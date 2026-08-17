@@ -1,7 +1,7 @@
 MODIFIED_FILE
 branch: main
-changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff -> HeroSMS country-matched number -> automatic OTP submission
-changed_fields: task result action; protocol mount; automatic phone-region prefill; HeroSMS API number allocation and OTP watcher; sanitized HeroSMS configuration example
+changed_branch: extraction-success -> single "push to BA protocol payment" action -> compact payment preview -> HeroSMS country-matched number -> automatic OTP submission
+changed_fields: single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
 original_hashes:
   requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
   payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85

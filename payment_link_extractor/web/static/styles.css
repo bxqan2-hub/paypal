@@ -41,6 +41,8 @@ button { cursor: pointer; }
 
 .topbar { margin-bottom: 28px; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }
+.payment-preview-link { display: inline-flex; align-items: center; min-height: 38px; border: 1px solid #1864ab; border-radius: 8px; background: #fff; color: #1864ab; padding: 0 13px; font-size: 12px; font-weight: 700; text-decoration: none; transition: background .18s, color .18s, border-color .18s; }
+.payment-preview-link:hover { border-color: #124f88; background: #eef6ff; color: #124f88; }
 
 .eyebrow { margin: 0 0 4px; color: #75808c; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
 h1, h2, p { margin-top: 0; }
@@ -161,6 +163,8 @@ h2 { margin-bottom: 4px; font-size: 18px; }
 .result-label { display: block; margin-bottom: 4px; color: #8a949f; font-size: 11px; }
 .result-link { min-width: 0; flex: 1 1 auto; color: #286596; font-size: 13px; overflow-wrap: anywhere; word-break: break-word; }
 .result-row button { flex-shrink: 0; white-space: nowrap; }
+.result-row-protocol { margin-top: 14px; }
+.result-row-protocol .protocol-pay-link, .task-row-result .protocol-pay-link { width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; white-space: normal; }
 .copy-success, .copy-success:hover { border-color: #28a76a; background: #28a76a; color: #fff; }
 .result-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #eef1f4; }
 .detail-item { min-width: 0; display: flex; flex-direction: column; gap: 2px; }

@@ -14,16 +14,25 @@ index b58f7d9..df021a1 100644
 +HEROSMS_MAX_PRICE=
 +HEROSMS_POLL_INTERVAL=5
 +HEROSMS_TIMEOUT=1800
+diff --git a/.gitignore b/.gitignore
+index 1594dac..a978314 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,3 +7,4 @@ __pycache__/
+ .env.*
+ !.env.example
+ data/*.log
++artifacts/screenshots/
 diff --git a/artifacts/MODIFIED_FILE.txt b/artifacts/MODIFIED_FILE.txt
 new file mode 100644
-index 0000000..2bd7474
+index 0000000..f437305
 --- /dev/null
 +++ b/artifacts/MODIFIED_FILE.txt
 @@ -0,0 +1,12 @@
 +MODIFIED_FILE
 +branch: main
-+changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff -> HeroSMS country-matched number -> automatic OTP submission
-+changed_fields: task result action; protocol mount; automatic phone-region prefill; HeroSMS API number allocation and OTP watcher; sanitized HeroSMS configuration example
++changed_branch: extraction-success -> single "push to BA protocol payment" action -> compact payment preview -> HeroSMS country-matched number -> automatic OTP submission
++changed_fields: single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
 +original_hashes:
 +  requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
 +  payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
@@ -34,24 +43,24 @@ index 0000000..2bd7474
 +secret_handling: HEROSMS_API_KEY is read from local .env and is not tracked; .env.example contains an empty placeholder
 diff --git a/artifacts/ROLLBACK.sh b/artifacts/ROLLBACK.sh
 new file mode 100755
-index 0000000..0f03d52
+index 0000000..cc99970
 --- /dev/null
 +++ b/artifacts/ROLLBACK.sh
 @@ -0,0 +1,5 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +TARGET_COMMIT="${1:-HEAD^}"
-+git restore --source "$TARGET_COMMIT" -- payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol .env.example
++git restore --source "$TARGET_COMMIT" -- payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js payment_link_extractor/web/static/styles.css payment_link_extractor/web/templates/index.html requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol .env.example
 +printf 'restored_to=%s\n' "$TARGET_COMMIT"
 diff --git a/artifacts/VERIFICATION.txt b/artifacts/VERIFICATION.txt
 new file mode 100644
-index 0000000..f348459
+index 0000000..494d896
 --- /dev/null
 +++ b/artifacts/VERIFICATION.txt
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,30 @@
 +VERIFICATION
-+changed_branch: extraction-success -> /paypal-pay/ -> protocol country/phone form -> HeroSMS country lookup/number allocation -> /paypal-pay/api/jobs -> background OTP submission
-+changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, automatic phone-region prefill from task billing_country, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
++changed_branch: extraction-success -> single BA protocol-payment button -> responsive payment preview -> manual country selection -> HeroSMS number/OTP -> /paypal-pay/api/jobs
++changed_fields: one successful-task action, test-preview entry button, responsive payment layout, unchanged copied core, manual PayPal country picker, hidden automatic phone field, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
 +artifacts:
 +- MODIFIED_FILE: C:\Users\Administrator\Desktop\??\artifacts\MODIFIED_FILE.txt
 +- DIFF_FILE: C:\Users\Administrator\Desktop\??\artifacts\DIFF_FILE.patch
@@ -69,6 +78,12 @@ index 0000000..f348459
 +MODIFIED JS command: node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js
 +MODIFIED JS literal result: extractor_js_exit=0 protocol_js_exit=0
 +MODIFIED JS exit status: 0
++MODIFIED visual command: npx.cmd --yes playwright screenshot --browser=chromium --viewport-size=1440,900 --full-page http://127.0.0.1:18795/paypal-pay/?ba=BA-DEMO2026081701 artifacts/screenshots/payment-desktop.png; npx.cmd --yes playwright screenshot --browser=chromium --viewport-size=390,844 --full-page http://127.0.0.1:18795/paypal-pay/?ba=BA-DEMO2026081701 artifacts/screenshots/payment-mobile.png
++MODIFIED visual literal result: desktop_exit=0; mobile_exit=0; screenshots show BA prefill, visible manual country picker, no phone field, responsive single-column mobile layout, and one primary start button
++MODIFIED visual exit status: 0
++MODIFIED preview command: GET /; GET /paypal-pay/?ba=BA-DEMO2026081701
++MODIFIED preview literal result: workbench_status=200; payment_preview_status=200; payment_preview_bytes=16666; checkout_preview_css_status=200 bytes=5858
++MODIFIED preview exit status: 0
 +ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
 +ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
 +ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
@@ -289,10 +304,10 @@ index 0000000..28e3042
 +                pass
 +        return response
 diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index 67c32f1..16c9c44 100644
+index 67c32f1..198891e 100644
 --- a/payment_link_extractor/web/static/app.js
 +++ b/payment_link_extractor/web/static/app.js
-@@ -1267,8 +1267,19 @@
+@@ -1267,8 +1267,18 @@
      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
    }
  
@@ -305,25 +320,24 @@ index 67c32f1..16c9c44 100644
 +    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}&billing_country=${encodeURIComponent(country)}` : ""}`;
 +  }
 +
-+  function renderResultRow(url, result = {}) {
++  function renderResultRow(url, result = {}, task = {}) {
 +    const protocolUrl = protocolPaymentUrl(result, task);
-+    const protocolAction = protocolUrl
-+      ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>`
++    return protocolUrl
++      ? `<div class="result-row result-row-protocol"><a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送到 BA 协议支付</a></div>`
 +      : "";
-+    return `<div class="result-row"><div class="result-content"><span class="result-label">提取链接</span><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div><button class="primary" data-copy="${escapeHtml(url)}">复制</button>${protocolAction}</div>`;
    }
  
    function isFailedTask(task) {
-@@ -1318,7 +1329,7 @@
+@@ -1318,7 +1328,7 @@
      const progressHtml = isComplete || isFailed
        ? ""
        : `<div class="task-progress progress-${progressTone}" aria-label="任务进度 ${progress}%"><div class="task-progress-header"><span>${escapeHtml(stageLabel(task.stage))}</span><strong>${progress}%</strong></div><div class="task-progress-track"><span class="task-progress-bar" style="width: ${progress}%"></span></div></div>`;
 -    const resultHtml = hasResult ? renderResultRow(url) : "";
-+    const resultHtml = hasResult ? renderResultRow(url, result) : "";
++    const resultHtml = hasResult ? renderResultRow(url, result, task) : "";
      const resultDetails = task.status === "succeeded" ? renderResultDetails(result, checkoutProxy, task.task_id, task.proxyTest) : "";
      const cardClass = task.status === "succeeded" ? "task-card task-card-success" : "task-card";
      return `<article class="${cardClass}" data-task-container>
-@@ -1349,9 +1360,10 @@
+@@ -1349,9 +1359,10 @@
      const isComplete = task.status === "succeeded";
      const isFailed = isFailedTask(task);
      const hasResult = isComplete && Boolean(url);
@@ -331,19 +345,53 @@ index 67c32f1..16c9c44 100644
      const progressOrResult = isComplete
        ? (hasResult
 -      ? `<div class="task-row-result"><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a><button class="primary" data-copy="${escapeHtml(url)}">复制</button></div>`
-+      ? `<div class="task-row-result"><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a><button class="primary" data-copy="${escapeHtml(url)}">复制</button>${protocolUrl ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>` : ""}</div>`
++      ? `<div class="task-row-result">${protocolUrl ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送到 BA 协议支付</a>` : ""}</div>`
        : `<span class="task-row-result-empty">未返回链接</span>`)
        : isFailed
        ? `<span class="task-row-error" title="${escapeHtml(taskFailureReason(task))}">${escapeHtml(taskFailureReason(task))}</span>`
-@@ -1436,7 +1448,7 @@
+@@ -1436,7 +1447,7 @@
      const progressHtml = isComplete || isFailed
        ? ""
        : `<div class="modal-progress progress-${progressTone}"><div class="task-progress-header"><span>${escapeHtml(stageLabel(task.stage))}</span><strong>${progress}%</strong></div><div class="task-progress-track"><span class="task-progress-bar" style="width: ${progress}%"></span></div></div>`;
 -    const resultHtml = hasResult ? renderResultRow(url) : "";
-+    const resultHtml = hasResult ? renderResultRow(url, result) : "";
++    const resultHtml = hasResult ? renderResultRow(url, result, task) : "";
      elements.taskDetailsContent.innerHTML = `${progressHtml}<div class="result-details modal-detail-grid">${details}</div>${renderTaskError(task)}${resultHtml}${task.status === "succeeded" ? renderResultDetails(result, checkoutProxy, task.task_id, task.proxyTest) : ""}<div class="task-modal-actions" data-task-container>${renderTaskActions(task)}</div>`;
    }
  
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index ecfa1c7..44210e9 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -41,6 +41,8 @@ button { cursor: pointer; }
+ 
+ .topbar { margin-bottom: 28px; }
+ .topbar-actions { display: flex; align-items: center; gap: 12px; }
++.payment-preview-link { display: inline-flex; align-items: center; min-height: 38px; border: 1px solid #1864ab; border-radius: 8px; background: #fff; color: #1864ab; padding: 0 13px; font-size: 12px; font-weight: 700; text-decoration: none; transition: background .18s, color .18s, border-color .18s; }
++.payment-preview-link:hover { border-color: #124f88; background: #eef6ff; color: #124f88; }
+ 
+ .eyebrow { margin: 0 0 4px; color: #75808c; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+ h1, h2, p { margin-top: 0; }
+@@ -161,6 +163,8 @@ h2 { margin-bottom: 4px; font-size: 18px; }
+ .result-label { display: block; margin-bottom: 4px; color: #8a949f; font-size: 11px; }
+ .result-link { min-width: 0; flex: 1 1 auto; color: #286596; font-size: 13px; overflow-wrap: anywhere; word-break: break-word; }
+ .result-row button { flex-shrink: 0; white-space: nowrap; }
++.result-row-protocol { margin-top: 14px; }
++.result-row-protocol .protocol-pay-link, .task-row-result .protocol-pay-link { width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; white-space: normal; }
+ .copy-success, .copy-success:hover { border-color: #28a76a; background: #28a76a; color: #fff; }
+ .result-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #eef1f4; }
+ .detail-item { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 8cbae5f..10372c8 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -32,6 +32,7 @@
+           <h1>个人提链工作台</h1>
+         </div>
+         <div class="topbar-actions">
++          <a class="payment-preview-link" href="/paypal-pay/?demo=1&amp;ba=BA-DEMO2026081701&amp;country=GB">&#x652F;&#x4ED8;&#x754C;&#x9762;&#x6D4B;&#x8BD5;&#x7248;</a>
+           <div id="socket-status" class="connection offline">
+             <span class="dot"></span>
+             <span>连接中</span>
 diff --git a/paypal_agreement_protocol/README.md b/paypal_agreement_protocol/README.md
 new file mode 100644
 index 0000000..0794065
@@ -11523,39 +11571,150 @@ index 0000000..0b8fc9c
 +  if ($('successTotal')) setInterval(refreshSuccessStats, 15000);
 +  setInterval(checkHealth, 15000);
 +})();
+diff --git a/paypal_agreement_protocol/web_static/checkout-preview.css b/paypal_agreement_protocol/web_static/checkout-preview.css
+new file mode 100644
+index 0000000..d8a20c3
+--- /dev/null
++++ b/paypal_agreement_protocol/web_static/checkout-preview.css
+@@ -0,0 +1,88 @@
++:root {
++  --checkout-bg: #f3f6f9;
++  --checkout-panel: #ffffff;
++  --checkout-ink: #15202b;
++  --checkout-muted: #667585;
++  --checkout-line: #d9e0e7;
++  --checkout-blue: #1468a8;
++  --checkout-green: #16835b;
++  --checkout-soft-blue: #eef6fc;
++  --checkout-soft-green: #edf8f3;
++}
++
++body { background: var(--checkout-bg); color: var(--checkout-ink); }
++.paper-noise { display: none; }
++.topbar { height: 68px; border-bottom: 1px solid var(--checkout-line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(12px); }
++.brand-mark { width: 38px; height: 38px; border-radius: 8px; background: #17324d; box-shadow: none; font-size: 14px; }
++.brand-mark:after { display: none; }
++.brand-mark i { background: #51c995; }
++.brand b { font-size: 15px; letter-spacing: 0; }
++.brand small { letter-spacing: .08em; }
++.service-dot, .nav-return, .icon-button { border-radius: 8px; box-shadow: none; background: #fff; }
++.nav-return { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--checkout-line); padding: 0 12px; color: var(--checkout-muted); font-size: 11px; font-weight: 700; text-decoration: none; }
++.shell { width: min(1120px, 100%); padding: 30px 24px 64px; }
++
++.payment-overview { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 32px; margin-bottom: 18px; padding: 24px 26px; border: 1px solid var(--checkout-line); border-radius: 8px; background: #17324d; color: #fff; }
++.preview-kicker { display: block; margin-bottom: 8px; color: #8fd8bc; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
++.payment-overview h1 { margin: 0; font: 700 28px/1.2 var(--display); letter-spacing: 0; }
++.payment-overview p { margin: 8px 0 0; color: #c7d3df; font-size: 13px; }
++.payment-steps { display: grid; grid-template-columns: repeat(3, minmax(94px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
++.payment-steps li { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 7px; min-height: 42px; padding: 8px; border: 1px solid rgba(255,255,255,.18); border-radius: 6px; color: #b9c8d5; font-size: 10px; }
++.payment-steps b { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; font: 700 10px var(--mono); }
++.payment-steps .active { border-color: #70d4ad; color: #fff; background: rgba(81,201,149,.11); }
++.payment-steps .active b { background: #51c995; color: #102a22; }
++.workspace-grid { display: block !important; }
++.form-panel { max-width: none !important; padding: 26px; border: 1px solid var(--checkout-line); border-radius: 8px; background: var(--checkout-panel); box-shadow: 0 12px 34px rgba(24, 44, 63, .07); backdrop-filter: none; }
++.panel:before { height: 3px; background: var(--checkout-blue); }
++.panel-heading { margin-bottom: 22px; }
++.section-index { border-radius: 6px; color: var(--checkout-blue); background: var(--checkout-soft-blue); border-color: #bad5e9; }
++.quiet { border-radius: 6px; background: #edf1f4; color: var(--checkout-muted); }
++.public-limit-note, .protocol-mode-switch, #braintreeVaultFields, .field-note, .protocol-schema-hint, .dynamic-country-notice, .buyer-config-row, .auto-phone-field, .recent-wrap { display: none !important; }
++.protocol-token { margin-bottom: 18px; }
++.token-field textarea { min-height: 86px; resize: none; border-radius: 6px; background: #f7f9fb; font-size: 12px; }
++.herosms-strip { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; margin: 0 0 18px; padding: 12px 14px; border: 1px solid #cce7db; border-radius: 6px; background: var(--checkout-soft-green); }
++.herosms-strip span { color: var(--checkout-green); font-size: 11px; font-weight: 800; }
++.herosms-strip p { margin: 0; color: #527064; font-size: 11px; }
++#legacyCountryFields { grid-template-columns: 1fr; }
++.field { margin-bottom: 16px; }
++textarea, input, select, .country-picker-toggle { border-radius: 6px; background: #f8fafb; }
++.country-picker-toggle { min-height: 46px; }
++.country-picker-menu { border-radius: 6px; }
++.proxy-block { margin: 8px 0 0; padding: 18px; border: 1px solid var(--checkout-line); border-radius: 8px; background: #f8fafb; }
++.proxy-block .section-index { display: none; }
++.block-heading h3 { font-size: 14px; }
++.block-heading p { color: var(--checkout-muted); }
++.proxy-pool-input { min-height: 96px; border-radius: 6px; background: #fff; }
++.privacy-note { border-radius: 6px; }
++.form-actions { justify-content: flex-end; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--checkout-line); }
++.primary-button { min-width: 220px; min-height: 48px; border-radius: 6px; background: var(--checkout-blue); box-shadow: none; }
++.primary-button:hover { transform: translateY(-1px); background: #0f578e; box-shadow: none; }
++.batch-run-panel { border-radius: 8px; }
++.batch-job-card { border-radius: 6px; }
++.dark body { background: #0d141c; }
++.dark .payment-overview { background: #111d29; }
++.dark .form-panel { background: #101922; border-color: #263645; }
++.dark .herosms-strip { background: #10251e; border-color: #254d3e; }
++.dark .proxy-block { background: #111c26; border-color: #2b3b49; }
++
++@media (max-width: 780px) {
++  .shell { padding: 18px 14px 48px; }
++  .payment-overview { grid-template-columns: 1fr; padding: 20px; }
++  .payment-steps { width: 100%; }
++  .form-panel { padding: 20px; }
++}
++
++@media (max-width: 520px) {
++  .topbar { padding: 0 14px; }
++  .service-dot { display: none; }
++  .brand small { display: none; }
++  .payment-steps { grid-template-columns: 1fr; }
++  .payment-steps li { min-height: 38px; }
++  .payment-overview h1 { font-size: 24px; }
++  .herosms-strip { grid-template-columns: 1fr; }
++  .primary-button { width: 100%; min-width: 0; }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  *, *:before, *:after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
++}
 diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
 new file mode 100644
-index 0000000..839adae
+index 0000000..64f9335
 --- /dev/null
 +++ b/paypal_agreement_protocol/web_static/index.html
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,211 @@
 +<!doctype html>
 +<html lang="zh-CN">
 +<head>
 +  <meta charset="utf-8">
 +  <meta name="viewport" content="width=device-width,initial-scale=1">
 +  <meta name="color-scheme" content="light dark">
-+  <title>PAY.153 · PayPal OAICS 协议支付</title>
-+  <meta name="description" content="PayPal OAICS Billing Agreement 协议授权工作台">
++  <title>BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;</title>
++  <meta name="description" content="PayPal BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;&#x5DE5;&#x4F5C;&#x53F0;">
 +  <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
 +  <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260812-ba-pool-1">
++  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-preview-1">
 +</head>
 +<body>
 +  <div class="paper-noise"></div>
 +  <header class="topbar">
++    <a class="brand" href="/" aria-label="Return to extraction workbench">
++      <span class="brand-mark">BA<i></i></span>
++      <span><b>&#x534F;&#x8BAE;&#x652F;&#x4ED8;</b><small>PAYPAL BILLING AGREEMENT</small></span>
++    </a>
 +    <div class="top-actions">
-+      <a class="nav-return" href="/pay153/">返回提链工作台</a>
++      <a class="nav-return" href="/">&#x8FD4;&#x56DE;&#x63D0;&#x94FE;&#x5DE5;&#x4F5C;&#x53F0;</a>
 +      <span id="serviceState" class="service-dot"><i></i> 服务检测中</span>
 +      <button id="themeToggle" class="icon-button" type="button" aria-label="切换主题">◐</button>
 +    </div>
 +  </header>
 +
 +  <main class="shell">
++    <section class="payment-overview" aria-labelledby="paymentTitle">
++      <div>
++        <span class="preview-kicker">PAYMENT WORKBENCH</span>
++        <h1 id="paymentTitle">BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;</h1>
++        <p>&#x786E;&#x8BA4;&#x63D0;&#x94FE;&#x7ED3;&#x679C;&#xFF0C;&#x624B;&#x52A8;&#x9009;&#x62E9; PayPal &#x56FD;&#x5BB6;&#xFF0C;&#x7136;&#x540E;&#x542F;&#x52A8;&#x534F;&#x8BAE;&#x652F;&#x4ED8;&#x3002;</p>
++      </div>
++      <ol class="payment-steps" aria-label="Payment steps">
++        <li class="active"><b>1</b><span>&#x786E;&#x8BA4; BA &#x94FE;</span></li>
++        <li><b>2</b><span>&#x9009;&#x62E9;&#x56FD;&#x5BB6;</span></li>
++        <li><b>3</b><span>&#x534F;&#x8BAE;&#x652F;&#x4ED8;</span></li>
++      </ol>
++    </section>
 +    <section class="workspace-grid">
 +      <form id="protocolForm" class="panel form-panel">
 +        <div class="panel-heading">
-+          <div><span class="section-index">A</span><h2>协议参数</h2></div>
-+          <span class="quiet">独立任务</span>
++          <div><span class="section-index">01</span><h2>&#x652F;&#x4ED8;&#x4FE1;&#x606F;</h2></div>
++          <span class="quiet">&#x5355;&#x8D26;&#x53F7;&#x4EFB;&#x52A1;</span>
 +        </div>
 +
 +        <div class="public-limit-note"><b>运行说明</b><span>BA 链池与手机号池按行一一对应，最多 20 组；每组独立运行并从代理池随机选择代理。</span></div>
@@ -11591,6 +11750,7 @@ index 0000000..839adae
 +          <span class="field-note">第 1 条 BA 链使用第 1 个手机号，第 2 条使用第 2 个手机号，依次对应。</span>
 +        </label>
 +
++        <div class="herosms-strip"><span>HeroSMS &#x81EA;&#x52A8;&#x63A5;&#x7801;</span><p>&#x56FD;&#x5BB6;&#x7531;&#x4F60;&#x624B;&#x52A8;&#x9009;&#x62E9;&#xFF0C;&#x624B;&#x673A;&#x53F7;&#x548C;&#x77ED;&#x4FE1;&#x9A8C;&#x8BC1;&#x7801;&#x7531;&#x7CFB;&#x7EDF;&#x81EA;&#x52A8;&#x83B7;&#x53D6;&#x5E76;&#x586B;&#x5199;&#x3002;</p></div>
 +        <div id="legacyCountryFields" class="two-cols protocol-country-row">
 +          <label class="field">
 +            <span class="label-row"><b>PayPal 国家</b><small>决定注册资料与地址</small></span>
@@ -11605,15 +11765,15 @@ index 0000000..839adae
 +              <select id="paypalCountry" required hidden aria-hidden="true" tabindex="-1"></select>
 +            </div>
 +          </label>
-+          <label class="field">
++          <label class="field auto-phone-field">
 +            <span class="label-row"><b id="phoneLabel">巴西手机号池</b><small id="phonePoolCount">0 / 20</small></span>
-+            <textarea id="phone" class="phone-pool-input" required autocomplete="off" inputmode="tel" spellcheck="false" placeholder="每行一个手机号，顺序与 BA 链池一致"></textarea>
++            <textarea id="phone" class="phone-pool-input" autocomplete="off" inputmode="tel" spellcheck="false" placeholder="每行一个手机号，顺序与 BA 链池一致"></textarea>
 +          </label>
 +        </div>
 +        <div id="countrySchemaHint" class="field-note protocol-schema-hint">正在读取国家目录…</div>
 +        <div id="dynamicCountryNotice" class="dynamic-country-notice" hidden><b>&#x8BD5;&#x8FD0;&#x884C;&#x56FD;&#x5BB6;</b><span>&#x4EC5;&#x4FDD;&#x8BC1;&#x5B57;&#x6BB5;&#x3001;&#x5730;&#x5740;&#x548C; KYC &#x5B9E;&#x65F6;&#x89E3;&#x6790;&#xFF1B;&#x652F;&#x4ED8;&#x7ED3;&#x679C;&#x53D7; PayPal &#x5730;&#x533A;&#x3001;&#x98CE;&#x63A7;&#x548C;&#x8D44;&#x6599;&#x8981;&#x6C42;&#x5F71;&#x54CD;&#xFF0C;&#x4E0D;&#x627F;&#x8BFA;&#x6210;&#x529F;&#x3002;</span></div>
 +
-+        <div class="two-cols protocol-country-row">
++        <div class="two-cols protocol-country-row buyer-config-row">
 +          <label class="field">
 +            <span class="label-row"><b>Buyer 身份模式</b><small>每个任务独立选择</small></span>
 +            <select id="buyerMode" required>
@@ -11640,7 +11800,7 @@ index 0000000..839adae
 +        </section>
 +
 +        <div id="legacyActions" class="form-actions">
-+          <button id="submitButton" class="primary-button" type="submit"><span>开始批量协议支付</span><i>→</i></button>
++          <button id="submitButton" class="primary-button" type="submit"><span>&#x5F00;&#x59CB;&#x534F;&#x8BAE;&#x652F;&#x4ED8;</span><i aria-hidden="true">&rarr;</i></button>
 +          <button id="cancelBatchButton" class="secondary-button" type="button" hidden>停止全部</button>
 +          <button id="cancelButton" class="secondary-button" type="button" hidden>停止任务</button>
 +        </div>
