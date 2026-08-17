@@ -1,0 +1,65 @@
+OBJECT=payment-link extractor and PayPal agreement protocol optimization
+BRANCH=main
+BASE_COMMIT=92fe8ee
+CHANGED_FIELDS=country_catalog,proxy_bridge,address_normalization,buyer_default,browser_runtime,dynamic_concurrency,stage_events,event_redaction,regression_tests
+ORIGINAL_BUNDLE_SHA256=E72D04D44A5AC9DEC137C663A00939E08E02008F67E87A4116ADEA61FFF1B6BD
+MODIFIED_BUNDLE_SHA256=A17AF25AB736E34C251FE0AD235F5490071B044345CA7C532DA90C0ACA8D59A0
+BASELINE_FIXTURE_SHA256=624A7924B2334D3761A404533A917EDE7A82B716D9299C846CCA11257542B78D
+MODIFIED_FILE_SHA256=A879EED645DC1DCC2CE7498B0F53073E2E76B4E088DC96D154A21DDFD5512702
+
+MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/MODIFIED_FILE
+DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/DIFF_FILE.patch
+VERIFICATION_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/VERIFICATION.txt
+ROLLBACK_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/ROLLBACK.sh
+
+BASELINE_COMMAND_1=& .\.venv\Scripts\python.exe -m pytest -q tests
+BASELINE_INPUT=current local regression suite before optimization
+BASELINE_LITERAL_OUTPUT_1=3 passed in 0.09s
+BASELINE_RESULT_1=PASS
+BASELINE_EXIT_1=0
+
+BASELINE_COMMAND_2=Push-Location paypal_agreement_protocol; & ..\.venv\Scripts\python.exe -m pytest -q <reference>\app\backend\paypal_agreement_protocol\tests; Pop-Location
+BASELINE_INPUT=reference protocol regression suite executed against current code before optimization
+BASELINE_LITERAL_OUTPUT_2=12 failed, 5 passed in 0.41s
+BASELINE_RESULT_2=EXPECTED_INCOMPATIBILITIES_REPRODUCED
+BASELINE_EXIT_2=1
+
+MODIFIED_COMMAND_1=& .\.venv\Scripts\python.exe -m pytest -q tests
+MODIFIED_INPUT=local suite including imported reference protocol tests and optimization tests
+MODIFIED_LITERAL_OUTPUT_1=29 passed in 0.47s
+MODIFIED_RESULT_1=PASS
+MODIFIED_EXIT_1=0
+
+MODIFIED_COMMAND_2=Push-Location paypal_agreement_protocol; & ..\.venv\Scripts\python.exe -m pytest -q <reference>\app\backend\paypal_agreement_protocol\tests; Pop-Location
+MODIFIED_INPUT=unchanged reference protocol regression suite executed against optimized current code
+MODIFIED_LITERAL_OUTPUT_2=17 passed in 0.29s
+MODIFIED_RESULT_2=PASS
+MODIFIED_EXIT_2=0
+
+MODIFIED_COMMAND_3=& .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+MODIFIED_INPUT=all modified Python source and tests
+MODIFIED_LITERAL_OUTPUT_3=COMPILE_EXIT=0
+MODIFIED_RESULT_3=PASS
+MODIFIED_EXIT_3=0
+
+MODIFIED_COMMAND_4=Flask test client GET health/defaults/concurrency and authenticated POST concurrency=3
+MODIFIED_INPUT=TASK_WORKERS=2,TASK_MAX_WORKERS=4,X-Workbench-Password=test-password
+MODIFIED_LITERAL_OUTPUT_4=/api/health 200; /api/defaults 200; /api/tasks/concurrency 200; POST 200 concurrency=3 max_concurrency=4
+MODIFIED_RESULT_4=PASS
+MODIFIED_EXIT_4=0
+
+MODIFIED_COMMAND_5=ensure_background_server(); stop_background_server()
+MODIFIED_INPUT=local bridge listener 127.0.0.1:18796
+MODIFIED_LITERAL_OUTPUT_5=BRIDGE_STARTED_OR_REUSED True; BRIDGE_STOP_OK
+MODIFIED_RESULT_5=PASS
+MODIFIED_EXIT_5=0
+
+ROLLBACK_COMMAND="C:\Program Files\Git\bin\bash.exe" artifacts/optimization-20260818/ROLLBACK.sh --fixture <another-copy>
+ROLLBACK_INPUT=copy of MODIFIED_FILE in the verified TEMP directory
+ROLLBACK_LITERAL_OUTPUT=ROLLED_BACK_FIXTURE <another-copy>
+ROLLBACK_RESULT=PASS
+ROLLBACK_EXIT=0
+ROLLBACK_RESTORED_HASH=624A7924B2334D3761A404533A917EDE7A82B716D9299C846CCA11257542B78D
+ROLLBACK_RESTORED_BEHAVIOR=STATE=baseline; COUNTRIES=12; DYNAMIC_FIELD_SCHEMAS=12; BUYER_DEFAULT=original; LOCAL_TESTS=3_passed; REFERENCE_PROTOCOL_TESTS=5_passed_12_failed
+
+MODIFIED_FILE_REMAINS_CHANGED=STATE=optimized; COUNTRIES=197; DYNAMIC_FIELD_SCHEMAS=32; BUYER_DEFAULT=identity_elevation; LOCAL_TESTS=29_passed; REFERENCE_PROTOCOL_TESTS=17_passed

@@ -30,7 +30,8 @@ def create_app(
     load_configured_env()
     app = Flask(__name__)
     app.config.from_mapping(
-        TASK_WORKERS=_int_env("OPLL_TASK_WORKERS", 2),
+        TASK_WORKERS=min(_int_env("OPLL_TASK_WORKERS", 2), 32),
+        TASK_MAX_WORKERS=min(_int_env("OPLL_TASK_MAX_WORKERS", 10), 32),
         TASK_TTL_SECONDS=_int_env("OPLL_TASK_TTL_SECONDS", 3600),
         TASK_EVENT_HISTORY_SIZE=_int_env("OPLL_TASK_EVENT_HISTORY_SIZE", 500),
         WEB_PASSWORD=os.getenv("OPLL_WEB_PASSWORD", ""),
@@ -50,7 +51,8 @@ def create_app(
         serialize=bool(app.config["LOG_JSON"]),
     )
     manager = task_manager or TaskManager(
-        max_workers=int(app.config["TASK_WORKERS"]),
+        max_workers=max(int(app.config["TASK_WORKERS"]), int(app.config["TASK_MAX_WORKERS"])),
+        concurrency=int(app.config["TASK_WORKERS"]),
         ttl_seconds=int(app.config["TASK_TTL_SECONDS"]),
         history_size=int(app.config["TASK_EVENT_HISTORY_SIZE"]),
     )

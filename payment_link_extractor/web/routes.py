@@ -74,6 +74,22 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
     def list_tasks() -> Any:
         return jsonify({"ok": True, "tasks": manager.list()})
 
+    @app.get("/api/tasks/concurrency")
+    def get_task_concurrency() -> Any:
+        return jsonify({"ok": True, **manager.concurrency_snapshot()})
+
+    @app.post("/api/tasks/concurrency")
+    def set_task_concurrency() -> Any:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _error("request body must be a JSON object", 400)
+        try:
+            value = int(payload.get("concurrency"))
+        except (TypeError, ValueError):
+            return _error("concurrency must be an integer", 400)
+        manager.set_concurrency(value)
+        return jsonify({"ok": True, **manager.concurrency_snapshot()})
+
     @app.post("/api/tasks")
     def create_task() -> Any:
         payload = request.get_json(silent=True)

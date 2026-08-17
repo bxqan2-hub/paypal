@@ -23,6 +23,9 @@ SOURCE_URL = os.getenv(
 _credential_lock = threading.Lock()
 _credential: tuple[str, int, str, str] | None = None
 _credential_time = 0.0
+_server_lock = threading.Lock()
+_background_server: "Server | None" = None
+_background_thread: threading.Thread | None = None
 
 
 def recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -114,10 +117,17 @@ def open_chain(
     else:
         proxy_host, proxy_port, username, password = load_credential()
         protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
-    upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
-    upstream.settimeout(30)
+    upstream: socket.socket | None = None
     try:
-        socks_connect(upstream, proxy_host, proxy_port)
+        try:
+            upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
+            upstream.settimeout(30)
+            socks_connect(upstream, proxy_host, proxy_port)
+        except (ConnectionError, OSError):
+            if upstream is not None:
+                upstream.close()
+            upstream = socket.create_connection((proxy_host, proxy_port), timeout=15)
+            upstream.settimeout(30)
         if protocol == "http":
             http_proxy_connect(upstream, destination_host, destination_port, username, password)
         else:
@@ -125,7 +135,8 @@ def open_chain(
         upstream.settimeout(None)
         return upstream
     except Exception:
-        upstream.close()
+        if upstream is not None:
+            upstream.close()
         raise
 
 
@@ -188,6 +199,46 @@ class Handler(socketserver.BaseRequestHandler):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+
+def ensure_background_server() -> bool:
+    """Start the shared bridge once; reuse an existing listener when present."""
+    global _background_server, _background_thread
+    with _server_lock:
+        if _background_thread is not None and _background_thread.is_alive():
+            return False
+        try:
+            probe = socket.create_connection((LISTEN_HOST, LISTEN_PORT), timeout=0.2)
+        except OSError:
+            probe = None
+        if probe is not None:
+            probe.close()
+            return False
+        server = Server((LISTEN_HOST, LISTEN_PORT), Handler)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="iprocket-chain-bridge",
+            daemon=True,
+        )
+        thread.start()
+        _background_server = server
+        _background_thread = thread
+        return True
+
+
+def stop_background_server() -> None:
+    """Stop the bridge owned by this process; external listeners are untouched."""
+    global _background_server, _background_thread
+    with _server_lock:
+        server = _background_server
+        thread = _background_thread
+        _background_server = None
+        _background_thread = None
+    if server is not None:
+        server.shutdown()
+        server.server_close()
+    if thread is not None:
+        thread.join(timeout=2)
 
 
 if __name__ == "__main__":

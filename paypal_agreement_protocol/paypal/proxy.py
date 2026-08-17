@@ -6,16 +6,70 @@ and converts them to httpx-compatible proxy URLs.
 """
 from __future__ import annotations
 
+import base64
 import os
 import random
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from config import PROXY_POOL, PROXY_ENABLED
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enable", "enabled", "y"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disable", "disabled", "n", ""}
+_BRIDGE_VENDOR_SUFFIXES = (
+    "1024proxy.io", "iprocket.io", "iprocket.pro", "iproyal.net", "iproyal.com",
+)
+
+
+def _uses_vendor_bridge(host: str) -> bool:
+    lowered = str(host or "").strip().lower().rstrip(".")
+    return any(
+        lowered == suffix or lowered.endswith("." + suffix)
+        for suffix in _BRIDGE_VENDOR_SUFFIXES
+    )
+
+
+def _bridge_enabled() -> bool:
+    return parse_bool(os.getenv("PAYPAL_PROXY_USE_BRIDGE"), True)
+
+
+def _bridge_protocol(entry: "ProxyEntry") -> str:
+    host = entry.host.lower()
+    if "1024proxy." in host or entry.scheme.lower().startswith("socks"):
+        return "socks5"
+    if "iproyal." in host or entry.scheme.lower() in {"http", "https"}:
+        return "http"
+    return "socks5" if entry.port in {9595, 59999, 61999} else "http"
+
+
+def _bridge_url(entry: "ProxyEntry") -> str:
+    bridge = os.getenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796").strip()
+    parsed = urlsplit(bridge)
+    bridge_host = parsed.hostname or "127.0.0.1"
+    bridge_port = parsed.port or 18796
+    metadata = base64.urlsafe_b64encode(
+        f"{_bridge_protocol(entry)}|{entry.host}|{entry.port}|{entry.username}".encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return (
+        f"http://iprb_{metadata}:{quote(entry.password, safe='')}"
+        f"@{bridge_host}:{bridge_port}"
+    )
+
+
+def ensure_proxy_bridge(entry: "ProxyEntry | None") -> bool:
+    """Start or reuse the shared dynamic-credential bridge when required."""
+    if entry is None or not _bridge_enabled() or not _uses_vendor_bridge(entry.host):
+        return False
+    project_root = Path(__file__).resolve().parents[2]
+    project_text = str(project_root)
+    if project_text not in sys.path:
+        sys.path.insert(0, project_text)
+    from oai_iprocket_chain_bridge import ensure_background_server
+
+    return ensure_background_server()
 
 
 @dataclass(frozen=True)
@@ -79,6 +133,16 @@ class ProxyEntry:
 
     @property
     def url(self) -> str:
+        if self.uses_bridge:
+            return _bridge_url(self)
+        return self.direct_url
+
+    @property
+    def uses_bridge(self) -> bool:
+        return _bridge_enabled() and _uses_vendor_bridge(self.host)
+
+    @property
+    def direct_url(self) -> str:
         user = quote(self.username, safe="")
         password = quote(self.password, safe="")
         auth = f"{user}:{password}@" if self.username or self.password else ""
@@ -104,6 +168,14 @@ class ProxyConfig:
         if not self.enabled or not self.entry:
             return "代理关闭"
         return self.entry.masked
+
+    def prepare(self) -> bool:
+        """Ensure the local transport dependency is ready before a request."""
+        return ensure_proxy_bridge(self.entry if self.enabled else None)
+
+    @property
+    def uses_bridge(self) -> bool:
+        return bool(self.enabled and self.entry and self.entry.uses_bridge)
 
 
 def parse_bool(value: object, default: bool = False) -> bool:

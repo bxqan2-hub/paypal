@@ -684,6 +684,7 @@ def proxy_probe(proxy_config: ProxyConfig, timeout_seconds: float = 8.0) -> tupl
     if not proxy_config.enabled or not proxy_config.url:
         return False, "proxy is disabled"
     try:
+        proxy_config.prepare()
         with httpx.Client(
             proxy=proxy_config.url,
             timeout=httpx.Timeout(timeout_seconds),
@@ -853,7 +854,7 @@ def sanitize_payload(value: Any, key: str = "") -> Any:
 
     if compact_key in {"password", "securitycode", "cvv", "pin", "otp", "authorization", "cookie", "accesstoken"}:
         return "<redacted>"
-    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken"}:
+    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken", "activationid"}:
         return mask_middle(value, 4, 4)
     if compact_key in {"cardnumber", "encryptednumber"}:
         return mask_digits(value, keep=4)
@@ -943,7 +944,7 @@ class WebJob:
     batch_index: int = 1
     batch_total: int = 1
     country: str = "BR"
-    buyer_mode: str = "original"
+    buyer_mode: str = "identity_elevation"
     sms_activation_id: str = ""
     sms_attempt: int = 0
     sms_max_attempts: int = 3
@@ -973,6 +974,7 @@ class WebJob:
     awaiting_prompt: str = ""
     challenge_url: str = ""
     logs: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
     _input_queue: list[str] = field(default_factory=list, repr=False)
     _captcha_queue: list[str] = field(default_factory=list, repr=False)
@@ -995,6 +997,22 @@ class WebJob:
         if len(self.logs) > MAX_LOG_LINES:
             del self.logs[: len(self.logs) - MAX_LOG_LINES]
 
+    def _emit_event_locked(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+        self.events.append({
+            "type": str(event_type),
+            "task_id": self.id,
+            "timestamp": now_ts(),
+            "data": sanitize_payload(data or {}),
+        })
+        if len(self.events) > MAX_LOG_LINES:
+            del self.events[: len(self.events) - MAX_LOG_LINES]
+
+    def emit_event(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+        with self._condition:
+            self._emit_event_locked(event_type, data)
+            self.updated_at = now_ts()
+            self._condition.notify_all()
+
     def set_sms_activation(
         self,
         activation_id: str,
@@ -1010,6 +1028,12 @@ class WebJob:
             self.sms_attempt = max(0, int(attempt or 0))
             self.sms_max_attempts = max(1, int(max_attempts or 3))
             self.updated_at = now_ts()
+            self._emit_event_locked("herosms.number.active", {
+                "activation_id": self.sms_activation_id,
+                "phone": self.phone,
+                "attempt": self.sms_attempt,
+                "max_attempts": self.sms_max_attempts,
+            })
             self._condition.notify_all()
 
     def report_sms_send_failure(self, error: str) -> None:
@@ -1064,6 +1088,12 @@ class WebJob:
                 "WARNING",
                 f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
             )
+            self._emit_event_locked("protocol.retry", {
+                "retry_count": self.retry_count,
+                "max_retries": self.max_retries,
+                "stage": self.stage,
+                "reason": reason,
+            })
             self._condition.notify_all()
 
     def set_status(self, status: str, stage: str | None = None) -> None:
@@ -1077,6 +1107,10 @@ class WebJob:
             self.updated_at = now_ts()
             if changed:
                 self._append_log_locked("INFO", f"状态：{status}；阶段：{self.stage}")
+                self._emit_event_locked("protocol.stage", {
+                    "status": self.status,
+                    "stage": self.stage,
+                })
             self._condition.notify_all()
 
     def check_cancelled(self) -> None:
@@ -1117,6 +1151,10 @@ class WebJob:
             if self.status not in {"completed", "failed", "cancelled"}:
                 self.stage = step
             self.updated_at = now_ts()
+            self._emit_event_locked("protocol.cancelled", {
+                "status": self.status,
+                "stage": self.stage,
+            })
             self._condition.notify_all()
 
     def cancel(self) -> None:
@@ -1166,6 +1204,10 @@ class WebJob:
             self.awaiting_prompt = ""
             self.challenge_url = ""
             self._browser = None
+            self._emit_event_locked("protocol.cancelled", {
+                "status": self.status,
+                "stage": self.stage,
+            })
             self._condition.notify_all()
 
     def acquire_execution_slot(self) -> None:
@@ -1210,6 +1252,11 @@ class WebJob:
             self.awaiting_prompt = redact_text(prompt)
             self.updated_at = now_ts()
             self._append_log_locked("INFO", f"已进入短信发送步骤，等待验证码或新手机号：{prompt}")
+            self._emit_event_locked("protocol.awaiting_otp", {
+                "status": self.status,
+                "stage": self.stage,
+                "prompt": self.awaiting_prompt,
+            })
             self._condition.notify_all()
         # Human wait time must not occupy a network execution slot.
         self.release_execution_slot()
@@ -1392,6 +1439,15 @@ class WebJob:
                 else f"协议支付执行失败：{self.error or result_obj.get('error') or result_obj.get('error_code') or 'unknown error'}"
             )
             self._append_log_locked("SUCCESS" if succeeded else "ERROR", summary)
+            self._emit_event_locked(
+                "protocol.completed" if succeeded else "protocol.failed",
+                {
+                    "status": self.status,
+                    "stage": self.stage,
+                    "result": self.result,
+                    "error": self.error,
+                },
+            )
             self._condition.notify_all()
 
     def fail(self, exc: BaseException) -> None:
@@ -1458,11 +1514,24 @@ class WebJob:
             self.challenge_url = ""
             self._browser = None
             self._append_log_locked("ERROR", f"任务结束；失败阶段：{failure_step}；原因：{self.error}")
+            self._emit_event_locked("protocol.failed", {
+                "status": self.status,
+                "stage": self.stage,
+                "error": self.error,
+                "result": self.result,
+            })
             self._condition.notify_all()
 
-    def to_dict(self, *, include_logs: bool = True, log_offset: int = 0) -> dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        include_logs: bool = True,
+        log_offset: int = 0,
+        event_offset: int = 0,
+    ) -> dict[str, Any]:
         with self._condition:
             logs = self.logs[max(0, log_offset) :] if include_logs else []
+            events = self.events[max(0, event_offset) :] if include_logs else []
             return {
                 "id": self.id,
                 "created_at": self.created_at,
@@ -1512,6 +1581,8 @@ class WebJob:
                 "traceback": self.traceback_text if (self.debug and ALLOW_DEBUG_LOGS) else "",
                 "logs": logs,
                 "log_count": len(self.logs),
+                "events": events,
+                "event_count": len(self.events),
             }
 
 
@@ -2012,7 +2083,7 @@ def create_job(
     manual_funding: bool = False,
     agreement_only: bool = False,
     country: str = "BR",
-    buyer_mode: str = "original",
+    buyer_mode: str = "identity_elevation",
     proxy_pool: Any = None,
     exclude_public_metrics: bool = False,
     batch_id: str = "",
@@ -2026,7 +2097,7 @@ def create_job(
     if account_email and ("@" not in account_email or any(char.isspace() for char in account_email)):
         raise ValueError("账号邮箱格式不正确")
     country = str(country or "BR").strip().upper()
-    buyer_mode = str(buyer_mode or "original").strip().lower()
+    buyer_mode = str(buyer_mode or "identity_elevation").strip().lower()
     if buyer_mode not in {"original", "identity_elevation"}:
         raise ValueError("Buyer 模式参数不正确")
     allowed_countries = supported_country_codes() if ENABLE_DYNAMIC_COUNTRIES else VERIFIED_PROTOCOL_COUNTRIES
@@ -2595,7 +2666,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 log_offset = int(query.get("log_offset", "0") or 0)
             except Exception:
                 log_offset = 0
-            return self.send_json(job.to_dict(include_logs=True, log_offset=log_offset))
+            try:
+                event_offset = int(query.get("event_offset", "0") or 0)
+            except Exception:
+                event_offset = 0
+            return self.send_json(job.to_dict(
+                include_logs=True,
+                log_offset=log_offset,
+                event_offset=event_offset,
+            ))
         if path.startswith("/api/"):
             return self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
         return self.serve_static(path)
@@ -2651,7 +2730,7 @@ class WebHandler(BaseHTTPRequestHandler):
                             phone=phone_value,
                             account_email=email_value,
                             country=data.get("country") or data.get("paypal_country") or "BR",
-                            buyer_mode=data.get("buyer_mode") or "original",
+                            buyer_mode=data.get("buyer_mode") or "identity_elevation",
                             debug=False,
                             max_card_attempts=5,
                             manual_funding=False,
@@ -2681,7 +2760,7 @@ class WebHandler(BaseHTTPRequestHandler):
                     phone=data.get("phone", ""),
                     account_email=data.get("account_email") or data.get("email", ""),
                     country=data.get("country") or data.get("paypal_country") or "BR",
-                    buyer_mode=data.get("buyer_mode") or "original",
+                    buyer_mode=data.get("buyer_mode") or "identity_elevation",
                     debug=False,
                     max_card_attempts=5,
                     # Braintree link generation is now independent from the

@@ -22,6 +22,45 @@ _BROWSER_LIMIT = max(1, min(int(os.getenv("PAYPAL_MANUAL_BROWSER_LIMIT", "2") or
 _BROWSER_SEMAPHORE = threading.BoundedSemaphore(_BROWSER_LIMIT)
 
 
+def browser_launch_profile(
+    playwright_executable: str = "",
+    *,
+    platform_name: str | None = None,
+) -> dict[str, Any]:
+    """Return a testable cross-platform Playwright launch profile."""
+    platform = platform_name or os.name
+    explicit = os.getenv("PAYPAL_BROWSER_EXECUTABLE", "").strip()
+    if explicit:
+        if not os.path.isfile(explicit):
+            raise RuntimeError("PAYPAL_BROWSER_EXECUTABLE does not point to a file")
+        return {"headless": platform == "nt", "executable_path": explicit}
+
+    if platform == "nt":
+        candidates = [
+            playwright_executable,
+            os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
+        ]
+    else:
+        candidates = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            playwright_executable,
+        ]
+    executable = next(
+        (candidate for candidate in candidates if candidate and os.path.isfile(candidate)),
+        "",
+    )
+    result: dict[str, Any] = {"headless": platform == "nt"}
+    if executable:
+        result["executable_path"] = executable
+    return result
+
+
 @dataclass
 class BrowserState:
     ready: bool = False
@@ -255,27 +294,28 @@ class ManualBrowserController:
                 self._done_event.set()
                 return
 
-            with _DISPLAY_LOCK:
-                display_number = next(_DISPLAY_COUNTER)
-            display = f":{display_number}"
-            xvfb = subprocess.Popen(
-                ["Xvfb", display, "-screen", "0", f"{self.viewport_width}x{self.viewport_height}x24", "-nolisten", "tcp", "-ac"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(0.35)
-            if xvfb.poll() is not None:
-                raise RuntimeError("Xvfb failed to start")
+            display = ""
+            if os.name != "nt":
+                with _DISPLAY_LOCK:
+                    display_number = next(_DISPLAY_COUNTER)
+                display = f":{display_number}"
+                xvfb = subprocess.Popen(
+                    ["Xvfb", display, "-screen", "0", f"{self.viewport_width}x{self.viewport_height}x24", "-nolisten", "tcp", "-ac"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.35)
+                if xvfb.poll() is not None:
+                    raise RuntimeError("Xvfb failed to start")
 
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
 
             self._set_state(message="正在通过任务代理打开验证页面…")
             with sync_playwright() as playwright:
+                launch_profile = browser_launch_profile(playwright.chromium.executable_path)
                 launch_kwargs: dict[str, Any] = {
-                    "headless": False,
-                    "executable_path": "/usr/bin/chromium",
-                    "env": {**os.environ, "DISPLAY": display},
+                    "headless": launch_profile["headless"],
                     "args": [
                         "--no-sandbox",
                         "--disable-dev-shm-usage",
@@ -283,6 +323,10 @@ class ManualBrowserController:
                         "--window-size=1280,800",
                     ],
                 }
+                if launch_profile.get("executable_path"):
+                    launch_kwargs["executable_path"] = launch_profile["executable_path"]
+                if display:
+                    launch_kwargs["env"] = {**os.environ, "DISPLAY": display}
                 proxy, proxy_bridge, proxy_auth_file = self._start_socks5_http_bridge(self.proxy_config)
                 if proxy:
                     launch_kwargs["proxy"] = proxy

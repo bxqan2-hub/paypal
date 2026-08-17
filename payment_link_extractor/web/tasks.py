@@ -83,16 +83,54 @@ class TaskManager:
         extractor: Callable[..., PaymentLinkResult] = extract_payment_link,
         *,
         max_workers: int = 2,
+        concurrency: int | None = None,
         ttl_seconds: int = 3600,
         history_size: int = EVENT_HISTORY_SIZE,
     ) -> None:
         self._extractor = extractor
-        self._executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="payment-task")
+        self._capacity = max(1, max_workers)
+        self._concurrency = max(
+            1, min(self._capacity, concurrency if concurrency is not None else self._capacity)
+        )
+        self._active_slots = 0
+        self._executor = ThreadPoolExecutor(max_workers=self._capacity, thread_name_prefix="payment-task")
         self._ttl = max(1, ttl_seconds)
         self._lock = threading.RLock()
         self._tasks: dict[str, TaskRecord] = {}
         self._history: deque[dict[str, Any]] = deque(maxlen=max(1, history_size))
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
+
+    @property
+    def concurrency(self) -> int:
+        with self._lock:
+            return self._concurrency
+
+    @property
+    def max_concurrency(self) -> int:
+        return self._capacity
+
+    def set_concurrency(self, value: int) -> int:
+        normalized = max(1, min(self._capacity, int(value)))
+        with self._lock:
+            self._concurrency = normalized
+            self._publish_locked(
+                "",
+                "task.concurrency",
+                {
+                    "concurrency": self._concurrency,
+                    "max_concurrency": self._capacity,
+                    "active_slots": self._active_slots,
+                },
+            )
+        return normalized
+
+    def concurrency_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "concurrency": self._concurrency,
+                "max_concurrency": self._capacity,
+                "active_slots": self._active_slots,
+            }
 
     def close(self, wait: bool = True) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=True)
@@ -306,7 +344,31 @@ class TaskManager:
         with self._lock:
             self._subscribers.discard(subscriber)
 
+    def _acquire_slot(self, task_id: str) -> bool:
+        while True:
+            with self._lock:
+                record = self._tasks.get(task_id)
+                if record is None or record.status == "cancelled":
+                    return False
+                if self._active_slots < self._concurrency:
+                    self._active_slots += 1
+                    return True
+            if record.cancel_event.wait(0.1):
+                return False
+
+    def _release_slot(self) -> None:
+        with self._lock:
+            self._active_slots = max(0, self._active_slots - 1)
+
     def _run(self, task_id: str) -> None:
+        if not self._acquire_slot(task_id):
+            return
+        try:
+            self._run_with_slot(task_id)
+        finally:
+            self._release_slot()
+
+    def _run_with_slot(self, task_id: str) -> None:
         task_log = log_context(component="task", task_id=task_id)
         with self._lock:
             record = self._tasks.get(task_id)

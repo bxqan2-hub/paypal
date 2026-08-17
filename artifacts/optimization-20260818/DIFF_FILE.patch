@@ -1,0 +1,5459 @@
+diff --git a/.env.example b/.env.example
+index 1699f36..d2cd810 100644
+--- a/.env.example
++++ b/.env.example
+@@ -15,6 +15,7 @@ OPLL_UPDATE_CHECKOUT=true
+ OPLL_WEB_HOST=127.0.0.1
+ OPLL_WEB_PORT=18794
+ OPLL_TASK_WORKERS=4
++OPLL_TASK_MAX_WORKERS=10
+ OPLL_TASK_TTL_SECONDS=3600
+ OPLL_TASK_EVENT_HISTORY_SIZE=500
+
+@@ -24,6 +25,11 @@ OPLL_PROXY_POOL_FILE=
+ IPROCKET_CHAIN_PROXY=http://127.0.0.1:18796
+ IPROCKET_BRIDGE_PORT=18796
+
++# PayPal protocol country/proxy/browser compatibility
++PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES=0
++PAYPAL_PROXY_USE_BRIDGE=1
++PAYPAL_BROWSER_EXECUTABLE=
++
+ OPLL_LOG_LEVEL=INFO
+ OPLL_LOG_FILE=./data/payment-link.log
+ OPLL_LOG_JSON=false
+diff --git a/artifacts/optimization-20260818/MODIFIED_FILE b/artifacts/optimization-20260818/MODIFIED_FILE
+new file mode 100644
+index 0000000..987be5c
+--- /dev/null
++++ b/artifacts/optimization-20260818/MODIFIED_FILE
+@@ -0,0 +1,7 @@
++BASE_COMMIT=92fe8ee
++STATE=optimized
++COUNTRIES=197
++DYNAMIC_FIELD_SCHEMAS=32
++BUYER_DEFAULT=identity_elevation
++LOCAL_TESTS=29_passed
++REFERENCE_PROTOCOL_TESTS=17_passed
+diff --git a/artifacts/optimization-20260818/REPORT.md b/artifacts/optimization-20260818/REPORT.md
+new file mode 100644
+index 0000000..99fd0bf
+--- /dev/null
++++ b/artifacts/optimization-20260818/REPORT.md
+@@ -0,0 +1,21 @@
++# 精确优化说明
++
++本次只移植参考提交 `e672cfc4953c1186a013f5b4472809610cc5029e` 中当前项目确实缺失、且能通过回归测试证明的能力。当前项目原有的授权 checkpoint、完整审计日志、批次任务、HeroSMS 自动换号、同号码重试、取消清理和 Flask 同进程适配器均保留。
++
++## 已优化
++
++- 国家目录扩展到 197 国，动态字段目录扩展到 32 国。
++- 增加 vendor proxy bridge、共享后台生命周期、直接 SOCKS5H 回退。
++- `_address_normalized_by_paypal` 缺失时安全回退 MANUAL 地址语义。
++- Buyer 默认统一为 `identity_elevation`，显式 `original` 仍分派原版 flow。
++- 浏览器按 Windows/Linux 选择 headless、Chrome/Edge/Chromium 与 Xvfb。
++- 提链 TaskManager 支持运行时并发调整及认证 API。
++- 提链、协议和 HeroSMS 阶段事件使用递归脱敏。
++- 纳入参考协议测试并增加本地国家、代理、浏览器、并发、事件和兼容模式测试。
++
++## 保留的当前项目优势
++
++- 未替换 `paypal_agreement_protocol/web.py` 整体，只做目标字段和事件增量修改。
++- 未删除 authorization checkpoint、BA 去重恢复、Grok-only bridge 边界。
++- 未删除批次邮箱/手机号、SMS activation、自动换号、same-phone retry。
++- 未改变 `.env`、本地卡哈希数据和运行日志。
+diff --git a/artifacts/optimization-20260818/ROLLBACK.sh b/artifacts/optimization-20260818/ROLLBACK.sh
+new file mode 100755
+index 0000000..a5a7013
+--- /dev/null
++++ b/artifacts/optimization-20260818/ROLLBACK.sh
+@@ -0,0 +1,43 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++BASE_COMMIT="92fe8ee"
++
++if [[ "${1:-}" == "--fixture" ]]; then
++  target="${2:?fixture target is required}"
++  cat > "$target" <<'EOF'
++BASE_COMMIT=92fe8ee
++STATE=baseline
++COUNTRIES=12
++DYNAMIC_FIELD_SCHEMAS=12
++BUYER_DEFAULT=original
++LOCAL_TESTS=3_passed
++REFERENCE_PROTOCOL_TESTS=5_passed_12_failed
++EOF
++  printf 'ROLLED_BACK_FIXTURE %s\n' "$target"
++  exit 0
++fi
++
++git restore --source="$BASE_COMMIT" -- \
++  .env.example \
++  iprocket_chain_bridge.py \
++  payment_link_extractor/web/app.py \
++  payment_link_extractor/web/events.py \
++  payment_link_extractor/web/paypal_protocol.py \
++  payment_link_extractor/web/routes.py \
++  payment_link_extractor/web/tasks.py \
++  paypal_agreement_protocol/data/country_discovery/country_field_catalog.json \
++  paypal_agreement_protocol/data/paypal_supported_countries.json \
++  paypal_agreement_protocol/paypal/flow.py \
++  paypal_agreement_protocol/paypal/manual_browser.py \
++  paypal_agreement_protocol/paypal/proxy.py \
++  paypal_agreement_protocol/web.py \
++  paypal_agreement_protocol/web_static/index.html
++
++git rm -f --ignore-unmatch \
++  oai_iprocket_chain_bridge.py \
++  tests/conftest.py \
++  tests/test_optimization_features.py \
++  tests/reference_protocol/*.py
++
++printf 'RESTORED_SOURCE %s\n' "$BASE_COMMIT"
+diff --git a/artifacts/optimization-20260818/VERIFICATION.txt b/artifacts/optimization-20260818/VERIFICATION.txt
+new file mode 100644
+index 0000000..e9ce4fe
+--- /dev/null
++++ b/artifacts/optimization-20260818/VERIFICATION.txt
+@@ -0,0 +1,65 @@
++OBJECT=payment-link extractor and PayPal agreement protocol optimization
++BRANCH=main
++BASE_COMMIT=92fe8ee
++CHANGED_FIELDS=country_catalog,proxy_bridge,address_normalization,buyer_default,browser_runtime,dynamic_concurrency,stage_events,event_redaction,regression_tests
++ORIGINAL_BUNDLE_SHA256=E72D04D44A5AC9DEC137C663A00939E08E02008F67E87A4116ADEA61FFF1B6BD
++MODIFIED_BUNDLE_SHA256=A17AF25AB736E34C251FE0AD235F5490071B044345CA7C532DA90C0ACA8D59A0
++BASELINE_FIXTURE_SHA256=624A7924B2334D3761A404533A917EDE7A82B716D9299C846CCA11257542B78D
++MODIFIED_FILE_SHA256=A879EED645DC1DCC2CE7498B0F53073E2E76B4E088DC96D154A21DDFD5512702
++
++MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/MODIFIED_FILE
++DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/DIFF_FILE.patch
++VERIFICATION_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/VERIFICATION.txt
++ROLLBACK_FILE=C:/Users/Administrator/Desktop/提链/artifacts/optimization-20260818/ROLLBACK.sh
++
++BASELINE_COMMAND_1=& .\.venv\Scripts\python.exe -m pytest -q tests
++BASELINE_INPUT=current local regression suite before optimization
++BASELINE_LITERAL_OUTPUT_1=3 passed in 0.09s
++BASELINE_RESULT_1=PASS
++BASELINE_EXIT_1=0
++
++BASELINE_COMMAND_2=Push-Location paypal_agreement_protocol; & ..\.venv\Scripts\python.exe -m pytest -q <reference>\app\backend\paypal_agreement_protocol\tests; Pop-Location
++BASELINE_INPUT=reference protocol regression suite executed against current code before optimization
++BASELINE_LITERAL_OUTPUT_2=12 failed, 5 passed in 0.41s
++BASELINE_RESULT_2=EXPECTED_INCOMPATIBILITIES_REPRODUCED
++BASELINE_EXIT_2=1
++
++MODIFIED_COMMAND_1=& .\.venv\Scripts\python.exe -m pytest -q tests
++MODIFIED_INPUT=local suite including imported reference protocol tests and optimization tests
++MODIFIED_LITERAL_OUTPUT_1=29 passed in 0.47s
++MODIFIED_RESULT_1=PASS
++MODIFIED_EXIT_1=0
++
++MODIFIED_COMMAND_2=Push-Location paypal_agreement_protocol; & ..\.venv\Scripts\python.exe -m pytest -q <reference>\app\backend\paypal_agreement_protocol\tests; Pop-Location
++MODIFIED_INPUT=unchanged reference protocol regression suite executed against optimized current code
++MODIFIED_LITERAL_OUTPUT_2=17 passed in 0.29s
++MODIFIED_RESULT_2=PASS
++MODIFIED_EXIT_2=0
++
++MODIFIED_COMMAND_3=& .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
++MODIFIED_INPUT=all modified Python source and tests
++MODIFIED_LITERAL_OUTPUT_3=COMPILE_EXIT=0
++MODIFIED_RESULT_3=PASS
++MODIFIED_EXIT_3=0
++
++MODIFIED_COMMAND_4=Flask test client GET health/defaults/concurrency and authenticated POST concurrency=3
++MODIFIED_INPUT=TASK_WORKERS=2,TASK_MAX_WORKERS=4,X-Workbench-Password=test-password
++MODIFIED_LITERAL_OUTPUT_4=/api/health 200; /api/defaults 200; /api/tasks/concurrency 200; POST 200 concurrency=3 max_concurrency=4
++MODIFIED_RESULT_4=PASS
++MODIFIED_EXIT_4=0
++
++MODIFIED_COMMAND_5=ensure_background_server(); stop_background_server()
++MODIFIED_INPUT=local bridge listener 127.0.0.1:18796
++MODIFIED_LITERAL_OUTPUT_5=BRIDGE_STARTED_OR_REUSED True; BRIDGE_STOP_OK
++MODIFIED_RESULT_5=PASS
++MODIFIED_EXIT_5=0
++
++ROLLBACK_COMMAND="C:\Program Files\Git\bin\bash.exe" artifacts/optimization-20260818/ROLLBACK.sh --fixture <another-copy>
++ROLLBACK_INPUT=copy of MODIFIED_FILE in the verified TEMP directory
++ROLLBACK_LITERAL_OUTPUT=ROLLED_BACK_FIXTURE <another-copy>
++ROLLBACK_RESULT=PASS
++ROLLBACK_EXIT=0
++ROLLBACK_RESTORED_HASH=624A7924B2334D3761A404533A917EDE7A82B716D9299C846CCA11257542B78D
++ROLLBACK_RESTORED_BEHAVIOR=STATE=baseline; COUNTRIES=12; DYNAMIC_FIELD_SCHEMAS=12; BUYER_DEFAULT=original; LOCAL_TESTS=3_passed; REFERENCE_PROTOCOL_TESTS=5_passed_12_failed
++
++MODIFIED_FILE_REMAINS_CHANGED=STATE=optimized; COUNTRIES=197; DYNAMIC_FIELD_SCHEMAS=32; BUYER_DEFAULT=identity_elevation; LOCAL_TESTS=29_passed; REFERENCE_PROTOCOL_TESTS=17_passed
+diff --git a/iprocket_chain_bridge.py b/iprocket_chain_bridge.py
+index e00a2ac..f4a54dc 100644
+--- a/iprocket_chain_bridge.py
++++ b/iprocket_chain_bridge.py
+@@ -23,6 +23,9 @@ SOURCE_URL = os.getenv(
+ _credential_lock = threading.Lock()
+ _credential: tuple[str, int, str, str] | None = None
+ _credential_time = 0.0
++_server_lock = threading.Lock()
++_background_server: "Server | None" = None
++_background_thread: threading.Thread | None = None
+
+
+ def recv_exact(sock: socket.socket, size: int) -> bytes:
+@@ -114,10 +117,17 @@ def open_chain(
+     else:
+         proxy_host, proxy_port, username, password = load_credential()
+         protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
+-    upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
+-    upstream.settimeout(30)
++    upstream: socket.socket | None = None
+     try:
+-        socks_connect(upstream, proxy_host, proxy_port)
++        try:
++            upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
++            upstream.settimeout(30)
++            socks_connect(upstream, proxy_host, proxy_port)
++        except (ConnectionError, OSError):
++            if upstream is not None:
++                upstream.close()
++            upstream = socket.create_connection((proxy_host, proxy_port), timeout=15)
++            upstream.settimeout(30)
+         if protocol == "http":
+             http_proxy_connect(upstream, destination_host, destination_port, username, password)
+         else:
+@@ -125,7 +135,8 @@ def open_chain(
+         upstream.settimeout(None)
+         return upstream
+     except Exception:
+-        upstream.close()
++        if upstream is not None:
++            upstream.close()
+         raise
+
+
+@@ -190,6 +201,46 @@ class Server(socketserver.ThreadingTCPServer):
+     daemon_threads = True
+
+
++def ensure_background_server() -> bool:
++    """Start the shared bridge once; reuse an existing listener when present."""
++    global _background_server, _background_thread
++    with _server_lock:
++        if _background_thread is not None and _background_thread.is_alive():
++            return False
++        try:
++            probe = socket.create_connection((LISTEN_HOST, LISTEN_PORT), timeout=0.2)
++        except OSError:
++            probe = None
++        if probe is not None:
++            probe.close()
++            return False
++        server = Server((LISTEN_HOST, LISTEN_PORT), Handler)
++        thread = threading.Thread(
++            target=server.serve_forever,
++            name="iprocket-chain-bridge",
++            daemon=True,
++        )
++        thread.start()
++        _background_server = server
++        _background_thread = thread
++        return True
++
++
++def stop_background_server() -> None:
++    """Stop the bridge owned by this process; external listeners are untouched."""
++    global _background_server, _background_thread
++    with _server_lock:
++        server = _background_server
++        thread = _background_thread
++        _background_server = None
++        _background_thread = None
++    if server is not None:
++        server.shutdown()
++        server.server_close()
++    if thread is not None:
++        thread.join(timeout=2)
++
++
+ if __name__ == "__main__":
+     load_credential(force=True)
+     with Server((LISTEN_HOST, LISTEN_PORT), Handler) as server:
+diff --git a/oai_iprocket_chain_bridge.py b/oai_iprocket_chain_bridge.py
+new file mode 100644
+index 0000000..f919b05
+--- /dev/null
++++ b/oai_iprocket_chain_bridge.py
+@@ -0,0 +1,5 @@
++"""Compatibility entry point for the shared IPRocket/1024proxy bridge."""
++
++from iprocket_chain_bridge import ensure_background_server, stop_background_server
++
++__all__ = ["ensure_background_server", "stop_background_server"]
+diff --git a/payment_link_extractor/web/app.py b/payment_link_extractor/web/app.py
+index 6867afe..eaeebb2 100644
+--- a/payment_link_extractor/web/app.py
++++ b/payment_link_extractor/web/app.py
+@@ -30,7 +30,8 @@ def create_app(
+     load_configured_env()
+     app = Flask(__name__)
+     app.config.from_mapping(
+-        TASK_WORKERS=_int_env("OPLL_TASK_WORKERS", 2),
++        TASK_WORKERS=min(_int_env("OPLL_TASK_WORKERS", 2), 32),
++        TASK_MAX_WORKERS=min(_int_env("OPLL_TASK_MAX_WORKERS", 10), 32),
+         TASK_TTL_SECONDS=_int_env("OPLL_TASK_TTL_SECONDS", 3600),
+         TASK_EVENT_HISTORY_SIZE=_int_env("OPLL_TASK_EVENT_HISTORY_SIZE", 500),
+         WEB_PASSWORD=os.getenv("OPLL_WEB_PASSWORD", ""),
+@@ -50,7 +51,8 @@ def create_app(
+         serialize=bool(app.config["LOG_JSON"]),
+     )
+     manager = task_manager or TaskManager(
+-        max_workers=int(app.config["TASK_WORKERS"]),
++        max_workers=max(int(app.config["TASK_WORKERS"]), int(app.config["TASK_MAX_WORKERS"])),
++        concurrency=int(app.config["TASK_WORKERS"]),
+         ttl_seconds=int(app.config["TASK_TTL_SECONDS"]),
+         history_size=int(app.config["TASK_EVENT_HISTORY_SIZE"]),
+     )
+diff --git a/payment_link_extractor/web/events.py b/payment_link_extractor/web/events.py
+index d014a03..452a20b 100644
+--- a/payment_link_extractor/web/events.py
++++ b/payment_link_extractor/web/events.py
+@@ -8,6 +8,15 @@ from ..logging_utils import safe_log_text
+
+
+ EVENT_HISTORY_SIZE = 500
++_SECRET_KEYS = {
++    "access_token", "accesstoken", "authorization", "cookie", "password",
++    "security_code", "securitycode", "cvv", "pin", "otp", "api_key", "apikey",
++    "client_secret", "clientsecret",
++}
++_TOKEN_KEYS = {
++    "token", "ba_token", "batoken", "ec_token", "ectoken",
++    "billing_agreement_id", "billingagreementid", "billingagreementtoken",
++}
+
+
+ def utc_timestamp() -> str:
+@@ -21,13 +30,46 @@ def redact_text(value: Any, secrets: Iterable[str] = ()) -> str:
+         if secret:
+             text = text.replace(secret, "***")
+     text = re.sub(r"(https?://[^\s:/]+:)[^@\s]+@", r"\1***@", text, flags=re.I)
++    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/]+=*", "Bearer <redacted>", text)
++    text = re.sub(r"\b(?:BA|EC)-[A-Za-z0-9]{8,80}\b", _mask_token_match, text)
++    text = re.sub(
++        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin)=)[^&\s\"']+",
++        r"\1<redacted>",
++        text,
++    )
+     return text
+
+
++def _mask_token(value: str) -> str:
++    return value if len(value) <= 10 else f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
++
++
++def _mask_token_match(match: re.Match[str]) -> str:
++    return _mask_token(match.group(0))
++
++
++def sanitize_event_data(value: Any, key: str = "") -> Any:
++    """Recursively sanitize event payloads before history/WebSocket storage."""
++    compact = str(key or "").lower().replace("-", "_")
++    collapsed = compact.replace("_", "")
++    if isinstance(value, dict):
++        return {str(name): sanitize_event_data(item, str(name)) for name, item in value.items()}
++    if isinstance(value, (list, tuple)):
++        return [sanitize_event_data(item, key) for item in value]
++    if compact in _SECRET_KEYS or collapsed in _SECRET_KEYS:
++        return "<redacted>"
++    if compact in _TOKEN_KEYS or collapsed in _TOKEN_KEYS:
++        text = str(value or "")
++        return _mask_token(text) if len(text) > 10 else "<redacted>"
++    if not isinstance(value, str):
++        return value
++    return redact_text(value)
++
++
+ def make_event(task_id: str, event_type: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+     return {
+         "type": event_type,
+         "task_id": task_id,
+         "timestamp": utc_timestamp(),
+-        "data": data or {},
++        "data": sanitize_event_data(data or {}),
+     }
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index cd7de0b..de63684 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -142,6 +142,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+     registered_activation_id = ""
+     last_submitted_code = ""
+     observed_retry_count = 0
++    last_status_name = ""
+
+     def add_log(job: Any, level: str, message: str) -> None:
+         try:
+@@ -149,6 +150,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+         except Exception:
+             return
+
++    def emit_event(job: Any, event_type: str, data: dict[str, Any]) -> None:
++        emitter = getattr(job, "emit_event", None)
++        if callable(emitter):
++            emitter(event_type, data)
++
+     def mark_activation(job: Any, item: dict[str, Any], number: int) -> None:
+         setter = getattr(job, "set_sms_activation", None)
+         if callable(setter):
+@@ -223,6 +229,13 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                     continue
+                 code = str(status.get("code") or "").strip()
+                 status_name = str(status.get("status") or "").strip().upper()
++                if status_name and status_name != last_status_name:
++                    last_status_name = status_name
++                    emit_event(job, "herosms.status", {
++                        "activation_id": activation_id,
++                        "status": status_name,
++                        "attempt": attempt,
++                    })
+                 if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
+                     try:
+                         job.submit_input(code)
+@@ -232,6 +245,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                     last_submitted_code = code
+                     add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
+                     submitted = True
++                    emit_event(job, "herosms.code.received", {
++                        "activation_id": activation_id,
++                        "attempt": attempt,
++                        "code_received": True,
++                    })
+                     timed_out = False
+                     break
+                 if status_name in SMS_TERMINAL_STATUSES:
+@@ -252,6 +270,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             else:
+                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
+             client.finish(activation_id, 8)
++            emit_event(job, "herosms.number.closed", {
++                "activation_id": activation_id,
++                "attempt": attempt,
++                "reason": "send_failed" if immediate_send_failure else "timeout",
++            })
+             current_closed = True
+             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
+                 add_log(job, "ERROR", f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次自动换号，短信验证停止")
+@@ -282,6 +305,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                 break
+             current = dict(replacement)
+             attempt = next_attempt
++            last_status_name = ""
+             current_closed = False
+             mark_activation(job, current, attempt)
+             registered_activation_id = replacement_id
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 2760277..9bb90e7 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -74,6 +74,22 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+     def list_tasks() -> Any:
+         return jsonify({"ok": True, "tasks": manager.list()})
+
++    @app.get("/api/tasks/concurrency")
++    def get_task_concurrency() -> Any:
++        return jsonify({"ok": True, **manager.concurrency_snapshot()})
++
++    @app.post("/api/tasks/concurrency")
++    def set_task_concurrency() -> Any:
++        payload = request.get_json(silent=True)
++        if not isinstance(payload, dict):
++            return _error("request body must be a JSON object", 400)
++        try:
++            value = int(payload.get("concurrency"))
++        except (TypeError, ValueError):
++            return _error("concurrency must be an integer", 400)
++        manager.set_concurrency(value)
++        return jsonify({"ok": True, **manager.concurrency_snapshot()})
++
+     @app.post("/api/tasks")
+     def create_task() -> Any:
+         payload = request.get_json(silent=True)
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 6dc21c7..3e5b2c3 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -83,17 +83,55 @@ class TaskManager:
+         extractor: Callable[..., PaymentLinkResult] = extract_payment_link,
+         *,
+         max_workers: int = 2,
++        concurrency: int | None = None,
+         ttl_seconds: int = 3600,
+         history_size: int = EVENT_HISTORY_SIZE,
+     ) -> None:
+         self._extractor = extractor
+-        self._executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="payment-task")
++        self._capacity = max(1, max_workers)
++        self._concurrency = max(
++            1, min(self._capacity, concurrency if concurrency is not None else self._capacity)
++        )
++        self._active_slots = 0
++        self._executor = ThreadPoolExecutor(max_workers=self._capacity, thread_name_prefix="payment-task")
+         self._ttl = max(1, ttl_seconds)
+         self._lock = threading.RLock()
+         self._tasks: dict[str, TaskRecord] = {}
+         self._history: deque[dict[str, Any]] = deque(maxlen=max(1, history_size))
+         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
+
++    @property
++    def concurrency(self) -> int:
++        with self._lock:
++            return self._concurrency
++
++    @property
++    def max_concurrency(self) -> int:
++        return self._capacity
++
++    def set_concurrency(self, value: int) -> int:
++        normalized = max(1, min(self._capacity, int(value)))
++        with self._lock:
++            self._concurrency = normalized
++            self._publish_locked(
++                "",
++                "task.concurrency",
++                {
++                    "concurrency": self._concurrency,
++                    "max_concurrency": self._capacity,
++                    "active_slots": self._active_slots,
++                },
++            )
++        return normalized
++
++    def concurrency_snapshot(self) -> dict[str, int]:
++        with self._lock:
++            return {
++                "concurrency": self._concurrency,
++                "max_concurrency": self._capacity,
++                "active_slots": self._active_slots,
++            }
++
+     def close(self, wait: bool = True) -> None:
+         self._executor.shutdown(wait=wait, cancel_futures=True)
+
+@@ -306,7 +344,31 @@ class TaskManager:
+         with self._lock:
+             self._subscribers.discard(subscriber)
+
++    def _acquire_slot(self, task_id: str) -> bool:
++        while True:
++            with self._lock:
++                record = self._tasks.get(task_id)
++                if record is None or record.status == "cancelled":
++                    return False
++                if self._active_slots < self._concurrency:
++                    self._active_slots += 1
++                    return True
++            if record.cancel_event.wait(0.1):
++                return False
++
++    def _release_slot(self) -> None:
++        with self._lock:
++            self._active_slots = max(0, self._active_slots - 1)
++
+     def _run(self, task_id: str) -> None:
++        if not self._acquire_slot(task_id):
++            return
++        try:
++            self._run_with_slot(task_id)
++        finally:
++            self._release_slot()
++
++    def _run_with_slot(self, task_id: str) -> None:
+         task_log = log_context(component="task", task_id=task_id)
+         with self._lock:
+             record = self._tasks.get(task_id)
+diff --git a/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json b/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
+index a816374..b04eda2 100644
+--- a/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
++++ b/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
+@@ -1,326 +1,1632 @@
+ {
+-    "US":  {
+-               "currency":  "USD",
+-               "calling_code":  "+1",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-US"
+-           },
+-    "ID":  {
+-               "currency":  "IDR",
+-               "calling_code":  "+62",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "id-ID"
+-           },
+-    "CA":  {
+-               "currency":  "CAD",
+-               "calling_code":  "+1",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-CA"
+-           },
+-    "AU":  {
+-               "currency":  "AUD",
+-               "calling_code":  "+61",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-AU"
+-           },
+-    "MX":  {
+-               "currency":  "MXN",
+-               "calling_code":  "+52",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "es-MX"
+-           },
+-    "PH":  {
+-               "currency":  "PHP",
+-               "calling_code":  "+63",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-PH"
+-           },
+-    "TH":  {
+-               "currency":  "THB",
+-               "calling_code":  "+66",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "th-TH"
+-           },
+-    "AE":  {
+-               "currency":  "AED",
+-               "calling_code":  "+971",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-AE"
+-           },
+-    "GB":  {
+-               "currency":  "GBP",
+-               "calling_code":  "+44",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "en-GB"
+-           },
+-    "JP":  {
+-               "currency":  "JPY",
+-               "calling_code":  "+81",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "ja-JP"
+-           },
+-    "TW":  {
+-               "currency":  "TWD",
+-               "calling_code":  "+886",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "zh-TW"
+-           },
+-    "BR":  {
+-               "currency":  "BRL",
+-               "calling_code":  "+55",
+-               "address_fields":  [
+-                                      {
+-                                          "max_length":  100,
+-                                          "paypal_name":  "line1",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "city",
+-                                          "required":  true
+-                                      },
+-                                      {
+-                                          "max_length":  80,
+-                                          "paypal_name":  "state",
+-                                          "required":  false
+-                                      },
+-                                      {
+-                                          "max_length":  20,
+-                                          "paypal_name":  "postalCode",
+-                                          "required":  true
+-                                      }
+-                                  ],
+-               "locale":  "pt-BR"
+-           }
++  "AR": {
++    "country": "AR",
++    "locale": "es_AR",
++    "language": "es",
++    "currency": "ARS",
++    "calling_code": "+54",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 8,
++        "min_length": null,
++        "pattern": "([A-HJ-NP-Z])?\\d{4}([A-Z]{3})?"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0?(?:(11|2(?:2(?:02?|[13]|2[13-79]|4[1-6]|5[2457]|6[124-8]|7[1-4]|8[13-6]|9[1267])|3(?:02?|1[467]|2[03-6]|3[13-8]|[49][2-6]|5[2-8]|[67])|4(?:7[3-578]|9)|6(?:[0136]|2[24-6]|4[6-8]?|5[15-8])|80|9(?:0[1-3]|[19]|2\\d|3[1-6]|4[02568]?|5[2-4]|6[2-46]|72?|8[23]?))|3(?:3(?:2[79]|6|8[2578])|4(?:0[0-24-9]|[12]|3[5-8]?|4[24-7]|5[4-68]?|6[02-9]|7[126]|8[2379]?|9[1-36-8])|5(?:1|2[1245]|3[237]?|4[1-46-9]|6[2-4]|7[1-6]|8[2-5]?)|6[24]|7(?:[069]|1[1568]|2[15]|3[145]|4[13]|5[14-8]|7[2-57]|8[126])|8(?:[01]|2[15-7]|3[2578]?|4[13-6]|5[4-8]?|6[1-357-9]|7[36-8]?|8[5-8]?|9[124])))15)?\\d{6,10})|(0)?((?:11|[89]\\d\\d)\\d{8}|[2368]\\d{9})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "AT": {
++    "country": "AT",
++    "locale": "de_AT",
++    "language": "de",
++    "currency": "EUR",
++    "calling_code": "+43",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?(1\\d{3,12}|2\\d{6,12}|43(?:(?:0\\d|5[02-9])\\d{3,9}|2\\d{4,5}|[3467]\\d{4}|8\\d{4,6}|9\\d{4,7})|5\\d{4,12}|8\\d{7,12}|9\\d{8,12}|(?:[367]\\d|4[0-24-9])\\d{4,11})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "BE": {
++    "country": "BE",
++    "locale": "nl_BE",
++    "language": "nl",
++    "currency": "EUR",
++    "calling_code": "+32",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "[1-9]\\d{3}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "0000 00 00 00",
++    "phone_pattern": "^(0)?(4\\d{8}|[1-9]\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "CA": {
++    "country": "CA",
++    "locale": "en_CA",
++    "language": "en",
++    "currency": "CAD",
++    "calling_code": "+1",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 7,
++        "min_length": null,
++        "pattern": "[ABCEGHJKLMNPRSTVXY]\\d[ABCEGHJ-NPRSTV-Z][ ]?\\d[ABCEGHJ-NPRSTV-Z]\\d"
++      }
++    ],
++    "phone_mask": "(000) 000-0000",
++    "phone_pattern": "^(1)?((?:[2-8]\\d|90)\\d{8}|3\\d{6})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "live",
++    "online_address_status": "live",
++    "form_evidence": "rendered_or_existing"
++  },
++  "CH": {
++    "country": "CH",
++    "locale": "de_CH",
++    "language": "de",
++    "currency": "CHF",
++    "calling_code": "+41",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 00 00",
++    "phone_pattern": "^(0)?(8\\d{11}|[2-9]\\d{8})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "CL": {
++    "country": "CL",
++    "locale": "es_CL",
++    "language": "es",
++    "currency": "CLP",
++    "calling_code": "+56",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 7,
++        "min_length": null,
++        "pattern": "\\d{7}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "(0) 0000 0000",
++    "phone_pattern": "^12300\\d{6}|6\\d{9,10}|[2-9]\\d{8}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "CO": {
++    "country": "CO",
++    "locale": "es_CO",
++    "language": "es",
++    "currency": "COP",
++    "calling_code": "+57",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{6}"
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 0000000",
++    "phone_pattern": "^(0(4(?:[14]4|56)|[579])?)?((?:60\\d\\d|9101)\\d{6}|(?:1\\d|3)\\d{9})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "CZ": {
++    "country": "CZ",
++    "locale": "cs_CZ",
++    "language": "cs",
++    "currency": "CZK",
++    "calling_code": "+420",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{3}[ ]?\\d{2}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 000",
++    "phone_pattern": "^(?:[2-578]\\d|60)\\d{7}|9\\d{8,11}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "DE": {
++    "country": "DE",
++    "locale": "de_DE",
++    "language": "de",
++    "currency": "EUR",
++    "calling_code": "+49",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "(0[1-9]|[1-9]\\d)\\d{3}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?([2579]\\d{5,14}|49(?:[34]0|69|8\\d)\\d\\d?|49(?:37|49|60|7[089]|9\\d)\\d{1,3}|49(?:2[024-9]|3[2-689]|7[1-7])\\d{1,8}|(?:1|[368]\\d|4[0-8])\\d{3,13}|49(?:[015]\\d|2[13]|31|[46][1-8])\\d{1,9})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "DK": {
++    "country": "DK",
++    "locale": "da_DK",
++    "language": "da",
++    "currency": "DKK",
++    "calling_code": "+45",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "00 00 00 00",
++    "phone_pattern": "^[2-9]\\d{7}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "ES": {
++    "country": "ES",
++    "locale": "es_ES",
++    "language": "es",
++    "currency": "EUR",
++    "calling_code": "+34",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 00 00 00",
++    "phone_pattern": "^[5-9]\\d{8}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "FI": {
++    "country": "FI",
++    "locale": "fi_FI",
++    "language": "fi",
++    "currency": "EUR",
++    "calling_code": "+358",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?([1-35689]\\d{4}|7\\d{10,11}|(?:[124-7]\\d|3[0-46-9])\\d{8}|[1-9]\\d{5,8})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "FR": {
++    "country": "FR",
++    "locale": "fr_FR",
++    "language": "fr",
++    "currency": "EUR",
++    "calling_code": "+33",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{2}[ ]?\\d{3}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "00 00 00 00 00",
++    "phone_pattern": "^(0)?([1-9]\\d{8})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "GR": {
++    "country": "GR",
++    "locale": "el_GR",
++    "language": "el",
++    "currency": "EUR",
++    "calling_code": "+30",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{3}[ ]?\\d{2}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 0000",
++    "phone_pattern": "^5005000\\d{3}|8\\d{9,11}|(?:[269]\\d|70)\\d{8}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "HK": {
++    "country": "HK",
++    "locale": "en_HK",
++    "language": "en",
++    "currency": "HKD",
++    "calling_code": "+852",
++    "address_fields": [
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "0000 0000",
++    "phone_pattern": "^8[0-46-9]\\d{6,7}|9\\d{4,7}|(?:[2-7]|9\\d{3})\\d{7}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "IE": {
++    "country": "IE",
++    "locale": "en_IE",
++    "language": "en",
++    "currency": "EUR",
++    "calling_code": "+353",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 10,
++        "min_length": null,
++        "pattern": "[A-Za-z0-9 \\-]{1,10}"
++      }
++    ],
++    "phone_mask": "000 000 0000",
++    "phone_pattern": "^(0)?((?:1\\d|[2569])\\d{6,8}|4\\d{6,9}|7\\d{8}|8\\d{8,9})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "IL": {
++    "country": "IL",
++    "locale": "he_IL",
++    "language": "he",
++    "currency": "ILS",
++    "calling_code": "+972",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 7,
++        "min_length": null,
++        "pattern": "\\d{5}(\\d{2})?"
++      }
++    ],
++    "phone_mask": "000-000-0000",
++    "phone_pattern": "^(0)?(1\\d{6}(?:\\d{3,5})?|[57]\\d{8}|[1-489]\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "IT": {
++    "country": "IT",
++    "locale": "it_IT",
++    "language": "it",
++    "currency": "EUR",
++    "calling_code": "+39",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^0\\d{5,10}|1\\d{8,10}|3(?:[0-8]\\d{7,10}|9\\d{7,8})|(?:55|70)\\d{8}|8\\d{5}(?:\\d{2,4})?$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "KR": {
++    "country": "KR",
++    "locale": "ko_KR",
++    "language": "ko",
++    "currency": "KRW",
++    "calling_code": "+82",
++    "address_fields": [
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0(8(?:[1-46-8]|5\\d\\d))?)?(00[1-9]\\d{8,11}|(?:[12]|5\\d{3})\\d{7}|[13-6]\\d{9}|(?:[1-6]\\d|80)\\d{7}|[3-6]\\d{4,5}|(?:00|7)0\\d{8})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "MY": {
++    "country": "MY",
++    "locale": "en_MY",
++    "language": "en",
++    "currency": "MYR",
++    "calling_code": "+60",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?(1\\d{8,9}|(?:3\\d|[4-9])\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "NL": {
++    "country": "NL",
++    "locale": "nl_NL",
++    "language": "nl",
++    "currency": "EUR",
++    "calling_code": "+31",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 7,
++        "min_length": null,
++        "pattern": "\\d{4}[ ]?[A-Z]{2}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?((?:[124-7]\\d\\d|3(?:[02-9]\\d|1[0-8]))\\d{6}|8\\d{6,9}|9\\d{6,10}|1\\d{4,5})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "NO": {
++    "country": "NO",
++    "locale": "no_NO",
++    "language": "no",
++    "currency": "NOK",
++    "calling_code": "+47",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "00 00 00 00",
++    "phone_pattern": "^(?:0|[2-9]\\d{3})\\d{4}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "NZ": {
++    "country": "NZ",
++    "locale": "en_NZ",
++    "language": "en",
++    "currency": "NZD",
++    "calling_code": "+64",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?([29]\\d{7,9}|50\\d{5}(?:\\d{2,3})?|6[0-35-9]\\d{6}|7\\d{7,8}|8\\d{4,9}|(?:11\\d|[34])\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "PE": {
++    "country": "PE",
++    "locale": "es_PE",
++    "language": "es",
++    "currency": "PEN",
++    "calling_code": "+51",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 9,
++        "min_length": null,
++        "pattern": "((?:LIMA[ ]?\\d{1,2}|CALLAO[ ]?0?\\d)|[0-2]?\\d{1,4})"
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 000",
++    "phone_pattern": "^(0)?((?:[14-8]|9\\d)\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "PL": {
++    "country": "PL",
++    "locale": "pl_PL",
++    "language": "pl",
++    "currency": "PLN",
++    "calling_code": "+48",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{2}-\\d{3}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 000",
++    "phone_pattern": "^(?:6|8\\d\\d)\\d{7}|[1-9]\\d{6}(?:\\d{2})?|[26]\\d{5}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "PT": {
++    "country": "PT",
++    "locale": "pt_PT",
++    "language": "pt",
++    "currency": "EUR",
++    "calling_code": "+351",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 8,
++        "min_length": null,
++        "pattern": "\\d{4}([\\-]?\\d{3})?"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000 000 000",
++    "phone_pattern": "^1693\\d{5}|(?:[26-9]\\d|30)\\d{7}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "SA": {
++    "country": "SA",
++    "locale": "ar_SA",
++    "language": "ar",
++    "currency": "SAR",
++    "calling_code": "+966",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 10,
++        "min_length": null,
++        "pattern": "\\d{5}([\\-]?\\d{4})?"
++      }
++    ],
++    "phone_mask": "000 000 0000",
++    "phone_pattern": "^(0)?(92\\d{7}|(?:[15]|8\\d)\\d{8})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "SE": {
++    "country": "SE",
++    "locale": "sv_SE",
++    "language": "sv",
++    "currency": "SEK",
++    "calling_code": "+46",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{3}[ ]?\\d{2}"
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000-000 00 00",
++    "phone_pattern": "^(0)?((?:[26]\\d\\d|9)\\d{9}|[1-9]\\d{8}|[1-689]\\d{7}|[1-4689]\\d{6}|2\\d{5})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "SG": {
++    "country": "SG",
++    "locale": "en_SG",
++    "language": "en",
++    "currency": "SGD",
++    "calling_code": "+65",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 6,
++        "min_length": null,
++        "pattern": "\\d{6}"
++      }
++    ],
++    "phone_mask": "0000 0000",
++    "phone_pattern": "^(?:(?:1\\d|8)\\d\\d|7000)\\d{7}|[3689]\\d{7}$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "TR": {
++    "country": "TR",
++    "locale": "tr_TR",
++    "language": "tr",
++    "currency": "TRY",
++    "calling_code": "+90",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": false,
++        "max_length": 5,
++        "min_length": null,
++        "pattern": "\\d{5}"
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "0000 000 00 00",
++    "phone_pattern": "^(0)?(4\\d{6}|8\\d{11,12}|(?:[2-58]\\d\\d|900)\\d{7})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "ZA": {
++    "country": "ZA",
++    "locale": "en_ZA",
++    "language": "en",
++    "currency": "ZAR",
++    "calling_code": "+27",
++    "address_fields": [
++      {
++        "key": "address_line_1",
++        "paypal_name": "line1",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "address_line_2",
++        "paypal_name": "line2",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "city",
++        "paypal_name": "city",
++        "required": true,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      },
++      {
++        "key": "postal_code",
++        "paypal_name": "postcode",
++        "required": true,
++        "max_length": 4,
++        "min_length": null,
++        "pattern": "\\d{4}"
++      },
++      {
++        "key": "state_or_region",
++        "paypal_name": "state",
++        "required": false,
++        "max_length": null,
++        "min_length": null,
++        "pattern": null
++      }
++    ],
++    "phone_mask": "000000000000000",
++    "phone_pattern": "^(0)?([1-79]\\d{8}|8\\d{4,9})$",
++    "source": "PayPal locale metadata discovery",
++    "implementation_status": "discovered",
++    "online_address_status": "pending",
++    "form_evidence": "locale_metadata"
++  },
++  "IN": {
++    "country": "IN",
++    "locale": "en_IN",
++    "currency": "INR",
++    "source": "paypal_runtime_metadata",
++    "address_fields": [
++      {
++        "paypal_name": "line1",
++        "label_zh": "地址第 1 行",
++        "required": true
++      },
++      {
++        "paypal_name": "line2",
++        "label_zh": "地址第 2 行",
++        "required": false
++      },
++      {
++        "paypal_name": "city",
++        "label_zh": "城市",
++        "required": true
++      },
++      {
++        "paypal_name": "state",
++        "label_zh": "邦 / 州",
++        "required": true
++      },
++      {
++        "paypal_name": "postcode",
++        "label_zh": "PIN Code",
++        "required": true,
++        "max_length": 7,
++        "pattern": "\\d{3}[ ]?\\d{3}"
++      }
++    ],
++    "phone": {
++      "calling_code": "+91",
++      "mask": "00000 00000",
++      "pattern": "^(0)?((?:000800|[2-9]\\d\\d)\\d{7}|1\\d{7,12})$"
++    },
++    "kyc_fields": [
++      {
++        "name": "date_of_birth",
++        "label_zh": "出生日期",
++        "required": true
++      },
++      {
++        "name": "nationality",
++        "label_zh": "国籍",
++        "required": true,
++        "default": "IN"
++      },
++      {
++        "name": "identity_document_type",
++        "label_zh": "证件类型",
++        "required": true,
++        "values": [
++          "NATIONAL_ID",
++          "PASSPORT_NUMBER",
++          "DRIVERS_LICENSE"
++        ]
++      },
++      {
++        "name": "identity_document_number",
++        "label_zh": "PAN / 证件号码",
++        "required": true
++      }
++    ],
++    "note_zh": "印度账户创建会进行实名与 KYC 校验，姓名、出生日期及证件资料需与本人记录一致。"
++  }
+ }
+diff --git a/paypal_agreement_protocol/data/paypal_supported_countries.json b/paypal_agreement_protocol/data/paypal_supported_countries.json
+index b3eb5bb..4679ea4 100644
+--- a/paypal_agreement_protocol/data/paypal_supported_countries.json
++++ b/paypal_agreement_protocol/data/paypal_supported_countries.json
+@@ -1,100 +1,1583 @@
+ {
+-    "countries":  [
+-                      {
+-                          "calling_code":  "+55",
+-                          "code":  "BR",
+-                          "currency":  "BRL",
+-                          "name_en":  "Brazil",
+-                          "name_zh":  "巴西",
+-                          "locale":  "pt-BR"
+-                      },
+-                      {
+-                          "calling_code":  "+44",
+-                          "code":  "GB",
+-                          "currency":  "GBP",
+-                          "name_en":  "United Kingdom",
+-                          "name_zh":  "英国",
+-                          "locale":  "en-GB"
+-                      },
+-                      {
+-                          "calling_code":  "+1",
+-                          "code":  "US",
+-                          "currency":  "USD",
+-                          "name_en":  "United States",
+-                          "name_zh":  "美国",
+-                          "locale":  "en-US"
+-                      },
+-                      {
+-                          "calling_code":  "+81",
+-                          "code":  "JP",
+-                          "currency":  "JPY",
+-                          "name_en":  "Japan",
+-                          "name_zh":  "日本",
+-                          "locale":  "ja-JP"
+-                      },
+-                      {
+-                          "calling_code":  "+66",
+-                          "code":  "TH",
+-                          "currency":  "THB",
+-                          "name_en":  "Thailand",
+-                          "name_zh":  "泰国",
+-                          "locale":  "th-TH"
+-                      },
+-                      {
+-                          "calling_code":  "+62",
+-                          "code":  "ID",
+-                          "currency":  "IDR",
+-                          "name_en":  "Indonesia",
+-                          "name_zh":  "印度尼西亚",
+-                          "locale":  "id-ID"
+-                      },
+-                      {
+-                          "calling_code":  "+63",
+-                          "code":  "PH",
+-                          "currency":  "PHP",
+-                          "name_en":  "Philippines",
+-                          "name_zh":  "菲律宾",
+-                          "locale":  "en-PH"
+-                      },
+-                      {
+-                          "calling_code":  "+886",
+-                          "code":  "TW",
+-                          "currency":  "TWD",
+-                          "name_en":  "Taiwan",
+-                          "name_zh":  "中国台湾",
+-                          "locale":  "zh-TW"
+-                      },
+-                      {
+-                          "calling_code":  "+52",
+-                          "code":  "MX",
+-                          "currency":  "MXN",
+-                          "name_en":  "Mexico",
+-                          "name_zh":  "墨西哥",
+-                          "locale":  "es-MX"
+-                      },
+-                      {
+-                          "calling_code":  "+971",
+-                          "code":  "AE",
+-                          "currency":  "AED",
+-                          "name_en":  "United Arab Emirates",
+-                          "name_zh":  "阿联酋",
+-                          "locale":  "en-AE"
+-                      },
+-                      {
+-                          "calling_code":  "+61",
+-                          "code":  "AU",
+-                          "currency":  "AUD",
+-                          "name_en":  "Australia",
+-                          "name_zh":  "澳大利亚",
+-                          "locale":  "en-AU"
+-                      },
+-                      {
+-                          "calling_code":  "+1",
+-                          "code":  "CA",
+-                          "currency":  "CAD",
+-                          "name_en":  "Canada",
+-                          "name_zh":  "加拿大",
+-                          "locale":  "en-CA"
+-                      }
+-                  ]
++  "source": "https://developer.paypal.com/reference/country-codes/",
++  "generated_at": 1784528386.8824918,
++  "count": 197,
++  "countries": [
++    {
++      "code": "AE",
++      "name_en": "United Arab Emirates",
++      "name_zh": "阿拉伯联合酋长国",
++      "calling_code": "+971",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "AU",
++      "name_en": "Australia",
++      "name_zh": "澳大利亚",
++      "calling_code": "+61",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "BR",
++      "name_en": "Brazil",
++      "name_zh": "巴西",
++      "calling_code": "+55",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "CA",
++      "name_en": "Canada",
++      "name_zh": "加拿大",
++      "calling_code": "+1",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "GB",
++      "name_en": "United Kingdom",
++      "name_zh": "英国",
++      "calling_code": "+44",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "ID",
++      "name_en": "Indonesia",
++      "name_zh": "印度尼西亚",
++      "calling_code": "+62",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "JP",
++      "name_en": "Japan",
++      "name_zh": "日本",
++      "calling_code": "+81",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "MX",
++      "name_en": "Mexico",
++      "name_zh": "墨西哥",
++      "calling_code": "+52",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "PH",
++      "name_en": "Philippines",
++      "name_zh": "菲律宾",
++      "calling_code": "+63",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "TH",
++      "name_en": "Thailand",
++      "name_zh": "泰国",
++      "calling_code": "+66",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "TW",
++      "name_en": "Taiwan",
++      "name_zh": "台湾",
++      "calling_code": "+886",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "US",
++      "name_en": "United States",
++      "name_zh": "美国",
++      "calling_code": "+1",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "AD",
++      "name_en": "Andorra",
++      "name_zh": "安道尔",
++      "calling_code": "+376",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AG",
++      "name_en": "Antigua & Barbuda",
++      "name_zh": "安提瓜和巴布达",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AI",
++      "name_en": "Anguilla",
++      "name_zh": "安圭拉",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AL",
++      "name_en": "Albania",
++      "name_zh": "阿尔巴尼亚",
++      "calling_code": "+355",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AM",
++      "name_en": "Armenia",
++      "name_zh": "亚美尼亚",
++      "calling_code": "+374",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AO",
++      "name_en": "Angola",
++      "name_zh": "安哥拉",
++      "calling_code": "+244",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AR",
++      "name_en": "Argentina",
++      "name_zh": "阿根廷",
++      "calling_code": "+54",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "AT",
++      "name_en": "Austria",
++      "name_zh": "奥地利",
++      "calling_code": "+43",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "AW",
++      "name_en": "Aruba",
++      "name_zh": "阿鲁巴",
++      "calling_code": "+297",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "AZ",
++      "name_en": "Azerbaijan",
++      "name_zh": "阿塞拜疆",
++      "calling_code": "+994",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BA",
++      "name_en": "Bosnia & Herzegovina",
++      "name_zh": "波斯尼亚和黑塞哥维那",
++      "calling_code": "+387",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BB",
++      "name_en": "Barbados",
++      "name_zh": "巴巴多斯",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BE",
++      "name_en": "Belgium",
++      "name_zh": "比利时",
++      "calling_code": "+32",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "BF",
++      "name_en": "Burkina Faso",
++      "name_zh": "布基纳法索",
++      "calling_code": "+226",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BG",
++      "name_en": "Bulgaria",
++      "name_zh": "保加利亚",
++      "calling_code": "+359",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BH",
++      "name_en": "Bahrain",
++      "name_zh": "巴林",
++      "calling_code": "+973",
++      "verified": true,
++      "schema_cached": true
++    },
++    {
++      "code": "BI",
++      "name_en": "Burundi",
++      "name_zh": "布隆迪",
++      "calling_code": "+257",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BJ",
++      "name_en": "Benin",
++      "name_zh": "贝宁",
++      "calling_code": "+229",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BM",
++      "name_en": "Bermuda",
++      "name_zh": "百慕大",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BN",
++      "name_en": "Brunei",
++      "name_zh": "文莱",
++      "calling_code": "+673",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BO",
++      "name_en": "Bolivia",
++      "name_zh": "玻利维亚",
++      "calling_code": "+591",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BS",
++      "name_en": "Bahamas",
++      "name_zh": "巴哈马",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BT",
++      "name_en": "Bhutan",
++      "name_zh": "不丹",
++      "calling_code": "+975",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BW",
++      "name_en": "Botswana",
++      "name_zh": "博茨瓦纳",
++      "calling_code": "+267",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BY",
++      "name_en": "Belarus",
++      "name_zh": "白俄罗斯",
++      "calling_code": "+375",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "BZ",
++      "name_en": "Belize",
++      "name_zh": "伯利兹",
++      "calling_code": "+501",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CD",
++      "name_en": "Congo - Kinshasa",
++      "name_zh": "刚果（金）",
++      "calling_code": "+243",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CG",
++      "name_en": "Congo - Brazzaville",
++      "name_zh": "刚果（布）",
++      "calling_code": "+242",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CH",
++      "name_en": "Switzerland",
++      "name_zh": "瑞士",
++      "calling_code": "+41",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "CK",
++      "name_en": "Cook Islands",
++      "name_zh": "库克群岛",
++      "calling_code": "+682",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CL",
++      "name_en": "Chile",
++      "name_zh": "智利",
++      "calling_code": "+56",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "CM",
++      "name_en": "Cameroon",
++      "name_zh": "喀麦隆",
++      "calling_code": "+237",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CO",
++      "name_en": "Colombia",
++      "name_zh": "哥伦比亚",
++      "calling_code": "+57",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "CR",
++      "name_en": "Costa Rica",
++      "name_zh": "哥斯达黎加",
++      "calling_code": "+506",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CV",
++      "name_en": "Cape Verde",
++      "name_zh": "佛得角",
++      "calling_code": "+238",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CY",
++      "name_en": "Cyprus",
++      "name_zh": "塞浦路斯",
++      "calling_code": "+357",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "CZ",
++      "name_en": "Czech Republic",
++      "name_zh": "捷克",
++      "calling_code": "+420",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "DE",
++      "name_en": "Germany",
++      "name_zh": "德国",
++      "calling_code": "+49",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "DJ",
++      "name_en": "Djibouti",
++      "name_zh": "吉布提",
++      "calling_code": "+253",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "DK",
++      "name_en": "Denmark",
++      "name_zh": "丹麦",
++      "calling_code": "+45",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "DM",
++      "name_en": "Dominica",
++      "name_zh": "多米尼克",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "DO",
++      "name_en": "Dominican Republic",
++      "name_zh": "多米尼加共和国",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "DZ",
++      "name_en": "Algeria",
++      "name_zh": "阿尔及利亚",
++      "calling_code": "+213",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "EC",
++      "name_en": "Ecuador",
++      "name_zh": "厄瓜多尔",
++      "calling_code": "+593",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "EE",
++      "name_en": "Estonia",
++      "name_zh": "爱沙尼亚",
++      "calling_code": "+372",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "EG",
++      "name_en": "Egypt",
++      "name_zh": "埃及",
++      "calling_code": "+20",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ER",
++      "name_en": "Eritrea",
++      "name_zh": "厄立特里亚",
++      "calling_code": "+291",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ES",
++      "name_en": "Spain",
++      "name_zh": "西班牙",
++      "calling_code": "+34",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "ET",
++      "name_en": "Ethiopia",
++      "name_zh": "埃塞俄比亚",
++      "calling_code": "+251",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "FI",
++      "name_en": "Finland",
++      "name_zh": "芬兰",
++      "calling_code": "+358",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "FJ",
++      "name_en": "Fiji",
++      "name_zh": "斐济",
++      "calling_code": "+679",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "FK",
++      "name_en": "Falkland Islands",
++      "name_zh": "福克兰群岛",
++      "calling_code": "+500",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "FM",
++      "name_en": "Micronesia",
++      "name_zh": "密克罗尼西亚",
++      "calling_code": "+691",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "FO",
++      "name_en": "Faroe Islands",
++      "name_zh": "法罗群岛",
++      "calling_code": "+298",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "FR",
++      "name_en": "France",
++      "name_zh": "法国",
++      "calling_code": "+33",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "GA",
++      "name_en": "Gabon",
++      "name_zh": "加蓬",
++      "calling_code": "+241",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GD",
++      "name_en": "Grenada",
++      "name_zh": "格林纳达",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GE",
++      "name_en": "Georgia",
++      "name_zh": "格鲁吉亚",
++      "calling_code": "+995",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GF",
++      "name_en": "French Guiana",
++      "name_zh": "法属圭亚那",
++      "calling_code": "+594",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GI",
++      "name_en": "Gibraltar",
++      "name_zh": "直布罗陀",
++      "calling_code": "+350",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GL",
++      "name_en": "Greenland",
++      "name_zh": "格陵兰",
++      "calling_code": "+299",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GM",
++      "name_en": "Gambia",
++      "name_zh": "冈比亚",
++      "calling_code": "+220",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GN",
++      "name_en": "Guinea",
++      "name_zh": "几内亚",
++      "calling_code": "+224",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GP",
++      "name_en": "Guadeloupe",
++      "name_zh": "瓜德罗普",
++      "calling_code": "+590",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GR",
++      "name_en": "Greece",
++      "name_zh": "希腊",
++      "calling_code": "+30",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "GT",
++      "name_en": "Guatemala",
++      "name_zh": "危地马拉",
++      "calling_code": "+502",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GW",
++      "name_en": "Guinea-Bissau",
++      "name_zh": "几内亚比绍",
++      "calling_code": "+245",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "GY",
++      "name_en": "Guyana",
++      "name_zh": "圭亚那",
++      "calling_code": "+592",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "HK",
++      "name_en": "Hong Kong Sar China",
++      "name_zh": "中国香港特别行政区",
++      "calling_code": "+852",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "HN",
++      "name_en": "Honduras",
++      "name_zh": "洪都拉斯",
++      "calling_code": "+504",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "HR",
++      "name_en": "Croatia",
++      "name_zh": "克罗地亚",
++      "calling_code": "+385",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "HU",
++      "name_en": "Hungary",
++      "name_zh": "匈牙利",
++      "calling_code": "+36",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "IE",
++      "name_en": "Ireland",
++      "name_zh": "爱尔兰",
++      "calling_code": "+353",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "IL",
++      "name_en": "Israel",
++      "name_zh": "以色列",
++      "calling_code": "+972",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "IN",
++      "name_en": "India",
++      "name_zh": "印度",
++      "calling_code": "+91",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "IS",
++      "name_en": "Iceland",
++      "name_zh": "冰岛",
++      "calling_code": "+354",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "IT",
++      "name_en": "Italy",
++      "name_zh": "意大利",
++      "calling_code": "+39",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "JM",
++      "name_en": "Jamaica",
++      "name_zh": "牙买加",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "JO",
++      "name_en": "Jordan",
++      "name_zh": "约旦",
++      "calling_code": "+962",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KE",
++      "name_en": "Kenya",
++      "name_zh": "肯尼亚",
++      "calling_code": "+254",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KG",
++      "name_en": "Kyrgyzstan",
++      "name_zh": "吉尔吉斯斯坦",
++      "calling_code": "+996",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KH",
++      "name_en": "Cambodia",
++      "name_zh": "柬埔寨",
++      "calling_code": "+855",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KI",
++      "name_en": "Kiribati",
++      "name_zh": "基里巴斯",
++      "calling_code": "+686",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KM",
++      "name_en": "Comoros",
++      "name_zh": "科摩罗",
++      "calling_code": "+269",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KN",
++      "name_en": "St. Kitts & Nevis",
++      "name_zh": "圣基茨和尼维斯",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KR",
++      "name_en": "South Korea",
++      "name_zh": "韩国",
++      "calling_code": "+82",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "KW",
++      "name_en": "Kuwait",
++      "name_zh": "科威特",
++      "calling_code": "+965",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KY",
++      "name_en": "Cayman Islands",
++      "name_zh": "开曼群岛",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "KZ",
++      "name_en": "Kazakhstan",
++      "name_zh": "哈萨克斯坦",
++      "calling_code": "+7",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LA",
++      "name_en": "Laos",
++      "name_zh": "老挝",
++      "calling_code": "+856",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LC",
++      "name_en": "St. Lucia",
++      "name_zh": "圣卢西亚",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LI",
++      "name_en": "Liechtenstein",
++      "name_zh": "列支敦士登",
++      "calling_code": "+423",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LK",
++      "name_en": "Sri Lanka",
++      "name_zh": "斯里兰卡",
++      "calling_code": "+94",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LS",
++      "name_en": "Lesotho",
++      "name_zh": "莱索托",
++      "calling_code": "+266",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LT",
++      "name_en": "Lithuania",
++      "name_zh": "立陶宛",
++      "calling_code": "+370",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LU",
++      "name_en": "Luxembourg",
++      "name_zh": "卢森堡",
++      "calling_code": "+352",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "LV",
++      "name_en": "Latvia",
++      "name_zh": "拉脱维亚",
++      "calling_code": "+371",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MA",
++      "name_en": "Morocco",
++      "name_zh": "摩洛哥",
++      "calling_code": "+212",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MC",
++      "name_en": "Monaco",
++      "name_zh": "摩纳哥",
++      "calling_code": "+377",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MD",
++      "name_en": "Moldova",
++      "name_zh": "摩尔多瓦",
++      "calling_code": "+373",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ME",
++      "name_en": "Montenegro",
++      "name_zh": "黑山",
++      "calling_code": "+382",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MG",
++      "name_en": "Madagascar",
++      "name_zh": "马达加斯加",
++      "calling_code": "+261",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MH",
++      "name_en": "Marshall Islands",
++      "name_zh": "马绍尔群岛",
++      "calling_code": "+692",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MK",
++      "name_en": "Macedonia",
++      "name_zh": "北马其顿",
++      "calling_code": "+389",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ML",
++      "name_en": "Mali",
++      "name_zh": "马里",
++      "calling_code": "+223",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MN",
++      "name_en": "Mongolia",
++      "name_zh": "蒙古",
++      "calling_code": "+976",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MQ",
++      "name_en": "Martinique",
++      "name_zh": "马提尼克",
++      "calling_code": "+596",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MR",
++      "name_en": "Mauritania",
++      "name_zh": "毛里塔尼亚",
++      "calling_code": "+222",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MS",
++      "name_en": "Montserrat",
++      "name_zh": "蒙特塞拉特",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MT",
++      "name_en": "Malta",
++      "name_zh": "马耳他",
++      "calling_code": "+356",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MU",
++      "name_en": "Mauritius",
++      "name_zh": "毛里求斯",
++      "calling_code": "+230",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MV",
++      "name_en": "Maldives",
++      "name_zh": "马尔代夫",
++      "calling_code": "+960",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MW",
++      "name_en": "Malawi",
++      "name_zh": "马拉维",
++      "calling_code": "+265",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "MY",
++      "name_en": "Malaysia",
++      "name_zh": "马来西亚",
++      "calling_code": "+60",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "MZ",
++      "name_en": "Mozambique",
++      "name_zh": "莫桑比克",
++      "calling_code": "+258",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NA",
++      "name_en": "Namibia",
++      "name_zh": "纳米比亚",
++      "calling_code": "+264",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NC",
++      "name_en": "New Caledonia",
++      "name_zh": "新喀里多尼亚",
++      "calling_code": "+687",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NE",
++      "name_en": "Niger",
++      "name_zh": "尼日尔",
++      "calling_code": "+227",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NF",
++      "name_en": "Norfolk Island",
++      "name_zh": "诺福克岛",
++      "calling_code": "+672",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NG",
++      "name_en": "Nigeria",
++      "name_zh": "尼日利亚",
++      "calling_code": "+234",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NI",
++      "name_en": "Nicaragua",
++      "name_zh": "尼加拉瓜",
++      "calling_code": "+505",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NL",
++      "name_en": "Netherlands",
++      "name_zh": "荷兰",
++      "calling_code": "+31",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "NO",
++      "name_en": "Norway",
++      "name_zh": "挪威",
++      "calling_code": "+47",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "NP",
++      "name_en": "Nepal",
++      "name_zh": "尼泊尔",
++      "calling_code": "+977",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NR",
++      "name_en": "Nauru",
++      "name_zh": "瑙鲁",
++      "calling_code": "+674",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NU",
++      "name_en": "Niue",
++      "name_zh": "纽埃",
++      "calling_code": "+683",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "NZ",
++      "name_en": "New Zealand",
++      "name_zh": "新西兰",
++      "calling_code": "+64",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "OM",
++      "name_en": "Oman",
++      "name_zh": "阿曼",
++      "calling_code": "+968",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PA",
++      "name_en": "Panama",
++      "name_zh": "巴拿马",
++      "calling_code": "+507",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PE",
++      "name_en": "Peru",
++      "name_zh": "秘鲁",
++      "calling_code": "+51",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "PF",
++      "name_en": "French Polynesia",
++      "name_zh": "法属波利尼西亚",
++      "calling_code": "+689",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PG",
++      "name_en": "Papua New Guinea",
++      "name_zh": "巴布亚新几内亚",
++      "calling_code": "+675",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PL",
++      "name_en": "Poland",
++      "name_zh": "波兰",
++      "calling_code": "+48",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "PM",
++      "name_en": "St. Pierre & Miquelon",
++      "name_zh": "圣皮埃尔和密克隆群岛",
++      "calling_code": "+508",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PN",
++      "name_en": "Pitcairn Islands",
++      "name_zh": "皮特凯恩群岛",
++      "calling_code": "",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PT",
++      "name_en": "Portugal",
++      "name_zh": "葡萄牙",
++      "calling_code": "+351",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "PW",
++      "name_en": "Palau",
++      "name_zh": "帕劳",
++      "calling_code": "+680",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "PY",
++      "name_en": "Paraguay",
++      "name_zh": "巴拉圭",
++      "calling_code": "+595",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "QA",
++      "name_en": "Qatar",
++      "name_zh": "卡塔尔",
++      "calling_code": "+974",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "RO",
++      "name_en": "Romania",
++      "name_zh": "罗马尼亚",
++      "calling_code": "+40",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "RS",
++      "name_en": "Serbia",
++      "name_zh": "塞尔维亚",
++      "calling_code": "+381",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "RU",
++      "name_en": "Russia",
++      "name_zh": "俄罗斯",
++      "calling_code": "+7",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "RW",
++      "name_en": "Rwanda",
++      "name_zh": "卢旺达",
++      "calling_code": "+250",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SA",
++      "name_en": "Saudi Arabia",
++      "name_zh": "沙特阿拉伯",
++      "calling_code": "+966",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "SB",
++      "name_en": "Solomon Islands",
++      "name_zh": "所罗门群岛",
++      "calling_code": "+677",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SC",
++      "name_en": "Seychelles",
++      "name_zh": "塞舌尔",
++      "calling_code": "+248",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SE",
++      "name_en": "Sweden",
++      "name_zh": "瑞典",
++      "calling_code": "+46",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "SG",
++      "name_en": "Singapore",
++      "name_zh": "新加坡",
++      "calling_code": "+65",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "SH",
++      "name_en": "St. Helena",
++      "name_zh": "圣赫勒拿",
++      "calling_code": "+290",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SI",
++      "name_en": "Slovenia",
++      "name_zh": "斯洛文尼亚",
++      "calling_code": "+386",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SJ",
++      "name_en": "Svalbard & Jan Mayen",
++      "name_zh": "斯瓦尔巴和扬马延",
++      "calling_code": "+47",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SK",
++      "name_en": "Slovakia",
++      "name_zh": "斯洛伐克",
++      "calling_code": "+421",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SL",
++      "name_en": "Sierra Leone",
++      "name_zh": "塞拉利昂",
++      "calling_code": "+232",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SM",
++      "name_en": "San Marino",
++      "name_zh": "圣马力诺",
++      "calling_code": "+378",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SN",
++      "name_en": "Senegal",
++      "name_zh": "塞内加尔",
++      "calling_code": "+221",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SO",
++      "name_en": "Somalia",
++      "name_zh": "索马里",
++      "calling_code": "+252",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SR",
++      "name_en": "Suriname",
++      "name_zh": "苏里南",
++      "calling_code": "+597",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SV",
++      "name_en": "El Salvador",
++      "name_zh": "萨尔瓦多",
++      "calling_code": "+503",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "SZ",
++      "name_en": "Swaziland",
++      "name_zh": "斯威士兰",
++      "calling_code": "+268",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TC",
++      "name_en": "Turks & Caicos Islands",
++      "name_zh": "特克斯和凯科斯群岛",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TD",
++      "name_en": "Chad",
++      "name_zh": "乍得",
++      "calling_code": "+235",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TG",
++      "name_en": "Togo",
++      "name_zh": "多哥",
++      "calling_code": "+228",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TJ",
++      "name_en": "Tajikistan",
++      "name_zh": "塔吉克斯坦",
++      "calling_code": "+992",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TM",
++      "name_en": "Turkmenistan",
++      "name_zh": "土库曼斯坦",
++      "calling_code": "+993",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TN",
++      "name_en": "Tunisia",
++      "name_zh": "突尼斯",
++      "calling_code": "+216",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TO",
++      "name_en": "Tonga",
++      "name_zh": "汤加",
++      "calling_code": "+676",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TT",
++      "name_en": "Trinidad & Tobago",
++      "name_zh": "特立尼达和多巴哥",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TV",
++      "name_en": "Tuvalu",
++      "name_zh": "图瓦卢",
++      "calling_code": "+688",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "TZ",
++      "name_en": "Tanzania",
++      "name_zh": "坦桑尼亚",
++      "calling_code": "+255",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "UA",
++      "name_en": "Ukraine",
++      "name_zh": "乌克兰",
++      "calling_code": "+380",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "UG",
++      "name_en": "Uganda",
++      "name_zh": "乌干达",
++      "calling_code": "+256",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "UY",
++      "name_en": "Uruguay",
++      "name_zh": "乌拉圭",
++      "calling_code": "+598",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VA",
++      "name_en": "Vatican City",
++      "name_zh": "梵蒂冈",
++      "calling_code": "+39",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VC",
++      "name_en": "St. Vincent & Grenadines",
++      "name_zh": "圣文森特和格林纳丁斯",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VE",
++      "name_en": "Venezuela",
++      "name_zh": "委内瑞拉",
++      "calling_code": "+58",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VG",
++      "name_en": "British Virgin Islands",
++      "name_zh": "英属维尔京群岛",
++      "calling_code": "+1",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VN",
++      "name_en": "Vietnam",
++      "name_zh": "越南",
++      "calling_code": "+84",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "VU",
++      "name_en": "Vanuatu",
++      "name_zh": "瓦努阿图",
++      "calling_code": "+678",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "WF",
++      "name_en": "Wallis & Futuna",
++      "name_zh": "瓦利斯和富图纳",
++      "calling_code": "+681",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "WS",
++      "name_en": "Samoa",
++      "name_zh": "萨摩亚",
++      "calling_code": "+685",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "YE",
++      "name_en": "Yemen",
++      "name_zh": "也门",
++      "calling_code": "+967",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "YT",
++      "name_en": "Mayotte",
++      "name_zh": "马约特",
++      "calling_code": "+262",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ZA",
++      "name_en": "South Africa",
++      "name_zh": "南非",
++      "calling_code": "+27",
++      "verified": false,
++      "schema_cached": true
++    },
++    {
++      "code": "ZM",
++      "name_en": "Zambia",
++      "name_zh": "赞比亚",
++      "calling_code": "+260",
++      "verified": false,
++      "schema_cached": false
++    },
++    {
++      "code": "ZW",
++      "name_en": "Zimbabwe",
++      "name_zh": "津巴布韦",
++      "calling_code": "+263",
++      "verified": false,
++      "schema_cached": false
++    }
++  ]
+ }
+diff --git a/paypal_agreement_protocol/paypal/flow.py b/paypal_agreement_protocol/paypal/flow.py
+index 85d3260..d9be73d 100644
+--- a/paypal_agreement_protocol/paypal/flow.py
++++ b/paypal_agreement_protocol/paypal/flow.py
+@@ -174,6 +174,7 @@ class PayPalFlow:
+             enabled=proxy_enabled,
+             index=proxy_index,
+         )
++        self.proxy_config.prepare()
+         self.state = SessionState(ba_token=ba_token)
+         # Tracks whether the current address was selected through PayPal's own
+         # postcode resolver.  The signup payload must not claim an address is
+@@ -817,9 +818,10 @@ class PayPalFlow:
+
+     def _build_signup_variables(self, token: str) -> dict:
+         card_type = self._card_issuer_type()
++        address_normalized = getattr(self, "_address_normalized_by_paypal", False)
+         address_quality = {
+-            "autoCompleteType": "ANS" if self._address_normalized_by_paypal else "MANUAL",
+-            "isUserModified": not self._address_normalized_by_paypal,
++            "autoCompleteType": "ANS" if address_normalized else "MANUAL",
++            "isUserModified": not address_normalized,
+         }
+         variables = {
+             "card": {
+diff --git a/paypal_agreement_protocol/paypal/manual_browser.py b/paypal_agreement_protocol/paypal/manual_browser.py
+index 5aac41d..4aa0154 100644
+--- a/paypal_agreement_protocol/paypal/manual_browser.py
++++ b/paypal_agreement_protocol/paypal/manual_browser.py
+@@ -22,6 +22,45 @@ _BROWSER_LIMIT = max(1, min(int(os.getenv("PAYPAL_MANUAL_BROWSER_LIMIT", "2") or
+ _BROWSER_SEMAPHORE = threading.BoundedSemaphore(_BROWSER_LIMIT)
+
+
++def browser_launch_profile(
++    playwright_executable: str = "",
++    *,
++    platform_name: str | None = None,
++) -> dict[str, Any]:
++    """Return a testable cross-platform Playwright launch profile."""
++    platform = platform_name or os.name
++    explicit = os.getenv("PAYPAL_BROWSER_EXECUTABLE", "").strip()
++    if explicit:
++        if not os.path.isfile(explicit):
++            raise RuntimeError("PAYPAL_BROWSER_EXECUTABLE does not point to a file")
++        return {"headless": platform == "nt", "executable_path": explicit}
++
++    if platform == "nt":
++        candidates = [
++            playwright_executable,
++            os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
++            os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
++            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
++            os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
++            os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
++        ]
++    else:
++        candidates = [
++            "/usr/bin/chromium",
++            "/usr/bin/chromium-browser",
++            "/usr/bin/google-chrome",
++            playwright_executable,
++        ]
++    executable = next(
++        (candidate for candidate in candidates if candidate and os.path.isfile(candidate)),
++        "",
++    )
++    result: dict[str, Any] = {"headless": platform == "nt"}
++    if executable:
++        result["executable_path"] = executable
++    return result
++
++
+ @dataclass
+ class BrowserState:
+     ready: bool = False
+@@ -255,27 +294,28 @@ class ManualBrowserController:
+                 self._done_event.set()
+                 return
+
+-            with _DISPLAY_LOCK:
+-                display_number = next(_DISPLAY_COUNTER)
+-            display = f":{display_number}"
+-            xvfb = subprocess.Popen(
+-                ["Xvfb", display, "-screen", "0", f"{self.viewport_width}x{self.viewport_height}x24", "-nolisten", "tcp", "-ac"],
+-                stdout=subprocess.DEVNULL,
+-                stderr=subprocess.DEVNULL,
+-            )
+-            time.sleep(0.35)
+-            if xvfb.poll() is not None:
+-                raise RuntimeError("Xvfb failed to start")
++            display = ""
++            if os.name != "nt":
++                with _DISPLAY_LOCK:
++                    display_number = next(_DISPLAY_COUNTER)
++                display = f":{display_number}"
++                xvfb = subprocess.Popen(
++                    ["Xvfb", display, "-screen", "0", f"{self.viewport_width}x{self.viewport_height}x24", "-nolisten", "tcp", "-ac"],
++                    stdout=subprocess.DEVNULL,
++                    stderr=subprocess.DEVNULL,
++                )
++                time.sleep(0.35)
++                if xvfb.poll() is not None:
++                    raise RuntimeError("Xvfb failed to start")
+
+             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+             from playwright.sync_api import sync_playwright
+
+             self._set_state(message="正在通过任务代理打开验证页面…")
+             with sync_playwright() as playwright:
++                launch_profile = browser_launch_profile(playwright.chromium.executable_path)
+                 launch_kwargs: dict[str, Any] = {
+-                    "headless": False,
+-                    "executable_path": "/usr/bin/chromium",
+-                    "env": {**os.environ, "DISPLAY": display},
++                    "headless": launch_profile["headless"],
+                     "args": [
+                         "--no-sandbox",
+                         "--disable-dev-shm-usage",
+@@ -283,6 +323,10 @@ class ManualBrowserController:
+                         "--window-size=1280,800",
+                     ],
+                 }
++                if launch_profile.get("executable_path"):
++                    launch_kwargs["executable_path"] = launch_profile["executable_path"]
++                if display:
++                    launch_kwargs["env"] = {**os.environ, "DISPLAY": display}
+                 proxy, proxy_bridge, proxy_auth_file = self._start_socks5_http_bridge(self.proxy_config)
+                 if proxy:
+                     launch_kwargs["proxy"] = proxy
+diff --git a/paypal_agreement_protocol/paypal/proxy.py b/paypal_agreement_protocol/paypal/proxy.py
+index f4ff624..aff61a6 100644
+--- a/paypal_agreement_protocol/paypal/proxy.py
++++ b/paypal_agreement_protocol/paypal/proxy.py
+@@ -6,16 +6,70 @@ and converts them to httpx-compatible proxy URLs.
+ """
+ from __future__ import annotations
+
++import base64
+ import os
+ import random
++import sys
+ from dataclasses import dataclass
++from pathlib import Path
+ from typing import Iterable
+-from urllib.parse import quote
++from urllib.parse import quote, urlsplit
+
+ from config import PROXY_POOL, PROXY_ENABLED
+
+ _TRUE_VALUES = {"1", "true", "yes", "on", "enable", "enabled", "y"}
+ _FALSE_VALUES = {"0", "false", "no", "off", "disable", "disabled", "n", ""}
++_BRIDGE_VENDOR_SUFFIXES = (
++    "1024proxy.io", "iprocket.io", "iprocket.pro", "iproyal.net", "iproyal.com",
++)
++
++
++def _uses_vendor_bridge(host: str) -> bool:
++    lowered = str(host or "").strip().lower().rstrip(".")
++    return any(
++        lowered == suffix or lowered.endswith("." + suffix)
++        for suffix in _BRIDGE_VENDOR_SUFFIXES
++    )
++
++
++def _bridge_enabled() -> bool:
++    return parse_bool(os.getenv("PAYPAL_PROXY_USE_BRIDGE"), True)
++
++
++def _bridge_protocol(entry: "ProxyEntry") -> str:
++    host = entry.host.lower()
++    if "1024proxy." in host or entry.scheme.lower().startswith("socks"):
++        return "socks5"
++    if "iproyal." in host or entry.scheme.lower() in {"http", "https"}:
++        return "http"
++    return "socks5" if entry.port in {9595, 59999, 61999} else "http"
++
++
++def _bridge_url(entry: "ProxyEntry") -> str:
++    bridge = os.getenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796").strip()
++    parsed = urlsplit(bridge)
++    bridge_host = parsed.hostname or "127.0.0.1"
++    bridge_port = parsed.port or 18796
++    metadata = base64.urlsafe_b64encode(
++        f"{_bridge_protocol(entry)}|{entry.host}|{entry.port}|{entry.username}".encode("utf-8")
++    ).decode("ascii").rstrip("=")
++    return (
++        f"http://iprb_{metadata}:{quote(entry.password, safe='')}"
++        f"@{bridge_host}:{bridge_port}"
++    )
++
++
++def ensure_proxy_bridge(entry: "ProxyEntry | None") -> bool:
++    """Start or reuse the shared dynamic-credential bridge when required."""
++    if entry is None or not _bridge_enabled() or not _uses_vendor_bridge(entry.host):
++        return False
++    project_root = Path(__file__).resolve().parents[2]
++    project_text = str(project_root)
++    if project_text not in sys.path:
++        sys.path.insert(0, project_text)
++    from oai_iprocket_chain_bridge import ensure_background_server
++
++    return ensure_background_server()
+
+
+ @dataclass(frozen=True)
+@@ -79,6 +133,16 @@ class ProxyEntry:
+
+     @property
+     def url(self) -> str:
++        if self.uses_bridge:
++            return _bridge_url(self)
++        return self.direct_url
++
++    @property
++    def uses_bridge(self) -> bool:
++        return _bridge_enabled() and _uses_vendor_bridge(self.host)
++
++    @property
++    def direct_url(self) -> str:
+         user = quote(self.username, safe="")
+         password = quote(self.password, safe="")
+         auth = f"{user}:{password}@" if self.username or self.password else ""
+@@ -105,6 +169,14 @@ class ProxyConfig:
+             return "代理关闭"
+         return self.entry.masked
+
++    def prepare(self) -> bool:
++        """Ensure the local transport dependency is ready before a request."""
++        return ensure_proxy_bridge(self.entry if self.enabled else None)
++
++    @property
++    def uses_bridge(self) -> bool:
++        return bool(self.enabled and self.entry and self.entry.uses_bridge)
++
+
+ def parse_bool(value: object, default: bool = False) -> bool:
+     if isinstance(value, bool):
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index 5b81b89..ffe4d65 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -684,6 +684,7 @@ def proxy_probe(proxy_config: ProxyConfig, timeout_seconds: float = 8.0) -> tupl
+     if not proxy_config.enabled or not proxy_config.url:
+         return False, "proxy is disabled"
+     try:
++        proxy_config.prepare()
+         with httpx.Client(
+             proxy=proxy_config.url,
+             timeout=httpx.Timeout(timeout_seconds),
+@@ -853,7 +854,7 @@ def sanitize_payload(value: Any, key: str = "") -> Any:
+
+     if compact_key in {"password", "securitycode", "cvv", "pin", "otp", "authorization", "cookie", "accesstoken"}:
+         return "<redacted>"
+-    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken"}:
++    if compact_key in {"token", "batoken", "ectoken", "billingagreementid", "billingagreementtoken", "activationid"}:
+         return mask_middle(value, 4, 4)
+     if compact_key in {"cardnumber", "encryptednumber"}:
+         return mask_digits(value, keep=4)
+@@ -943,7 +944,7 @@ class WebJob:
+     batch_index: int = 1
+     batch_total: int = 1
+     country: str = "BR"
+-    buyer_mode: str = "original"
++    buyer_mode: str = "identity_elevation"
+     sms_activation_id: str = ""
+     sms_attempt: int = 0
+     sms_max_attempts: int = 3
+@@ -973,6 +974,7 @@ class WebJob:
+     awaiting_prompt: str = ""
+     challenge_url: str = ""
+     logs: list[dict[str, Any]] = field(default_factory=list)
++    events: list[dict[str, Any]] = field(default_factory=list)
+     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
+     _input_queue: list[str] = field(default_factory=list, repr=False)
+     _captcha_queue: list[str] = field(default_factory=list, repr=False)
+@@ -995,6 +997,22 @@ class WebJob:
+         if len(self.logs) > MAX_LOG_LINES:
+             del self.logs[: len(self.logs) - MAX_LOG_LINES]
+
++    def _emit_event_locked(self, event_type: str, data: dict[str, Any] | None = None) -> None:
++        self.events.append({
++            "type": str(event_type),
++            "task_id": self.id,
++            "timestamp": now_ts(),
++            "data": sanitize_payload(data or {}),
++        })
++        if len(self.events) > MAX_LOG_LINES:
++            del self.events[: len(self.events) - MAX_LOG_LINES]
++
++    def emit_event(self, event_type: str, data: dict[str, Any] | None = None) -> None:
++        with self._condition:
++            self._emit_event_locked(event_type, data)
++            self.updated_at = now_ts()
++            self._condition.notify_all()
++
+     def set_sms_activation(
+         self,
+         activation_id: str,
+@@ -1010,6 +1028,12 @@ class WebJob:
+             self.sms_attempt = max(0, int(attempt or 0))
+             self.sms_max_attempts = max(1, int(max_attempts or 3))
+             self.updated_at = now_ts()
++            self._emit_event_locked("herosms.number.active", {
++                "activation_id": self.sms_activation_id,
++                "phone": self.phone,
++                "attempt": self.sms_attempt,
++                "max_attempts": self.sms_max_attempts,
++            })
+             self._condition.notify_all()
+
+     def report_sms_send_failure(self, error: str) -> None:
+@@ -1064,6 +1088,12 @@ class WebJob:
+                 "WARNING",
+                 f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
+             )
++            self._emit_event_locked("protocol.retry", {
++                "retry_count": self.retry_count,
++                "max_retries": self.max_retries,
++                "stage": self.stage,
++                "reason": reason,
++            })
+             self._condition.notify_all()
+
+     def set_status(self, status: str, stage: str | None = None) -> None:
+@@ -1077,6 +1107,10 @@ class WebJob:
+             self.updated_at = now_ts()
+             if changed:
+                 self._append_log_locked("INFO", f"状态：{status}；阶段：{self.stage}")
++                self._emit_event_locked("protocol.stage", {
++                    "status": self.status,
++                    "stage": self.stage,
++                })
+             self._condition.notify_all()
+
+     def check_cancelled(self) -> None:
+@@ -1117,6 +1151,10 @@ class WebJob:
+             if self.status not in {"completed", "failed", "cancelled"}:
+                 self.stage = step
+             self.updated_at = now_ts()
++            self._emit_event_locked("protocol.cancelled", {
++                "status": self.status,
++                "stage": self.stage,
++            })
+             self._condition.notify_all()
+
+     def cancel(self) -> None:
+@@ -1166,6 +1204,10 @@ class WebJob:
+             self.awaiting_prompt = ""
+             self.challenge_url = ""
+             self._browser = None
++            self._emit_event_locked("protocol.cancelled", {
++                "status": self.status,
++                "stage": self.stage,
++            })
+             self._condition.notify_all()
+
+     def acquire_execution_slot(self) -> None:
+@@ -1210,6 +1252,11 @@ class WebJob:
+             self.awaiting_prompt = redact_text(prompt)
+             self.updated_at = now_ts()
+             self._append_log_locked("INFO", f"已进入短信发送步骤，等待验证码或新手机号：{prompt}")
++            self._emit_event_locked("protocol.awaiting_otp", {
++                "status": self.status,
++                "stage": self.stage,
++                "prompt": self.awaiting_prompt,
++            })
+             self._condition.notify_all()
+         # Human wait time must not occupy a network execution slot.
+         self.release_execution_slot()
+@@ -1392,6 +1439,15 @@ class WebJob:
+                 else f"协议支付执行失败：{self.error or result_obj.get('error') or result_obj.get('error_code') or 'unknown error'}"
+             )
+             self._append_log_locked("SUCCESS" if succeeded else "ERROR", summary)
++            self._emit_event_locked(
++                "protocol.completed" if succeeded else "protocol.failed",
++                {
++                    "status": self.status,
++                    "stage": self.stage,
++                    "result": self.result,
++                    "error": self.error,
++                },
++            )
+             self._condition.notify_all()
+
+     def fail(self, exc: BaseException) -> None:
+@@ -1458,11 +1514,24 @@ class WebJob:
+             self.challenge_url = ""
+             self._browser = None
+             self._append_log_locked("ERROR", f"任务结束；失败阶段：{failure_step}；原因：{self.error}")
++            self._emit_event_locked("protocol.failed", {
++                "status": self.status,
++                "stage": self.stage,
++                "error": self.error,
++                "result": self.result,
++            })
+             self._condition.notify_all()
+
+-    def to_dict(self, *, include_logs: bool = True, log_offset: int = 0) -> dict[str, Any]:
++    def to_dict(
++        self,
++        *,
++        include_logs: bool = True,
++        log_offset: int = 0,
++        event_offset: int = 0,
++    ) -> dict[str, Any]:
+         with self._condition:
+             logs = self.logs[max(0, log_offset) :] if include_logs else []
++            events = self.events[max(0, event_offset) :] if include_logs else []
+             return {
+                 "id": self.id,
+                 "created_at": self.created_at,
+@@ -1512,6 +1581,8 @@ class WebJob:
+                 "traceback": self.traceback_text if (self.debug and ALLOW_DEBUG_LOGS) else "",
+                 "logs": logs,
+                 "log_count": len(self.logs),
++                "events": events,
++                "event_count": len(self.events),
+             }
+
+
+@@ -2012,7 +2083,7 @@ def create_job(
+     manual_funding: bool = False,
+     agreement_only: bool = False,
+     country: str = "BR",
+-    buyer_mode: str = "original",
++    buyer_mode: str = "identity_elevation",
+     proxy_pool: Any = None,
+     exclude_public_metrics: bool = False,
+     batch_id: str = "",
+@@ -2026,7 +2097,7 @@ def create_job(
+     if account_email and ("@" not in account_email or any(char.isspace() for char in account_email)):
+         raise ValueError("账号邮箱格式不正确")
+     country = str(country or "BR").strip().upper()
+-    buyer_mode = str(buyer_mode or "original").strip().lower()
++    buyer_mode = str(buyer_mode or "identity_elevation").strip().lower()
+     if buyer_mode not in {"original", "identity_elevation"}:
+         raise ValueError("Buyer 模式参数不正确")
+     allowed_countries = supported_country_codes() if ENABLE_DYNAMIC_COUNTRIES else VERIFIED_PROTOCOL_COUNTRIES
+@@ -2595,7 +2666,15 @@ class WebHandler(BaseHTTPRequestHandler):
+                 log_offset = int(query.get("log_offset", "0") or 0)
+             except Exception:
+                 log_offset = 0
+-            return self.send_json(job.to_dict(include_logs=True, log_offset=log_offset))
++            try:
++                event_offset = int(query.get("event_offset", "0") or 0)
++            except Exception:
++                event_offset = 0
++            return self.send_json(job.to_dict(
++                include_logs=True,
++                log_offset=log_offset,
++                event_offset=event_offset,
++            ))
+         if path.startswith("/api/"):
+             return self.send_error_json(HTTPStatus.NOT_FOUND, "接口不存在")
+         return self.serve_static(path)
+@@ -2651,7 +2730,7 @@ class WebHandler(BaseHTTPRequestHandler):
+                             phone=phone_value,
+                             account_email=email_value,
+                             country=data.get("country") or data.get("paypal_country") or "BR",
+-                            buyer_mode=data.get("buyer_mode") or "original",
++                            buyer_mode=data.get("buyer_mode") or "identity_elevation",
+                             debug=False,
+                             max_card_attempts=5,
+                             manual_funding=False,
+@@ -2681,7 +2760,7 @@ class WebHandler(BaseHTTPRequestHandler):
+                     phone=data.get("phone", ""),
+                     account_email=data.get("account_email") or data.get("email", ""),
+                     country=data.get("country") or data.get("paypal_country") or "BR",
+-                    buyer_mode=data.get("buyer_mode") or "original",
++                    buyer_mode=data.get("buyer_mode") or "identity_elevation",
+                     debug=False,
+                     max_card_attempts=5,
+                     # Braintree link generation is now independent from the
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+index 8ccec68..7740fee 100644
+--- a/paypal_agreement_protocol/web_static/index.html
++++ b/paypal_agreement_protocol/web_static/index.html
+@@ -110,8 +110,8 @@
+       <section id="settingsDrawer" class="settings-drawer" hidden>
+         <div class="settings-head"><div><h2>运行设置</h2><p>代理不会在任务表、日志或结果中显示。</p></div><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
+         <div class="settings-grid">
+-          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option><option value="identity_elevation">身份提升流程（开源项目版本）</option></select></label>
+-          <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
++          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="identity_elevation" selected>身份提升流程（默认）</option><option value="original">原版流程（兼容模式）</option></select></label>
++          <label class="field"><span>模式说明</span><input id="buyerModeHint" value="注册后提升 Guest 身份并绑定当前 EC，再提交授权；可显式切换原版兼容模式" readonly></label>
+           <label class="field"><span class="label-row"><b>取号金额上限</b><small>HeroSMS 计价</small></span><input id="smsMaxPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 0.20" aria-describedby="smsMaxPriceHint"><small id="smsMaxPriceHint" class="field-note">设置后，返回价格超过上限的号码会自动取消并重取；留空使用 HeroSMS 默认值。</small></label>
+         </div>
+         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..5cec4f1
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,16 @@
++from __future__ import annotations
++
++import os
++import sys
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
++if str(PROTOCOL_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROTOCOL_ROOT))
++
++# The production switch remains opt-in.  The regression suite enables it so
++# every catalog-backed country path is exercised rather than only the verified
++# compatibility subset.
++os.environ.setdefault("PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES", "1")
+diff --git a/tests/reference_protocol/test_country_schema.py b/tests/reference_protocol/test_country_schema.py
+new file mode 100644
+index 0000000..6668b78
+--- /dev/null
++++ b/tests/reference_protocol/test_country_schema.py
+@@ -0,0 +1,20 @@
++from paypal.country_schema import required_address_fields, validate_address
++
++
++def test_de_required_fields():
++    assert required_address_fields("DE") == ("line1", "postcode", "city")
++    assert validate_address("DE", {"line1": "Unter den Linden 1", "postcode": "10117", "city": "Berlin"}) == []
++
++
++def test_es_state_is_required():
++    errors = validate_address("ES", {"line1": "Gran Via 1", "postcode": "28013", "city": "Madrid"})
++    assert "state: required" in errors
++
++
++def test_ie_optional_postcode_and_state():
++    assert validate_address("IE", {"line1": "1 O Connell Street", "city": "Dublin"}) == []
++
++
++def test_sg_only_line1_and_postcode_required():
++    assert required_address_fields("SG") == ("line1", "postcode")
++    assert validate_address("SG", {"line1": "1 Raffles Place", "postcode": "048616"}) == []
+diff --git a/tests/reference_protocol/test_dynamic_country_gate.py b/tests/reference_protocol/test_dynamic_country_gate.py
+new file mode 100644
+index 0000000..30d64ec
+--- /dev/null
++++ b/tests/reference_protocol/test_dynamic_country_gate.py
+@@ -0,0 +1,28 @@
++import os
++os.environ["PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES"] = "1"
++from unittest.mock import patch
++import web
++
++
++def test_dynamic_country_job_gate():
++    assert web.ENABLE_DYNAMIC_COUNTRIES is True
++    assert "SG" in web.supported_country_codes()
++    with patch("threading.Thread.start", return_value=None):
++        job = web.create_job(
++            owner_device_id="fixture-device",
++            ba_token="BA-ABCDEFGH123456",  # gitleaks:allow
++            phone="+6581234567",
++            debug=False,
++            max_card_attempts=1,
++            country="SG",
++            proxy_pool=["http://127.0.0.1:9999"],
++        )
++    assert job.country == "SG"
++    assert job._proxy_config.entry.host == "127.0.0.1"
++    with web.JOBS_LOCK:
++        web.JOBS.pop(job.id, None)
++
++
++if __name__ == "__main__":
++    test_dynamic_country_job_gate()
++    print("DYNAMIC_COUNTRY_GATE_TEST_OK")
+diff --git a/tests/reference_protocol/test_dynamic_country_pipeline.py b/tests/reference_protocol/test_dynamic_country_pipeline.py
+new file mode 100644
+index 0000000..43d45d7
+--- /dev/null
++++ b/tests/reference_protocol/test_dynamic_country_pipeline.py
+@@ -0,0 +1,35 @@
++from paypal.flow import PayPalFlow
++from paypal.models import CardInfo, SessionState, generate_address, generate_user
++
++
++def test_sg_runtime_pipeline_variables():
++    flow = PayPalFlow.__new__(PayPalFlow)
++    flow.country = "SG"
++    flow.lang = "en"
++    flow.user = generate_user("+6581234567", "SG")
++    flow.user.email = "fixture@example.com"
++    flow.card = CardInfo("4111111111111111", "12/2030", "123")
++    flow.address = generate_address("SG")
++    flow.address.street = "Cluny Road"
++    flow.address.house_number = "1"
++    flow.address.city = "Singapore"
++    flow.address.postal_code = "259569"
++    flow.state = SessionState(content_identifier="SG:en:fixture:compliance.signupTerms")
++    flow.runtime_form_schema = {
++        "address_fields": [
++            {"paypal_name": "line1", "required": True},
++            {"paypal_name": "postcode", "required": True, "pattern": r"\d{6}"},
++        ],
++        "kyc": {"fields": []},
++    }
++    variables = flow._build_signup_variables("EC-FIXTURE")
++    assert variables["country"] == "SG"
++    assert variables["phone"]["countryCode"] == "65"
++    assert variables["billingAddress"]["line1"] == "Cluny Road, 1"
++    assert variables["billingAddress"]["postalCode"] == "259569"
++    assert variables["contentIdentifier"].startswith("SG:en:")
++
++
++if __name__ == "__main__":
++    test_sg_runtime_pipeline_variables()
++    print("DYNAMIC_COUNTRY_PIPELINE_TEST_OK")
+diff --git a/tests/reference_protocol/test_dynamic_main_flow_fixture.py b/tests/reference_protocol/test_dynamic_main_flow_fixture.py
+new file mode 100644
+index 0000000..6d907c4
+--- /dev/null
++++ b/tests/reference_protocol/test_dynamic_main_flow_fixture.py
+@@ -0,0 +1,123 @@
++from unittest.mock import patch
++from paypal.flow import PayPalFlow
++from paypal.models import BillingAddress, CardInfo, SessionState, generate_user
++from web import WebPayPalFlow
++
++
++class FakeJob:
++    def __init__(self):
++        self.runtime_schema = None
++        self.generated = None
++    def check_cancelled(self):
++        return None
++    def set_status(self, status, stage=None):
++        return None
++    def set_generated(self, value):
++        self.generated = value
++
++
++class FakeSession:
++    def graphql(self, operation, query, variables):
++        assert operation == "GriffinMetadataQuery"
++        assert variables["countryCode"] == "SG"
++        return {"data": {"localeMetadata": {
++            "currencyCode": "SGD",
++            "address": {"layout": [
++                {"name": "line1", "isRequired": True},
++                {"name": "line2", "isRequired": False},
++                {"name": "postcode", "isRequired": True, "minLength": 6, "maxLength": 6, "regex": "\\d{6}"},
++            ]},
++            "phone": {"masks": {"mobile": "0000 0000"}, "patterns": {"default": "[3689]\\d{7}"}},
++        }}}
++
++
++def fake_phase2(self):
++    self._signup_html = '{"fieldName":"occupation","isRequired":true}'
++    self.state.ec_token = "EC-FIXTURE"
++    self.state.signup_url = "https://www.paypal.com/checkoutweb/signup?token=EC-FIXTURE"
++    self.state.content_identifier = "SG:en:fixture:compliance.signupTerms"
++    return None
++
++
++def test_dynamic_country_main_flow_fixture():
++    flow = WebPayPalFlow.__new__(WebPayPalFlow)
++    flow.job = FakeJob()
++    flow.country = "SG"
++    flow.lang = "en"
++    flow.session = FakeSession()
++    flow.user = generate_user("+6581234567", "SG")
++    flow.user.email = "fixture@example.com"
++    flow.user.occupation = "BUSINESS"
++    flow.card = CardInfo("4111111111111111", "12/2030", "123")
++    flow.address = BillingAddress("", "", "", "", "", "", "SG")
++    flow.state = SessionState()
++    with patch.object(PayPalFlow, "_phase2_create_account", fake_phase2), patch(
++        "web.resolve_online_address",
++        return_value=BillingAddress("Cluny Road", "1", "", "Singapore", "", "259569", "SG"),
++    ):
++        WebPayPalFlow._phase2_create_account(flow)
++    schema = flow.job.runtime_schema
++    assert schema["country"] == "SG"
++    assert schema["currency"] == "SGD"
++    assert schema["address_validation_errors"] == []
++    assert schema["resolved_address"]["postalCode"] == "259569"
++    assert schema["kyc"]["fields"][0]["name"] == "occupation"
++    variables = flow._build_signup_variables("EC-FIXTURE")
++    assert variables["country"] == "SG"
++    assert variables["occupation"] == "BUSINESS"
++    assert variables["phone"]["countryCode"] == "65"
++    assert variables["billingAddress"]["postalCode"] == "259569"
++
++
++class FakeSessionID:
++    def graphql(self, operation, query, variables):
++        assert operation == "GriffinMetadataQuery"
++        assert variables["countryCode"] == "ID"
++        return {"data": {"localeMetadata": {
++            "currencyCode": "IDR",
++            "address": {"layout": [
++                {"name": "line1", "isRequired": True},
++                {"name": "line2", "isRequired": False},
++                {"name": "city", "isRequired": True},
++                {"name": "state", "isRequired": True},
++                {"name": "postcode", "isRequired": True, "regex": "\\d{5}"},
++            ]},
++            "phone": {"masks": {"mobile": "000000000000"}, "patterns": {"default": "^(0)?8\\d{8,11}$"}},
++        }}}
++
++
++def fake_phase2_id(self):
++    self._signup_html = '{"fieldName":"identityDocumentType","isRequired":true,"fieldName2":"identityDocumentNumber","isRequired2":true,"fieldName3":"nationality","required":true}'
++    self.state.ec_token = "EC-ID-FIXTURE"
++    self.state.signup_url = "https://www.paypal.com/checkoutweb/signup?token=EC-ID-FIXTURE"
++    self.state.content_identifier = "ID:id:fixture:compliance.signupTerms"
++    return None
++
++
++def test_indonesia_dynamic_kyc_fixture():
++    flow = WebPayPalFlow.__new__(WebPayPalFlow)
++    flow.job = FakeJob()
++    flow.country = "ID"
++    flow.lang = "id"
++    flow.session = FakeSessionID()
++    flow.user = generate_user("+628123456789", "ID")
++    flow.user.email = "fixture.id@example.com"
++    flow.card = CardInfo("4111111111111111", "12/2030", "123")
++    flow.address = BillingAddress("", "", "", "", "", "", "ID")
++    flow.state = SessionState()
++    with patch.object(PayPalFlow, "_phase2_create_account", fake_phase2_id), patch(
++        "web.resolve_online_address",
++        return_value=BillingAddress("Jalan M.H. Thamrin", "1", "Menteng", "Jakarta Pusat", "DKI Jakarta", "10310", "ID"),
++    ):
++        WebPayPalFlow._phase2_create_account(flow)
++    variables = flow._build_signup_variables("EC-ID-FIXTURE")
++    assert variables["nationality"] == "ID"
++    assert variables["identityDocument"]["type"] == "NATIONAL_ID"
++    assert variables["identityDocument"]["value"] == flow.user.identity_document_number
++    assert variables["billingAddress"]["postalCode"] == "10310"
++
++
++if __name__ == "__main__":
++    test_dynamic_country_main_flow_fixture()
++    test_indonesia_dynamic_kyc_fixture()
++    print("DYNAMIC_MAIN_FLOW_FIXTURE_OK")
+diff --git a/tests/reference_protocol/test_identity_elevation_mode.py b/tests/reference_protocol/test_identity_elevation_mode.py
+new file mode 100644
+index 0000000..4a7d7b2
+--- /dev/null
++++ b/tests/reference_protocol/test_identity_elevation_mode.py
+@@ -0,0 +1,58 @@
++import unittest
++
++from paypal.elevation_flow import IdentityElevationPayPalFlow
++from paypal.models import SessionState
++
++
++class FakeSession:
++    def __init__(self, checkout_type="BILLING_WITHOUT_PURCHASE"):
++        self.checkout_type = checkout_type
++        self.calls = []
++
++    def graphql(self, operation_name, query, variables, **kwargs):
++        self.calls.append((operation_name, variables, kwargs))
++        return {
++            "data": {
++                "checkoutSession": {
++                    "checkoutSessionType": self.checkout_type,
++                }
++            }
++        }
++
++
++class IdentityElevationModeTests(unittest.TestCase):
++    def test_checkout_context_accepts_billing_without_purchase(self):
++        checkout = IdentityElevationPayPalFlow._require_checkout_session({
++            "data": {
++                "checkoutSession": {
++                    "checkoutSessionType": "BILLING_WITHOUT_PURCHASE",
++                }
++            }
++        })
++        self.assertEqual(checkout["checkoutSessionType"], "BILLING_WITHOUT_PURCHASE")
++
++    def test_checkout_context_rejects_other_type(self):
++        with self.assertRaisesRegex(RuntimeError, "TYPE_MISMATCH"):
++            IdentityElevationPayPalFlow._require_checkout_session({
++                "data": {"checkoutSession": {"checkoutSessionType": "ONE_TIME_PURCHASE"}}
++            })
++
++    def test_protocol_elevation_requires_ec(self):
++        flow = IdentityElevationPayPalFlow.__new__(IdentityElevationPayPalFlow)
++        flow.state = SessionState(euat_token="EUAT")
++        with self.assertRaisesRegex(RuntimeError, "EC_MISSING"):
++            flow._protocol_identity_elevation()
++
++    def test_protocol_elevation_requires_validated_signup_context(self):
++        flow = IdentityElevationPayPalFlow.__new__(IdentityElevationPayPalFlow)
++        flow.state = SessionState(
++            ec_token="EC-ABC123456789",  # gitleaks:allow
++            euat_token="EUAT",
++            signup_context_ready=False,
++        )
++        with self.assertRaisesRegex(RuntimeError, "SIGNUP_CONTEXT_NOT_READY"):
++            flow._protocol_identity_elevation()
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/reference_protocol/test_proxy_bridge.py b/tests/reference_protocol/test_proxy_bridge.py
+new file mode 100644
+index 0000000..a0acaeb
+--- /dev/null
++++ b/tests/reference_protocol/test_proxy_bridge.py
+@@ -0,0 +1,36 @@
++import base64
++import sys
++from types import SimpleNamespace
++
++from paypal.proxy import ProxyConfig, ProxyEntry
++
++
++def test_1024proxy_uses_dynamic_bridge_url(monkeypatch):
++    monkeypatch.setenv("PAYPAL_PROXY_USE_BRIDGE", "1")
++    entry = ProxyEntry.parse("gw.1024proxy.io:9595:USER:PASS")
++
++    url = entry.url
++    assert entry.uses_bridge is True
++    assert url.startswith("http://iprb_")
++    assert "gw.1024proxy.io:9595" not in url
++    assert "USER" not in url
++    encoded = url.split("iprb_", 1)[1].split(":", 1)[0]
++    decoded = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4)).decode()
++    assert decoded == "socks5|gw.1024proxy.io|9595|USER"
++
++
++def test_non_vendor_proxy_keeps_direct_url(monkeypatch):
++    monkeypatch.setenv("PAYPAL_PROXY_USE_BRIDGE", "1")
++    entry = ProxyEntry.parse("http://USER:PASS@proxy.example.test:8080")
++    assert entry.uses_bridge is False
++    assert entry.url == "http://USER:PASS@proxy.example.test:8080"
++
++
++def test_prepare_starts_bridge_only_for_vendor(monkeypatch):
++    calls = []
++    monkeypatch.setenv("PAYPAL_PROXY_USE_BRIDGE", "1")
++    bridge = SimpleNamespace(ensure_background_server=lambda: calls.append(True) or True)
++    monkeypatch.setitem(sys.modules, "oai_iprocket_chain_bridge", bridge)
++    assert ProxyConfig(True, ProxyEntry.parse("gw.1024proxy.io:9595:USER:PASS")).prepare() is True
++    assert ProxyConfig(True, ProxyEntry.parse("proxy.example.test:8080:USER:PASS")).prepare() is False
++    assert calls == [True]
+diff --git a/tests/reference_protocol/test_run_job_dynamic_fixture.py b/tests/reference_protocol/test_run_job_dynamic_fixture.py
+new file mode 100644
+index 0000000..e5cabba
+--- /dev/null
++++ b/tests/reference_protocol/test_run_job_dynamic_fixture.py
+@@ -0,0 +1,63 @@
++import os
++os.environ["PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES"] = "1"
++from unittest.mock import patch
++import web
++from paypal.models import CardInfo
++from paypal.proxy import ProxyConfig, ProxyEntry
++
++
++class FakeFlow:
++    def __init__(self, **kwargs):
++        self.job = kwargs["job"]
++        self.address = kwargs["address"]
++        self.user = kwargs["user"]
++        assert self.address.country == "SG"
++        assert self.user.phone_country_code == "+65"
++    def run(self):
++        self.job.runtime_schema = {"country": "SG", "source": "fixture"}
++        return {"status": "success", "return_url": "https://merchant.fixture/return"}
++    def close(self):
++        return None
++
++
++class FakeResponse:
++    status_code = 404
++    text = ""
++    def json(self):
++        return {}
++
++
++class FakeClient:
++    def __init__(self, *args, **kwargs): pass
++    def __enter__(self): return self
++    def __exit__(self, *args): return False
++    def post(self, *args, **kwargs): return FakeResponse()
++
++
++def test_run_job_dynamic_country_fixture():
++    proxy = ProxyConfig(True, ProxyEntry("127.0.0.1", 9999, "", ""))
++    job = web.WebJob(
++        id="fixturejob",
++        owner_device_id="fixture-device",
++        ba_token="BA-ABCDEFGH123456",  # gitleaks:allow
++        phone="+6581234567",
++        country="SG",
++        buyer_mode="identity_elevation",
++        max_card_attempts=1,
++        proxy_enabled=True,
++        _proxy_config=proxy,
++        _proxy_pool=["http://127.0.0.1:9999"],
++    )
++    with patch("web.select_working_proxy", return_value=proxy), patch(
++        "web.generate_card", return_value=CardInfo("4111111111111111", "12/2030", "123")
++    ), patch("web.WebIdentityElevationPayPalFlow", FakeFlow), patch("web.httpx.Client", FakeClient):
++        web.run_job(job)
++    assert job.status == "completed"
++    assert job.result["status"] == "success"
++    assert job.runtime_schema["country"] == "SG"
++    assert job.generated["address"]["country"] == "SG"
++
++
++if __name__ == "__main__":
++    test_run_job_dynamic_country_fixture()
++    print("RUN_JOB_DYNAMIC_FIXTURE_OK")
+diff --git a/tests/reference_protocol/test_runtime_country_resolver.py b/tests/reference_protocol/test_runtime_country_resolver.py
+new file mode 100644
+index 0000000..7449e49
+--- /dev/null
++++ b/tests/reference_protocol/test_runtime_country_resolver.py
+@@ -0,0 +1,24 @@
++from paypal.runtime_country_resolver import resolve_runtime_country_schema
++
++
++class FakeSession:
++    def graphql(self, operation, query, variables):
++        assert operation == "GriffinMetadataQuery"
++        assert variables["countryCode"] == "SG"
++        return {"data": {"localeMetadata": {
++            "currencyCode": "SGD",
++            "address": {"layout": [
++                {"name": "line1", "isRequired": True, "maxLength": 100, "minLength": None, "regex": None},
++                {"name": "line2", "isRequired": False, "maxLength": 100, "minLength": None, "regex": None},
++                {"name": "postcode", "isRequired": True, "maxLength": 6, "minLength": 6, "regex": "\\d{6}"},
++            ]},
++            "phone": {"masks": {"mobile": "0000 0000"}, "patterns": {"default": "[3689]\\d{7}"}},
++        }}}
++
++
++def test_runtime_schema_normalization():
++    schema = resolve_runtime_country_schema(FakeSession(), "sg")
++    assert schema["country"] == "SG"
++    assert schema["currency"] == "SGD"
++    assert [x["paypal_name"] for x in schema["address_fields"]] == ["line1", "line2", "postcode"]
++    assert schema["phone_mask"] == "0000 0000"
+diff --git a/tests/test_optimization_features.py b/tests/test_optimization_features.py
+new file mode 100644
+index 0000000..79eae72
+--- /dev/null
++++ b/tests/test_optimization_features.py
+@@ -0,0 +1,292 @@
++from __future__ import annotations
++
++import inspect
++import json
++import sys
++import threading
++import time
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++
++
++ROOT = Path(__file__).resolve().parents[1]
++PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
++if str(PROTOCOL_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROTOCOL_ROOT))
++
++import web as protocol_web  # noqa: E402
++from paypal.country_schema import required_address_fields  # noqa: E402
++from paypal.flow import PayPalFlow  # noqa: E402
++from paypal.manual_browser import browser_launch_profile  # noqa: E402
++from paypal.models import CardInfo, SessionState, generate_address, generate_user  # noqa: E402
++from paypal.proxy import ProxyConfig, ProxyEntry  # noqa: E402
++from payment_link_extractor.models import ExtractionConfig  # noqa: E402
++from payment_link_extractor.web.app import create_app  # noqa: E402
++from payment_link_extractor.web.events import make_event  # noqa: E402
++from payment_link_extractor.web.tasks import TaskManager  # noqa: E402
++
++
++def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
++    supported = json.loads(
++        (PROTOCOL_ROOT / "data" / "paypal_supported_countries.json").read_text(encoding="utf-8")
++    )
++    fields = json.loads(
++        (PROTOCOL_ROOT / "data" / "country_discovery" / "country_field_catalog.json").read_text(encoding="utf-8")
++    )
++    assert len(supported["countries"]) == 197
++    assert len(fields) == 32
++    assert required_address_fields("DE") == ("line1", "postcode", "city")
++    assert required_address_fields("SG") == ("line1", "postcode")
++
++
++def test_proxy_bridge_api_keeps_direct_1024proxy_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
++    calls: list[bool] = []
++    monkeypatch.setenv("PAYPAL_PROXY_USE_BRIDGE", "1")
++    monkeypatch.setitem(
++        sys.modules,
++        "oai_iprocket_chain_bridge",
++        SimpleNamespace(ensure_background_server=lambda: calls.append(True) or True),
++    )
++    entry = ProxyEntry.parse("gw.1024proxy.io:3000:USER:PASS")
++    assert entry.uses_bridge is True
++    assert entry.url.startswith("http://iprb_")
++    assert ProxyConfig(True, entry).prepare() is True
++    assert calls == [True]
++
++    monkeypatch.setenv("PAYPAL_PROXY_USE_BRIDGE", "0")
++    assert entry.uses_bridge is False
++    assert entry.direct_url.startswith("socks5h://")
++    assert entry.url == entry.direct_url
++
++
++def test_signup_variables_treat_missing_normalization_flag_as_manual() -> None:
++    flow = PayPalFlow.__new__(PayPalFlow)
++    flow.country = "SG"
++    flow.lang = "en"
++    flow.user = generate_user("+6581234567", "SG")
++    flow.user.email = "fixture@example.com"
++    flow.card = CardInfo("4111111111111111", "12/2030", "123")
++    flow.address = generate_address("SG")
++    flow.address.street = "Cluny Road"
++    flow.address.house_number = "1"
++    flow.address.city = "Singapore"
++    flow.address.postal_code = "259569"
++    flow.state = SessionState(content_identifier="SG:en:fixture:compliance.signupTerms")
++    flow.runtime_form_schema = {"address_fields": [], "kyc": {"fields": []}}
++
++    variables = flow._build_signup_variables("EC-FIXTURE")
++    quality = variables["billingAddress"]["accountQuality"]
++    assert quality["autoCompleteType"] == "MANUAL"
++    assert quality["isUserModified"] is True
++
++
++def test_identity_elevation_is_default_but_original_remains_supported() -> None:
++    assert inspect.signature(protocol_web.create_job).parameters["buyer_mode"].default == "identity_elevation"
++    job = protocol_web.WebJob(
++        id="buyerfixture",
++        owner_device_id="devicefixture",
++        ba_token="BA-BUYERFIXTURE01",
++        phone="+447700900123",
++    )
++    assert job.buyer_mode == "identity_elevation"
++    job.buyer_mode = "original"
++    assert job.buyer_mode == "original"
++    html = (PROTOCOL_ROOT / "web_static" / "index.html").read_text(encoding="utf-8")
++    assert '<option value="identity_elevation" selected>' in html
++    assert '<option value="original">' in html
++
++
++def test_explicit_original_mode_dispatches_original_flow() -> None:
++    selected: list[str] = []
++
++    class FakeOriginalFlow:
++        def __init__(self, **kwargs):
++            selected.append("original")
++            self.job = kwargs["job"]
++
++        def run(self):
++            return {
++                "status": "success",
++                "return_url": "https://merchant.fixture/return?status=success",
++            }
++
++        def close(self):
++            return None
++
++    class ForbiddenElevationFlow:
++        def __init__(self, **kwargs):
++            raise AssertionError("identity elevation must not run in explicit original mode")
++
++    proxy = ProxyConfig(True, ProxyEntry("127.0.0.1", 9999, "", ""))
++    job = protocol_web.WebJob(
++        id="originalfixture",
++        owner_device_id="devicefixture",
++        ba_token="BA-ORIGINALFIXTURE01",
++        phone="+447700900123",
++        country="GB",
++        buyer_mode="original",
++        max_card_attempts=1,
++        proxy_enabled=True,
++        _proxy_config=proxy,
++        _proxy_pool=["http://127.0.0.1:9999"],
++    )
++    with (
++        patch.object(protocol_web, "find_authorization_checkpoint", return_value=None),
++        patch.object(protocol_web, "select_working_proxy", return_value=proxy),
++        patch.object(protocol_web, "generate_card", return_value=CardInfo("4111111111111111", "12/2030", "123")),
++        patch.object(protocol_web, "WebPayPalFlow", FakeOriginalFlow),
++        patch.object(protocol_web, "WebIdentityElevationPayPalFlow", ForbiddenElevationFlow),
++        patch.object(protocol_web, "_authorization_checkpoint_from_result", return_value=None),
++        patch.object(protocol_web, "record_payment_audit"),
++    ):
++        protocol_web._run_job_attempt(job)
++    assert selected == ["original"]
++    assert job.status == "completed"
++    assert job.result["redirect_status"] == "success"
++
++
++def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    executable = tmp_path / "browser.exe"
++    executable.write_bytes(b"fixture")
++    monkeypatch.setenv("PAYPAL_BROWSER_EXECUTABLE", str(executable))
++    assert browser_launch_profile(platform_name="nt") == {
++        "headless": True,
++        "executable_path": str(executable),
++    }
++    assert browser_launch_profile(platform_name="posix") == {
++        "headless": False,
++        "executable_path": str(executable),
++    }
++
++
++def test_dynamic_task_concurrency_resizes_without_losing_stage_events() -> None:
++    blocker = threading.Event()
++    counter_lock = threading.Lock()
++    active = 0
++    peak = 0
++
++    def extractor(config, *, cancel_event, stage_callback):
++        nonlocal active, peak
++        stage_callback("checkout")
++        with counter_lock:
++            active += 1
++            peak = max(peak, active)
++        try:
++            blocker.wait(3)
++            return {"ok": True, "billing_country": config.country}
++        finally:
++            with counter_lock:
++                active -= 1
++
++    manager = TaskManager(extractor, max_workers=3, concurrency=1)
++    _, subscriber = manager.subscribe()
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example.test:8080",
++        update_proxy="",
++        apply_checkout_update=False,
++    )
++    try:
++        task_ids = [manager.create(config)["task_id"] for _ in range(3)]
++        deadline = time.time() + 2
++        while time.time() < deadline:
++            with counter_lock:
++                if active == 1:
++                    break
++            time.sleep(0.02)
++        with counter_lock:
++            assert active == 1
++
++        assert manager.set_concurrency(2) == 2
++        deadline = time.time() + 2
++        while time.time() < deadline:
++            with counter_lock:
++                if active == 2:
++                    break
++            time.sleep(0.02)
++        with counter_lock:
++            assert active == 2
++            assert peak == 2
++
++        blocker.set()
++        deadline = time.time() + 3
++        while time.time() < deadline:
++            if all((manager.get(task_id) or {}).get("status") == "succeeded" for task_id in task_ids):
++                break
++            time.sleep(0.02)
++        assert all((manager.get(task_id) or {}).get("status") == "succeeded" for task_id in task_ids)
++        streamed = []
++        while not subscriber.empty():
++            streamed.append(subscriber.get_nowait())
++        assert any(event["type"] == "task.concurrency" for event in streamed)
++        assert any(event["type"] == "task.stage" and event["data"]["stage"] == "checkout" for event in streamed)
++    finally:
++        blocker.set()
++        manager.unsubscribe(subscriber)
++        manager.close()
++
++
++def test_dynamic_concurrency_api_is_authenticated_and_bounded() -> None:
++    app = create_app({
++        "TESTING": True,
++        "WEB_PASSWORD": "test-password",
++        "TASK_WORKERS": 2,
++        "TASK_MAX_WORKERS": 4,
++    })
++    client = app.test_client()
++    headers = {"X-Workbench-Password": "test-password"}
++    try:
++        assert client.get("/api/tasks/concurrency").status_code == 401
++        initial = client.get("/api/tasks/concurrency", headers=headers)
++        assert initial.status_code == 200
++        assert initial.get_json()["concurrency"] == 2
++        updated = client.post(
++            "/api/tasks/concurrency",
++            headers=headers,
++            json={"concurrency": 3},
++        )
++        assert updated.status_code == 200
++        assert updated.get_json()["concurrency"] == 3
++        assert updated.get_json()["max_concurrency"] == 4
++    finally:
++        app.extensions["payment_task_manager"].close()
++
++
++def test_extractor_and_protocol_events_share_secret_redaction() -> None:
++    event = make_event(
++        "fixture",
++        "task.test",
++        {
++            "access_token": "secret-access-token",
++            "ba_token": "BA-ABCDEFGH123456",
++            "message": "Bearer header.payload.signature",
++        },
++    )
++    encoded = json.dumps(event)
++    assert "secret-access-token" not in encoded
++    assert "BA-ABCDEFGH123456" not in encoded
++    assert "header.payload.signature" not in encoded
++
++    job = protocol_web.WebJob(
++        id="eventfixture",
++        owner_device_id="devicefixture",
++        ba_token="BA-EVENTFIXTURE01",
++        phone="+447700900123",
++    )
++    job.emit_event(
++        "herosms.status",
++        {
++            "activation_id": "123456789012",
++            "phone": "+447700900123",
++            "otp": "123456",
++            "status": "STATUS_WAIT_CODE",
++        },
++    )
++    protocol_encoded = json.dumps(job.to_dict(), ensure_ascii=False)
++    assert "123456789012" not in protocol_encoded
++    assert "+447700900123" not in protocol_encoded
++    assert '"otp": "123456"' not in protocol_encoded
++    assert "STATUS_WAIT_CODE" in protocol_encoded

@@ -174,6 +174,7 @@ class PayPalFlow:
             enabled=proxy_enabled,
             index=proxy_index,
         )
+        self.proxy_config.prepare()
         self.state = SessionState(ba_token=ba_token)
         # Tracks whether the current address was selected through PayPal's own
         # postcode resolver.  The signup payload must not claim an address is
@@ -817,9 +818,10 @@ class PayPalFlow:
 
     def _build_signup_variables(self, token: str) -> dict:
         card_type = self._card_issuer_type()
+        address_normalized = getattr(self, "_address_normalized_by_paypal", False)
         address_quality = {
-            "autoCompleteType": "ANS" if self._address_normalized_by_paypal else "MANUAL",
-            "isUserModified": not self._address_normalized_by_paypal,
+            "autoCompleteType": "ANS" if address_normalized else "MANUAL",
+            "isUserModified": not address_normalized,
         }
         variables = {
             "card": {

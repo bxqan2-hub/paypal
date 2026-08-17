@@ -142,12 +142,18 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
     registered_activation_id = ""
     last_submitted_code = ""
     observed_retry_count = 0
+    last_status_name = ""
 
     def add_log(job: Any, level: str, message: str) -> None:
         try:
             job.add_log(level, message)
         except Exception:
             return
+
+    def emit_event(job: Any, event_type: str, data: dict[str, Any]) -> None:
+        emitter = getattr(job, "emit_event", None)
+        if callable(emitter):
+            emitter(event_type, data)
 
     def mark_activation(job: Any, item: dict[str, Any], number: int) -> None:
         setter = getattr(job, "set_sms_activation", None)
@@ -223,6 +229,13 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                     continue
                 code = str(status.get("code") or "").strip()
                 status_name = str(status.get("status") or "").strip().upper()
+                if status_name and status_name != last_status_name:
+                    last_status_name = status_name
+                    emit_event(job, "herosms.status", {
+                        "activation_id": activation_id,
+                        "status": status_name,
+                        "attempt": attempt,
+                    })
                 if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
                     try:
                         job.submit_input(code)
@@ -232,6 +245,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                     last_submitted_code = code
                     add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
                     submitted = True
+                    emit_event(job, "herosms.code.received", {
+                        "activation_id": activation_id,
+                        "attempt": attempt,
+                        "code_received": True,
+                    })
                     timed_out = False
                     break
                 if status_name in SMS_TERMINAL_STATUSES:
@@ -252,6 +270,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             else:
                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
             client.finish(activation_id, 8)
+            emit_event(job, "herosms.number.closed", {
+                "activation_id": activation_id,
+                "attempt": attempt,
+                "reason": "send_failed" if immediate_send_failure else "timeout",
+            })
             current_closed = True
             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
                 add_log(job, "ERROR", f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次自动换号，短信验证停止")
@@ -282,6 +305,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 break
             current = dict(replacement)
             attempt = next_attempt
+            last_status_name = ""
             current_closed = False
             mark_activation(job, current, attempt)
             registered_activation_id = replacement_id
