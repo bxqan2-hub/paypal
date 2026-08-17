@@ -276,3 +276,20 @@ ROLLBACK input: tracked service-normalization files
 ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps commit 663eac6; EXIT_CODE=0
 ROLLBACK exit status: 0
 restored behavior/status: service 18794 is listening with HTTP 200; PayPal acquisition now sends HeroSMS service=ts instead of service=paypal.
+
+LATEST COUNTRY GATE FIX
+BASELINE command: GET http://127.0.0.1:18794/paypal-pay/api/supported-countries; inspect GB entry and submit guard source
+BASELINE input: running build before verified flags were added to the country response
+BASELINE literal result: baseline_dynamic_countries_enabled=False; baseline_GB_verified_property_present=False; selected GB option dataset.live=0; submit guard displayed the dynamic-country-disabled message; EXIT_CODE=0
+BASELINE exit status: 0
+
+MODIFIED command: annotate /api/supported-countries countries; add VERIFIED_COUNTRY_CODES fallback; node --check paypal_agreement_protocol/web_static/app.js; py_compile paypal_agreement_protocol/web.py; catalog test; git diff --check
+MODIFIED input: static twelve-country protocol catalogue with PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES=false
+MODIFIED literal result: catalog_country_count=12; verified_codes=BR,GB,US,JP,TH,ID,PH,TW,MX,AE,AU,CA; GB_verified=True; verified_fallback_present=True; modified_test_exit=0 protocol_js=0 web_py=0 diff_check=0; EXIT_CODE=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-country-gate-rollback HEAD; append COUNTRY_GATE_ROLLBACK_MARKER to web.py and app.js; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-country-gate-rollback' && ./artifacts/ROLLBACK.sh HEAD"; git diff --exit-code -- paypal_agreement_protocol/web.py paypal_agreement_protocol/web_static/app.js; git worktree remove --force C:\Temp\paypal-country-gate-rollback
+ROLLBACK input: temporary copy with one marker in each changed country-gate file
+ROLLBACK literal result: restored_to=HEAD; web_marker_after=False; app_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores both country-gate files to the selected commit; the active project marks the twelve verified protocol countries so a manually selected GB/US/etc. phone can start payment while dynamic-country execution remains separately disabled.

@@ -110,6 +110,16 @@ index 8e42831..6af338c 100644
    </body>
  </html>
 
+# LATEST COUNTRY GATE FIX DIFF
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+@@ /api/supported-countries
++for item in payload["countries"]:
++    item["verified"] = item["code"].upper() in VERIFIED_PROTOCOL_COUNTRIES
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+@@ country option rendering
++const VERIFIED_COUNTRY_CODES = new Set(['BR','GB','US','JP','TH','ID','PH','TW','MX','AE','AU','CA']);
++option.dataset.live = item.verified === true || VERIFIED_COUNTRY_CODES.has(String(item.code || '').toUpperCase()) ? '1' : '0';
+
 
 # LATEST PROXY-PARSER FIX
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py

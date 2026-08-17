@@ -50,6 +50,24 @@ four_artifacts:
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
+LATEST COUNTRY GATE FIX
+changed_branch: manual-country selection to protocol payment gate
+changed_fields:
+- paypal_agreement_protocol/web.py annotates the static country response with verified=true for the twelve protocol countries before returning it to the browser.
+- paypal_agreement_protocol/web_static/app.js adds the same verified-country fallback so missing legacy flags cannot classify GB/US/etc. as dynamic-only.
+- The client no longer blocks a manually selected verified country when PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES is false; the selected HeroSMS country can proceed to protocol payment.
+source_hashes_before_change:
+- paypal_agreement_protocol/web.py: 90bd50cb9093c149c1ab884c631aff6b58d3af26e9e83288a63f3b1ca9daeb1c
+- paypal_agreement_protocol/web_static/app.js: 1167a758a1c64e2ea5129d20a178a535398e12844d775a459f508ae669bc7abe
+source_hashes_after_change:
+- paypal_agreement_protocol/web.py: 831fb3d960ced2ede186137f025b3322b737a0d3ec40788bd34de4cabee3c60f
+- paypal_agreement_protocol/web_static/app.js: d5e0b64aace40a35c5cd3119171f028bfaf7d3464c4c804dad63a223dcd2950a
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
 LATEST HEROSMS SERVICE NORMALIZATION
 changed_branch: HeroSMS service-code normalization for PayPal number acquisition
 changed_fields:

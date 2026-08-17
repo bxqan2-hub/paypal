@@ -2296,6 +2296,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 payload = json.loads(country_path.read_text(encoding="utf-8"))
             except Exception as exc:
                 return self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"country catalog read failed: {exc}")
+            # The static catalogue predates the runtime flag fields.  Mark the
+            # countries that are handled by the verified protocol flow here so
+            # the browser does not mistake a manually selected verified country
+            # for a dynamic-only country when the dynamic switch is disabled.
+            countries = payload.get("countries") if isinstance(payload, dict) else []
+            for item in countries or []:
+                if isinstance(item, dict):
+                    item["verified"] = str(item.get("code") or "").strip().upper() in VERIFIED_PROTOCOL_COUNTRIES
             payload["dynamic_countries_enabled"] = ENABLE_DYNAMIC_COUNTRIES
             return self.send_json(payload)
         if path == "/api/country-fields":

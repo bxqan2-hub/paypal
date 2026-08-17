@@ -222,6 +222,7 @@ $('phone').addEventListener('input', updatePairCounts);
 
 let paypalCountries = [];
 let dynamicCountriesEnabled = false;
+const VERIFIED_COUNTRY_CODES = new Set(['BR', 'GB', 'US', 'JP', 'TH', 'ID', 'PH', 'TW', 'MX', 'AE', 'AU', 'CA']);
 
 async function updateCountrySchemaHint(country) {
   const hint = $('countrySchemaHint');
@@ -279,7 +280,7 @@ function populateCountrySelect() {
     option.dataset.zh = item.name_zh;
     option.dataset.en = item.name_en;
     option.dataset.calling = item.calling_code || '+';
-    option.dataset.live = item.verified ? '1' : '0';
+    option.dataset.live = item.verified === true || VERIFIED_COUNTRY_CODES.has(String(item.code || '').toUpperCase()) ? '1' : '0';
     option.dataset.schemaCached = item.schema_cached ? '1' : '0';
     select.appendChild(option);
   });
