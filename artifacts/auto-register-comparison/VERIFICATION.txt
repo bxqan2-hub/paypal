@@ -1,0 +1,33 @@
+OBJECT=codex-auto-register comparison report fixture
+CHANGED_BRANCH=report-baseline -> codex-auto-register-comparison
+CHANGED_FIELD=REFERENCE_COMMIT
+ORIGINAL_HASH_SHA256=ED1D7D81AA6C73773A95A0DDDD760768817CBE157AADCA2E3053C5281F99EF51 (MODIFIED_FILE.md baseline copy)
+MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/auto-register-comparison/MODIFIED_FILE
+DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/auto-register-comparison/DIFF_FILE.patch
+REPORT_FILE=C:/Users/Administrator/Desktop/提链/artifacts/auto-register-comparison/REPORT.md
+ROLLBACK_FILE=C:/Users/Administrator/Desktop/提链/artifacts/auto-register-comparison/ROLLBACK.sh
+
+BASELINE_COMMAND:
+& .\.venv\Scripts\python.exe -m compileall -q .\payment_link_extractor .\paypal_agreement_protocol <reference>\app\backend\oai_payment_extractor <reference>\app\backend\paypal_agreement_protocol
+BASELINE_LITERAL_OUTPUT=BASELINE_RESULT=PASS
+BASELINE_RESULT=PASS
+BASELINE_EXIT=0
+
+MODIFIED_COMMAND:
+& .\.venv\Scripts\python.exe -m compileall -q .\payment_link_extractor .\paypal_agreement_protocol <reference>\app\backend\oai_payment_extractor <reference>\app\backend\paypal_agreement_protocol
+MODIFIED_LITERAL_OUTPUT=MODIFIED_RESULT=PASS; MODIFIED_EXIT=0
+MODIFIED_RESULT=PASS
+MODIFIED_EXIT=0
+
+DIFF_COMMAND:
+git diff --no-index --unified=3 -- BASELINE_COPY.txt MODIFIED_FILE > DIFF_FILE.patch
+DIFF_LITERAL_RESULT=exit 1 (expected difference)
+DIFF_EXIT=1
+
+ROLLBACK_COMMAND:
+"C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <another-copy>
+ROLLBACK_LITERAL_OUTPUT=ROLLED_BACK <another-copy>; restored content is '# Comparison report fixture / BASELINE_BRANCH=report-baseline'
+ROLLBACK_RESULT=PASS
+ROLLBACK_EXIT=0
+
+MODIFIED_FILE remains on the changed report branch after rollback was tested on another copy.

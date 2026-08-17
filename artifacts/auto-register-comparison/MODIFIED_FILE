@@ -1,0 +1,4 @@
+# Comparison report fixture
+BASELINE_BRANCH=report-baseline
+REPORT_BRANCH=codex-auto-register-comparison
+CHANGED_FIELD=REFERENCE_COMMIT
