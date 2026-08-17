@@ -50,6 +50,16 @@ four_artifacts:
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
+LATEST PHONE REFRESH CACHE BUST
+changed_branch: protocol UI cache refresh
+changed_fields:
+- paypal_agreement_protocol/web_static/index.html changes app.js query version to 20260818-phone-refresh-1 so the refresh button and optional-email payload are loaded after restart.
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
 LATEST PHONE REFRESH AND OPTIONAL EMAIL FLOW
 changed_branch: HeroSMS phone-status refresh and BA-only protocol submission
 changed_fields:

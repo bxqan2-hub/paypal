@@ -49,6 +49,12 @@ ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=False; web_marker
 ROLLBACK exit status: 0
 restored behavior/status: the temporary copy restores the selected commit; the active build exposes read-only HeroSMS status refresh, clears canceled phone activations, and accepts BA-only jobs without requiring email.
 
+LATEST PHONE REFRESH CACHE BUST
+MODIFIED command: update paypal_agreement_protocol/web_static/index.html app.js query version; node --check; git diff --check
+MODIFIED input: phone-refresh and optional-email build
+MODIFIED literal result: cache_version=20260818-phone-refresh-1; EXIT_CODE=0
+MODIFIED exit status: 0
+
 MODIFIED console route command: create_app(TESTING); GET /paypal-pay/; inspect checkout-preview.css and flow.py
 MODIFIED input: protocol page plus existing open-source flow.py Phase 0–4
 MODIFIED literal result: protocol_status=200 original_option=True elevation_option=True full_width=True font14=True log_modal=True log_button=True phases=True

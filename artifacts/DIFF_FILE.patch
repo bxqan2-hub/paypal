@@ -140,6 +140,11 @@ diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_
 @@ command bar
 +refreshPhonesButton = 刷新手机号
 
+# LATEST PHONE REFRESH CACHE BUST DIFF
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+-  <script src="/paypal-pay/static/app.js?v=20260818-country-gate-1"></script>
++  <script src="/paypal-pay/static/app.js?v=20260818-phone-refresh-1"></script>
+
 
 # LATEST PROXY-PARSER FIX
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
