@@ -7,8 +7,8 @@
   <title>PayPal BA 协议支付控制台</title>
   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
-  <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-2">
-  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-2">
+  <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-4">
 </head>
 <body>
   <div class="paper-noise"></div>
@@ -109,14 +109,15 @@
       <section id="settingsDrawer" class="settings-drawer" hidden>
         <div class="settings-head"><div><h2>运行设置</h2><p>代理不会在任务表、日志或结果中显示。</p></div><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
         <div class="settings-grid">
-          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="identity_elevation" selected>身份提升流程</option><option value="original">原版流程</option></select></label>
-          <label class="field"><span>模式说明</span><input id="buyerModeHint" value="注册后提升 Guest 身份并绑定当前 EC，再提交授权" readonly></label>
+          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option></select></label>
+          <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
         </div>
         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
         <div class="privacy-note"><i></i><span>每个账号开始时从代理池随机选择一条与所选地区匹配的代理。</span></div>
       </section>
 
       <textarea id="phone" class="compatibility-field" tabindex="-1" aria-hidden="true"></textarea>
+      <textarea id="emailPool" class="compatibility-field" tabindex="-1" aria-hidden="true"></textarea>
       <span id="phoneLabel" hidden>手机号池</span><span id="phonePoolCount" hidden>0 / 20</span>
       <div id="countrySchemaHint" hidden></div><div id="dynamicCountryNotice" hidden></div>
 
@@ -140,8 +141,15 @@
     </form>
   </main>
 
+  <div id="jobLogModal" class="job-log-modal" hidden role="dialog" aria-modal="true" aria-labelledby="jobLogModalTitle">
+    <div class="job-log-dialog">
+      <div class="job-log-head"><div><h2 id="jobLogModalTitle">当前 BA 日志</h2><p id="jobLogModalMeta">正在加载完整日志…</p></div><button id="jobLogModalClose" class="job-log-close" type="button" aria-label="关闭日志">×</button></div>
+      <div id="jobLogModalBody" class="job-log-body"></div>
+    </div>
+  </div>
+
   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
-  <script src="/paypal-pay/static/app.js?v=20260817-account-table-3"></script>
+  <script src="/paypal-pay/static/app.js?v=20260817-account-table-4"></script>
 </body>
 </html>

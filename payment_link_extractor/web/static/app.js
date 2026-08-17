@@ -1283,7 +1283,9 @@
     const url = taskResultUrl(result);
     if (!url) return "";
     const country = task.billing_country || result.billing_country || task.country || "";
-    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}&billing_country=${encodeURIComponent(country)}` : ""}`;
+    const email = task.account_email || result.account_email || "";
+    const emailQuery = email ? `&email=${encodeURIComponent(email)}&account_email=${encodeURIComponent(email)}` : "";
+    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}&billing_country=${encodeURIComponent(country)}` : ""}${emailQuery}`;
   }
 
   function renderResultRow(url, result = {}, task = {}) {

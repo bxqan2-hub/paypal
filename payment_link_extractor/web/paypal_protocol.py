@@ -175,6 +175,13 @@ def register_paypal_protocol(app: Any) -> None:
                 return jsonify({"ok": True, **activation})
             except (HeroSMSError, ValueError) as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 503
+        if protocol_path == "api/sms/cancel" and request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            activation_id = str(data.get("activation_id") or data.get("id") or "").strip()
+            if not activation_id:
+                return jsonify({"ok": False, "error": "activation_id is required"}), 400
+            _sms_client().finish(activation_id, 6)
+            return jsonify({"ok": True, "activation_id": activation_id, "status": 6})
         inner_path = "/" + protocol_path if protocol_path else "/"
         body = request.get_data(cache=False)
         activations: list[dict[str, Any]] = []

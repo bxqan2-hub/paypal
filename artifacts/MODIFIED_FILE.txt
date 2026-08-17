@@ -1,19 +1,22 @@
 ﻿MODIFIED_FILE
 branch: main
-changed_branch: protocol account queue + minimal successful-row BA push action
+changed_branch: email-aware BA handoff + replaceable SMS activations + open-source core flow + per-BA full logs
 changed_fields:
-- 提链界面保留原成功任务工具栏，不再添加顶部批量按钮
-- 成功结果行在链接复制按钮后增加小型“推送提链”按钮
-- “推送提链”仅对严格识别的 PayPal agreements/approve?ba_token=BA- 链接显示，并打开单条协议支付
-- 协议支付页自动识别 BA Token 并自然排序账号行
-- 获取接码手机号按排序后的每个 BA 逐个调用 HeroSMS，五条 BA 就逐条获取五个号码并保存独立 activation
-- 开始协议支付按同一排序创建整批独立任务，每个 batch_index 绑定对应 activation，自动接收对应验证码
+- 提链成功行推送提链 URL 同时携带对应 account_email/email，协议支付账号队列优先显示该邮箱
+- 协议批次提交带 emails 数组，后端按 batch_index 保存邮箱并注入原版 PayPal Flow 的 UserInfo.email
+- 接码手机号按国家规则校验；无效或主动换号时先调用取消接口 status=6，再最多重试 3 次取新号，旧 activation 不保留
+- 提链与协议支付字体整体放大一点，协议表格和按钮字号同步加 1px
+- Buyer 默认固定为原版开源流程，按 Phase 0–4 的协议页、风控、创建账号、短信验证、最终授权执行
+- 每个已创建任务的 BA 行新增“日志”按钮，读取 /jobs/{id}?log_offset=0 并在弹窗展示该 BA 全部保留日志
 source_hashes_before_change:
-- payment_link_extractor/web/templates/index.html: 10372c8405ff175fcd735e6cceee80b6b8df7ec3
-- payment_link_extractor/web/static/app.js: 198891e43600bc1f1e5c9cb80cc628eee8f80eeb
-- payment_link_extractor/web/static/styles.css: 44210e9aa27b41e694b59f5dd3f3dc9fbf810523
-- paypal_agreement_protocol/web_static/index.html: aee8f80cc77228e4b21e19794a43b3e1c501cea3
-- paypal_agreement_protocol/web_static/app.js: ef586b86e874bb7f71208db895132c964a440c9f
+- payment_link_extractor/web/paypal_protocol.py: e1c2ef5c478db3fe93d23d7d7d0a15ab3cb9b189
+- payment_link_extractor/web/static/app.js: 0f67a244b8eeb1186a2e4c05478f62dd68b81c5b
+- payment_link_extractor/web/static/styles.css: 1a640981f28c32b5201aadbae51d88581a3f4a9d
+- payment_link_extractor/web/templates/index.html: 27282c8b530c2de0eb8934ce3c55e950e1cd6830
+- paypal_agreement_protocol/web.py: c2aed1e9fa513ff2c713ce173ab644e8384fa3b8
+- paypal_agreement_protocol/web_static/app.js: fb76c3021de6a0586eac551f1da1c89b8138672e
+- paypal_agreement_protocol/web_static/checkout-preview.css: 3a2cc118c26b7a6090d1ef77d3af1e226a5a5005
+- paypal_agreement_protocol/web_static/index.html: 49db3709968f6bc21237ab7c0638362ef284511f
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch

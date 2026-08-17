@@ -938,11 +938,12 @@ class WebJob:
     owner_device_id: str
     ba_token: str
     phone: str
+    account_email: str = ""
     batch_id: str = ""
     batch_index: int = 1
     batch_total: int = 1
     country: str = "BR"
-    buyer_mode: str = "identity_elevation"
+    buyer_mode: str = "original"
     debug: bool = False
     max_card_attempts: int = 5
     manual_funding: bool = False
@@ -1327,6 +1328,7 @@ class WebJob:
                 "stage": self.stage,
                 "ba_token": mask_middle(self.ba_token),
                 "phone": mask_phone(self.phone),
+                "account_email": self.account_email,
                 "batch_id": self.batch_id,
                 "batch_index": self.batch_index,
                 "batch_total": self.batch_total,
@@ -1819,10 +1821,11 @@ def create_job(
     phone: str,
     debug: bool,
     max_card_attempts: int,
+    account_email: str = "",
     manual_funding: bool = False,
     agreement_only: bool = False,
     country: str = "BR",
-    buyer_mode: str = "identity_elevation",
+    buyer_mode: str = "original",
     proxy_pool: Any = None,
     exclude_public_metrics: bool = False,
     batch_id: str = "",
@@ -1832,8 +1835,11 @@ def create_job(
 ) -> WebJob:
     ba_token = extract_ba_token(ba_token)
     phone = re.sub(r"[\s().-]+", "", (phone or "").strip())
+    account_email = str(account_email or "").strip()
+    if account_email and ("@" not in account_email or any(char.isspace() for char in account_email)):
+        raise ValueError("账号邮箱格式不正确")
     country = str(country or "BR").strip().upper()
-    buyer_mode = str(buyer_mode or "identity_elevation").strip().lower()
+    buyer_mode = str(buyer_mode or "original").strip().lower()
     if buyer_mode not in {"original", "identity_elevation"}:
         raise ValueError("Buyer 模式参数不正确")
     allowed_countries = supported_country_codes() if ENABLE_DYNAMIC_COUNTRIES else VERIFIED_PROTOCOL_COUNTRIES
@@ -1905,6 +1911,7 @@ def create_job(
         owner_device_id=owner_device_id,
         ba_token=ba_token,
         phone=phone,
+        account_email=account_email,
         batch_id=str(batch_id or ""),
         batch_index=max(1, int(batch_index or 1)),
         batch_total=max(1, min(int(batch_total or 1), 20)),
@@ -2009,6 +2016,8 @@ def run_job(job: WebJob) -> None:
                 )
             else:
                 user = generate_user(job.phone, country=job.country)
+                if job.account_email:
+                    user.email = job.account_email
                 job.check_cancelled()
                 card = generate_card(
                     proxy_url=proxy_config.url,
@@ -2363,6 +2372,13 @@ class WebHandler(BaseHTTPRequestHandler):
                     phone_values = parse_pool_values(data.get("phones"), field_name="手机号池")
                     if len(ba_values) != len(phone_values):
                         raise ValueError(f"BA 链池与手机号池数量必须一致（当前 {len(ba_values)} / {len(phone_values)}）")
+                    raw_email_values = data.get("emails")
+                    if raw_email_values in (None, "", []):
+                        email_values = [""] * len(ba_values)
+                    else:
+                        email_values = parse_pool_values(raw_email_values, field_name="账号邮箱池")
+                        if len(ba_values) != len(email_values):
+                            raise ValueError(f"BA 链池与账号邮箱池数量必须一致（当前 {len(ba_values)} / {len(email_values)}）")
                     ba_tokens = [extract_ba_token(value) for value in ba_values]
                     if any(not token or not BA_TOKEN_RE.fullmatch(token) for token in ba_tokens):
                         raise ValueError("BA 链池中存在格式不正确的 PayPal 链接或 BA Token")
@@ -2384,13 +2400,14 @@ class WebHandler(BaseHTTPRequestHandler):
                         if device_active + batch_total > 20:
                             raise ValueError(f"当前浏览器最多同时运行 20 个任务，现有 {device_active} 个")
 
-                    for index, (ba_value, phone_value) in enumerate(zip(ba_values, phone_values), start=1):
+                    for index, (ba_value, phone_value, email_value) in enumerate(zip(ba_values, phone_values, email_values), start=1):
                         job = create_job(
                             owner_device_id=owner_device_id,
                             ba_token=ba_value,
                             phone=phone_value,
+                            account_email=email_value,
                             country=data.get("country") or data.get("paypal_country") or "BR",
-                            buyer_mode=data.get("buyer_mode") or "identity_elevation",
+                            buyer_mode=data.get("buyer_mode") or "original",
                             debug=False,
                             max_card_attempts=5,
                             manual_funding=False,
@@ -2418,8 +2435,9 @@ class WebHandler(BaseHTTPRequestHandler):
                     owner_device_id=self.get_device_id(),
                     ba_token=data.get("ba_token") or data.get("paypal_url", ""),
                     phone=data.get("phone", ""),
+                    account_email=data.get("account_email") or data.get("email", ""),
                     country=data.get("country") or data.get("paypal_country") or "BR",
-                    buyer_mode=data.get("buyer_mode") or "identity_elevation",
+                    buyer_mode=data.get("buyer_mode") or "original",
                     debug=False,
                     max_card_attempts=5,
                     # Braintree link generation is now independent from the

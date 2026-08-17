@@ -9,6 +9,8 @@ function applyWorkbenchPrefill() {
   const ba = params.get('ba') || params.get('paypal_url') || '';
   const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
   const phone = params.get('phone') || '';
+  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
+    .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
   if (ba && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
@@ -16,6 +18,8 @@ function applyWorkbenchPrefill() {
     if (typeof state !== 'undefined') state.lastCountry = country;
   }
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
+  if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
+  if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
 }
 const $ = (id) => document.getElementById(id);
 const PRIVATE_BRAINTREE_SLUG = 'bt-vault-8f1d2e4c9a7b6d3e';
@@ -34,6 +38,7 @@ const state = {
   batchJobs: [],
   batchPollTimer: null,
   smsActivations: new Map(),
+  prefillEmails: [],
   queueRenderTimer: null,
   lastCountry: '',
 };
@@ -141,6 +146,9 @@ function baPoolLines() {
 }
 function phonePoolLines() {
   return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
+}
+function emailPoolLines() {
+  return $('emailPool').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
 }
 function updatePairCounts() {
   const baCount = baPoolLines().length;
@@ -259,7 +267,7 @@ $('buyerMode').addEventListener('change', () => {
   const elevated = $('buyerMode').value === 'identity_elevation';
   $('buyerModeHint').value = elevated
     ? '注册后提升 Guest 身份并绑定当前 EC，再提交授权'
-    : '沿用当前协议流程，兼容性优先';
+    : '按开源项目 Phase 0-4：协议地址、风控、创建账号、短信验证、最终授权';
 });
 
 function normalizePhone(value) {
@@ -272,9 +280,10 @@ function extractBa(value) {
 
 function sortedBaPoolEntries() {
   const sourcePhones = phonePoolLines();
+  const sourceEmails = emailPoolLines().length ? emailPoolLines() : state.prefillEmails;
   return baPoolLines().map((link, originalIndex) => {
     const token = extractBa(link);
-    return {link, token, originalIndex, manualPhone: sourcePhones[originalIndex] || ''};
+    return {link, token, originalIndex, manualPhone: sourcePhones[originalIndex] || '', email: sourceEmails[originalIndex] || ''};
   }).sort((left, right) => {
     const tokenOrder = left.token.localeCompare(right.token, undefined, {numeric: true, sensitivity: 'base'});
     return tokenOrder || left.originalIndex - right.originalIndex;
@@ -294,7 +303,7 @@ function queueRows() {
 
 function accountForRow(row) {
   const generated = row.job?.generated || {};
-  return generated.user?.email || generated.email || row.job?.result?.email || row.job?.result?.user_id || '';
+  return row.job?.account_email || row.email || generated.user?.email || generated.email || row.job?.result?.email || row.job?.result?.user_id || '';
 }
 
 function otpStateForRow(row) {
@@ -320,6 +329,8 @@ function failureForRow(row) {
 function bindAccountTableActions() {
   document.querySelectorAll('[data-queue-cancel]').forEach(button => button.addEventListener('click', () => cancelBatchJob(button.dataset.queueCancel)));
   document.querySelectorAll('[data-queue-phone]').forEach(button => button.addEventListener('click', () => acquireSmsNumbers([Number(button.dataset.queuePhone) - 1])));
+  document.querySelectorAll('[data-queue-replace-phone]').forEach(button => button.addEventListener('click', () => acquireSmsNumbers([Number(button.dataset.queueReplacePhone) - 1], true)));
+  document.querySelectorAll('[data-queue-log]').forEach(button => button.addEventListener('click', () => openJobLogs(button.dataset.queueLog, button.dataset.queueToken)));
   document.querySelectorAll('[data-queue-copy]').forEach(button => button.addEventListener('click', async () => {
     const row = queueRows()[Number(button.dataset.queueCopy) - 1];
     if (!row) return;
@@ -355,8 +366,10 @@ function renderAccountQueue() {
     const duration = job ? formatDuration(job.duration) : '—';
     let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
     if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.index}">取号</button>`;
+    else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">换号</button>`;
     if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
     if (job?.cancellable) action = `<button class="table-action danger" type="button" data-queue-cancel="${escapeHtml(job.id)}">停止</button>`;
+    if (job) action = `<div class="table-actions">${action}<button class="table-action" type="button" data-queue-log="${escapeHtml(job.id)}" data-queue-token="${escapeHtml(row.token)}">日志</button></div>`;
     return `<tr data-account-row="${row.index}">
       <td>${row.index}</td>
       <td><span class="account-value ${account ? '' : 'muted-value'}">${escapeHtml(account || '等待生成账号')}</span></td>
@@ -381,7 +394,22 @@ function syncPhonePoolFromActivations() {
   updatePairCounts();
 }
 
-async function acquireSmsNumbers(onlyIndexes = null) {
+async function cancelSmsActivation(activation) {
+  const activationId = String(activation?.activation_id || '').trim();
+  if (!activationId) return;
+  try {
+    await api('/sms/cancel', {method:'POST', body:JSON.stringify({activation_id: activationId})});
+  } catch (_) {}
+}
+
+function clearPhoneAtIndex(index, entry = {}) {
+  const values = $('phone').value.split(/\r?\n/);
+  const sourceIndex = Number.isInteger(entry.originalIndex) ? entry.originalIndex : index;
+  if (sourceIndex >= 0 && sourceIndex < values.length) values[sourceIndex] = '';
+  $('phone').value = values.join('\n');
+}
+
+async function acquireSmsNumbers(onlyIndexes = null, force = false) {
   const entries = sortedBaPoolEntries();
   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
@@ -390,11 +418,31 @@ async function acquireSmsNumbers(onlyIndexes = null) {
   if (button) button.disabled = true;
   try {
     for (const index of indexes) {
-      const token = entries[index]?.token || '';
-      if (!token || state.smsActivations.has(token)) continue;
+      const entry = entries[index];
+      const token = entry?.token || '';
+      if (!token) continue;
+      const current = state.smsActivations.get(token);
+      const currentError = current ? phoneValidationError(current.phone, country) : '';
+      if (current && !force && !currentError) continue;
+      if (current) {
+        await cancelSmsActivation(current);
+        state.smsActivations.delete(token);
+        clearPhoneAtIndex(index, entry);
+        syncPhonePoolFromActivations();
+      }
       if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${entries.length}`;
-      const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
-      state.smsActivations.set(token, {...sms, token, index: index + 1});
+      let replacement = null;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
+        const error = phoneValidationError(sms.phone, country);
+        if (!error) {
+          replacement = {...sms, token, index: index + 1};
+          break;
+        }
+        await cancelSmsActivation(sms);
+        if (attempt === 3) throw new Error(`第 ${index + 1} 个手机号连续无效：${error}`);
+      }
+      state.smsActivations.set(token, replacement);
       syncPhonePoolFromActivations();
     }
   } catch (error) {
@@ -485,6 +533,44 @@ $('logBox').addEventListener('scroll', () => {
   const box = $('logBox');
   state.logPinned = box.scrollHeight - box.scrollTop - box.clientHeight < 32;
 });
+
+function closeJobLogModal() {
+  const modal = $('jobLogModal');
+  if (modal) modal.hidden = true;
+}
+
+function renderFullJobLogs(job, token = '') {
+  const logs = Array.isArray(job?.logs) ? job.logs : [];
+  $('jobLogModalTitle').textContent = `BA ${token || job?.ba_token || '当前任务'} 日志`;
+  $('jobLogModalMeta').textContent = `${logs.length} 条完整日志 · ${job?.status || '未知状态'}`;
+  $('jobLogModalBody').innerHTML = logs.length
+    ? logs.map(item => {
+      const level = String(item.level || '').toLowerCase();
+      const cls = level === 'error' ? 'error' : (level === 'warning' || level === 'warn' ? 'warn' : '');
+      return `<div class="full-log-row ${cls}"><time>${formatTime(item.time)}</time><b>${escapeHtml(String(item.level || 'INFO').toUpperCase())}</b><span>${escapeHtml(item.message || '')}</span></div>`;
+    }).join('')
+    : '<div class="empty-log">当前 BA 暂无日志</div>';
+}
+
+async function openJobLogs(jobId, token = '') {
+  const modal = $('jobLogModal');
+  if (!modal || !jobId) return;
+  modal.hidden = false;
+  $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
+  $('jobLogModalMeta').textContent = '正在加载完整日志…';
+  $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
+  try {
+    const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
+    renderFullJobLogs(job, token);
+  } catch (error) {
+    $('jobLogModalMeta').textContent = '日志加载失败';
+    $('jobLogModalBody').innerHTML = `<div class="full-log-error">${escapeHtml(error.message || '无法加载日志')}</div>`;
+  }
+}
+
+$('jobLogModalClose').addEventListener('click', closeJobLogModal);
+$('jobLogModal').addEventListener('click', event => { if (event.target === $('jobLogModal')) closeJobLogModal(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('jobLogModal').hidden) closeJobLogModal(); });
 
 function renderResult(job) {
   const terminal = ['completed', 'failed', 'cancelled'].includes(job.status);
@@ -1018,7 +1104,7 @@ $('protocolForm').addEventListener('submit', async (event) => {
       return activation?.activation_id ? {index: index + 1, activation_id: activation.activation_id, phone: activation.phone, country} : null;
     });
     const data = await api('/jobs', {method:'POST', body:JSON.stringify({
-      ba_pool: baValues, phones, country, proxies, agreement_only: false,
+      ba_pool: baValues, phones, emails: baEntries.map(entry => entry.email || ''), country, proxies, agreement_only: false,
       buyer_mode: $('buyerMode').value,
       sms_activations: smsActivations,
     })});
@@ -1186,6 +1272,8 @@ async function refreshSuccessStats() {
 (async function init() {
   await paypalCountriesReady;
   restoreProtocolFormState();
+  $('buyerMode').value = 'original';
+  $('buyerMode').dispatchEvent(new Event('change'));
   applyWorkbenchPrefill();
   updateProtocolMode();
   updateVaultRegion();
