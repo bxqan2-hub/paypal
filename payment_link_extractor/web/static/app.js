@@ -1217,8 +1217,11 @@
     pruneSelectedTasks();
     const total = succeededTasks().length;
     const selected = selectedTaskIds.size;
+    const pushable = paypalTasksForBulkPush();
     elements.selectedTaskCount.textContent = `已选 ${selected} 个`;
     elements.exportCsvButton.disabled = selected === 0;
+    elements.pushSelectedPaypalButton.disabled = pushable.length === 0;
+    elements.pushSelectedPaypalButton.textContent = pushable.length ? `一键推送 BA（${pushable.length}）` : "一键推送 BA";
     elements.selectAllSucceeded.disabled = total === 0;
     elements.selectAllSucceeded.checked = total > 0 && selected === total;
     elements.selectAllSucceeded.indeterminate = selected > 0 && selected < total;
@@ -1346,10 +1349,32 @@
     return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}&billing_country=${encodeURIComponent(country)}` : ""}${emailQuery}`;
   }
 
+  function paypalTasksForBulkPush() {
+    const paypalTasks = succeededTasks().filter(task => isPaypalBaLink(taskResultUrl(task.result || {})));
+    if (!selectedTaskIds.size) return paypalTasks;
+    return paypalTasks.filter(task => selectedTaskIds.has(task.task_id));
+  }
+
+  function pushPaypalTasks() {
+    const selected = paypalTasksForBulkPush().sort((left, right) => taskCompletionTime(left) - taskCompletionTime(right));
+    if (!selected.length) return;
+    const links = selected.map(task => taskResultUrl(task.result || {}));
+    const countries = [...new Set(selected.map(task => String(task.billing_country || task.result?.billing_country || task.country || '').trim().toUpperCase()).filter(Boolean))];
+    const emails = selected.map(task => String(task.account_email || task.result?.account_email || '').trim());
+    const params = new URLSearchParams();
+    params.set('ba', links.join('\n'));
+    if (countries.length === 1) {
+      params.set('country', countries[0]);
+      params.set('billing_country', countries[0]);
+    }
+    if (emails.some(Boolean)) params.set('emails', emails.join('\n'));
+    window.location.assign(`/paypal-pay/?${params.toString()}`);
+  }
+
   function renderResultRow(url, result = {}, task = {}) {
     const protocolUrl = protocolPaymentUrl(result, task);
     const pushButton = protocolUrl && isPaypalBaLink(url)
-      ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>`
+      ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送协议支付</a>`
       : "";
     return `<div class="result-row result-row-protocol"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${pushButton}</div>`;
   }
@@ -1435,7 +1460,7 @@
     const protocolUrl = protocolPaymentUrl(result, task);
     const progressOrResult = isComplete
       ? (hasResult
-      ? `<div class="task-row-result"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${protocolUrl && isPaypalBaLink(url) ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>` : ""}</div>`
+      ? `<div class="task-row-result"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${protocolUrl && isPaypalBaLink(url) ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送协议支付</a>` : ""}</div>`
       : `<span class="task-row-result-empty">未返回链接</span>`)
       : isFailed
       ? `<span class="task-row-error" title="${escapeHtml(taskFailureReason(task))}">${escapeHtml(taskFailureReason(task))}</span>`
@@ -1694,6 +1719,7 @@
       toggleAllSucceeded(event.target.checked);
     });
     elements.exportCsvButton.addEventListener("click", downloadSelectedCsv);
+    elements.pushSelectedPaypalButton.addEventListener("click", pushPaypalTasks);
     elements.retryNetworkFailedTasksButton.addEventListener("click", retryAllNetworkFailedTasks);
     elements.clearFailedTasksButton.addEventListener("click", () => bulkDeleteTasks("failed"));
     elements.clearSucceededTasksButton.addEventListener("click", () => bulkDeleteTasks("succeeded"));
@@ -1741,6 +1767,7 @@
     elements.selectAllSucceeded = byId("select-all-succeeded");
     elements.selectedTaskCount = byId("selected-task-count");
     elements.exportCsvButton = byId("export-csv-button");
+    elements.pushSelectedPaypalButton = byId("push-selected-paypal");
     elements.retryNetworkFailedTasksButton = byId("retry-network-failed-tasks");
     elements.clearFailedTasksButton = byId("clear-failed-tasks");
     elements.clearSucceededTasksButton = byId("clear-succeeded-tasks");

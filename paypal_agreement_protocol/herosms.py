@@ -180,9 +180,13 @@ class HeroSMSClient:
 
     def finish(self, activation_id: str, status: int = 6) -> None:
         try:
-            self._request("setStatus", id=str(activation_id), status=int(status))
+            self.set_status(activation_id, status)
         except HeroSMSError:
             return
+
+    def set_status(self, activation_id: str, status: int) -> Any:
+        """Update an activation; status 3 requests another SMS on the same number."""
+        return self._request("setStatus", id=str(activation_id), status=int(status))
 
     def wait_for_code(self, activation_id: str) -> str:
         deadline = time.monotonic() + self.timeout

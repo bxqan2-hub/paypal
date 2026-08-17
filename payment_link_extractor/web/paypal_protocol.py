@@ -140,6 +140,8 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
     submitted = False
     current_closed = False
     registered_activation_id = ""
+    last_submitted_code = ""
+    observed_retry_count = 0
 
     def add_log(job: Any, level: str, message: str) -> None:
         try:
@@ -183,6 +185,20 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 time.sleep(min(1.0, client.poll_interval))
                 continue
 
+            retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
+            if retry_count > observed_retry_count:
+                observed_retry_count = retry_count
+                if last_submitted_code:
+                    try:
+                        client.set_status(activation_id, 3)
+                        add_log(
+                            job,
+                            "INFO",
+                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：继续使用当前手机号并等待新的验证码",
+                        )
+                    except HeroSMSError as exc:
+                        add_log(job, "WARNING", f"当前手机号请求新验证码状态更新失败，继续轮询：{exc}")
+
             deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
             timed_out = True
             immediate_send_failure = False
@@ -207,11 +223,17 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                     continue
                 code = str(status.get("code") or "").strip()
                 status_name = str(status.get("status") or "").strip().upper()
-                if code and code.lower() not in {"none", "null"}:
-                    job.submit_input(code)
+                if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
+                    try:
+                        job.submit_input(code)
+                    except ValueError:
+                        timed_out = False
+                        break
+                    last_submitted_code = code
                     add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
                     submitted = True
-                    return
+                    timed_out = False
+                    break
                 if status_name in SMS_TERMINAL_STATUSES:
                     add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
                     break

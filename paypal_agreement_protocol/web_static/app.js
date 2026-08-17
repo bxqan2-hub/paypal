@@ -40,7 +40,8 @@ function applyWorkbenchPrefill() {
   const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
   const phone = params.get('phone') || saved.phone || '';
   const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
-    .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    .split(/\r?\n/).map(value => value.trim());
+  while (emailValues.length && !emailValues[emailValues.length - 1]) emailValues.pop();
   if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
@@ -48,8 +49,8 @@ function applyWorkbenchPrefill() {
     if (typeof state !== 'undefined') state.lastCountry = country;
   }
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
-  if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
-  if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
+  if (emailValues.some(Boolean) && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
+  if (emailValues.some(Boolean) && typeof state !== 'undefined') state.prefillEmails = emailValues;
   persistLastProtocolInputs();
   saveProtocolFormState();
 }
@@ -200,14 +201,18 @@ function baPoolLines() {
   return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(value => value && !isDefaultDemoBa(value));
 }
 function phonePoolLines() {
-  return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
+  const values = $('phone').value.split(/\r?\n/).map(value => normalizePhone(value));
+  while (values.length && !values[values.length - 1]) values.pop();
+  return values;
 }
 function emailPoolLines() {
-  return $('emailPool').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  const values = $('emailPool').value.split(/\r?\n/).map(value => value.trim());
+  while (values.length && !values[values.length - 1]) values.pop();
+  return values;
 }
 function updatePairCounts() {
   const baCount = baPoolLines().length;
-  const phoneCount = phonePoolLines().length;
+  const phoneCount = phonePoolLines().filter(Boolean).length;
   $('baPoolCount').textContent = `${baCount} / 20`;
   $('phonePoolCount').textContent = `${phoneCount} / 20`;
   $('baPoolCount').classList.toggle('over-limit', baCount > 20);
@@ -340,6 +345,10 @@ function extractBa(value) {
   return match ? match[0] : value.trim();
 }
 
+function isTerminalJob(job) {
+  return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
+}
+
 function sortedBaPoolEntries() {
   const sourcePhones = phonePoolLines();
   const sourceEmails = emailPoolLines().length ? emailPoolLines() : state.prefillEmails;
@@ -364,7 +373,7 @@ function queueRows() {
       link,
       token,
       activation,
-      phone: job?.sms_current_phone || activation?.phone || entry.manualPhone || job?.phone || '',
+      phone: (isTerminalJob(job) ? activation?.phone : job?.sms_current_phone) || activation?.phone || entry.manualPhone || job?.phone || '',
       job,
     };
   });
@@ -379,6 +388,10 @@ function otpStateForRow(row) {
   const job = row.job;
   if (!row.phone) return ['等待取号', 'muted-value'];
   if (!job) return ['已准备', 'otp-state'];
+  if (isTerminalJob(job) && row.activation?.activation_id
+      && String(row.activation.activation_id) !== String(job.sms_activation_id || '')) {
+    return ['新号已准备', 'otp-state'];
+  }
   if (job.status === 'awaiting_otp') return [row.activation ? '自动接收中' : '等待填写', 'otp-state waiting'];
   const logs = Array.isArray(job.logs) ? job.logs : [];
   const submitted = logs.some(item => /code received|验证码.*提交|SMS input received/i.test(item.message || ''));
@@ -415,10 +428,9 @@ function renderAccountQueue() {
   const body = $('accountQueueBody');
   if (!body) return;
   const rows = queueRows();
-  const terminal = job => job && ['completed','failed','cancelled'].includes(job.status);
   $('queueCount').textContent = String(rows.length);
   $('queueReadyCount').textContent = String(rows.filter(row => row.phone).length);
-  $('queueRunningCount').textContent = String(rows.filter(row => row.job && !terminal(row.job)).length);
+  $('queueRunningCount').textContent = String(rows.filter(row => row.job && !isTerminalJob(row.job)).length);
   $('queueDoneCount').textContent = String(rows.filter(row => row.job?.status === 'completed').length);
   if (!rows.length) {
     body.innerHTML = '<tr class="account-empty-row"><td colspan="11"><b>等待 BA 链接</b><span>从提链工作台推送后，账号会在这里横向排列显示。</span></td></tr>';
@@ -431,11 +443,13 @@ function renderAccountQueue() {
     const [failure, failureClass] = failureForRow(row);
     const account = accountForRow(row);
     const stage = job?.stage || (row.phone ? '手机号已就绪' : '选择地区并获取手机号');
-    const retry = Number(job?.result?.retry_count || 0);
+    const retry = Number(job?.retry_count ?? job?.result?.retry_count ?? 0);
+    const maxRetries = Number(job?.max_retries ?? job?.result?.max_retries ?? 2);
     const duration = job ? formatDuration(job.duration) : '—';
     let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
     if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.index}">取号</button>`;
     else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">换号</button>`;
+    else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">获取新号</button>`;
     if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
     if (job?.cancellable) action = `<button class="table-action danger" type="button" data-queue-cancel="${escapeHtml(job.id)}">停止</button>`;
     if (job) action = `<div class="table-actions">${action}<button class="table-action" type="button" data-queue-log="${escapeHtml(job.id)}" data-queue-token="${escapeHtml(row.token)}">日志</button></div>`;
@@ -447,7 +461,7 @@ function renderAccountQueue() {
       <td><span class="${otpClass}">${escapeHtml(otpLabel)}</span></td>
       <td><span class="table-status ${escapeHtml(statusClass)}">${escapeHtml(statusLabel)}</span></td>
       <td title="${escapeHtml(stage)}"><span class="failure-cell">${escapeHtml(stage)}</span></td>
-      <td><span class="retry-pill">${retry}/2</span></td>
+      <td><span class="retry-pill">${retry}/${maxRetries}</span></td>
       <td title="${escapeHtml(failure)}"><span class="${failureClass}">${escapeHtml(failure)}</span></td>
       <td><code>${escapeHtml(duration)}</code></td>
       <td>${action}</td>
@@ -457,7 +471,11 @@ function renderAccountQueue() {
 }
 
 function syncPhonePoolFromActivations() {
-  const values = sortedBaPoolEntries().map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '');
+  const entries = sortedBaPoolEntries();
+  const values = Array.from({length: baPoolLines().length}, () => '');
+  entries.forEach(entry => {
+    values[entry.originalIndex] = state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '';
+  });
   $('phone').value = values.join('\n');
   saveProtocolFormState();
   updatePairCounts();
@@ -521,6 +539,7 @@ function clearPhoneAtIndex(index, entry = {}) {
 
 async function acquireSmsNumbers(onlyIndexes = null, force = false) {
   const entries = sortedBaPoolEntries();
+  const existingRows = queueRows();
   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
   const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
@@ -535,7 +554,8 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
       if (!token) continue;
       const current = state.smsActivations.get(token);
       const currentError = current ? phoneValidationError(current.phone, country) : '';
-      if (current && !force && !currentError) continue;
+      const replaceTerminalNumber = isTerminalJob(existingRows[index]?.job);
+      if (current && !force && !replaceTerminalNumber && !currentError) continue;
       if (current) {
         await cancelSmsActivation(current);
         state.smsActivations.delete(token);
@@ -563,11 +583,12 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
       }
       state.smsActivations.set(token, replacement);
       syncPhonePoolFromActivations();
+      setProgress(5, `第 ${index + 1} 个账号已获取新手机号`, 'SMS');
     }
   } catch (error) {
     showClientError(error.message || 'HeroSMS 手机号获取失败');
   } finally {
-    if (button) { button.disabled = false; button.querySelector('b').textContent = '获取接码手机号'; }
+    if (button) { button.disabled = false; button.querySelector('b').textContent = '获取新的手机号'; }
     renderAccountQueue();
   }
 }
@@ -683,7 +704,7 @@ async function refreshOpenJobLogs() {
     const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
     if (modal.hidden || state.activeLogJobId !== jobId) return;
     renderFullJobLogs(job, token);
-    if (!terminal(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
+    if (!isTerminalJob(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
   } catch (error) {
     if (modal.hidden || state.activeLogJobId !== jobId) return;
     $('jobLogModalMeta').textContent = '日志加载失败';

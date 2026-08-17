@@ -951,6 +951,8 @@ class WebJob:
     sms_send_error: str = ""
     debug: bool = False
     max_card_attempts: int = 5
+    retry_count: int = 0
+    max_retries: int = 2
     manual_funding: bool = False
     agreement_only: bool = False
     exclude_public_metrics: bool = False
@@ -1035,6 +1037,34 @@ class WebJob:
             self.sms_send_failed = False
             self.sms_send_error = ""
             self.updated_at = now_ts()
+
+    def prepare_retry(self, exc: BaseException) -> None:
+        """Reset volatile attempt state while keeping the current SMS number."""
+        with self._condition:
+            self.retry_count += 1
+            reason = redact_text(str(exc) or type(exc).__name__)
+            self.status = "queued"
+            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：继续使用当前手机号"
+            self.result = None
+            self.error = ""
+            self.traceback_text = ""
+            self.finished_at = None
+            self.generated = None
+            self.runtime_schema = None
+            self.last_protocol_step = ""
+            self.awaiting_prompt = ""
+            self.challenge_url = ""
+            self.sms_send_failed = False
+            self.sms_send_error = ""
+            self._input_queue.clear()
+            self._captcha_queue.clear()
+            self._browser = None
+            self.updated_at = now_ts()
+            self._append_log_locked(
+                "WARNING",
+                f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
+            )
+            self._condition.notify_all()
 
     def set_status(self, status: str, stage: str | None = None) -> None:
         with self._condition:
@@ -1343,6 +1373,8 @@ class WebJob:
                 else ("已完成" if succeeded else "最终授权失败")
             )
             self.result = result_obj
+            self.result.setdefault("retry_count", self.retry_count)
+            self.result.setdefault("max_retries", self.max_retries)
             if not succeeded:
                 self.error = redact_text(
                     result_obj.get("error_code")
@@ -1387,6 +1419,8 @@ class WebJob:
                     "new_task_retryable": True,
                     "requires_new_ba": True,
                     "requires_new_account": True,
+                    "retry_count": self.retry_count,
+                    "max_retries": self.max_retries,
                 }
                 self.stage = "PayPal account restricted after card binding" if after_card_rejection else "PayPal account restricted"
             elif error_code == "PAYPAL_GRAPHQL_AUTH_CHALLENGE":
@@ -1400,6 +1434,8 @@ class WebJob:
                     "paypal_authorized": False,
                     "same_session_retryable": False,
                     "new_task_retryable": True,
+                    "retry_count": self.retry_count,
+                    "max_retries": self.max_retries,
                 }
                 self.stage = "PayPal edge authentication challenge"
             else:
@@ -1409,6 +1445,8 @@ class WebJob:
                     "error": redact_text(error_text),
                     "failure_stage": failure_step,
                     "paypal_authorized": False,
+                    "retry_count": self.retry_count,
+                    "max_retries": self.max_retries,
                 }
                 self.stage = f"{failure_step} · failed"
             self.status = "failed"
@@ -1451,6 +1489,8 @@ class WebJob:
                 "sms_send_error": redact_text(self.sms_send_error),
                 "debug": self.debug and ALLOW_DEBUG_LOGS,
                 "max_card_attempts": self.max_card_attempts,
+                "retry_count": self.retry_count,
+                "max_retries": self.max_retries,
                 "manual_funding": self.manual_funding,
                 "agreement_only": self.agreement_only,
                 "generated": sanitize_payload(self.generated),
@@ -2129,13 +2169,22 @@ def create_job(
     return job
 
 
-def run_job(job: WebJob) -> None:
+class ProtocolResultError(RuntimeError):
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = dict(result)
+        super().__init__(
+            str(result.get("error") or result.get("error_code") or "protocol flow returned an error result")
+        )
+
+
+def _run_job_attempt(job: WebJob) -> None:
     with logger.contextualize(job_id=job.id):
         try:
             job.set_status("queued", "Waiting for execution slot")
             job.acquire_execution_slot()
             job.check_cancelled()
-            job.started_at = now_ts()
+            if job.started_at is None:
+                job.started_at = now_ts()
             job.set_status("running", "Preparing protocol payment profile")
             checkpoint = find_authorization_checkpoint(job.ba_token)
             if checkpoint:
@@ -2338,23 +2387,70 @@ def run_job(job: WebJob) -> None:
                     })
                     job.complete(result)
                     return
+            if isinstance(result, dict) and result.get("status") != "success":
+                raise ProtocolResultError(result)
             job.complete(result)
         except BaseException as exc:
             if job._cancel_event.is_set():
                 logger.info("Protocol payment job cancelled")
                 job.mark_cancelled()
             else:
-                logger.error("Protocol payment job failed: {}", redact_text(exc))
-                job.fail(exc)
+                raise
         finally:
-            try:
-                record_protocol_metric(job)
-            except Exception as metric_error:
-                logger.warning("Protocol metrics write failed: {}", metric_error)
             job._flow = None
-            job._proxy_config = None
-            job._proxy_pool = []
             job.release_execution_slot()
+
+
+def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
+    """Retry a clean protocol attempt unless the BA is already consumed."""
+    if job._cancel_event.is_set() or job.retry_count >= job.max_retries:
+        return False
+    result = getattr(exc, "result", None)
+    if not isinstance(result, dict):
+        result = job.result if isinstance(job.result, dict) else {}
+    if result.get("paypal_authorized") or result.get("requires_new_ba"):
+        return False
+    error_code = str(getattr(exc, "error_code", "") or result.get("error_code") or "").upper()
+    if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
+        return False
+    if "cancelled by user" in str(exc).lower():
+        return False
+    return True
+
+
+def run_job(job: WebJob) -> None:
+    """Run a job with bounded clean-session retries on the current phone."""
+    try:
+        while True:
+            try:
+                _run_job_attempt(job)
+            except BaseException as exc:
+                if not _job_failure_is_retryable(job, exc):
+                    with logger.contextualize(job_id=job.id):
+                        logger.error("Protocol payment job failed: {}", redact_text(exc))
+                    if isinstance(exc, ProtocolResultError):
+                        job.complete(exc.result)
+                    else:
+                        job.fail(exc)
+                    break
+                job.prepare_retry(exc)
+                with logger.contextualize(job_id=job.id):
+                    logger.warning(
+                        "Protocol payment automatic retry {}/{} with current phone",
+                        job.retry_count,
+                        job.max_retries,
+                    )
+                continue
+            break
+    finally:
+        try:
+            record_protocol_metric(job)
+        except Exception as metric_error:
+            logger.warning("Protocol metrics write failed: {}", metric_error)
+        job._flow = None
+        job._proxy_config = None
+        job._proxy_pool = []
+        job.release_execution_slot()
 
 
 # ----------------------------- HTTP server -----------------------------

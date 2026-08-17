@@ -172,6 +172,7 @@
                   </label>
                   <span id="selected-task-count" class="quiet" aria-live="polite">已选 0 个</span>
                   <button id="export-csv-button" class="secondary" type="button" disabled>导出 CSV</button>
+                  <button id="push-selected-paypal" class="primary" type="button" disabled>一键推送 BA</button>
                   <button id="retry-network-failed-tasks" class="secondary bulk-retry-button" type="button" disabled>重试网络失败</button>
                   <button id="clear-failed-tasks" class="secondary bulk-delete-button" type="button" disabled>清空失败任务</button>
                   <button id="clear-succeeded-tasks" class="secondary bulk-delete-button" type="button" disabled>清空已完成任务</button>
@@ -220,6 +221,6 @@
         </section>
       </div>
     </main>
-    <script src="{{ url_for('static', filename='app.js', v='20260818-ui-persist-1') }}" defer></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260818-protocol-bulk-push-1') }}" defer></script>
   </body>
 </html>

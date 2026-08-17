@@ -1,1178 +1,410 @@
-diff --git a/.env.example b/.env.example
-index df021a1..1699f36 100644
---- a/.env.example
-+++ b/.env.example
-@@ -6,8 +6,8 @@ OPLL_UPDATE_PROXY=
- OPLL_STRIPE_HCAPTCHA_TOKEN=
-
- # EUR billing
-+# Fallback used only when the workbench sends no billing country.
- OPLL_COUNTRY=DE
--OPLL_FORCE_COUNTRY=DE
- OPLL_PAYMENT_METHOD=paypal
- OPLL_UPDATE_CHECKOUT=true
-
-diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
-index 291b366..d574aba 100644
---- a/payment_link_extractor/web/routes.py
-+++ b/payment_link_extractor/web/routes.py
-@@ -1,7 +1,6 @@
- from __future__ import annotations
-
- import os
--import re
- import hashlib
- from pathlib import Path
- from typing import Any
-@@ -25,12 +24,11 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
-     @app.get("/api/defaults")
-     def defaults() -> Any:
-         proxy_pool = _configured_proxy_pool()
--        forced_country = os.getenv("OPLL_FORCE_COUNTRY", "").strip().upper()
-         return jsonify(
-             {
-                 "ok": True,
--                "country": forced_country or os.getenv("OPLL_COUNTRY", "DE"),
--                "force_country": forced_country,
-+                "country": os.getenv("OPLL_COUNTRY", "DE"),
-+                "force_country": "",
-                 "payment_method": "paypal",
-                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
-                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
-@@ -185,14 +183,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
-     checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
-     update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
-     hcaptcha = _value(payload, "stripe_hcaptcha_token", "OPLL_STRIPE_HCAPTCHA_TOKEN")
--    forced_country = os.getenv("OPLL_FORCE_COUNTRY", "").strip().upper()
--    country = forced_country or str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
--    proxy_country = re.search(
--        r"-(?:res|country|region|area|dc|res_sc)-([A-Za-z]{2})(?:[-_:]|$)",
--        str(checkout_proxy or ""),
--    )
--    if proxy_country and not forced_country:
--        country = proxy_country.group(1).upper()
-+    country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
-     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
-     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
-     # Accept both OAICS (oaics_*) and Stripe Checkout (cs_*) PayPal flows.
-diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index 1c656b5..fc0d9ac 100644
---- a/payment_link_extractor/web/static/app.js
-+++ b/payment_link_extractor/web/static/app.js
-@@ -258,7 +258,6 @@
-   }
-
-   function saveFormPreferences() {
--    syncCountryFromProxy();
-     const preferences = {
-       country: byId("country").value,
-       payment_method: byId("payment-method").value,
-@@ -278,16 +277,6 @@
-     updateProxyCounts();
-   }
-
--  function syncCountryFromProxy() {
--    if (byId("country").disabled) return;
--    const firstProxy = proxyPoolLines(byId("checkout-proxy").value)[0] || "";
--    const match = firstProxy.match(/-(?:res|country|region|area|dc|res_sc)-([a-z]{2})(?:[-_:]|$)/i);
--    if (!match) return;
--    const country = match[1].toUpperCase();
--    const option = Array.from(byId("country").options).find(item => item.value === country);
--    if (option) byId("country").value = country;
--  }
--
-   function proxyPoolLines(value) {
-     // Preserve every pasted row. Some providers intentionally issue several
-     // entries with the same gateway but different sessions behind the scenes.
-@@ -323,10 +312,8 @@
-       const response = await apiFetch("/api/defaults");
-       const defaults = await response.json();
-       if (!response.ok || !defaults || typeof defaults !== "object") return;
--      if (typeof defaults.force_country === "string" && defaults.force_country) {
--        byId("country").value = defaults.force_country;
--        byId("country").disabled = true;
--      } else if (!byId("country").value && typeof defaults.country === "string") {
-+      byId("country").disabled = false;
-+      if (!byId("country").value && typeof defaults.country === "string") {
-         byId("country").value = defaults.country;
-       }
-       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;
-diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
-index 8e42831..6af338c 100644
---- a/payment_link_extractor/web/templates/index.html
-+++ b/payment_link_extractor/web/templates/index.html
-@@ -202,6 +202,6 @@
-         </section>
-       </div>
-     </main>
--    <script src="{{ url_for('static', filename='app.js', v='20260817-email-ba-1') }}" defer></script>
-+    <script src="{{ url_for('static', filename='app.js', v='20260817-country-unlock-1') }}" defer></script>
-   </body>
- </html>
-
-# LATEST COUNTRY GATE FIX DIFF
-diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
-@@ /api/supported-countries
-+for item in payload["countries"]:
-+    item["verified"] = item["code"].upper() in VERIFIED_PROTOCOL_COUNTRIES
-diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-@@ country option rendering
-+const VERIFIED_COUNTRY_CODES = new Set(['BR','GB','US','JP','TH','ID','PH','TW','MX','AE','AU','CA']);
-+option.dataset.live = item.verified === true || VERIFIED_COUNTRY_CODES.has(String(item.code || '').toUpperCase()) ? '1' : '0';
-
-# LATEST COUNTRY GATE CACHE BUST DIFF
-diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
--  <script src="/paypal-pay/static/app.js?v=20260817-price-limit-1"></script>
-+  <script src="/paypal-pay/static/app.js?v=20260818-country-gate-1"></script>
-
-# LATEST PHONE REFRESH AND OPTIONAL EMAIL DIFF
 diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
-@@ SMS bridge
-+POST /paypal-pay/api/sms/status accepts activation_ids and calls HeroSMS getStatusV2 without buying numbers.
-diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
-@@ batch email parsing
-+parse_optional_email_values treats None, empty strings, all-blank lists, and aligned blank slots as optional.
-diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-@@ phone controls
-+refreshSmsNumbers checks activation status, clears canceled/unknown phones, and keeps active numbers.
-+all-blank email pools are omitted from the job payload.
-diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
-@@ command bar
-+refreshPhonesButton = 刷新手机号
-
-# LATEST PHONE REFRESH CACHE BUST DIFF
-diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
--  <script src="/paypal-pay/static/app.js?v=20260818-country-gate-1"></script>
-+  <script src="/paypal-pay/static/app.js?v=20260818-phone-refresh-1"></script>
-
-
-# LATEST PROXY-PARSER FIX
-diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 76f3fe2..3bc10f9 100644
---- a/payment_link_extractor/transport.py
-+++ b/payment_link_extractor/transport.py
-@@ -63,6 +63,20 @@ def safe_close(session: Any) -> None:
-             pass
-
-
-+def _is_1024proxy_host(host: str) -> bool:
-+    lowered = str(host or "").lower().rstrip(".")
-+    return lowered == "1024proxy.io" or lowered.endswith(".1024proxy.io")
+index 6c3b641..cd7de0b 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -142,0 +143,2 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
++    last_submitted_code = ""
++    observed_retry_count = 0
+@@ -185,0 +188,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
++            retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
++            if retry_count > observed_retry_count:
++                observed_retry_count = retry_count
++                if last_submitted_code:
++                    try:
++                        client.set_status(activation_id, 3)
++                        add_log(
++                            job,
++                            "INFO",
++                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：继续使用当前手机号并等待新的验证码",
++                        )
++                    except HeroSMSError as exc:
++                        add_log(job, "WARNING", f"当前手机号请求新验证码状态更新失败，继续轮询：{exc}")
 +
-+
-+def _direct_authenticated_proxy_url(
-+    scheme: str, host: str, port: int | str, username: str, password: str
-+) -> str:
-+    return (
-+        f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}"
-+        f"@{host}:{port}"
-+    )
-+
-+
- def _is_iprocket_host(host: str) -> bool:
-     lowered = str(host or "").lower().rstrip(".")
-     return (
-@@ -169,6 +183,10 @@ def normalize_proxy_url(proxy: str) -> str:
-             parsed_vendor = parts[2], parts[3], parts[0], parts[1]
-         if parsed_vendor is not None:
-             host, port, username, password = parsed_vendor
-+            if _is_1024proxy_host(host) and int(port) == 3000:
-+                return _direct_authenticated_proxy_url(
-+                    "socks5h", host, port, username, password
-+                )
-             if _is_iprocket_host(host):
-                 return _iprocket_bridge_proxy(host, int(port), username, password)
-             # Vendor port conventions: IPRocket 9595 and Kookeey gateways are
-@@ -212,6 +230,14 @@ def normalize_proxy_url(proxy: str) -> str:
-             parsed_port = parsed.port or (9595 if parsed.scheme.lower().startswith("socks") else 5959)
-         except ValueError as exc:
-             raise ValueError("proxy contains an invalid port") from exc
-+        if _is_1024proxy_host(host) and parsed_port == 3000:
-+            return _direct_authenticated_proxy_url(
-+                "socks5h",
-+                host,
-+                parsed_port,
-+                unquote(parsed.username),
-+                unquote(parsed.password or ""),
-+            )
-         return _iprocket_bridge_proxy(
-             host,
-             parsed_port,
-diff --git a/payment_link_extractor/web/proxy_probe.py b/payment_link_extractor/web/proxy_probe.py
-index e5bb07d..964d274 100644
---- a/payment_link_extractor/web/proxy_probe.py
-+++ b/payment_link_extractor/web/proxy_probe.py
-@@ -4,12 +4,20 @@ from dataclasses import asdict, dataclass
- from typing import Any, Callable
- from urllib.parse import urlsplit
-
-+import httpx
-+
- try:
-     import requests
- except ImportError:  # pragma: no cover - runtime dependency is declared in requirements.txt
-     requests = None  # type: ignore[assignment]
-
--from ..transport import normalize_proxy_url
-+from ..transport import (
-+    CurlCffiSession,
-+    new_session,
-+    normalize_proxy_url,
-+    safe_close,
-+    set_proxy_url,
-+)
-
-
- IP_LOOKUP_URL = "https://ipwho.is/"
-@@ -42,9 +50,23 @@ def probe_proxy(
- ) -> ProxyLocation:
-     proxy = _normalize_probe_proxy(checkout_proxy)
-     if request_get is None:
--        if requests is None:
--            raise ProxyProbeError("requests is required for proxy testing", 500)
--        request_get = requests.get
-+        def request_get(url: str, **kwargs: Any) -> Any:
-+            kwargs.pop("proxies", None)
-+            request_timeout = kwargs.pop("timeout", timeout)
-+            if CurlCffiSession is None:
-+                with httpx.Client(
-+                    proxy=proxy,
-+                    timeout=httpx.Timeout(request_timeout),
-+                    follow_redirects=False,
-+                    trust_env=False,
-+                ) as client:
-+                    return client.get(url, **kwargs)
-+            session = new_session()
-+            try:
-+                set_proxy_url(session, proxy)
-+                return session.get(url, timeout=request_timeout, **kwargs)
-+            finally:
-+                safe_close(session)
-
-     try:
-         response = request_get(
-@@ -54,6 +76,10 @@ def probe_proxy(
-             timeout=timeout,
-         )
-     except Exception as exc:
-+        if isinstance(exc, httpx.TimeoutException):
-+            raise ProxyProbeError("proxy request timed out", 504) from exc
-+        if isinstance(exc, httpx.HTTPError):
-+            raise ProxyProbeError("proxy connection failed", 502) from exc
-         if requests is not None and isinstance(exc, requests.exceptions.Timeout):
-             raise ProxyProbeError("proxy request timed out", 504) from exc
-         if requests is not None and isinstance(exc, requests.exceptions.RequestException):
-
-
-
-# FINAL PROXY-PARSER FIX DIFF
-diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 76f3fe2..3bc10f9 100644
---- a/payment_link_extractor/transport.py
-+++ b/payment_link_extractor/transport.py
-@@ -63,6 +63,20 @@ def safe_close(session: Any) -> None:
-             pass
-
-
-+def _is_1024proxy_host(host: str) -> bool:
-+    lowered = str(host or "").lower().rstrip(".")
-+    return lowered == "1024proxy.io" or lowered.endswith(".1024proxy.io")
-+
-+
-+def _direct_authenticated_proxy_url(
-+    scheme: str, host: str, port: int | str, username: str, password: str
-+) -> str:
-+    return (
-+        f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}"
-+        f"@{host}:{port}"
-+    )
-+
-+
- def _is_iprocket_host(host: str) -> bool:
-     lowered = str(host or "").lower().rstrip(".")
-     return (
-@@ -169,6 +183,10 @@ def normalize_proxy_url(proxy: str) -> str:
-             parsed_vendor = parts[2], parts[3], parts[0], parts[1]
-         if parsed_vendor is not None:
-             host, port, username, password = parsed_vendor
-+            if _is_1024proxy_host(host) and int(port) == 3000:
-+                return _direct_authenticated_proxy_url(
-+                    "socks5h", host, port, username, password
-+                )
-             if _is_iprocket_host(host):
-                 return _iprocket_bridge_proxy(host, int(port), username, password)
-             # Vendor port conventions: IPRocket 9595 and Kookeey gateways are
-@@ -212,6 +230,14 @@ def normalize_proxy_url(proxy: str) -> str:
-             parsed_port = parsed.port or (9595 if parsed.scheme.lower().startswith("socks") else 5959)
-         except ValueError as exc:
-             raise ValueError("proxy contains an invalid port") from exc
-+        if _is_1024proxy_host(host) and parsed_port == 3000:
-+            return _direct_authenticated_proxy_url(
-+                "socks5h",
-+                host,
-+                parsed_port,
-+                unquote(parsed.username),
-+                unquote(parsed.password or ""),
-+            )
-         return _iprocket_bridge_proxy(
-             host,
-             parsed_port,
-diff --git a/payment_link_extractor/web/proxy_probe.py b/payment_link_extractor/web/proxy_probe.py
-index e5bb07d..964d274 100644
---- a/payment_link_extractor/web/proxy_probe.py
-+++ b/payment_link_extractor/web/proxy_probe.py
-@@ -4,12 +4,20 @@ from dataclasses import asdict, dataclass
- from typing import Any, Callable
- from urllib.parse import urlsplit
-
-+import httpx
-+
- try:
-     import requests
- except ImportError:  # pragma: no cover - runtime dependency is declared in requirements.txt
-     requests = None  # type: ignore[assignment]
-
--from ..transport import normalize_proxy_url
-+from ..transport import (
-+    CurlCffiSession,
-+    new_session,
-+    normalize_proxy_url,
-+    safe_close,
-+    set_proxy_url,
-+)
-
-
- IP_LOOKUP_URL = "https://ipwho.is/"
-@@ -42,9 +50,23 @@ def probe_proxy(
- ) -> ProxyLocation:
-     proxy = _normalize_probe_proxy(checkout_proxy)
-     if request_get is None:
--        if requests is None:
--            raise ProxyProbeError("requests is required for proxy testing", 500)
--        request_get = requests.get
-+        def request_get(url: str, **kwargs: Any) -> Any:
-+            kwargs.pop("proxies", None)
-+            request_timeout = kwargs.pop("timeout", timeout)
-+            if CurlCffiSession is None:
-+                with httpx.Client(
-+                    proxy=proxy,
-+                    timeout=httpx.Timeout(request_timeout),
-+                    follow_redirects=False,
-+                    trust_env=False,
-+                ) as client:
-+                    return client.get(url, **kwargs)
-+            session = new_session()
-+            try:
-+                set_proxy_url(session, proxy)
-+                return session.get(url, timeout=request_timeout, **kwargs)
-+            finally:
-+                safe_close(session)
-
-     try:
-         response = request_get(
-@@ -54,6 +76,10 @@ def probe_proxy(
-             timeout=timeout,
-         )
-     except Exception as exc:
-+        if isinstance(exc, httpx.TimeoutException):
-+            raise ProxyProbeError("proxy request timed out", 504) from exc
-+        if isinstance(exc, httpx.HTTPError):
-+            raise ProxyProbeError("proxy connection failed", 502) from exc
-         if requests is not None and isinstance(exc, requests.exceptions.Timeout):
-             raise ProxyProbeError("proxy request timed out", 504) from exc
-         if requests is not None and isinstance(exc, requests.exceptions.RequestException):
-
-
-# LATEST BILLING-PROFILE PREVIEW DIFF
-diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
-index d574aba..2760277 100644
---- a/payment_link_extractor/web/routes.py
-+++ b/payment_link_extractor/web/routes.py
-@@ -9,7 +9,12 @@ from urllib.request import Request, urlopen
-
- from flask import Flask, jsonify, request
-
--from ..config import SUPPORTED_COUNTRIES, country_config, normalize_payment_method
-+from ..config import (
-+    SUPPORTED_COUNTRIES,
-+    billing_dict_for_country,
-+    country_config,
-+    normalize_payment_method,
-+)
- from ..errors import ConfigurationError
- from ..models import ExtractionConfig
- from .proxy_probe import ProxyProbeError, probe_proxy
-@@ -24,6 +29,15 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
-     @app.get("/api/defaults")
-     def defaults() -> Any:
-         proxy_pool = _configured_proxy_pool()
-+        billing_profiles = {}
-+        for code in SUPPORTED_COUNTRIES:
-+            _, currency, locale, timezone = country_config(code)
-+            billing_profiles[code] = {
-+                **billing_dict_for_country(code),
-+                "currency": currency,
-+                "locale": locale,
-+                "timezone": timezone,
-+            }
-         return jsonify(
-             {
-                 "ok": True,
-@@ -35,6 +49,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
-                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
-                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
-                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
-+                "billing_profiles": billing_profiles,
-             }
-         )
-
+@@ -210,2 +226,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+-                if code and code.lower() not in {"none", "null"}:
+-                    job.submit_input(code)
++                if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
++                    try:
++                        job.submit_input(code)
++                    except ValueError:
++                        timed_out = False
++                        break
++                    last_submitted_code = code
+@@ -214 +235,2 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+-                    return
++                    timed_out = False
++                    break
 diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index fc0d9ac..158e6c4 100644
+index 07f14ce..b1e4aa7 100644
 --- a/payment_link_extractor/web/static/app.js
 +++ b/payment_link_extractor/web/static/app.js
-@@ -33,6 +33,7 @@
-   let batchImportFinished = false;
-   let checkoutProxyPoolCursor = 0;
-   let updateProxyPoolCursor = 0;
-+  let billingProfiles = {};
-
-   const elements = {};
-
-@@ -287,6 +288,38 @@
-     return proxyPoolLines(value).join("\n");
-   }
-
-+  function renderBillingPreview(country = byId("country").value) {
-+    const preview = byId("billing-preview");
-+    if (!preview) return;
-+    const code = String(country || "").trim().toUpperCase();
-+    const profile = billingProfiles[code];
-+    if (!profile) {
-+      preview.hidden = true;
-+      return;
-+    }
-+    const address = [profile.line1, profile.city, profile.state, profile.postal_code]
-+      .map(value => String(value || "").trim())
-+      .filter(Boolean)
-+      .join(", ");
-+    const values = {
-+      "billing-preview-title": `${code} 实际账单配置`,
-+      "billing-preview-subtitle": "提链任务会使用这套完整姓名、电话和地址资料",
-+      "billing-preview-code": code,
-+      "billing-currency": profile.currency,
-+      "billing-locale": profile.locale,
-+      "billing-timezone": profile.timezone,
-+      "billing-name": profile.name,
-+      "billing-phone": profile.phone,
-+      "billing-email": profile.email,
-+      "billing-address": address,
-+    };
-+    Object.entries(values).forEach(([id, value]) => {
-+      const node = byId(id);
-+      if (node) node.textContent = String(value || "—");
-+    });
-+    preview.hidden = false;
+@@ -1219,0 +1220 @@
++    const pushable = paypalTasksForBulkPush();
+@@ -1221,0 +1223,2 @@
++    elements.pushSelectedPaypalButton.disabled = pushable.length === 0;
++    elements.pushSelectedPaypalButton.textContent = pushable.length ? `一键推送 BA（${pushable.length}）` : "一键推送 BA";
+@@ -1348,0 +1352,22 @@
++  function paypalTasksForBulkPush() {
++    const paypalTasks = succeededTasks().filter(task => isPaypalBaLink(taskResultUrl(task.result || {})));
++    if (!selectedTaskIds.size) return paypalTasks;
++    return paypalTasks.filter(task => selectedTaskIds.has(task.task_id));
 +  }
 +
-   function updateProxyCounts() {
-     const checkoutCount = byId("checkout-proxy-count");
-     const updateCount = byId("update-proxy-count");
-@@ -312,10 +345,14 @@
-       const response = await apiFetch("/api/defaults");
-       const defaults = await response.json();
-       if (!response.ok || !defaults || typeof defaults !== "object") return;
-+      if (defaults.billing_profiles && typeof defaults.billing_profiles === "object") {
-+        billingProfiles = defaults.billing_profiles;
-+      }
-       byId("country").disabled = false;
-       if (!byId("country").value && typeof defaults.country === "string") {
-         byId("country").value = defaults.country;
-       }
-+      renderBillingPreview();
-       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;
-       let savedPoolId = "";
-       try { savedPoolId = localStorage.getItem(SERVER_PROXY_POOL_KEY) || ""; } catch (error) { /* ignore */ }
-@@ -1590,6 +1627,7 @@
-       field.addEventListener("change", saveFormPreferences);
-       field.addEventListener("input", saveFormPreferences);
-     });
-+    byId("country").addEventListener("change", () => renderBillingPreview());
-     byId("refresh-proxy-source").addEventListener("click", refreshProxySource);
-     ["apply-update", "rotate-checkout-proxy", "rotate-update-proxy", "oaics-only"].forEach(id => {
-       byId(id).addEventListener("change", saveFormPreferences);
-@@ -1681,6 +1719,7 @@
-     elements.batchValidateButton = byId("batch-import-validate");
-     elements.batchSubmitButton = byId("batch-import-submit");
-     restoreFormPreferences();
-+    renderBillingPreview();
-     restoreTaskViewMode();
-     bindEvents();
-     elements.copyTokenButton.addEventListener("click", copyAccessToken);
-diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
-index c21fc04..9531979 100644
---- a/payment_link_extractor/web/static/styles.css
-+++ b/payment_link_extractor/web/static/styles.css
-@@ -100,6 +100,16 @@ h2 { margin-bottom: 4px; font-size: 18px; }
- .account-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
- .account-preview strong { color: #40505e; font-weight: 650; }
- .form-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
-+.billing-preview { grid-column: 1 / -1; margin: -2px 0 2px; padding: 14px 15px; border: 1px solid #cfe0ef; border-radius: 10px; background: linear-gradient(135deg, #f5faff, #fbfdff); }
-+.billing-preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
-+.billing-preview-heading strong { display: block; color: #285b86; font-size: 14px; }
-+.billing-preview-heading small { display: block; margin-top: 2px; color: #71808e; font-size: 11px; }
-+.billing-preview-code { flex: 0 0 auto; border-radius: 999px; padding: 3px 8px; background: #e5f1fb; color: #286596; font-size: 11px; font-weight: 750; }
-+.billing-preview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px 14px; }
-+.billing-preview-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-+.billing-preview-grid span { color: #7b8996; font-size: 11px; }
-+.billing-preview-grid strong { overflow-wrap: anywhere; color: #31495d; font-size: 12px; font-weight: 650; }
-+.billing-preview-wide { grid-column: 1 / -1; }
- .form-actions { margin-top: 22px; }
- .check-field { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
- .check-field input { accent-color: #2e6da4; }
-@@ -224,6 +234,8 @@ body.modal-open { overflow: hidden; }
-   .task-row-account, .task-row-progress, .task-row-error-field, .task-row-actions { grid-column: 1 / -1; }
-   .task-row-actions { justify-content: flex-start; }
-   .result-details { grid-template-columns: 1fr; }
-+  .billing-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-+  .billing-preview-wide { grid-column: 1 / -1; }
-   .topbar, .panel-heading { align-items: flex-start; flex-direction: column; }
-   .task-overview { width: 100%; align-items: flex-start; }
-   .task-toolbar { width: 100%; align-items: flex-start; flex-direction: column; }
++  function pushPaypalTasks() {
++    const selected = paypalTasksForBulkPush().sort((left, right) => taskCompletionTime(left) - taskCompletionTime(right));
++    if (!selected.length) return;
++    const links = selected.map(task => taskResultUrl(task.result || {}));
++    const countries = [...new Set(selected.map(task => String(task.billing_country || task.result?.billing_country || task.country || '').trim().toUpperCase()).filter(Boolean))];
++    const emails = selected.map(task => String(task.account_email || task.result?.account_email || '').trim());
++    const params = new URLSearchParams();
++    params.set('ba', links.join('\n'));
++    if (countries.length === 1) {
++      params.set('country', countries[0]);
++      params.set('billing_country', countries[0]);
++    }
++    if (emails.some(Boolean)) params.set('emails', emails.join('\n'));
++    window.location.assign(`/paypal-pay/?${params.toString()}`);
++  }
++
+@@ -1352 +1377 @@
+-      ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>`
++      ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送协议支付</a>`
+@@ -1438 +1463 @@
+-      ? `<div class="task-row-result"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${protocolUrl && isPaypalBaLink(url) ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>` : ""}</div>`
++      ? `<div class="task-row-result"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${protocolUrl && isPaypalBaLink(url) ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送协议支付</a>` : ""}</div>`
+@@ -1696,0 +1722 @@
++    elements.pushSelectedPaypalButton.addEventListener("click", pushPaypalTasks);
+@@ -1743,0 +1770 @@
++    elements.pushSelectedPaypalButton = byId("push-selected-paypal");
 diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
-index 6af338c..7c40627 100644
+index 9d24bcc..3235119 100644
 --- a/payment_link_extractor/web/templates/index.html
 +++ b/payment_link_extractor/web/templates/index.html
-@@ -79,6 +79,24 @@
-                   <option>ES</option><option>FI</option><option>FR</option>
-                 </select>
-               </label>
-+              <section id="billing-preview" class="billing-preview" hidden aria-live="polite" aria-label="所选国家账单配置">
-+                <div class="billing-preview-heading">
-+                  <div>
-+                    <strong id="billing-preview-title">账单配置</strong>
-+                    <small id="billing-preview-subtitle">选择国家后显示完整账单资料</small>
-+                  </div>
-+                  <span id="billing-preview-code" class="billing-preview-code"></span>
-+                </div>
-+                <div class="billing-preview-grid">
-+                  <div><span>币种</span><strong id="billing-currency">—</strong></div>
-+                  <div><span>语言区域</span><strong id="billing-locale">—</strong></div>
-+                  <div><span>时区</span><strong id="billing-timezone">—</strong></div>
-+                  <div><span>姓名</span><strong id="billing-name">—</strong></div>
-+                  <div><span>电话</span><strong id="billing-phone">—</strong></div>
-+                  <div><span>邮箱</span><strong id="billing-email">—</strong></div>
-+                  <div class="billing-preview-wide"><span>账单地址</span><strong id="billing-address">—</strong></div>
-+                </div>
-+              </section>
-               <label class="field">
-                 <span>支付方式</span>
-                 <select id="payment-method">
-
-
-# LATEST HEROSMS 422 FIX DIFF
+@@ -174,0 +175 @@
++                  <button id="push-selected-paypal" class="primary" type="button" disabled>一键推送 BA</button>
+@@ -223 +224 @@
+-    <script src="{{ url_for('static', filename='app.js', v='20260818-ui-persist-1') }}" defer></script>
++    <script src="{{ url_for('static', filename='app.js', v='20260818-protocol-bulk-push-1') }}" defer></script>
 diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
-index cb2cc2d..ae68418 100644
+index bf17f21..26e9b5a 100644
 --- a/paypal_agreement_protocol/herosms.py
 +++ b/paypal_agreement_protocol/herosms.py
-@@ -49,8 +49,16 @@ class HeroSMSClient:
-         try:
-             response = httpx.get(self.base_url, params=query, timeout=30.0)
-             response.raise_for_status()
-+        except httpx.HTTPStatusError as exc:
-+            body = exc.response.text.strip().replace("\n", " ")[:300]
-+            detail = f"HTTP {exc.response.status_code}"
-+            if body:
-+                detail += f": {body}"
-+            raise HeroSMSError(f"HeroSMS request failed: {detail}") from exc
-+        except httpx.RequestError as exc:
-+            raise HeroSMSError("HeroSMS request failed: network error") from exc
-         except httpx.HTTPError as exc:
--            raise HeroSMSError(f"HeroSMS request failed: {exc}") from exc
-+            raise HeroSMSError("HeroSMS request failed: HTTP client error") from exc
-         try:
-             return response.json()
-         except ValueError:
-@@ -86,9 +94,17 @@ class HeroSMSClient:
-         country_code = str(country or "").strip().upper()
-         country_id = self.resolve_country_id(country_code)
-         price = self.default_max_price if max_price is None else max_price
-+        number_params: dict[str, Any] = {
-+            "service": service or self.default_service,
-+            "country": country_id,
-+        }
-+        if price is not None:
-+            # HeroSMS documents fixedPrice as an alias used only when
-+            # maxPrice is absent. Sending both makes getNumberV2 reject the
-+            # request with HTTP 422.
-+            number_params["maxPrice"] = price
-         payload = self._request(
--            "getNumberV2", service=(service or self.default_service), country=country_id,
--            maxPrice=price, fixedPrice="1" if price is not None else None,
-+            "getNumberV2", **number_params,
-         )
-         activation_id, phone, cost = _parse_activation(payload)
-         if not activation_id or not phone:
-
-
-# LATEST UI SWITCH PERSISTENCE DIFF
-diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index 158e6c4..07f14ce 100644
---- a/payment_link_extractor/web/static/app.js
-+++ b/payment_link_extractor/web/static/app.js
-@@ -5,6 +5,8 @@
-   const DELETABLE_STATES = new Set(["succeeded", "failed", "cancelled"]);
-   const FORM_PREFERENCES_KEY = "payment_link_extractor.form_preferences";
-   const TASK_VIEW_MODE_KEY = "payment_link_extractor.task_view_mode";
-+  const TASK_SNAPSHOT_KEY = "payment_link_extractor.task_snapshots.v1";
-+  const TASK_SNAPSHOT_LIMIT = 100;
-   const PASSWORD_STORAGE_KEY = "payment_link_extractor.workbench_password";
-   const SERVER_PROXY_POOL_KEY = "payment_link_extractor.server_proxy_pool_id";
-   const tasks = new Map();
-@@ -41,6 +43,37 @@
-     return document.getElementById(id);
-   }
-
-+  function saveTaskSnapshots() {
-+    try {
-+      const snapshots = Array.from(tasks.values())
-+        .sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0))
-+        .slice(0, TASK_SNAPSHOT_LIMIT)
-+        .map(task => ({ ...task }));
-+      localStorage.setItem(TASK_SNAPSHOT_KEY, JSON.stringify(snapshots));
-+    } catch (error) {
-+      // Keep the live workbench usable when browser storage is unavailable or full.
-+    }
-+  }
-+
-+  function restoreTaskSnapshots() {
-+    try {
-+      const saved = JSON.parse(localStorage.getItem(TASK_SNAPSHOT_KEY) || "[]");
-+      if (!Array.isArray(saved)) return;
-+      saved.forEach(snapshot => {
-+        if (!snapshot || !snapshot.task_id) return;
-+        const task = ensureTask(snapshot.task_id, Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || Date.now());
-+        if (!task) return;
-+        Object.assign(task, snapshot, {
-+          createdAt: Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || task.createdAt,
-+          updatedAt: Number(snapshot.updatedAt) || Date.parse(snapshot.finished_at || snapshot.started_at || snapshot.created_at || "") || task.updatedAt,
-+        });
-+        task.progress = clampProgress(snapshot.progress ?? task.progress);
-+      });
-+    } catch (error) {
-+      // Ignore malformed snapshots and continue with the server task list.
-+    }
-+  }
-+
-   function apiFetch(url, options = {}) {
-     const headers = new Headers(options.headers || {});
-     headers.set("X-Workbench-Password", authPassword);
-@@ -571,6 +604,7 @@
-   }
-
-   async function loadExistingTasks() {
-+    restoreTaskSnapshots();
-     const response = await apiFetch("/api/tasks");
-     const data = await response.json();
-     if (!response.ok) throw new Error(data.error || "历史任务加载失败");
-@@ -1543,6 +1577,7 @@
-   }
-
-   function renderTasks() {
-+    saveTaskSnapshots();
-     const all = Array.from(tasks.values()).sort((a, b) => b.createdAt - a.createdAt);
-     const visible = all.filter(matchesFilter);
-     pruneSelectedTasks();
-@@ -1614,6 +1649,8 @@
-     if (copy) copyResult(copy.dataset.copy, copy);
-   }
-
-+  window.addEventListener("pagehide", saveTaskSnapshots);
-+
-   function bindEvents() {
-     elements.authForm.addEventListener("submit", function (event) {
-       event.preventDefault();
-diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-index 06a0454..0995bc7 100644
---- a/paypal_agreement_protocol/web_static/app.js
-+++ b/paypal_agreement_protocol/web_static/app.js
-@@ -1,6 +1,7 @@
- const API_BASE = '/paypal-pay/api';
- const GROK_API_BASE = '/api/grok-trial';
- const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
-+const LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
-
- function isDefaultDemoBa(value) {
-   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
-@@ -10,6 +11,15 @@ function stripDefaultDemoBa(value) {
-   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
- }
-
-+function readLastProtocolInputs() {
-+  try {
-+    const saved = JSON.parse(localStorage.getItem(LAST_BA_PREFILL_KEY) || '{}');
-+    return saved && typeof saved === 'object' ? saved : {};
-+  } catch (_) {
-+    return {};
-+  }
-+}
-+
- function readSmsMaxPrice() {
-   const node = $('smsMaxPrice');
-   const raw = node ? node.value.trim() : '';
-@@ -24,12 +34,14 @@ function readSmsMaxPrice() {
- // number before starting the unchanged protocol flow.
- function applyWorkbenchPrefill() {
-   const params = new URLSearchParams(window.location.search);
--  const ba = params.get('ba') || params.get('paypal_url') || '';
--  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
--  const phone = params.get('phone') || '';
--  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
-+  const saved = readLastProtocolInputs();
-+  const existingBa = document.querySelector('#baToken')?.value || '';
-+  const ba = params.get('ba') || params.get('paypal_url') || existingBa || saved.ba || '';
-+  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
-+  const phone = params.get('phone') || saved.phone || '';
-+  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
-     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
--  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
-+  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
-   if (country && document.querySelector('#paypalCountry')) {
-     const select = document.querySelector('#paypalCountry');
-     if ([...select.options].some(option => option.value === country)) select.value = country;
-@@ -38,6 +50,8 @@ function applyWorkbenchPrefill() {
-   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
-   if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
-   if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
-+  persistLastProtocolInputs();
-+  saveProtocolFormState();
- }
- const $ = (id) => document.getElementById(id);
- const PRIVATE_BRAINTREE_SLUG = 'bt-vault-8f1d2e4c9a7b6d3e';
-@@ -90,6 +104,20 @@ function saveProtocolFormState() {
-   }, 80);
- }
-
-+function persistLastProtocolInputs() {
-+  const ba = stripDefaultDemoBa($('baToken')?.value || '');
-+  if (!ba) return;
-+  try {
-+    localStorage.setItem(LAST_BA_PREFILL_KEY, JSON.stringify({
-+      ba,
-+      country: $('paypalCountry')?.value || '',
-+      phone: $('phone')?.value || '',
-+      emails: $('emailPool')?.value || '',
-+      updatedAt: new Date().toISOString(),
-+    }));
-+  } catch (_) {}
-+}
-+
- function restoreProtocolFormState() {
-   let saved = {};
-   try { saved = JSON.parse(sessionStorage.getItem(PROTOCOL_FORM_STATE_KEY) || '{}'); } catch (_) {}
-@@ -103,8 +131,14 @@ function restoreProtocolFormState() {
-   });
- }
-
--$('protocolForm').addEventListener('input', saveProtocolFormState);
--$('protocolForm').addEventListener('change', saveProtocolFormState);
-+$('protocolForm').addEventListener('input', () => {
-+  saveProtocolFormState();
-+  persistLastProtocolInputs();
-+});
-+$('protocolForm').addEventListener('change', () => {
-+  saveProtocolFormState();
-+  persistLastProtocolInputs();
-+});
-
- if (privateBraintreeEnabled) {
-   $('privateBraintreeMode').hidden = false;
-
-
-# LATEST UI CACHE BUST DIFF
-diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
-index 7c40627..9d24bcc 100644
---- a/payment_link_extractor/web/templates/index.html
-+++ b/payment_link_extractor/web/templates/index.html
-@@ -220,6 +220,6 @@
-         </section>
-       </div>
-     </main>
--    <script src="{{ url_for('static', filename='app.js', v='20260817-country-unlock-1') }}" defer></script>
-+    <script src="{{ url_for('static', filename='app.js', v='20260818-ui-persist-1') }}" defer></script>
-  </body>
-</html>
-
-# LATEST HEROSMS SERVICE NORMALIZATION DIFF
-diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
---- a/paypal_agreement_protocol/herosms.py
-+++ b/paypal_agreement_protocol/herosms.py
-@@
-+_SERVICE_ALIASES = {"paypal": "ts", "pay pal": "ts"}
-+self._services_by_country = {}
-+get_services(country_id) calls getServicesList and caches the country catalogue.
-+resolve_service_code(service, country_id) maps PayPal/name labels to the API code.
-+acquire_number sends service_code and returns the normalized code.
-
-# LATEST AUTOMATIC SMS ROTATION AND LOG VISIBILITY DIFF
-diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
-@@
-+SMS_ROTATION_MAX_ATTEMPTS = 3
-+SMS_ROTATION_WAIT_SECONDS = 150.0
-+_watch_sms_job polls getStatusV2 per 150-second window, cancels stale numbers with status=8, acquires a country-matched replacement, submits it through WebJob.wait_for_input, and stops after the third attempt.
-+sms_activations request parsing now keeps phone/country metadata for the active job display.
+@@ -183 +183 @@ class HeroSMSClient:
+-            self._request("setStatus", id=str(activation_id), status=int(status))
++            self.set_status(activation_id, status)
+@@ -186,0 +187,4 @@ class HeroSMSClient:
++    def set_status(self, activation_id: str, status: int) -> Any:
++        """Update an activation; status 3 requests another SMS on the same number."""
++        return self._request("setStatus", id=str(activation_id), status=int(status))
 +
 diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
-@@
-+WebJob.sms_activation_id/sms_attempt/sms_max_attempts and sms_current_phone serialization.
-+WebJob.set_sms_activation updates the active number.
-+WebJob stage transitions and SMS input waits append durable in-memory log rows.
-+
-diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-@@
-+queueRows prefers the current watcher phone.
-+renderLogs falls back from major-only filtering to all log records.
-+renderFullJobLogs renders stage/prompt fallback data when the API returns no log rows.
-+
-diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
-@@
--app.js?v=20260818-phone-refresh-1
-+app.js?v=20260818-sms-rotation-logs-1
-
-# LATEST HEROSMS CODE RECEPTION AND IMMEDIATE SEND-FAIL ROTATION DIFF
-diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
-@@
-+get_status calls _find_sms_code to normalize structured getStatusV2 sms.code/call.code and nested/legacy response forms.
-+_find_sms_code recursively scans OTP-bearing fields and accepts 4-12 digit values.
-
-diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
-@@
-+WebJob.report_sms_send_failure/consume_sms_send_failure/clear_sms_send_failure provide a synchronized signal and log record.
-+WebPayPalFlow reports _initiate_2fa_phone_confirmation failures immediately.
-
-diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
-@@
-+_watch_sms_job checks consume_sms_send_failure before getStatusV2 polling.
-+On send failure it cancels the current activation with status=8 and immediately executes the existing same-country replacement branch without waiting 150 seconds.
-
-
-# LATEST COMPLETE PROTOCOL LOGGING AND FAILURE ATTRIBUTION
-diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
-index 091a785..cce8a2b 100644
+index cce8a2b..82870ed 100644
 --- a/paypal_agreement_protocol/web.py
 +++ b/paypal_agreement_protocol/web.py
-@@ -961,6 +961,7 @@ class WebJob:
-     started_at: float | None = None
-     finished_at: float | None = None
-     status: str = "queued"  # queued | running | awaiting_otp | completed | failed
-+    last_protocol_step: str = ""
-     stage: str = "排队中"
-     result: dict[str, Any] | None = None
-     error: str = ""
-@@ -1052,6 +1053,42 @@ class WebJob:
-         if self._cancel_event.is_set():
-             raise RuntimeError("Task cancelled")
-
-+    def note_protocol_step(self, message: str) -> None:
-+        """Keep the table stage aligned with important upstream log steps."""
-+        text = str(message or "")
-+        step = ""
-+        attempt_match = re.search(r"Step 3: Creating account, signup attempt\s+(\d+/\d+)", text, re.I)
-+        if attempt_match:
-+            step = f"Phase 3 · createMemberAccount {attempt_match.group(1)}"
-+        elif re.search(r"SignUpNewMemberMutation returned errors|onboardAccount is empty", text, re.I):
-+            step = "Phase 3 · createMemberAccount failed"
-+        elif re.search(r"OTP confirmed successfully", text, re.I):
-+            step = "Phase 3 · OTP confirmed"
-+        elif re.search(r"Step 2: Confirming OTP", text, re.I):
-+            step = "Phase 3 · confirming OTP"
-+        elif re.search(r"SMS verification code sent", text, re.I):
-+            step = "Phase 3 · waiting for SMS code"
-+        elif re.search(r"Step 1: Initiating 2FA", text, re.I):
-+            step = "Phase 3 · sending SMS"
-+        elif re.search(r"Phase 4|Final authorization", text, re.I):
-+            step = "Phase 4 · final authorization"
-+        elif re.search(r"Phase 3|Signup form \+ 2FA", text, re.I):
-+            step = "Phase 3 · signup and SMS verification"
-+        elif re.search(r"Phase 2|Create account flow", text, re.I):
-+            step = "Phase 2 · account preparation"
-+        elif re.search(r"Phase 1|Risk control signals", text, re.I):
-+            step = "Phase 1 · risk controls"
-+        elif re.search(r"Phase 0|Initial page load", text, re.I):
-+            step = "Phase 0 · agreement page"
-+        if not step:
-+            return
+@@ -953,0 +954,2 @@ class WebJob:
++    retry_count: int = 0
++    max_retries: int = 2
+@@ -1038,0 +1041,28 @@ class WebJob:
++    def prepare_retry(self, exc: BaseException) -> None:
++        """Reset volatile attempt state while keeping the current SMS number."""
 +        with self._condition:
-+            self.last_protocol_step = step
-+            if self.status not in {"completed", "failed", "cancelled"}:
-+                self.stage = step
++            self.retry_count += 1
++            reason = redact_text(str(exc) or type(exc).__name__)
++            self.status = "queued"
++            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：继续使用当前手机号"
++            self.result = None
++            self.error = ""
++            self.traceback_text = ""
++            self.finished_at = None
++            self.generated = None
++            self.runtime_schema = None
++            self.last_protocol_step = ""
++            self.awaiting_prompt = ""
++            self.challenge_url = ""
++            self.sms_send_failed = False
++            self.sms_send_error = ""
++            self._input_queue.clear()
++            self._captcha_queue.clear()
++            self._browser = None
 +            self.updated_at = now_ts()
++            self._append_log_locked(
++                "WARNING",
++                f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
++            )
 +            self._condition.notify_all()
 +
-     def cancel(self) -> None:
-         with self._condition:
-             if self.status in {"completed", "failed", "cancelled"}:
-@@ -1317,6 +1354,12 @@ class WebJob:
-             self.awaiting_prompt = ""
-             self.challenge_url = ""
-             self._browser = None
-+            summary = (
-+                "协议支付执行完成"
-+                if succeeded
-+                else f"协议支付执行失败：{self.error or result_obj.get('error') or result_obj.get('error_code') or 'unknown error'}"
-+            )
-+            self._append_log_locked("SUCCESS" if succeeded else "ERROR", summary)
-             self._condition.notify_all()
-
-     def fail(self, exc: BaseException) -> None:
-@@ -1326,6 +1369,7 @@ class WebJob:
-         with self._condition:
-             error_text = str(exc)
-             error_code = str(getattr(exc, "error_code", "") or "")
-+            failure_step = self.last_protocol_step or self.stage or "protocol execution"
-             if not error_code and error_text.startswith("PAYPAL_GRAPHQL_AUTH_CHALLENGE:"):
-                 error_code = "PAYPAL_GRAPHQL_AUTH_CHALLENGE"
-             if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
-@@ -1359,7 +1403,14 @@ class WebJob:
-                 }
-                 self.stage = "PayPal edge authentication challenge"
-             else:
--                self.stage = "Execution failed"
-+                self.result = {
-+                    "status": "error",
-+                    "error_code": error_code or "PROTOCOL_EXECUTION_FAILED",
-+                    "error": redact_text(error_text),
-+                    "failure_stage": failure_step,
-+                    "paypal_authorized": False,
-+                }
-+                self.stage = f"{failure_step} · failed"
-             self.status = "failed"
-             self.error = redact_text(error_text)
-             self.traceback_text = redact_text(traceback.format_exc()) if (self.debug and ALLOW_DEBUG_LOGS) else ""
-@@ -1368,6 +1419,7 @@ class WebJob:
-             self.awaiting_prompt = ""
-             self.challenge_url = ""
-             self._browser = None
-+            self._append_log_locked("ERROR", f"任务结束；失败阶段：{failure_step}；原因：{self.error}")
-             self._condition.notify_all()
-
-     def to_dict(self, *, include_logs: bool = True, log_offset: int = 0) -> dict[str, Any]:
-@@ -1382,6 +1434,7 @@ class WebJob:
-                 "duration": (self.finished_at or now_ts()) - (self.started_at or self.created_at),
-                 "status": self.status,
-                 "stage": self.stage,
-+                "last_protocol_step": self.last_protocol_step,
-                 "ba_token": mask_middle(self.ba_token),
-                 "phone": mask_phone(self.phone),
-                 "account_email": self.account_email,
-@@ -1805,9 +1858,23 @@ class WebIdentityElevationPayPalFlow(WebPayPalFlow, IdentityElevationPayPalFlow)
- # ----------------------------- logging -----------------------------
-
-
-+def _record_job_id(record: dict[str, Any]) -> str:
-+    """Resolve a job id from loguru context or the dedicated runner thread."""
-+    job_id = str(record["extra"].get("job_id") or "").strip()
-+    if job_id:
-+        return job_id
-+    thread_name = str(getattr(record.get("thread"), "name", "") or "")
-+    prefix = "paypal-web-"
-+    if thread_name.startswith(prefix):
-+        candidate = thread_name[len(prefix):].strip()
-+        if re.fullmatch(r"[0-9a-f]{12}", candidate):
-+            return candidate
-+    return ""
+@@ -1345,0 +1376,2 @@ class WebJob:
++            self.result.setdefault("retry_count", self.retry_count)
++            self.result.setdefault("max_retries", self.max_retries)
+@@ -1389,0 +1422,2 @@ class WebJob:
++                    "retry_count": self.retry_count,
++                    "max_retries": self.max_retries,
+@@ -1402,0 +1437,2 @@ class WebJob:
++                    "retry_count": self.retry_count,
++                    "max_retries": self.max_retries,
+@@ -1411,0 +1448,2 @@ class WebJob:
++                    "retry_count": self.retry_count,
++                    "max_retries": self.max_retries,
+@@ -1453,0 +1492,2 @@ class WebJob:
++                "retry_count": self.retry_count,
++                "max_retries": self.max_retries,
+@@ -2132 +2172,9 @@ def create_job(
+-def run_job(job: WebJob) -> None:
++class ProtocolResultError(RuntimeError):
++    def __init__(self, result: dict[str, Any]) -> None:
++        self.result = dict(result)
++        super().__init__(
++            str(result.get("error") or result.get("error_code") or "protocol flow returned an error result")
++        )
 +
 +
- def _job_log_sink(message: Any) -> None:
-     record = message.record
--    job_id = record["extra"].get("job_id")
-+    job_id = _record_job_id(record)
-     if not job_id:
-         return
-     with JOBS_LOCK:
-@@ -1818,6 +1885,7 @@ def _job_log_sink(message: Any) -> None:
-     if level == "DEBUG" and not job.debug:
-         return
-     job.add_log(level, record["message"], record["time"].timestamp())
-+    job.note_protocol_step(record["message"])
-
-
- def _console_log_sink(message: Any) -> None:
-@@ -1835,7 +1903,7 @@ def _full_log_sink(message: Any) -> None:
-         level=record["level"].name,
-         message=record["message"],
-         ts=record["time"].timestamp(),
--        job_id=str(record["extra"].get("job_id") or ""),
-+        job_id=_record_job_id(record),
-     )
-
-
-@@ -1843,7 +1911,7 @@ def configure_logging() -> None:
-     logger.remove()
-     logger.add(_console_log_sink, level="INFO")
-     logger.add(_full_log_sink, level="DEBUG")
--    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(r["extra"].get("job_id")))
-+    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(_record_job_id(r)))
-
-
- # ----------------------------- runner -----------------------------
++def _run_job_attempt(job: WebJob) -> None:
+@@ -2138 +2186,2 @@ def run_job(job: WebJob) -> None:
+-            job.started_at = now_ts()
++            if job.started_at is None:
++                job.started_at = now_ts()
+@@ -2340,0 +2390,2 @@ def run_job(job: WebJob) -> None:
++            if isinstance(result, dict) and result.get("status") != "success":
++                raise ProtocolResultError(result)
+@@ -2347,2 +2398 @@ def run_job(job: WebJob) -> None:
+-                logger.error("Protocol payment job failed: {}", redact_text(exc))
+-                job.fail(exc)
++                raise
+@@ -2350,4 +2399,0 @@ def run_job(job: WebJob) -> None:
+-            try:
+-                record_protocol_metric(job)
+-            except Exception as metric_error:
+-                logger.warning("Protocol metrics write failed: {}", metric_error)
+@@ -2355,2 +2400,0 @@ def run_job(job: WebJob) -> None:
+-            job._proxy_config = None
+-            job._proxy_pool = []
+@@ -2359,0 +2404,52 @@ def run_job(job: WebJob) -> None:
++def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
++    """Retry a clean protocol attempt unless the BA is already consumed."""
++    if job._cancel_event.is_set() or job.retry_count >= job.max_retries:
++        return False
++    result = getattr(exc, "result", None)
++    if not isinstance(result, dict):
++        result = job.result if isinstance(job.result, dict) else {}
++    if result.get("paypal_authorized") or result.get("requires_new_ba"):
++        return False
++    error_code = str(getattr(exc, "error_code", "") or result.get("error_code") or "").upper()
++    if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
++        return False
++    if "cancelled by user" in str(exc).lower():
++        return False
++    return True
++
++
++def run_job(job: WebJob) -> None:
++    """Run a job with bounded clean-session retries on the current phone."""
++    try:
++        while True:
++            try:
++                _run_job_attempt(job)
++            except BaseException as exc:
++                if not _job_failure_is_retryable(job, exc):
++                    with logger.contextualize(job_id=job.id):
++                        logger.error("Protocol payment job failed: {}", redact_text(exc))
++                    if isinstance(exc, ProtocolResultError):
++                        job.complete(exc.result)
++                    else:
++                        job.fail(exc)
++                    break
++                job.prepare_retry(exc)
++                with logger.contextualize(job_id=job.id):
++                    logger.warning(
++                        "Protocol payment automatic retry {}/{} with current phone",
++                        job.retry_count,
++                        job.max_retries,
++                    )
++                continue
++            break
++    finally:
++        try:
++            record_protocol_metric(job)
++        except Exception as metric_error:
++            logger.warning("Protocol metrics write failed: {}", metric_error)
++        job._flow = None
++        job._proxy_config = None
++        job._proxy_pool = []
++        job.release_execution_slot()
++
++
 diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-index f53196d..e3563bf 100644
+index e3563bf..09b0bbd 100644
 --- a/paypal_agreement_protocol/web_static/app.js
 +++ b/paypal_agreement_protocol/web_static/app.js
-@@ -73,6 +73,9 @@ const state = {
-   prefillEmails: [],
-   queueRenderTimer: null,
-   lastCountry: '',
-+  activeLogJobId: '',
-+  activeLogToken: '',
-+  jobLogTimer: null,
- };
-
- const vaultState = {
-@@ -616,12 +619,6 @@ function setProgress(percent, text, stage) {
-   $('orbitValue').style.strokeDashoffset = `${320.44 * (1 - p / 100)}`;
- }
-
--function isMajorLog(log) {
--  const level = String(log.level || '').toUpperCase();
--  if (level === 'ERROR' || level === 'WARNING' || level === 'WARN' || level === 'SUCCESS') return true;
--  const message = String(log.message || '');
--  return /Phase\s*[0-4]|协议支付任务|SMS|OTP|verification code|account|authorization|authorize|completed|success|failed|验证码|短信|授权|注册/.test(message);
--}
- function formatTime(ts) {
-   if (!ts) return '--:--:--';
-   return new Date(ts * 1000).toLocaleTimeString('zh-CN', {hour12: false});
-@@ -633,10 +630,9 @@ function renderLogs(logs = []) {
-   const box = $('logBox');
-   const keepTop = box.scrollTop;
-   const wasPinned = state.logPinned || (box.scrollHeight - box.scrollTop - box.clientHeight < 32);
--  const major = logs.filter(isMajorLog).slice(-100);
--  const visible = major.length ? major : logs.slice(-100);
-+  const visible = logs.slice(-300);
-   if (!visible.length) {
--    box.innerHTML = '<div class="empty-log">任务已开始，正在等待主要步骤。</div>';
-+    box.innerHTML = '<div class="empty-log">任务已开始，正在等待流程日志。</div>';
-     return;
-   }
-   box.innerHTML = visible.map(item => {
-@@ -655,6 +651,9 @@ $('logBox').addEventListener('scroll', () => {
- function closeJobLogModal() {
-   const modal = $('jobLogModal');
-   if (modal) modal.hidden = true;
-+  clearTimeout(state.jobLogTimer);
-+  state.activeLogJobId = '';
-+  state.activeLogToken = '';
- }
-
- function renderFullJobLogs(job, token = '') {
-@@ -674,22 +673,38 @@ function renderFullJobLogs(job, token = '') {
-     : '<div class="empty-log">当前 BA 暂无日志</div>';
- }
-
--async function openJobLogs(jobId, token = '') {
-+async function refreshOpenJobLogs() {
-+  clearTimeout(state.jobLogTimer);
-+  const jobId = state.activeLogJobId;
-+  const token = state.activeLogToken;
-   const modal = $('jobLogModal');
--  if (!modal || !jobId) return;
--  modal.hidden = false;
--  $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
--  $('jobLogModalMeta').textContent = '正在加载完整日志…';
--  $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
-+  if (!modal || modal.hidden || !jobId) return;
-   try {
-     const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
-+    if (modal.hidden || state.activeLogJobId !== jobId) return;
-     renderFullJobLogs(job, token);
-+    if (!terminal(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
-   } catch (error) {
-+    if (modal.hidden || state.activeLogJobId !== jobId) return;
-     $('jobLogModalMeta').textContent = '日志加载失败';
-     $('jobLogModalBody').innerHTML = `<div class="full-log-error">${escapeHtml(error.message || '无法加载日志')}</div>`;
-+    if (Number(error.status) !== 404) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 2000);
-   }
- }
-
-+async function openJobLogs(jobId, token = '') {
-+  const modal = $('jobLogModal');
-+  if (!modal || !jobId) return;
-+  clearTimeout(state.jobLogTimer);
-+  state.activeLogJobId = jobId;
-+  state.activeLogToken = token;
-+  modal.hidden = false;
-+  $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
-+  $('jobLogModalMeta').textContent = '正在加载完整日志…，运行期间将自动刷新';
-+  $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
-+  await refreshOpenJobLogs();
+@@ -43 +43,2 @@ function applyWorkbenchPrefill() {
+-    .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
++    .split(/\r?\n/).map(value => value.trim());
++  while (emailValues.length && !emailValues[emailValues.length - 1]) emailValues.pop();
+@@ -51,2 +52,2 @@ function applyWorkbenchPrefill() {
+-  if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
+-  if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
++  if (emailValues.some(Boolean) && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
++  if (emailValues.some(Boolean) && typeof state !== 'undefined') state.prefillEmails = emailValues;
+@@ -203 +204,3 @@ function phonePoolLines() {
+-  return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
++  const values = $('phone').value.split(/\r?\n/).map(value => normalizePhone(value));
++  while (values.length && !values[values.length - 1]) values.pop();
++  return values;
+@@ -206 +209,3 @@ function emailPoolLines() {
+-  return $('emailPool').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
++  const values = $('emailPool').value.split(/\r?\n/).map(value => value.trim());
++  while (values.length && !values[values.length - 1]) values.pop();
++  return values;
+@@ -210 +215 @@ function updatePairCounts() {
+-  const phoneCount = phonePoolLines().length;
++  const phoneCount = phonePoolLines().filter(Boolean).length;
+@@ -342,0 +348,4 @@ function extractBa(value) {
++function isTerminalJob(job) {
++  return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
 +}
 +
- $('jobLogModalClose').addEventListener('click', closeJobLogModal);
- $('jobLogModal').addEventListener('click', event => { if (event.target === $('jobLogModal')) closeJobLogModal(); });
- document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('jobLogModal').hidden) closeJobLogModal(); });
-@@ -1104,7 +1119,7 @@ function renderBatchJobs(jobs) {
-     const prompt = job.awaiting_prompt || (waitingOtp ? '填写短信验证码' : '填写验证结果');
-     const codeValue = pendingValues[job.id] || '';
-     const resultText = terminal(job) ? JSON.stringify(job.result || (job.error ? {error: job.error} : {status: job.status}), null, 2) : '';
--    const latestLogs = (job.logs || []).filter(isMajorLog).slice(-3);
-+    const latestLogs = (job.logs || []).slice(-3);
-     return `<article class="batch-job-card ${escapeHtml(cls)}" data-job-card="${escapeHtml(job.id)}">
-       <div class="batch-card-head"><div><b>#${index} · ${escapeHtml(job.ba_token || job.id)}</b><small>${escapeHtml(job.phone || '')}</small></div><span class="status-badge ${escapeHtml(cls)}">${escapeHtml(label)}</span></div>
-       <div class="batch-card-progress"><i style="width:${percent}%"></i></div>
-diff --git a/paypal_agreement_protocol/web_static/checkout-preview.css b/paypal_agreement_protocol/web_static/checkout-preview.css
-index 138cf1c..994f0cd 100644
---- a/paypal_agreement_protocol/web_static/checkout-preview.css
-+++ b/paypal_agreement_protocol/web_static/checkout-preview.css
-@@ -86,7 +86,7 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
- .account-table-wrap { overflow: auto; border: 1px solid var(--console-line); border-radius: 8px; background: #fff; }
- .account-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
- .account-table th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--console-line); background: #f8fafc; color: #526c87; font-size: 10px; font-weight: 800; text-align: left; white-space: nowrap; }
--.account-table td { height: 55px; padding: 9px 12px; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 10px; vertical-align: middle; }
-+.account-table td { height: 55px; min-width: 0; overflow: hidden; padding: 9px 12px; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 10px; vertical-align: middle; }
- .account-table tr:last-child td { border-bottom: 0; }
- .account-table tbody tr { transition: background .15s; }
- .account-table tbody tr:hover { background: #f9fbfd; }
-@@ -96,11 +96,11 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
- .account-table .muted-value { color: #93a0af; }
- .table-status { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: 6px; font-size: 9px; font-weight: 900; white-space: nowrap; }
- .table-status.idle { color: #67778b; background: #edf1f5; }.table-status.queued,.table-status.awaiting { color: var(--console-amber); background: var(--console-amber-soft); }.table-status.running { color: var(--console-blue); background: var(--console-blue-soft); }.table-status.done { color: var(--console-green); background: var(--console-green-soft); }.table-status.error { color: var(--console-red); background: var(--console-red-soft); }
--.otp-state { color: var(--console-green); font-weight: 800; }.otp-state.waiting { color: var(--console-amber); }.failure-cell { overflow: hidden; color: var(--console-muted); text-overflow: ellipsis; white-space: nowrap; }.failure-cell.error { color: var(--console-red); }
-+.otp-state { color: var(--console-green); font-weight: 800; }.otp-state.waiting { color: var(--console-amber); }.failure-cell { display: -webkit-box; max-width: 100%; overflow: hidden; color: var(--console-muted); line-height: 1.35; overflow-wrap: anywhere; text-overflow: ellipsis; white-space: normal; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.failure-cell.error { color: var(--console-red); }
- .retry-pill { display: inline-flex; min-width: 36px; justify-content: center; padding: 5px 7px; border-radius: 6px; background: var(--console-amber-soft); color: var(--console-amber); font: 800 10px var(--console-mono); }
- .table-action { min-height: 30px; padding: 0 10px; border: 1px solid var(--console-line); border-radius: 6px; background: #f7f9fb; color: #35526e; cursor: pointer; font-size: 9px; font-weight: 800; }
- .table-action:hover { border-color: #9ebcd3; background: #fff; }.table-action.danger { border-color: #efc5cb; color: var(--console-red); background: var(--console-red-soft); }
--.table-actions { display: flex; align-items: center; gap: 5px; }
-+.table-actions { display: flex; max-width: 100%; flex-wrap: wrap; align-items: center; gap: 5px; }.table-actions .table-action { min-width: 0; padding-right: 6px; padding-left: 6px; }
- .account-empty-row td { height: 125px; text-align: center; }.account-empty-row b,.account-empty-row span { display: block; }.account-empty-row b { color: #526b82; font-size: 12px; }.account-empty-row span { margin-top: 7px; color: #98a5b3; font-size: 10px; }
-
- .batch-status-strip { padding: 0 20px 18px; }.batch-status-strip[hidden]{display:none}.batch-status-copy { display: flex; align-items: center; justify-content: space-between; color: var(--console-muted); font-size: 10px; }.batch-status-copy b { color: #425c75; }.batch-status-copy span { color: var(--console-blue); font: 800 11px var(--console-mono); }.batch-overall-track { height: 5px; margin-top: 8px; overflow: hidden; border-radius: 99px; background: #e9eef3; }.batch-overall-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg,var(--console-blue),#1ca076); transition: width .25s; }
-@@ -126,7 +126,7 @@ body { font-size: 14px; }
- .job-log-close { width: 34px; height: 34px; border: 1px solid var(--console-line); border-radius: 7px; background: #fff; color: var(--console-muted); cursor: pointer; font-size: 22px; line-height: 1; }
- .job-log-body { min-height: 180px; overflow: auto; padding: 12px 18px 20px; background: #fff; }
- .full-log-row { display: grid; grid-template-columns: 86px 72px minmax(0,1fr); gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 13px; line-height: 1.5; }
--.full-log-row time { color: var(--console-muted); font: 11px var(--console-mono); }.full-log-row b { color: var(--console-blue); font-size: 10px; }.full-log-row.warn b,.full-log-row.warn span { color: var(--console-amber); }.full-log-row.error b,.full-log-row.error span { color: var(--console-red); }.full-log-error { padding: 24px 0; color: var(--console-red); }
-+.full-log-row time { color: var(--console-muted); font: 11px var(--console-mono); }.full-log-row b { color: var(--console-blue); font-size: 10px; }.full-log-row span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }.full-log-row.warn b,.full-log-row.warn span { color: var(--console-amber); }.full-log-row.error b,.full-log-row.error span { color: var(--console-red); }.full-log-error { padding: 24px 0; color: var(--console-red); }
- .dark .job-log-dialog { border-color: #34495a; background: #101922; }.dark .job-log-head,.dark .job-log-body { background: #111d27; border-color: #293a48; }.dark .job-log-head h2,.dark .full-log-row span { color: #edf3f8; }.dark .job-log-close { background: #0f1922; border-color: #304250; color: #d1dce6; }
-
- .dark body { background: #0d141c; color: #ecf2f8; }.dark .topbar,.dark .command-bar { background: rgba(14,23,32,.96); border-color: #2a3a49; }.dark .console-heading { border-color: #294b67; background: linear-gradient(115deg,#102234,#14334b); }.dark .account-console,.dark .account-table-wrap { background: #101922; border-color: #293a48; }.dark .ba-source-panel,.dark .account-table th,.dark .settings-drawer { background: #111d27; border-color: #293a48; }.dark .account-board,.dark .account-table td { border-color: #22313e; }.dark .account-table tbody tr:hover { background: #14222d; }.dark .ba-source-panel textarea,.dark .settings-drawer textarea,.dark .settings-drawer input,.dark .settings-drawer select,.dark .toolbar-country-picker .country-picker-toggle,.dark .command-button,.dark .square-command { background: #0f1922; color: #e8eef5; border-color: #304250; }.dark .account-table code { color: #a8d4f4; }.dark .command-label,.dark .account-board-head h2,.dark .section-title-row h2,.dark .settings-head h2 { color: #edf3f8; }.dark .phone-button { background: #112920; border-color: #285040; }.dark .start-button { background: #176eae; border-color: #176eae; }.dark .stop-button { background: #2c171b; border-color: #5d3038; }
+@@ -367 +376 @@ function queueRows() {
+-      phone: job?.sms_current_phone || activation?.phone || entry.manualPhone || job?.phone || '',
++      phone: (isTerminalJob(job) ? activation?.phone : job?.sms_current_phone) || activation?.phone || entry.manualPhone || job?.phone || '',
+@@ -381,0 +391,4 @@ function otpStateForRow(row) {
++  if (isTerminalJob(job) && row.activation?.activation_id
++      && String(row.activation.activation_id) !== String(job.sms_activation_id || '')) {
++    return ['新号已准备', 'otp-state'];
++  }
+@@ -418 +430,0 @@ function renderAccountQueue() {
+-  const terminal = job => job && ['completed','failed','cancelled'].includes(job.status);
+@@ -421 +433 @@ function renderAccountQueue() {
+-  $('queueRunningCount').textContent = String(rows.filter(row => row.job && !terminal(row.job)).length);
++  $('queueRunningCount').textContent = String(rows.filter(row => row.job && !isTerminalJob(row.job)).length);
+@@ -434 +446,2 @@ function renderAccountQueue() {
+-    const retry = Number(job?.result?.retry_count || 0);
++    const retry = Number(job?.retry_count ?? job?.result?.retry_count ?? 0);
++    const maxRetries = Number(job?.max_retries ?? job?.result?.max_retries ?? 2);
+@@ -438,0 +452 @@ function renderAccountQueue() {
++    else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">获取新号</button>`;
+@@ -450 +464 @@ function renderAccountQueue() {
+-      <td><span class="retry-pill">${retry}/2</span></td>
++      <td><span class="retry-pill">${retry}/${maxRetries}</span></td>
+@@ -460 +474,5 @@ function syncPhonePoolFromActivations() {
+-  const values = sortedBaPoolEntries().map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '');
++  const entries = sortedBaPoolEntries();
++  const values = Array.from({length: baPoolLines().length}, () => '');
++  entries.forEach(entry => {
++    values[entry.originalIndex] = state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '';
++  });
+@@ -523,0 +542 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
++  const existingRows = queueRows();
+@@ -538 +557,2 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+-      if (current && !force && !currentError) continue;
++      const replaceTerminalNumber = isTerminalJob(existingRows[index]?.job);
++      if (current && !force && !replaceTerminalNumber && !currentError) continue;
+@@ -565,0 +586 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
++      setProgress(5, `第 ${index + 1} 个账号已获取新手机号`, 'SMS');
+@@ -570 +591 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+-    if (button) { button.disabled = false; button.querySelector('b').textContent = '获取接码手机号'; }
++    if (button) { button.disabled = false; button.querySelector('b').textContent = '获取新的手机号'; }
+@@ -686 +707 @@ async function refreshOpenJobLogs() {
+-    if (!terminal(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
++    if (!isTerminalJob(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
 diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
-index c45487a..884d1f1 100644
+index 884d1f1..8ccec68 100644
 --- a/paypal_agreement_protocol/web_static/index.html
 +++ b/paypal_agreement_protocol/web_static/index.html
-@@ -8,7 +8,7 @@
-   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
-   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
-   <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
--  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-5">
-+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260818-complete-logs-1">
- </head>
- <body>
-   <div class="paper-noise"></div>
-@@ -152,6 +152,6 @@
-
-   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
-   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
--  <script src="/paypal-pay/static/app.js?v=20260818-sms-rotation-logs-1"></script>
-+  <script src="/paypal-pay/static/app.js?v=20260818-complete-logs-1"></script>
- </body>
- </html>
+@@ -59 +59 @@
+-          <button id="acquirePhonesButton" class="command-button phone-button" type="button"><span class="button-icon">＋</span><span><b>获取接码手机号</b><small>按账号队列自动取号</small></span></button>
++          <button id="acquirePhonesButton" class="command-button phone-button" type="button"><span class="button-icon">＋</span><span><b>获取新的手机号</b><small>首次取号或失败后自动换号</small></span></button>
+@@ -155 +155 @@
+-  <script src="/paypal-pay/static/app.js?v=20260818-complete-logs-1"></script>
++  <script src="/paypal-pay/static/app.js?v=20260818-live-logs-retry-1"></script>
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+new file mode 100644
+index 0000000..30e0df6
+--- /dev/null
++++ b/tests/test_protocol_regressions.py
+@@ -0,0 +1,87 @@
++from __future__ import annotations
++
++import sys
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++
++ROOT = Path(__file__).resolve().parents[1]
++PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
++if str(PROTOCOL_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROTOCOL_ROOT))
++
++import web as protocol_web  # noqa: E402
++
++
++class ProtocolRetryTests(unittest.TestCase):
++    def make_job(self) -> protocol_web.WebJob:
++        return protocol_web.WebJob(
++            id="retryfixture",
++            owner_device_id="devicefixture",
++            ba_token="BA-RETRYFIXTURE01",
++            phone="+447700900123",
++        )
++
++    def test_automatic_retry_keeps_current_phone_and_stops_after_success(self) -> None:
++        job = self.make_job()
++        phones: list[str] = []
++
++        def attempt(current: protocol_web.WebJob) -> None:
++            phones.append(current.phone)
++            if len(phones) < 3:
++                raise RuntimeError(f"transient failure {len(phones)}")
++            current.complete({"status": "success"})
++
++        with (
++            patch.object(protocol_web, "_run_job_attempt", side_effect=attempt),
++            patch.object(protocol_web, "record_protocol_metric"),
++            patch.object(protocol_web, "record_payment_audit"),
++        ):
++            protocol_web.run_job(job)
++
++        self.assertEqual(phones, ["+447700900123"] * 3)
++        self.assertEqual(job.retry_count, 2)
++        self.assertEqual(job.status, "completed")
++        self.assertEqual(job.result["retry_count"], 2)
++        self.assertTrue(any("继续使用当前手机号" in item["message"] for item in job.logs))
++
++    def test_consumed_ba_failure_is_not_retried(self) -> None:
++        job = self.make_job()
++        error = protocol_web.ProtocolResultError({
++            "status": "error",
++            "error_code": "BA_ALREADY_AUTHORIZED",
++            "error": "billing agreement was already authorized",
++            "paypal_authorized": True,
++        })
++
++        with (
++            patch.object(protocol_web, "_run_job_attempt", side_effect=error) as attempt,
++            patch.object(protocol_web, "record_protocol_metric"),
++            patch.object(protocol_web, "record_payment_audit"),
++        ):
++            protocol_web.run_job(job)
++
++        self.assertEqual(attempt.call_count, 1)
++        self.assertEqual(job.retry_count, 0)
++        self.assertEqual(job.status, "failed")
++
++
++class FrontendRegressionTests(unittest.TestCase):
++    def test_logs_phone_replacement_and_bulk_push_are_wired(self) -> None:
++        protocol_js = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
++        extractor_js = (ROOT / "payment_link_extractor" / "web" / "static" / "app.js").read_text(encoding="utf-8")
++        extractor_html = (ROOT / "payment_link_extractor" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
++
++        self.assertIn("function isTerminalJob", protocol_js)
++        self.assertIn("if (!isTerminalJob(job)) state.jobLogTimer", protocol_js)
++        self.assertNotIn("if (!terminal(job)) state.jobLogTimer", protocol_js)
++        self.assertIn("replaceTerminalNumber", protocol_js)
++        self.assertIn(">获取新号</button>", protocol_js)
++        self.assertIn('id="push-selected-paypal"', extractor_html)
++        self.assertIn("function pushPaypalTasks", extractor_js)
++        self.assertIn("links.join('\\n')", extractor_js)
++
++
++if __name__ == "__main__":
++    unittest.main()
