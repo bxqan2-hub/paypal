@@ -193,3 +193,27 @@ MODIFIED command: load .env; HeroSMSClient.get_countries(force=True); HeroSMSCli
 MODIFIED input: configured HeroSMS key; read-only country catalogue action (no number purchase)
 MODIFIED literal result: safe_getCountries_ok=True country_catalog_count=195; resolve_GB_country_id=16; EXIT_CODE=0
 MODIFIED exit status: 0
+
+LATEST UI SWITCH PERSISTENCE
+BASELINE command: read current HEAD extractor and protocol app.js; inspect persistence symbols
+BASELINE input: HEAD versions before UI-switch persistence change
+BASELINE literal result: baseline_task_snapshot_persistence=False baseline_restore_task_snapshots=False; baseline_prefill_save=False baseline_last_ba_storage=False; EXIT_CODE=0
+BASELINE exit status: 0
+
+MODIFIED command: inspect persistence symbols; node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js; git diff --check
+MODIFIED input: current extractor task table and protocol prefill state
+MODIFIED literal result: modified_task_snapshot_persistence=true modified_pagehide_flush=true modified_protocol_last_ba_storage=true modified_prefill_save=true demo_filter_preserved=true; modified_test_exit=0 extractor_js=0 protocol_js=0 diff_check=0; EXIT_CODE=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-persistence HEAD; append markers to payment_link_extractor/web/static/app.js and paypal_agreement_protocol/web_static/app.js; copy current artifacts/ROLLBACK.sh; push location to worktree; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- payment_link_extractor/web/static/app.js paypal_agreement_protocol/web_static/app.js; git worktree remove --force C:\Temp\paypal-ui-rollback-persistence
+ROLLBACK input: temporary copies with one persistence marker per UI script
+ROLLBACK literal result: restored_to=HEAD; extractor_marker_before=1; protocol_marker_before=1; extractor_marker_after=0; protocol_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains UI-switch persistence modified
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores both UI scripts to the selected Git commit; the active project keeps task snapshots and last BA prefill persistence.
+
+RECOVERED BA OUTPUT
+source: C:\Users\ADMINI~1\AppData\Local\Temp\paypal-web-restart.err.log request trace after the successful task
+recovered_task: fb33fd49c9b14835851f07026c195d0b
+recovered_ba_url: https://www.paypal.com/agreements/approve?ba_token=BA-3CJ44083AN071740L
+recovered_country: GB
+recovered_account_email: tinabattlefiy@computer4u.com

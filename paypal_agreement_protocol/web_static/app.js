@@ -1,6 +1,7 @@
 const API_BASE = '/paypal-pay/api';
 const GROK_API_BASE = '/api/grok-trial';
 const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
+const LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
 
 function isDefaultDemoBa(value) {
   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
@@ -8,6 +9,15 @@ function isDefaultDemoBa(value) {
 
 function stripDefaultDemoBa(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
+}
+
+function readLastProtocolInputs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAST_BA_PREFILL_KEY) || '{}');
+    return saved && typeof saved === 'object' ? saved : {};
+  } catch (_) {
+    return {};
+  }
 }
 
 function readSmsMaxPrice() {
@@ -24,12 +34,14 @@ function readSmsMaxPrice() {
 // number before starting the unchanged protocol flow.
 function applyWorkbenchPrefill() {
   const params = new URLSearchParams(window.location.search);
-  const ba = params.get('ba') || params.get('paypal_url') || '';
-  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
-  const phone = params.get('phone') || '';
-  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
+  const saved = readLastProtocolInputs();
+  const existingBa = document.querySelector('#baToken')?.value || '';
+  const ba = params.get('ba') || params.get('paypal_url') || existingBa || saved.ba || '';
+  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
+  const phone = params.get('phone') || saved.phone || '';
+  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
+  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
     if ([...select.options].some(option => option.value === country)) select.value = country;
@@ -38,6 +50,8 @@ function applyWorkbenchPrefill() {
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
   if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
   if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
+  persistLastProtocolInputs();
+  saveProtocolFormState();
 }
 const $ = (id) => document.getElementById(id);
 const PRIVATE_BRAINTREE_SLUG = 'bt-vault-8f1d2e4c9a7b6d3e';
@@ -90,6 +104,20 @@ function saveProtocolFormState() {
   }, 80);
 }
 
+function persistLastProtocolInputs() {
+  const ba = stripDefaultDemoBa($('baToken')?.value || '');
+  if (!ba) return;
+  try {
+    localStorage.setItem(LAST_BA_PREFILL_KEY, JSON.stringify({
+      ba,
+      country: $('paypalCountry')?.value || '',
+      phone: $('phone')?.value || '',
+      emails: $('emailPool')?.value || '',
+      updatedAt: new Date().toISOString(),
+    }));
+  } catch (_) {}
+}
+
 function restoreProtocolFormState() {
   let saved = {};
   try { saved = JSON.parse(sessionStorage.getItem(PROTOCOL_FORM_STATE_KEY) || '{}'); } catch (_) {}
@@ -103,8 +131,14 @@ function restoreProtocolFormState() {
   });
 }
 
-$('protocolForm').addEventListener('input', saveProtocolFormState);
-$('protocolForm').addEventListener('change', saveProtocolFormState);
+$('protocolForm').addEventListener('input', () => {
+  saveProtocolFormState();
+  persistLastProtocolInputs();
+});
+$('protocolForm').addEventListener('change', () => {
+  saveProtocolFormState();
+  persistLastProtocolInputs();
+});
 
 if (privateBraintreeEnabled) {
   $('privateBraintreeMode').hidden = false;

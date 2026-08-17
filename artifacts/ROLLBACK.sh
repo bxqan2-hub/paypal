@@ -17,6 +17,8 @@ FILES=(
   payment_link_extractor/web/static/app.js
   payment_link_extractor/web/static/styles.css
   paypal_agreement_protocol/herosms.py
+  payment_link_extractor/web/static/app.js
+  paypal_agreement_protocol/web_static/app.js
   .env.example
 )
 git restore --source "$TARGET_COMMIT" -- "${FILES[@]}"

@@ -116,3 +116,21 @@ four_artifacts:
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
 safe_read_only_check: getCountries returned 195 catalogue entries and resolved GB to country id 16 without calling getNumberV2.
+
+LATEST UI SWITCH PERSISTENCE
+changed_branch: browser-side task/result persistence across extractor and protocol interface switches
+changed_fields:
+- payment_link_extractor/web/static/app.js stores up to 100 task snapshots in localStorage, restores them before the server task list, and flushes snapshots on pagehide so successful BA results remain visible after navigation or a port restart.
+- paypal_agreement_protocol/web_static/app.js keeps the last real BA pool, selected country, phone pool, and email pool in a separate localStorage record, restores them when the page opens without a query string, and persists prefilled values immediately alongside the existing session form state.
+- Existing default BA-DEMO filtering remains active; demo data is never restored into the saved real-input record.
+source_hashes_before_change:
+- payment_link_extractor/web/static/app.js: 9b27811c80df4d33a07aa2eea08213b4c8ad64d27d8bf1d94eb70f3516e9f6dc
+- paypal_agreement_protocol/web_static/app.js: 4973f1d048ad994b8e77825a3a2c1ac934b311f55625f75e4d82c9222a94c70b
+source_hashes_after_change:
+- payment_link_extractor/web/static/app.js: f126fb839614aca2132840b4910aa6c0971a37d28480ad8443ffbb29a9f47217
+- paypal_agreement_protocol/web_static/app.js: 1167a758a1c64e2ea5129d20a178a535398e12844d775a459f508ae669bc7abe
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh

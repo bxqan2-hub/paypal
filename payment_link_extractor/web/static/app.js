@@ -5,6 +5,8 @@
   const DELETABLE_STATES = new Set(["succeeded", "failed", "cancelled"]);
   const FORM_PREFERENCES_KEY = "payment_link_extractor.form_preferences";
   const TASK_VIEW_MODE_KEY = "payment_link_extractor.task_view_mode";
+  const TASK_SNAPSHOT_KEY = "payment_link_extractor.task_snapshots.v1";
+  const TASK_SNAPSHOT_LIMIT = 100;
   const PASSWORD_STORAGE_KEY = "payment_link_extractor.workbench_password";
   const SERVER_PROXY_POOL_KEY = "payment_link_extractor.server_proxy_pool_id";
   const tasks = new Map();
@@ -39,6 +41,37 @@
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function saveTaskSnapshots() {
+    try {
+      const snapshots = Array.from(tasks.values())
+        .sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0))
+        .slice(0, TASK_SNAPSHOT_LIMIT)
+        .map(task => ({ ...task }));
+      localStorage.setItem(TASK_SNAPSHOT_KEY, JSON.stringify(snapshots));
+    } catch (error) {
+      // Keep the live workbench usable when browser storage is unavailable or full.
+    }
+  }
+
+  function restoreTaskSnapshots() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TASK_SNAPSHOT_KEY) || "[]");
+      if (!Array.isArray(saved)) return;
+      saved.forEach(snapshot => {
+        if (!snapshot || !snapshot.task_id) return;
+        const task = ensureTask(snapshot.task_id, Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || Date.now());
+        if (!task) return;
+        Object.assign(task, snapshot, {
+          createdAt: Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || task.createdAt,
+          updatedAt: Number(snapshot.updatedAt) || Date.parse(snapshot.finished_at || snapshot.started_at || snapshot.created_at || "") || task.updatedAt,
+        });
+        task.progress = clampProgress(snapshot.progress ?? task.progress);
+      });
+    } catch (error) {
+      // Ignore malformed snapshots and continue with the server task list.
+    }
   }
 
   function apiFetch(url, options = {}) {
@@ -571,6 +604,7 @@
   }
 
   async function loadExistingTasks() {
+    restoreTaskSnapshots();
     const response = await apiFetch("/api/tasks");
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "历史任务加载失败");
@@ -1543,6 +1577,7 @@
   }
 
   function renderTasks() {
+    saveTaskSnapshots();
     const all = Array.from(tasks.values()).sort((a, b) => b.createdAt - a.createdAt);
     const visible = all.filter(matchesFilter);
     pruneSelectedTasks();
@@ -1613,6 +1648,8 @@
     if (copyProxy) copyValue(copyProxy.dataset.copyProxy, "Checkout Proxy 已复制", "复制失败，请手动复制 Proxy");
     if (copy) copyResult(copy.dataset.copy, copy);
   }
+
+  window.addEventListener("pagehide", saveTaskSnapshots);
 
   function bindEvents() {
     elements.authForm.addEventListener("submit", function (event) {

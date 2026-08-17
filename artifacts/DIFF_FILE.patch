@@ -577,3 +577,177 @@ index cb2cc2d..ae68418 100644
          )
          activation_id, phone, cost = _parse_activation(payload)
          if not activation_id or not phone:
+
+
+# LATEST UI SWITCH PERSISTENCE DIFF
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 158e6c4..07f14ce 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -5,6 +5,8 @@
+   const DELETABLE_STATES = new Set(["succeeded", "failed", "cancelled"]);
+   const FORM_PREFERENCES_KEY = "payment_link_extractor.form_preferences";
+   const TASK_VIEW_MODE_KEY = "payment_link_extractor.task_view_mode";
++  const TASK_SNAPSHOT_KEY = "payment_link_extractor.task_snapshots.v1";
++  const TASK_SNAPSHOT_LIMIT = 100;
+   const PASSWORD_STORAGE_KEY = "payment_link_extractor.workbench_password";
+   const SERVER_PROXY_POOL_KEY = "payment_link_extractor.server_proxy_pool_id";
+   const tasks = new Map();
+@@ -41,6 +43,37 @@
+     return document.getElementById(id);
+   }
+
++  function saveTaskSnapshots() {
++    try {
++      const snapshots = Array.from(tasks.values())
++        .sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0))
++        .slice(0, TASK_SNAPSHOT_LIMIT)
++        .map(task => ({ ...task }));
++      localStorage.setItem(TASK_SNAPSHOT_KEY, JSON.stringify(snapshots));
++    } catch (error) {
++      // Keep the live workbench usable when browser storage is unavailable or full.
++    }
++  }
++
++  function restoreTaskSnapshots() {
++    try {
++      const saved = JSON.parse(localStorage.getItem(TASK_SNAPSHOT_KEY) || "[]");
++      if (!Array.isArray(saved)) return;
++      saved.forEach(snapshot => {
++        if (!snapshot || !snapshot.task_id) return;
++        const task = ensureTask(snapshot.task_id, Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || Date.now());
++        if (!task) return;
++        Object.assign(task, snapshot, {
++          createdAt: Number(snapshot.createdAt) || Date.parse(snapshot.created_at || "") || task.createdAt,
++          updatedAt: Number(snapshot.updatedAt) || Date.parse(snapshot.finished_at || snapshot.started_at || snapshot.created_at || "") || task.updatedAt,
++        });
++        task.progress = clampProgress(snapshot.progress ?? task.progress);
++      });
++    } catch (error) {
++      // Ignore malformed snapshots and continue with the server task list.
++    }
++  }
++
+   function apiFetch(url, options = {}) {
+     const headers = new Headers(options.headers || {});
+     headers.set("X-Workbench-Password", authPassword);
+@@ -571,6 +604,7 @@
+   }
+
+   async function loadExistingTasks() {
++    restoreTaskSnapshots();
+     const response = await apiFetch("/api/tasks");
+     const data = await response.json();
+     if (!response.ok) throw new Error(data.error || "历史任务加载失败");
+@@ -1543,6 +1577,7 @@
+   }
+
+   function renderTasks() {
++    saveTaskSnapshots();
+     const all = Array.from(tasks.values()).sort((a, b) => b.createdAt - a.createdAt);
+     const visible = all.filter(matchesFilter);
+     pruneSelectedTasks();
+@@ -1614,6 +1649,8 @@
+     if (copy) copyResult(copy.dataset.copy, copy);
+   }
+
++  window.addEventListener("pagehide", saveTaskSnapshots);
++
+   function bindEvents() {
+     elements.authForm.addEventListener("submit", function (event) {
+       event.preventDefault();
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 06a0454..0995bc7 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -1,6 +1,7 @@
+ const API_BASE = '/paypal-pay/api';
+ const GROK_API_BASE = '/api/grok-trial';
+ const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
++const LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
+
+ function isDefaultDemoBa(value) {
+   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
+@@ -10,6 +11,15 @@ function stripDefaultDemoBa(value) {
+   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
+ }
+
++function readLastProtocolInputs() {
++  try {
++    const saved = JSON.parse(localStorage.getItem(LAST_BA_PREFILL_KEY) || '{}');
++    return saved && typeof saved === 'object' ? saved : {};
++  } catch (_) {
++    return {};
++  }
++}
++
+ function readSmsMaxPrice() {
+   const node = $('smsMaxPrice');
+   const raw = node ? node.value.trim() : '';
+@@ -24,12 +34,14 @@ function readSmsMaxPrice() {
+ // number before starting the unchanged protocol flow.
+ function applyWorkbenchPrefill() {
+   const params = new URLSearchParams(window.location.search);
+-  const ba = params.get('ba') || params.get('paypal_url') || '';
+-  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
+-  const phone = params.get('phone') || '';
+-  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
++  const saved = readLastProtocolInputs();
++  const existingBa = document.querySelector('#baToken')?.value || '';
++  const ba = params.get('ba') || params.get('paypal_url') || existingBa || saved.ba || '';
++  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
++  const phone = params.get('phone') || saved.phone || '';
++  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
+     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+-  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
++  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
+   if (country && document.querySelector('#paypalCountry')) {
+     const select = document.querySelector('#paypalCountry');
+     if ([...select.options].some(option => option.value === country)) select.value = country;
+@@ -38,6 +50,8 @@ function applyWorkbenchPrefill() {
+   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
+   if (emailValues.length && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
+   if (emailValues.length && typeof state !== 'undefined') state.prefillEmails = emailValues;
++  persistLastProtocolInputs();
++  saveProtocolFormState();
+ }
+ const $ = (id) => document.getElementById(id);
+ const PRIVATE_BRAINTREE_SLUG = 'bt-vault-8f1d2e4c9a7b6d3e';
+@@ -90,6 +104,20 @@ function saveProtocolFormState() {
+   }, 80);
+ }
+
++function persistLastProtocolInputs() {
++  const ba = stripDefaultDemoBa($('baToken')?.value || '');
++  if (!ba) return;
++  try {
++    localStorage.setItem(LAST_BA_PREFILL_KEY, JSON.stringify({
++      ba,
++      country: $('paypalCountry')?.value || '',
++      phone: $('phone')?.value || '',
++      emails: $('emailPool')?.value || '',
++      updatedAt: new Date().toISOString(),
++    }));
++  } catch (_) {}
++}
++
+ function restoreProtocolFormState() {
+   let saved = {};
+   try { saved = JSON.parse(sessionStorage.getItem(PROTOCOL_FORM_STATE_KEY) || '{}'); } catch (_) {}
+@@ -103,8 +131,14 @@ function restoreProtocolFormState() {
+   });
+ }
+
+-$('protocolForm').addEventListener('input', saveProtocolFormState);
+-$('protocolForm').addEventListener('change', saveProtocolFormState);
++$('protocolForm').addEventListener('input', () => {
++  saveProtocolFormState();
++  persistLastProtocolInputs();
++});
++$('protocolForm').addEventListener('change', () => {
++  saveProtocolFormState();
++  persistLastProtocolInputs();
++});
+
+ if (privateBraintreeEnabled) {
+   $('privateBraintreeMode').hidden = false;
