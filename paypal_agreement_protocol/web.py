@@ -944,6 +944,9 @@ class WebJob:
     batch_total: int = 1
     country: str = "BR"
     buyer_mode: str = "original"
+    sms_activation_id: str = ""
+    sms_attempt: int = 0
+    sms_max_attempts: int = 3
     debug: bool = False
     max_card_attempts: int = 5
     manual_funding: bool = False
@@ -975,14 +978,46 @@ class WebJob:
     _browser: ManualBrowserController | None = field(default=None, repr=False)
     _slot_held: bool = field(default=False, repr=False)
 
+    def _append_log_locked(self, level: str, message: str, ts: float | None = None) -> None:
+        rendered_message = str(message).rstrip()
+        if not FULL_LOGS_UI_ENABLED:
+            rendered_message = redact_text(rendered_message)
+        self.logs.append({
+            "time": ts or now_ts(),
+            "level": level,
+            "message": truncate_text(rendered_message, 900),
+        })
+        if len(self.logs) > MAX_LOG_LINES:
+            del self.logs[: len(self.logs) - MAX_LOG_LINES]
+
+    def set_sms_activation(
+        self,
+        activation_id: str,
+        phone: str,
+        attempt: int,
+        max_attempts: int = 3,
+    ) -> None:
+        """Expose the currently active SMS number to the job/log UI."""
+        with self._condition:
+            self.sms_activation_id = str(activation_id or "").strip()
+            if phone:
+                self.phone = str(phone).strip()
+            self.sms_attempt = max(0, int(attempt or 0))
+            self.sms_max_attempts = max(1, int(max_attempts or 3))
+            self.updated_at = now_ts()
+            self._condition.notify_all()
+
     def set_status(self, status: str, stage: str | None = None) -> None:
         with self._condition:
             if self._cancel_event.is_set() and status not in {"cancelling", "cancelled"}:
                 return
+            changed = self.status != status or (stage is not None and self.stage != stage)
             self.status = status
             if stage is not None:
                 self.stage = stage
             self.updated_at = now_ts()
+            if changed:
+                self._append_log_locked("INFO", f"状态：{status}；阶段：{self.stage}")
             self._condition.notify_all()
 
     def check_cancelled(self) -> None:
@@ -1068,16 +1103,7 @@ class WebJob:
 
     def add_log(self, level: str, message: str, ts: float | None = None) -> None:
         with self._condition:
-            rendered_message = str(message).rstrip()
-            if not FULL_LOGS_UI_ENABLED:
-                rendered_message = redact_text(rendered_message)
-            self.logs.append({
-                "time": ts or now_ts(),
-                "level": level,
-                "message": truncate_text(rendered_message, 900),
-            })
-            if len(self.logs) > MAX_LOG_LINES:
-                del self.logs[: len(self.logs) - MAX_LOG_LINES]
+            self._append_log_locked(level, message, ts)
             self.updated_at = now_ts()
             self._condition.notify_all()
 
@@ -1088,6 +1114,7 @@ class WebJob:
             self.stage = "Waiting for SMS code / new phone"
             self.awaiting_prompt = redact_text(prompt)
             self.updated_at = now_ts()
+            self._append_log_locked("INFO", f"已进入短信发送步骤，等待验证码或新手机号：{prompt}")
             self._condition.notify_all()
         # Human wait time must not occupy a network execution slot.
         self.release_execution_slot()
@@ -1105,6 +1132,7 @@ class WebJob:
             self.stage = "SMS input received; waiting for execution slot"
             self.awaiting_prompt = ""
             self.updated_at = now_ts()
+            self._append_log_locked("INFO", "已收到短信验证码或新手机号，继续协议支付")
             self._condition.notify_all()
         self.acquire_execution_slot()
         with self._condition:
@@ -1334,6 +1362,10 @@ class WebJob:
                 "batch_total": self.batch_total,
                 "country": self.country,
                 "buyer_mode": self.buyer_mode,
+                "sms_activation_id": self.sms_activation_id,
+                "sms_attempt": self.sms_attempt,
+                "sms_max_attempts": self.sms_max_attempts,
+                "sms_current_phone": mask_phone(self.phone) if self.sms_attempt else "",
                 "debug": self.debug and ALLOW_DEBUG_LOGS,
                 "max_card_attempts": self.max_card_attempts,
                 "manual_funding": self.manual_funding,

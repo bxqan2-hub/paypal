@@ -356,7 +356,14 @@ function queueRows() {
     const activation = state.smsActivations.get(token) || null;
     const job = state.batchJobs.find(item => Number(item.batch_index || 0) === zeroIndex + 1)
       || (entries.length === 1 ? state.batchJobs[0] : null);
-    return {index: zeroIndex + 1, link, token, activation, phone: activation?.phone || entry.manualPhone || '', job};
+    return {
+      index: zeroIndex + 1,
+      link,
+      token,
+      activation,
+      phone: job?.sms_current_phone || activation?.phone || entry.manualPhone || job?.phone || '',
+      job,
+    };
   });
 }
 
@@ -627,11 +634,12 @@ function renderLogs(logs = []) {
   const keepTop = box.scrollTop;
   const wasPinned = state.logPinned || (box.scrollHeight - box.scrollTop - box.clientHeight < 32);
   const major = logs.filter(isMajorLog).slice(-100);
-  if (!major.length) {
+  const visible = major.length ? major : logs.slice(-100);
+  if (!visible.length) {
     box.innerHTML = '<div class="empty-log">任务已开始，正在等待主要步骤。</div>';
     return;
   }
-  box.innerHTML = major.map(item => {
+  box.innerHTML = visible.map(item => {
     const level = String(item.level || '').toLowerCase();
     const cls = level === 'error' ? 'error' : (level === 'warning' || level === 'warn' ? 'warn' : '');
     return `<div class="log-row ${cls}"><time>${formatTime(item.time)}</time><span>${escapeHtml(item.message)}</span></div>`;
@@ -651,10 +659,14 @@ function closeJobLogModal() {
 
 function renderFullJobLogs(job, token = '') {
   const logs = Array.isArray(job?.logs) ? job.logs : [];
+  const fallback = [];
+  if (!logs.length && job?.stage) fallback.push({time: job.updated_at, level: 'INFO', message: `\u5f53\u524d\u9636\u6bb5\uff1a${job.stage}`});
+  if (!logs.length && job?.awaiting_prompt) fallback.push({time: job.updated_at, level: 'INFO', message: job.awaiting_prompt});
+  const visible = logs.length ? logs : fallback;
   $('jobLogModalTitle').textContent = `BA ${token || job?.ba_token || '当前任务'} 日志`;
-  $('jobLogModalMeta').textContent = `${logs.length} 条完整日志 · ${job?.status || '未知状态'}`;
-  $('jobLogModalBody').innerHTML = logs.length
-    ? logs.map(item => {
+  $('jobLogModalMeta').textContent = `${visible.length} 条完整日志 · ${job?.status || '未知状态'}`;
+  $('jobLogModalBody').innerHTML = visible.length
+    ? visible.map(item => {
       const level = String(item.level || '').toLowerCase();
       const cls = level === 'error' ? 'error' : (level === 'warning' || level === 'warn' ? 'warn' : '');
       return `<div class="full-log-row ${cls}"><time>${formatTime(item.time)}</time><b>${escapeHtml(String(item.level || 'INFO').toUpperCase())}</b><span>${escapeHtml(item.message || '')}</span></div>`;

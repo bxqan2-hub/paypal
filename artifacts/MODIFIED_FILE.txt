@@ -194,6 +194,20 @@ four_artifacts:
 
 safe_read_only_check: getCountries returned 195 catalogue entries and resolved GB to country id 16 without calling getNumberV2.
 
+LATEST AUTOMATIC SMS ROTATION AND LOG VISIBILITY
+changed_branch: SMS watcher timeout/rotation and protocol job log rendering
+changed_fields:
+- payment_link_extractor/web/paypal_protocol.py: _watch_sms_job now polls getStatusV2 for 150 seconds per number, cancels expired activations with status 8, acquires a replacement through the selected country, resubmits the new phone through the existing PayPal resend branch, and stops after three attempts.
+- paypal_agreement_protocol/web.py: WebJob stores sms_activation_id/sms_attempt/sms_max_attempts, exposes sms_current_phone, records stage and SMS-input events in the in-memory log, and provides set_sms_activation for the watcher.
+- paypal_agreement_protocol/web_static/app.js: queue rows show the current replacement phone, the live log pane falls back to all records when major-log filtering is empty, and the full-log modal shows a stage/prompt fallback instead of an empty body.
+- paypal_agreement_protocol/web_static/index.html: cache-bust changed to 20260818-sms-rotation-logs-1.
+limits: SMS_ROTATION_MAX_ATTEMPTS=3; SMS_ROTATION_WAIT_SECONDS=150.0.
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
 LATEST UI SWITCH PERSISTENCE
 changed_branch: browser-side task/result persistence across extractor and protocol interface switches
 changed_fields:

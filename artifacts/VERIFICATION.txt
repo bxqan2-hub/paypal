@@ -352,3 +352,20 @@ MODIFIED command: update paypal_agreement_protocol/web_static/index.html app.js 
 MODIFIED input: country-gate fallback build
 MODIFIED literal result: cache_version=20260818-country-gate-1; EXIT_CODE=0
 MODIFIED exit status: 0
+
+LATEST AUTOMATIC SMS ROTATION AND LOG VISIBILITY
+BASELINE command: git show HEAD:payment_link_extractor/web/paypal_protocol.py; git show HEAD:paypal_agreement_protocol/web.py; git show HEAD:paypal_agreement_protocol/web_static/app.js; git show HEAD:paypal_agreement_protocol/web_static/index.html; inspect rotation/log/cache markers
+BASELINE input: previous build with one HeroSMS waiter, no bounded rotation constants, no WebJob SMS fields, major-only log rendering, and cache version 20260818-phone-refresh-1
+BASELINE literal result: baseline_rotation_constants=False; baseline_sms_activation_fields=False; baseline_stage_log_append=False; baseline_log_fallback=False; baseline_cache_version=<script src="/paypal-pay/static/app.js?v=20260818-phone-refresh-1"></script>; baseline_exit=0
+BASELINE exit status: 0
+
+MODIFIED command: node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; .venv\Scripts\python.exe watcher fake-client rotation test; .venv\Scripts\python.exe WebJob log serialization test; git diff --check
+MODIFIED input: automatic SMS rotation defaults (3 attempts, 150 seconds each), fake activation a1 with no code, replacement a2 with code 654321, and a WebJob entering awaiting_otp
+MODIFIED literal result: rotation_inputs=['+447700900002','654321']; rotation_sms=[('a1','+447700900001',1,3),('a2','+447700900002',2,3)]; rotation_finish=[('a1',8),('a2',6)]; rotation_test_exit=0; max_attempt_inputs=['+447700900002','+447700900003','q']; max_attempt_finish=[('a1',8),('a2',8),('a3',8)]; max_attempt_sms_count=3; max_attempt_test_exit=0; log_count=1; sms_fields=0,3,''; js_rotation=True; backend_rotation=True; log_stage_append=True; node_exit=0; compile_exit=0; diff_check_exit=0; modified_test_exit=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-sms-rotation-rollback HEAD; append markers to payment_link_extractor/web/paypal_protocol.py, paypal_agreement_protocol/web.py, and paypal_agreement_protocol/web_static/app.js; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-sms-rotation-rollback' && ./artifacts/ROLLBACK.sh HEAD"; git diff --exit-code -- payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol/web.py paypal_agreement_protocol/web_static/app.js; git worktree remove --force C:\Temp\paypal-sms-rotation-rollback
+ROLLBACK input: temporary worktree with one marker in each current SMS rotation/log file
+ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=False; web_marker_after=False; app_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: selected HEAD restores the pre-rotation bridge, WebJob, and UI behavior; the active project keeps the 3-attempt/150-second automatic replacement flow, replacement phone display, and non-empty SMS log rendering.

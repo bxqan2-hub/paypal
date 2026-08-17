@@ -812,3 +812,28 @@ diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/he
 +get_services(country_id) calls getServicesList and caches the country catalogue.
 +resolve_service_code(service, country_id) maps PayPal/name labels to the API code.
 +acquire_number sends service_code and returns the normalized code.
+
+# LATEST AUTOMATIC SMS ROTATION AND LOG VISIBILITY DIFF
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+@@
++SMS_ROTATION_MAX_ATTEMPTS = 3
++SMS_ROTATION_WAIT_SECONDS = 150.0
++_watch_sms_job polls getStatusV2 per 150-second window, cancels stale numbers with status=8, acquires a country-matched replacement, submits it through WebJob.wait_for_input, and stops after the third attempt.
++sms_activations request parsing now keeps phone/country metadata for the active job display.
++
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+@@
++WebJob.sms_activation_id/sms_attempt/sms_max_attempts and sms_current_phone serialization.
++WebJob.set_sms_activation updates the active number.
++WebJob stage transitions and SMS input waits append durable in-memory log rows.
++
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+@@
++queueRows prefers the current watcher phone.
++renderLogs falls back from major-only filtering to all log records.
++renderFullJobLogs renders stage/prompt fallback data when the API returns no log rows.
++
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+@@
+-app.js?v=20260818-phone-refresh-1
++app.js?v=20260818-sms-rotation-logs-1

@@ -34,6 +34,11 @@ _protocol = importlib.import_module("paypal_agreement_protocol.web")
 _SMS_CLIENT: HeroSMSClient | None = None
 _SMS_WATCHERS: dict[str, threading.Thread] = {}
 _SMS_WATCHERS_LOCK = threading.RLock()
+SMS_ROTATION_MAX_ATTEMPTS = 3
+SMS_ROTATION_WAIT_SECONDS = 150.0
+SMS_TERMINAL_STATUSES = {
+    "STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8",
+}
 
 
 def _parse_sms_max_price(value: Any) -> float | None:
@@ -122,28 +127,144 @@ def dispatch_protocol_request(inner_path: str, method: str, body: bytes = b"") -
 
 
 def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
-    activation_id = str(activation.get("activation_id") or "")
+    """Wait for an OTP and rotate the HeroSMS number when it expires.
+
+    The protocol flow already supports submitting a new phone while it is in
+    ``awaiting_otp``.  Feeding the replacement number through ``submit_input``
+    therefore keeps the upstream resend path unchanged while this adapter owns
+    the bounded HeroSMS polling/cleanup loop.
+    """
     client = _sms_client()
+    current = dict(activation)
+    attempt = 1
     submitted = False
-    deadline = time.monotonic() + client.timeout
+    current_closed = False
+    registered_activation_id = ""
+
+    def add_log(job: Any, level: str, message: str) -> None:
+        try:
+            job.add_log(level, message)
+        except Exception:
+            return
+
+    def mark_activation(job: Any, item: dict[str, Any], number: int) -> None:
+        setter = getattr(job, "set_sms_activation", None)
+        if callable(setter):
+            setter(
+                str(item.get("activation_id") or ""),
+                str(item.get("phone") or ""),
+                number,
+                SMS_ROTATION_MAX_ATTEMPTS,
+            )
+        else:
+            # Compatibility with an older in-memory job object during a hot
+            # reload; the normal WebJob path always has set_sms_activation.
+            with job._condition:
+                if item.get("phone"):
+                    job.phone = str(item["phone"])
+                job.updated_at = time.time()
+
     try:
-        while time.monotonic() < deadline:
+        while True:
             job = _protocol.get_job(job_id)
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
-            if job.status == "awaiting_otp":
-                if not submitted:
-                    try:
-                        code = client.wait_for_code(activation_id)
-                        job.submit_input(code)
-                        submitted = True
-                    except (HeroSMSError, ValueError):
-                        break
-            else:
-                submitted = False
-            time.sleep(client.poll_interval)
+            activation_id = str(current.get("activation_id") or "").strip()
+            if not activation_id:
+                add_log(job, "ERROR", "短信轮询缺少 HeroSMS activation_id，任务停止")
+                break
+
+            if registered_activation_id != activation_id:
+                mark_activation(job, current, attempt)
+                registered_activation_id = activation_id
+            if job.status != "awaiting_otp":
+                # The flow may still be sending the SMS or may have accepted a
+                # manual value.  Let it reach the next OTP wait before polling.
+                time.sleep(min(1.0, client.poll_interval))
+                continue
+
+            deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
+            timed_out = True
+            while time.monotonic() < deadline:
+                job = _protocol.get_job(job_id)
+                if job is None or job.status in {"completed", "failed", "cancelled"}:
+                    return
+                if job.status != "awaiting_otp":
+                    timed_out = False
+                    break
+                try:
+                    status = client.get_status(activation_id)
+                except HeroSMSError as exc:
+                    add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
+                    time.sleep(client.poll_interval)
+                    continue
+                code = str(status.get("code") or "").strip()
+                status_name = str(status.get("status") or "").strip().upper()
+                if code and code.lower() not in {"none", "null"}:
+                    job.submit_input(code)
+                    add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
+                    submitted = True
+                    return
+                if status_name in SMS_TERMINAL_STATUSES:
+                    add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
+                    break
+                time.sleep(client.poll_interval)
+
+            if not timed_out:
+                # The flow changed state (for example a manual OTP/phone was
+                # submitted); do not allocate a competing replacement number.
+                continue
+
+            job = _protocol.get_job(job_id)
+            if job is None or job.status in {"completed", "failed", "cancelled"}:
+                break
+            add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
+            client.finish(activation_id, 8)
+            current_closed = True
+            if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
+                add_log(job, "ERROR", f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次自动换号，短信验证停止")
+                try:
+                    job.submit_input("q")
+                except Exception:
+                    pass
+                break
+
+            next_attempt = attempt + 1
+            try:
+                replacement = client.acquire_number(str(getattr(job, "country", "") or ""))
+            except (HeroSMSError, ValueError) as exc:
+                add_log(job, "ERROR", f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号失败：{exc}")
+                try:
+                    job.submit_input("q")
+                except Exception:
+                    pass
+                break
+            replacement_id = str(replacement.get("activation_id") or "").strip()
+            replacement_phone = str(replacement.get("phone") or "").strip()
+            if not replacement_id or not replacement_phone:
+                add_log(job, "ERROR", f"HeroSMS 第 {next_attempt} 个手机号返回数据不完整，短信验证停止")
+                try:
+                    job.submit_input("q")
+                except Exception:
+                    pass
+                break
+            current = dict(replacement)
+            attempt = next_attempt
+            current_closed = False
+            mark_activation(job, current, attempt)
+            registered_activation_id = replacement_id
+            add_log(job, "INFO", f"已自动获取第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号并重新发送验证码")
+            try:
+                # _confirm_phone_with_retry receives this value through its
+                # existing new-phone branch and sends the next SMS itself.
+                job.submit_input(replacement_phone)
+            except Exception as exc:
+                add_log(job, "ERROR", f"提交新手机号失败：{exc}")
+                break
     finally:
-        client.finish(activation_id, 6)
+        current_id = str(current.get("activation_id") or "").strip()
+        if current_id and not current_closed:
+            client.finish(current_id, 6 if submitted else 8)
         with _SMS_WATCHERS_LOCK:
             _SMS_WATCHERS.pop(job_id, None)
 
@@ -254,6 +375,8 @@ def register_paypal_protocol(app: Any) -> None:
                         {
                             "index": int(item.get("index") or index),
                             "activation_id": str(item.get("activation_id") or "").strip(),
+                            "phone": str(item.get("phone") or "").strip(),
+                            "country": str(item.get("country") or "").strip().upper(),
                         }
                         for index, item in enumerate(raw_activations, start=1)
                         if isinstance(item, dict) and str(item.get("activation_id") or "").strip()
