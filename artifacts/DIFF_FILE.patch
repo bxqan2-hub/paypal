@@ -764,5 +764,16 @@ index 7c40627..9d24bcc 100644
      </main>
 -    <script src="{{ url_for('static', filename='app.js', v='20260817-country-unlock-1') }}" defer></script>
 +    <script src="{{ url_for('static', filename='app.js', v='20260818-ui-persist-1') }}" defer></script>
-   </body>
- </html>
+  </body>
+</html>
+
+# LATEST HEROSMS SERVICE NORMALIZATION DIFF
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+--- a/paypal_agreement_protocol/herosms.py
++++ b/paypal_agreement_protocol/herosms.py
+@@
++_SERVICE_ALIASES = {"paypal": "ts", "pay pal": "ts"}
++self._services_by_country = {}
++get_services(country_id) calls getServicesList and caches the country catalogue.
++resolve_service_code(service, country_id) maps PayPal/name labels to the API code.
++acquire_number sends service_code and returns the normalized code.

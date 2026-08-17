@@ -238,3 +238,26 @@ ROLLBACK input: temporary copy of the tracked UI persistence files
 ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps the modified service; EXIT_CODE=0
 ROLLBACK exit status: 0
 restored behavior/status: port 18794 serves HTTP 200 and the 20260818-ui-persist-1 cache-busted UI after restart; task/BA state remains browser-persistent across interface switches.
+
+LATEST HEROSMS SERVICE NORMALIZATION
+BASELINE command: copy paypal_agreement_protocol/herosms.py to C:\Temp\paypal-herosms-service-original.py; hash source and copy; inspect default service and acquire_number parameters
+BASELINE input: existing HeroSMS adapter with HEROSMS_SERVICE=paypal
+BASELINE literal result: original_hash=518ccccdf51f30f06723b0b07044e916895d18ec2dc9da42aa12142b9f97964b; copy_hash=518ccccdf51f30f06723b0b07044e916895d18ec2dc9da42aa12142b9f97964b; default request service=paypal; EXIT_CODE=0
+BASELINE exit status: 0
+
+MODIFIED command: safe getServicesList(country=16, lang=en); resolve_service_code('paypal', 16); mocked acquire_number; node --check; compileall; git diff --check
+MODIFIED input: configured HeroSMS key for read-only catalogue lookup plus mocked getNumberV2 response (no number purchase)
+MODIFIED literal result: safe_getServicesList_ok=True country=16 service_count=374 paypal_service_matches=[{'code': 'ts', 'name': 'PayPal'}] resolve_paypal=ts; mock_service_alias=ts; mock_request=[('getNumberV2', {'service': 'ts', 'country': 16})]; alias_variants=paypal,pay pal->ts; modified_test_exit=0 js_exit=0 compile_exit=0 diff_check_exit=0; EXIT_CODE=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-herosms-service-rollback HEAD; append a marker to paypal_agreement_protocol/herosms.py; copy current artifacts/ROLLBACK.sh; push location to worktree; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- paypal_agreement_protocol/herosms.py; git worktree remove --force C:\Temp\paypal-herosms-service-rollback
+ROLLBACK input: temporary copy with one HeroSMS service-normalization marker
+ROLLBACK literal result: restored_to=HEAD; herosms_marker_before=1; herosms_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains service-normalization modified
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores the HeroSMS adapter to the selected commit; the active project maps the PayPal label to service code `ts`, validates custom services from the country catalogue, and avoids the service=paypal HTTP 422.
+
+ROLLBACK EXECUTION RESULT
+command: git worktree add --detach C:\Temp\paypal-herosms-service-rollback HEAD; append SERVICE_ROLLBACK_MARKER; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-herosms-service-rollback' && ./artifacts/ROLLBACK.sh HEAD"; git -C C:\Temp\paypal-herosms-service-rollback diff --exit-code -- paypal_agreement_protocol/herosms.py; git worktree remove --force C:\Temp\paypal-herosms-service-rollback
+input: temporary copy at C:\Temp\paypal-herosms-service-rollback with one marker
+literal result: restored_to=HEAD; rollback_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+exit status: 0

@@ -50,6 +50,21 @@ four_artifacts:
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
+LATEST HEROSMS SERVICE NORMALIZATION
+changed_branch: HeroSMS service-code normalization for PayPal number acquisition
+changed_fields:
+- paypal_agreement_protocol/herosms.py maps the UI/config value `paypal` to HeroSMS API code `ts`.
+- paypal_agreement_protocol/herosms.py adds cached getServicesList lookup for country-specific custom service labels/codes and returns the actual API code in the activation record.
+source_hash_before_change:
+- paypal_agreement_protocol/herosms.py: 518ccccdf51f30f06723b0b07044e916895d18ec2dc9da42aa12142b9f97964b
+source_hash_after_change:
+- paypal_agreement_protocol/herosms.py: e6b56dc9dad7aa381498d5231f24ca122f8eead0c75e9a951ccdd1d757e12dcf
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
 LATEST PROXY-PARSER FIX
 changed_branch: direct authenticated 1024proxy SOCKS5h extraction transport + native SOCKS5h proxy probe
 changed_fields:

@@ -24,6 +24,15 @@ _FALLBACK_COUNTRY_IDS = {
     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
 }
 
+# HeroSMS uses short service identifiers on the SMS-Activate-compatible
+# endpoint.  The website label is "PayPal", but the API identifier is `ts`.
+# Keep accepting the human-readable value from existing settings and normalize
+# it before a purchase request is sent.
+_SERVICE_ALIASES = {
+    "paypal": "ts",
+    "pay pal": "ts",
+}
+
 
 class HeroSMSClient:
     def __init__(self) -> None:
@@ -36,6 +45,7 @@ class HeroSMSClient:
         self.poll_interval = max(2.0, _optional_float(os.getenv("HEROSMS_POLL_INTERVAL", "5")) or 5.0)
         self.timeout = max(30.0, _optional_float(os.getenv("HEROSMS_TIMEOUT", "1800")) or 1800.0)
         self._countries: Any = None
+        self._services_by_country: dict[int, list[dict[str, str]]] = {}
 
     @property
     def configured(self) -> bool:
@@ -88,14 +98,52 @@ class HeroSMSClient:
             return _FALLBACK_COUNTRY_IDS[code]
         raise HeroSMSError(f"HeroSMS country is unavailable: {code}")
 
+    def get_services(self, country_id: int, *, force: bool = False) -> list[dict[str, str]]:
+        """Return the current service catalogue for one HeroSMS country."""
+        country_key = int(country_id)
+        if not force and country_key in self._services_by_country:
+            return self._services_by_country[country_key]
+        payload = self._request("getServicesList", country=country_key, lang="en")
+        services = _service_entries(payload)
+        if not services:
+            raise HeroSMSError(f"HeroSMS returned no services for country {country_key}")
+        self._services_by_country[country_key] = services
+        return services
+
+    def resolve_service_code(self, service: str | None, country_id: int) -> str:
+        """Resolve a UI service label/code to the identifier accepted by HeroSMS."""
+        requested = str(service or self.default_service or "").strip()
+        if not requested:
+            raise HeroSMSError("HeroSMS service is not configured")
+        alias = _SERVICE_ALIASES.get(requested.casefold())
+        if alias:
+            return alias
+        requested_key = _normalise_service_name(requested)
+        try:
+            services = self.get_services(country_id)
+        except HeroSMSError:
+            # Preserve support for an explicitly supplied API code if the
+            # catalogue endpoint is temporarily unavailable; the purchase
+            # request will still receive a useful sanitized API error.
+            return requested
+        for item in services:
+            code = str(item.get("code") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if requested.casefold() == code.casefold() or requested_key == _normalise_service_name(name):
+                return code
+        raise HeroSMSError(
+            f"HeroSMS service unavailable for country {country_id}: {requested}"
+        )
+
     def acquire_number(
         self, country: str, *, max_price: float | None = None, service: str | None = None
     ) -> dict[str, Any]:
         country_code = str(country or "").strip().upper()
         country_id = self.resolve_country_id(country_code)
+        service_code = self.resolve_service_code(service, country_id)
         price = self.default_max_price if max_price is None else max_price
         number_params: dict[str, Any] = {
-            "service": service or self.default_service,
+            "service": service_code,
             "country": country_id,
         }
         if price is not None:
@@ -112,7 +160,7 @@ class HeroSMSClient:
         return {
             "activation_id": str(activation_id), "phone": _normalise_phone(phone),
             "country": country_code, "country_id": country_id,
-            "service": service or self.default_service, "price": cost,
+            "service": service_code, "price": cost,
         }
 
     def get_status(self, activation_id: str) -> dict[str, Any]:
@@ -177,6 +225,25 @@ def _country_alias_match(code: str, text: str) -> bool:
     aliases = {"GB": ("UNITED KINGDOM", "ENGLAND", "英国"), "US": ("UNITED STATES", "美国"),
                "AE": ("UNITED ARAB EMIRATES", "UAE", "阿联酋"), "TW": ("TAIWAN", "台湾")}
     return any(alias in text for alias in aliases.get(code, ()))
+
+
+def _normalise_service_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _service_entries(payload: Any) -> list[dict[str, str]]:
+    values = payload.get("services") if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return []
+    entries: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or item.get("service") or "").strip()
+        name = str(item.get("name") or item.get("title") or "").strip()
+        if code:
+            entries.append({"code": code, "name": name})
+    return entries
 
 
 def _parse_activation(payload: Any) -> tuple[str, str, Any]:
