@@ -201,6 +201,40 @@ def register_paypal_protocol(app: Any) -> None:
                 return jsonify({"ok": True, "max_price": max_price, **activation})
             except (HeroSMSError, ValueError) as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 503
+        if protocol_path == "api/sms/status" and request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            raw_ids = data.get("activation_ids")
+            if raw_ids is None:
+                raw_ids = [data.get("activation_id")]
+            if not isinstance(raw_ids, list):
+                return jsonify({"ok": False, "error": "activation_ids must be a list"}), 400
+            activation_ids = [str(value or "").strip() for value in raw_ids if str(value or "").strip()]
+            if not activation_ids:
+                return jsonify({"ok": False, "error": "activation_ids is required"}), 400
+            if len(activation_ids) > 20:
+                return jsonify({"ok": False, "error": "activation_ids supports at most 20 items"}), 400
+            client = _sms_client()
+            terminal_statuses = {"STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8"}
+            results = []
+            for activation_id in activation_ids:
+                try:
+                    status = client.get_status(activation_id)
+                    status_name = str(status.get("status") or "").strip().upper()
+                    results.append({
+                        "activation_id": activation_id,
+                        "status": status_name,
+                        "code": str(status.get("code") or "").strip(),
+                        "active": status_name not in terminal_statuses,
+                    })
+                except HeroSMSError as exc:
+                    results.append({
+                        "activation_id": activation_id,
+                        "status": "UNKNOWN",
+                        "code": "",
+                        "active": False,
+                        "error": str(exc),
+                    })
+            return jsonify({"ok": True, "activations": results})
         if protocol_path == "api/sms/cancel" and request.method == "POST":
             data = request.get_json(silent=True) or {}
             activation_id = str(data.get("activation_id") or data.get("id") or "").strip()

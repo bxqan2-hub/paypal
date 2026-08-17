@@ -50,6 +50,30 @@ four_artifacts:
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
+LATEST PHONE REFRESH AND OPTIONAL EMAIL FLOW
+changed_branch: HeroSMS phone-status refresh and BA-only protocol submission
+changed_fields:
+- payment_link_extractor/web/paypal_protocol.py adds POST /paypal-pay/api/sms/status, returning active/terminal status for up to 20 activation IDs without purchasing a number.
+- paypal_agreement_protocol/web_static/app.js adds the 刷新手机号 button flow, removes canceled/unknown activations from the phone pool, preserves active numbers, and omits an all-blank email pool from the job payload.
+- paypal_agreement_protocol/web.py treats missing, blank, or aligned blank email slots as optional while retaining per-BA alignment for mixed pools.
+- paypal_agreement_protocol/web_static/index.html and checkout-preview.css add the refresh control and state that email is optional.
+source_hashes_before_change:
+- payment_link_extractor/web/paypal_protocol.py: 2ef2f9771fdc0afb7e9dc6b10836419b0d1021a8e056ca51ce9193a8586cbf40
+- paypal_agreement_protocol/web.py: 831fb3d960ced2ede186137f025b3322b737a0d3ec40788bd34de4cabee3c60f
+- paypal_agreement_protocol/web_static/app.js: d5e0b64aace40a35c5cd3119171f028bfaf7d3464c4c804dad63a223dcd2950a
+- paypal_agreement_protocol/web_static/index.html: 849096fcee91934c5c93cf7bd0b1fd30303dd1284a13e10ad463086002ba3fa4
+source_hashes_after_change:
+- payment_link_extractor/web/paypal_protocol.py: 11df485c14294b5d5bfd6f9b2360e2839dd453264c891bcac0fa3e7678e7cdd5
+- paypal_agreement_protocol/web.py: a1cf7863c3748dee9157ea84045f24a99c9190d0295beeda2b8c51e07ab963e8
+- paypal_agreement_protocol/web_static/app.js: 47d62a41ace22ec50c3cc8c52c49803991e28b26b6de1ac2803e6d0df2fd9a47
+- paypal_agreement_protocol/web_static/index.html: eb59ca088e60b4222cefe9bc27c5d0ffe1206a676a9cce865f2e73df4c3f0089
+- paypal_agreement_protocol/web_static/checkout-preview.css: d5f5e5c2dc92fe86ae9c6ee5582773edaaa6b656bfc16b545776f27cd8ed133b
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
 LATEST COUNTRY GATE CACHE BUST
 changed_branch: protocol UI cache refresh
 changed_fields:

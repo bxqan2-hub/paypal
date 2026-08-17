@@ -61,6 +61,8 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
 .start-button:hover { border-color: #0f5f99; background: #0f5f99; }
 .phone-button { border-color: #b8ddcf; background: var(--console-green-soft); }
 .phone-button .button-icon { background: #ccecdf; color: var(--console-green); }
+.refresh-button { border-color: #c5d8ea; background: #f2f7fb; }
+.refresh-button .button-icon { background: #dcecf8; color: var(--console-blue); }
 .stop-button { border-color: #ebbdc4; background: var(--console-red-soft); color: var(--console-red); }
 .stop-button small { color: #a8616b; }
 .square-command { width: 48px; min-height: 46px; border: 1px solid var(--console-line); border-radius: 7px; background: #fff; color: var(--console-muted); cursor: pointer; font-size: 10px; font-weight: 800; transition: .16s; }

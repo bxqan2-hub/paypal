@@ -461,6 +461,47 @@ async function cancelSmsActivation(activation) {
   } catch (_) {}
 }
 
+async function refreshSmsNumbers() {
+  const entries = sortedBaPoolEntries();
+  const tracked = entries
+    .map((entry, index) => ({entry, index, activation: state.smsActivations.get(entry.token)}))
+    .filter(item => item.activation?.activation_id);
+  if (!tracked.length) return showClientError('当前没有可刷新的 HeroSMS 取号记录');
+  const button = $('refreshPhonesButton');
+  if (button) button.disabled = true;
+  try {
+    const data = await api('/sms/status', {
+      method: 'POST',
+      body: JSON.stringify({activation_ids: tracked.map(item => item.activation.activation_id)}),
+    });
+    const resultById = new Map((data.activations || []).map(item => [String(item.activation_id), item]));
+    let active = 0;
+    let removed = 0;
+    for (const item of tracked) {
+      const activationId = String(item.activation.activation_id);
+      const result = resultById.get(activationId);
+      if (!result || result.active === false) {
+        clearPhoneAtIndex(item.index, item.entry);
+        state.smsActivations.delete(item.entry.token);
+        removed += 1;
+        continue;
+      }
+      item.activation.status = result.status || item.activation.status || '';
+      item.activation.code = result.code || item.activation.code || '';
+      active += 1;
+    }
+    syncPhonePoolFromActivations();
+    renderAccountQueue();
+    setProgress(removed ? 4 : 5, removed
+      ? `刷新完成：${removed} 个手机号已失效并清除，${active} 个仍可用`
+      : `刷新完成：${active} 个手机号仍可用`, 'SMS');
+  } catch (error) {
+    showClientError(error.message || '手机号状态刷新失败');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function clearPhoneAtIndex(index, entry = {}) {
   const values = $('phone').value.split(/\r?\n/);
   const sourceIndex = Number.isInteger(entry.originalIndex) ? entry.originalIndex : index;
@@ -522,6 +563,7 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
 }
 
 $('acquirePhonesButton').addEventListener('click', () => acquireSmsNumbers());
+$('refreshPhonesButton').addEventListener('click', refreshSmsNumbers);
 $('toggleConfigButton').addEventListener('click', () => {
   const drawer = $('settingsDrawer');
   drawer.hidden = !drawer.hidden;
@@ -1167,15 +1209,18 @@ $('protocolForm').addEventListener('submit', async (event) => {
   $('batchJobGrid').innerHTML = '';
   setProgress(3, '正在创建独立任务', '提交中');
   try {
+    const emailValues = baEntries.map(entry => entry.email || '');
     const smsActivations = baEntries.map((entry, index) => {
       const activation = state.smsActivations.get(entry.token);
       return activation?.activation_id ? {index: index + 1, activation_id: activation.activation_id, phone: activation.phone, country} : null;
     });
-    const data = await api('/jobs', {method:'POST', body:JSON.stringify({
-      ba_pool: baValues, phones, emails: baEntries.map(entry => entry.email || ''), country, proxies, agreement_only: false,
+    const payload = {
+      ba_pool: baValues, phones, country, proxies, agreement_only: false,
       buyer_mode: $('buyerMode').value,
       sms_activations: smsActivations,
-    })});
+    };
+    if (emailValues.some(Boolean)) payload.emails = emailValues;
+    const data = await api('/jobs', {method:'POST', body:JSON.stringify(payload)});
     startBatch(data.jobs || []);
     await refreshJobs();
   } catch (error) {

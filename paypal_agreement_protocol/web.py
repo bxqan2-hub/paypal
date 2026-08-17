@@ -1815,6 +1815,21 @@ def parse_pool_values(value: Any, *, field_name: str, limit: int = 20) -> list[s
     return items
 
 
+def parse_optional_email_values(value: Any, expected_count: int) -> list[str]:
+    """Keep optional email slots aligned with the BA pool."""
+    if value in (None, "", []):
+        return [""] * expected_count
+    if isinstance(value, (list, tuple)):
+        values = [str(item or "").strip() for item in value]
+    else:
+        values = [line.strip() for line in str(value).splitlines()]
+    if not any(values):
+        return [""] * expected_count
+    if len(values) != expected_count:
+        raise ValueError(f"BA 链池与账号邮箱池数量必须一致（当前 {expected_count} / {len(values)}）")
+    return values
+
+
 def create_job(
     owner_device_id: str,
     ba_token: str,
@@ -2381,12 +2396,7 @@ class WebHandler(BaseHTTPRequestHandler):
                     if len(ba_values) != len(phone_values):
                         raise ValueError(f"BA 链池与手机号池数量必须一致（当前 {len(ba_values)} / {len(phone_values)}）")
                     raw_email_values = data.get("emails")
-                    if raw_email_values in (None, "", []):
-                        email_values = [""] * len(ba_values)
-                    else:
-                        email_values = parse_pool_values(raw_email_values, field_name="账号邮箱池")
-                        if len(ba_values) != len(email_values):
-                            raise ValueError(f"BA 链池与账号邮箱池数量必须一致（当前 {len(ba_values)} / {len(email_values)}）")
+                    email_values = parse_optional_email_values(raw_email_values, len(ba_values))
                     ba_tokens = [extract_ba_token(value) for value in ba_values]
                     if any(not token or not BA_TOKEN_RE.fullmatch(token) for token in ba_tokens):
                         raise ValueError("BA 链池中存在格式不正确的 PayPal 链接或 BA Token")

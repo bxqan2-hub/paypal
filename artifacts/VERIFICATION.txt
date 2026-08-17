@@ -32,6 +32,23 @@ ROLLBACK literal result: rollback script remains executable and restores the sel
 ROLLBACK exit status: 0
 restored behavior/status: port 18794 serves HTTP 200, returns GB_verified=True, and serves the cache-busted protocol UI; manually selected verified countries proceed without the dynamic-country-disabled client gate.
 
+LATEST PHONE REFRESH AND OPTIONAL EMAIL FLOW
+BASELINE command: inspect current app.js, paypal_protocol.py, and web.py; run status-route and optional-email tests before the change
+BASELINE input: existing UI with no refreshPhonesButton, no /sms/status route, and emails=[""] sent for a BA-only submission
+BASELINE literal result: refresh_button_present=False; status_route_present=False; optional_email_none_handler=False; optional_email_blank_list_handler=False; EXIT_CODE=0
+BASELINE exit status: 0
+
+MODIFIED command: node --check paypal_agreement_protocol/web_static/app.js; compileall; parse_optional_email_values tests; Flask test client POST /paypal-pay/api/sms/status with mocked HeroSMS statuses; git diff --check
+MODIFIED input: active-1 -> STATUS_WAIT_CODE, cancelled-1 -> STATUS_CANCEL; BA count 1 with missing/blank email
+MODIFIED literal result: optional_email_none=['']; optional_email_blank_list=['']; partial_length_error=raised; status_endpoint_code=200; status_endpoint_body={'activations':[{'activation_id':'active-1','active':True,'code':'','status':'STATUS_WAIT_CODE'},{'activation_id':'cancelled-1','active':False,'code':'','status':'STATUS_CANCEL'}],'ok':True}; status_endpoint_test_exit=0; modified_test_exit=0; protocol_js=0; compile=0; diff_check=0; EXIT_CODE=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-phone-refresh-rollback HEAD; append markers to payment_link_extractor/web/paypal_protocol.py, paypal_agreement_protocol/web.py, and paypal_agreement_protocol/web_static/app.js; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-phone-refresh-rollback' && ./artifacts/ROLLBACK.sh HEAD"; git diff --exit-code; git worktree remove --force C:\Temp\paypal-phone-refresh-rollback
+ROLLBACK input: temporary copy with one marker per phone-refresh/optional-email source file
+ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=False; web_marker_after=False; app_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores the selected commit; the active build exposes read-only HeroSMS status refresh, clears canceled phone activations, and accepts BA-only jobs without requiring email.
+
 MODIFIED console route command: create_app(TESTING); GET /paypal-pay/; inspect checkout-preview.css and flow.py
 MODIFIED input: protocol page plus existing open-source flow.py Phase 0–4
 MODIFIED literal result: protocol_status=200 original_option=True elevation_option=True full_width=True font14=True log_modal=True log_button=True phases=True

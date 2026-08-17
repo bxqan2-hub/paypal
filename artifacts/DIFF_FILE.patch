@@ -125,6 +125,21 @@ diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_
 -  <script src="/paypal-pay/static/app.js?v=20260817-price-limit-1"></script>
 +  <script src="/paypal-pay/static/app.js?v=20260818-country-gate-1"></script>
 
+# LATEST PHONE REFRESH AND OPTIONAL EMAIL DIFF
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+@@ SMS bridge
++POST /paypal-pay/api/sms/status accepts activation_ids and calls HeroSMS getStatusV2 without buying numbers.
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+@@ batch email parsing
++parse_optional_email_values treats None, empty strings, all-blank lists, and aligned blank slots as optional.
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+@@ phone controls
++refreshSmsNumbers checks activation status, clears canceled/unknown phones, and keeps active numbers.
++all-blank email pools are omitted from the job payload.
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+@@ command bar
++refreshPhonesButton = 刷新手机号
+
 
 # LATEST PROXY-PARSER FIX
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py

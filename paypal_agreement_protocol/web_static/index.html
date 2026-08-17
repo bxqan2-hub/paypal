@@ -57,6 +57,7 @@
         </div>
         <div class="command-actions">
           <button id="acquirePhonesButton" class="command-button phone-button" type="button"><span class="button-icon">＋</span><span><b>获取接码手机号</b><small>按账号队列自动取号</small></span></button>
+          <button id="refreshPhonesButton" class="command-button refresh-button" type="button"><span class="button-icon">↻</span><span><b>刷新手机号</b><small>检查号码是否仍可用</small></span></button>
           <button id="submitButton" class="command-button start-button" type="submit"><span class="button-icon">▶</span><span><b>开始协议支付</b><small>自动发送并接收验证码</small></span></button>
           <button id="cancelBatchButton" class="command-button stop-button" type="button" hidden><span class="button-icon">■</span><span><b>停止全部</b><small>结束执行中任务</small></span></button>
           <button id="toggleConfigButton" class="square-command" type="button" aria-controls="settingsDrawer" aria-expanded="false" title="运行设置">设置</button>
@@ -65,7 +66,7 @@
 
       <section class="ba-source-panel" aria-labelledby="baSourceTitle">
         <div class="section-title-row">
-          <div><span class="section-index">BA</span><div><h2 id="baSourceTitle">PayPal 付款链接（BA）</h2><p>推送过来的链接会自动填写到这里，并按一行一个账号同步到下方列表。</p></div></div>
+          <div><span class="section-index">BA</span><div><h2 id="baSourceTitle">PayPal 付款链接（BA）</h2><p>推送过来的链接会自动填写到这里，并按一行一个账号同步到下方列表；邮箱为可选项，没有邮箱也可以直接开始。</p></div></div>
           <span id="baPoolCount" class="count-badge">0 / 20</span>
         </div>
         <textarea id="baToken" required autocomplete="off" spellcheck="false" placeholder="等待提链工作台推送 PayPal BA 链接，也可以每行粘贴一条链接…"></textarea>
@@ -81,7 +82,7 @@
             <thead>
               <tr>
                 <th>#</th>
-                <th>账号（邮箱）</th>
+                <th>账号（邮箱，可选）</th>
                 <th>PayPal 付款链接（BA）</th>
                 <th>接码手机号</th>
                 <th>验证码</th>

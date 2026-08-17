@@ -18,6 +18,7 @@ FILES=(
   payment_link_extractor/web/static/styles.css
   paypal_agreement_protocol/herosms.py
   paypal_agreement_protocol/web.py
+  payment_link_extractor/web/paypal_protocol.py
   payment_link_extractor/web/static/app.js
   paypal_agreement_protocol/web_static/app.js
   .env.example
