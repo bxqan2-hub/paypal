@@ -18,6 +18,7 @@ from .events import make_event
 from .env import load_configured_env
 from .routes import register_routes
 from .tasks import TaskManager
+from .paypal_protocol import register_paypal_protocol
 from ..logging_utils import configure_logging
 
 
@@ -55,6 +56,9 @@ def create_app(
     )
     app.extensions["payment_task_manager"] = manager
     register_routes(app, manager)
+    # Keep the agreement protocol in this Flask process.  The adapter mounts
+    # the clean upstream core below /paypal-pay without opening another port.
+    register_paypal_protocol(app)
 
     @app.before_request
     def require_api_password() -> Any:

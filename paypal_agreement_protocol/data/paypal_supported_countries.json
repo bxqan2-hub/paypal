@@ -1,0 +1,100 @@
+{
+    "countries":  [
+                      {
+                          "calling_code":  "+55",
+                          "code":  "BR",
+                          "currency":  "BRL",
+                          "name_en":  "Brazil",
+                          "name_zh":  "巴西",
+                          "locale":  "pt-BR"
+                      },
+                      {
+                          "calling_code":  "+44",
+                          "code":  "GB",
+                          "currency":  "GBP",
+                          "name_en":  "United Kingdom",
+                          "name_zh":  "英国",
+                          "locale":  "en-GB"
+                      },
+                      {
+                          "calling_code":  "+1",
+                          "code":  "US",
+                          "currency":  "USD",
+                          "name_en":  "United States",
+                          "name_zh":  "美国",
+                          "locale":  "en-US"
+                      },
+                      {
+                          "calling_code":  "+81",
+                          "code":  "JP",
+                          "currency":  "JPY",
+                          "name_en":  "Japan",
+                          "name_zh":  "日本",
+                          "locale":  "ja-JP"
+                      },
+                      {
+                          "calling_code":  "+66",
+                          "code":  "TH",
+                          "currency":  "THB",
+                          "name_en":  "Thailand",
+                          "name_zh":  "泰国",
+                          "locale":  "th-TH"
+                      },
+                      {
+                          "calling_code":  "+62",
+                          "code":  "ID",
+                          "currency":  "IDR",
+                          "name_en":  "Indonesia",
+                          "name_zh":  "印度尼西亚",
+                          "locale":  "id-ID"
+                      },
+                      {
+                          "calling_code":  "+63",
+                          "code":  "PH",
+                          "currency":  "PHP",
+                          "name_en":  "Philippines",
+                          "name_zh":  "菲律宾",
+                          "locale":  "en-PH"
+                      },
+                      {
+                          "calling_code":  "+886",
+                          "code":  "TW",
+                          "currency":  "TWD",
+                          "name_en":  "Taiwan",
+                          "name_zh":  "中国台湾",
+                          "locale":  "zh-TW"
+                      },
+                      {
+                          "calling_code":  "+52",
+                          "code":  "MX",
+                          "currency":  "MXN",
+                          "name_en":  "Mexico",
+                          "name_zh":  "墨西哥",
+                          "locale":  "es-MX"
+                      },
+                      {
+                          "calling_code":  "+971",
+                          "code":  "AE",
+                          "currency":  "AED",
+                          "name_en":  "United Arab Emirates",
+                          "name_zh":  "阿联酋",
+                          "locale":  "en-AE"
+                      },
+                      {
+                          "calling_code":  "+61",
+                          "code":  "AU",
+                          "currency":  "AUD",
+                          "name_en":  "Australia",
+                          "name_zh":  "澳大利亚",
+                          "locale":  "en-AU"
+                      },
+                      {
+                          "calling_code":  "+1",
+                          "code":  "CA",
+                          "currency":  "CAD",
+                          "name_en":  "Canada",
+                          "name_zh":  "加拿大",
+                          "locale":  "en-CA"
+                      }
+                  ]
+}

@@ -1267,8 +1267,19 @@
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   }
 
-  function renderResultRow(url) {
-    return `<div class="result-row"><div class="result-content"><span class="result-label">提取链接</span><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div><button class="primary" data-copy="${escapeHtml(url)}">复制</button></div>`;
+  function protocolPaymentUrl(result) {
+    const url = taskResultUrl(result);
+    if (!url) return "";
+    const country = result.billing_country || "";
+    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}` : ""}`;
+  }
+
+  function renderResultRow(url, result = {}) {
+    const protocolUrl = protocolPaymentUrl(result);
+    const protocolAction = protocolUrl
+      ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>`
+      : "";
+    return `<div class="result-row"><div class="result-content"><span class="result-label">提取链接</span><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div><button class="primary" data-copy="${escapeHtml(url)}">复制</button>${protocolAction}</div>`;
   }
 
   function isFailedTask(task) {
@@ -1318,7 +1329,7 @@
     const progressHtml = isComplete || isFailed
       ? ""
       : `<div class="task-progress progress-${progressTone}" aria-label="任务进度 ${progress}%"><div class="task-progress-header"><span>${escapeHtml(stageLabel(task.stage))}</span><strong>${progress}%</strong></div><div class="task-progress-track"><span class="task-progress-bar" style="width: ${progress}%"></span></div></div>`;
-    const resultHtml = hasResult ? renderResultRow(url) : "";
+    const resultHtml = hasResult ? renderResultRow(url, result) : "";
     const resultDetails = task.status === "succeeded" ? renderResultDetails(result, checkoutProxy, task.task_id, task.proxyTest) : "";
     const cardClass = task.status === "succeeded" ? "task-card task-card-success" : "task-card";
     return `<article class="${cardClass}" data-task-container>
@@ -1349,9 +1360,10 @@
     const isComplete = task.status === "succeeded";
     const isFailed = isFailedTask(task);
     const hasResult = isComplete && Boolean(url);
+        const protocolUrl = protocolPaymentUrl(result);
     const progressOrResult = isComplete
       ? (hasResult
-      ? `<div class="task-row-result"><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a><button class="primary" data-copy="${escapeHtml(url)}">复制</button></div>`
+      ? `<div class="task-row-result"><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a><button class="primary" data-copy="${escapeHtml(url)}">复制</button>${protocolUrl ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>` : ""}</div>`
       : `<span class="task-row-result-empty">未返回链接</span>`)
       : isFailed
       ? `<span class="task-row-error" title="${escapeHtml(taskFailureReason(task))}">${escapeHtml(taskFailureReason(task))}</span>`
@@ -1436,7 +1448,7 @@
     const progressHtml = isComplete || isFailed
       ? ""
       : `<div class="modal-progress progress-${progressTone}"><div class="task-progress-header"><span>${escapeHtml(stageLabel(task.stage))}</span><strong>${progress}%</strong></div><div class="task-progress-track"><span class="task-progress-bar" style="width: ${progress}%"></span></div></div>`;
-    const resultHtml = hasResult ? renderResultRow(url) : "";
+    const resultHtml = hasResult ? renderResultRow(url, result) : "";
     elements.taskDetailsContent.innerHTML = `${progressHtml}<div class="result-details modal-detail-grid">${details}</div>${renderTaskError(task)}${resultHtml}${task.status === "succeeded" ? renderResultDetails(result, checkoutProxy, task.task_id, task.proxyTest) : ""}<div class="task-modal-actions" data-task-container>${renderTaskActions(task)}</div>`;
   }
 
