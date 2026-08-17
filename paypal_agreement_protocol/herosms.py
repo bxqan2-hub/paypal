@@ -69,7 +69,8 @@ class HeroSMSClient:
             payload = self.get_countries()
             for country_id, item in _country_entries(payload):
                 text = " ".join(str(item.get(key, "")) for key in (
-                    "iso", "isoCode", "countryCode", "code", "name", "name_en", "name_zh", "country"
+                    "iso", "isoCode", "countryCode", "code", "name", "name_en", "name_zh", "country",
+                    "countryName", "country_name", "nameEn", "nameCn"
                 )).upper()
                 if code in text or _country_alias_match(code, text):
                     return int(country_id)

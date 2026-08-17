@@ -968,10 +968,10 @@ new file mode 100644
 index 0000000..e69de29
 diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
 new file mode 100644
-index 0000000..f487fef
+index 0000000..cb2cc2d
 --- /dev/null
 +++ b/paypal_agreement_protocol/herosms.py
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,181 @@
 +"""Small synchronous HeroSMS adapter used by the protocol-payment bridge.
 +
 +The copied PayPal flow is deliberately not modified.  This module only owns
@@ -1043,7 +1043,8 @@ index 0000000..f487fef
 +            payload = self.get_countries()
 +            for country_id, item in _country_entries(payload):
 +                text = " ".join(str(item.get(key, "")) for key in (
-+                    "iso", "isoCode", "countryCode", "code", "name", "name_en", "name_zh", "country"
++                    "iso", "isoCode", "countryCode", "code", "name", "name_en", "name_zh", "country",
++                    "countryName", "country_name", "nameEn", "nameCn"
 +                )).upper()
 +                if code in text or _country_alias_match(code, text):
 +                    return int(country_id)
