@@ -293,3 +293,9 @@ ROLLBACK input: temporary copy with one marker in each changed country-gate file
 ROLLBACK literal result: restored_to=HEAD; web_marker_after=False; app_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 ROLLBACK exit status: 0
 restored behavior/status: the temporary copy restores both country-gate files to the selected commit; the active project marks the twelve verified protocol countries so a manually selected GB/US/etc. phone can start payment while dynamic-country execution remains separately disabled.
+
+LATEST COUNTRY GATE CACHE BUST
+MODIFIED command: update paypal_agreement_protocol/web_static/index.html app.js query version; node --check; git diff --check
+MODIFIED input: country-gate fallback build
+MODIFIED literal result: cache_version=20260818-country-gate-1; EXIT_CODE=0
+MODIFIED exit status: 0

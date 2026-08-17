@@ -120,6 +120,11 @@ diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_prot
 +const VERIFIED_COUNTRY_CODES = new Set(['BR','GB','US','JP','TH','ID','PH','TW','MX','AE','AU','CA']);
 +option.dataset.live = item.verified === true || VERIFIED_COUNTRY_CODES.has(String(item.code || '').toUpperCase()) ? '1' : '0';
 
+# LATEST COUNTRY GATE CACHE BUST DIFF
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+-  <script src="/paypal-pay/static/app.js?v=20260817-price-limit-1"></script>
++  <script src="/paypal-pay/static/app.js?v=20260818-country-gate-1"></script>
+
 
 # LATEST PROXY-PARSER FIX
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
