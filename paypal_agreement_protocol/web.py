@@ -961,6 +961,7 @@ class WebJob:
     started_at: float | None = None
     finished_at: float | None = None
     status: str = "queued"  # queued | running | awaiting_otp | completed | failed
+    last_protocol_step: str = ""
     stage: str = "排队中"
     result: dict[str, Any] | None = None
     error: str = ""
@@ -1051,6 +1052,42 @@ class WebJob:
     def check_cancelled(self) -> None:
         if self._cancel_event.is_set():
             raise RuntimeError("Task cancelled")
+
+    def note_protocol_step(self, message: str) -> None:
+        """Keep the table stage aligned with important upstream log steps."""
+        text = str(message or "")
+        step = ""
+        attempt_match = re.search(r"Step 3: Creating account, signup attempt\s+(\d+/\d+)", text, re.I)
+        if attempt_match:
+            step = f"Phase 3 · createMemberAccount {attempt_match.group(1)}"
+        elif re.search(r"SignUpNewMemberMutation returned errors|onboardAccount is empty", text, re.I):
+            step = "Phase 3 · createMemberAccount failed"
+        elif re.search(r"OTP confirmed successfully", text, re.I):
+            step = "Phase 3 · OTP confirmed"
+        elif re.search(r"Step 2: Confirming OTP", text, re.I):
+            step = "Phase 3 · confirming OTP"
+        elif re.search(r"SMS verification code sent", text, re.I):
+            step = "Phase 3 · waiting for SMS code"
+        elif re.search(r"Step 1: Initiating 2FA", text, re.I):
+            step = "Phase 3 · sending SMS"
+        elif re.search(r"Phase 4|Final authorization", text, re.I):
+            step = "Phase 4 · final authorization"
+        elif re.search(r"Phase 3|Signup form \+ 2FA", text, re.I):
+            step = "Phase 3 · signup and SMS verification"
+        elif re.search(r"Phase 2|Create account flow", text, re.I):
+            step = "Phase 2 · account preparation"
+        elif re.search(r"Phase 1|Risk control signals", text, re.I):
+            step = "Phase 1 · risk controls"
+        elif re.search(r"Phase 0|Initial page load", text, re.I):
+            step = "Phase 0 · agreement page"
+        if not step:
+            return
+        with self._condition:
+            self.last_protocol_step = step
+            if self.status not in {"completed", "failed", "cancelled"}:
+                self.stage = step
+            self.updated_at = now_ts()
+            self._condition.notify_all()
 
     def cancel(self) -> None:
         with self._condition:
@@ -1317,6 +1354,12 @@ class WebJob:
             self.awaiting_prompt = ""
             self.challenge_url = ""
             self._browser = None
+            summary = (
+                "协议支付执行完成"
+                if succeeded
+                else f"协议支付执行失败：{self.error or result_obj.get('error') or result_obj.get('error_code') or 'unknown error'}"
+            )
+            self._append_log_locked("SUCCESS" if succeeded else "ERROR", summary)
             self._condition.notify_all()
 
     def fail(self, exc: BaseException) -> None:
@@ -1326,6 +1369,7 @@ class WebJob:
         with self._condition:
             error_text = str(exc)
             error_code = str(getattr(exc, "error_code", "") or "")
+            failure_step = self.last_protocol_step or self.stage or "protocol execution"
             if not error_code and error_text.startswith("PAYPAL_GRAPHQL_AUTH_CHALLENGE:"):
                 error_code = "PAYPAL_GRAPHQL_AUTH_CHALLENGE"
             if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
@@ -1359,7 +1403,14 @@ class WebJob:
                 }
                 self.stage = "PayPal edge authentication challenge"
             else:
-                self.stage = "Execution failed"
+                self.result = {
+                    "status": "error",
+                    "error_code": error_code or "PROTOCOL_EXECUTION_FAILED",
+                    "error": redact_text(error_text),
+                    "failure_stage": failure_step,
+                    "paypal_authorized": False,
+                }
+                self.stage = f"{failure_step} · failed"
             self.status = "failed"
             self.error = redact_text(error_text)
             self.traceback_text = redact_text(traceback.format_exc()) if (self.debug and ALLOW_DEBUG_LOGS) else ""
@@ -1368,6 +1419,7 @@ class WebJob:
             self.awaiting_prompt = ""
             self.challenge_url = ""
             self._browser = None
+            self._append_log_locked("ERROR", f"任务结束；失败阶段：{failure_step}；原因：{self.error}")
             self._condition.notify_all()
 
     def to_dict(self, *, include_logs: bool = True, log_offset: int = 0) -> dict[str, Any]:
@@ -1382,6 +1434,7 @@ class WebJob:
                 "duration": (self.finished_at or now_ts()) - (self.started_at or self.created_at),
                 "status": self.status,
                 "stage": self.stage,
+                "last_protocol_step": self.last_protocol_step,
                 "ba_token": mask_middle(self.ba_token),
                 "phone": mask_phone(self.phone),
                 "account_email": self.account_email,
@@ -1805,9 +1858,23 @@ class WebIdentityElevationPayPalFlow(WebPayPalFlow, IdentityElevationPayPalFlow)
 # ----------------------------- logging -----------------------------
 
 
+def _record_job_id(record: dict[str, Any]) -> str:
+    """Resolve a job id from loguru context or the dedicated runner thread."""
+    job_id = str(record["extra"].get("job_id") or "").strip()
+    if job_id:
+        return job_id
+    thread_name = str(getattr(record.get("thread"), "name", "") or "")
+    prefix = "paypal-web-"
+    if thread_name.startswith(prefix):
+        candidate = thread_name[len(prefix):].strip()
+        if re.fullmatch(r"[0-9a-f]{12}", candidate):
+            return candidate
+    return ""
+
+
 def _job_log_sink(message: Any) -> None:
     record = message.record
-    job_id = record["extra"].get("job_id")
+    job_id = _record_job_id(record)
     if not job_id:
         return
     with JOBS_LOCK:
@@ -1818,6 +1885,7 @@ def _job_log_sink(message: Any) -> None:
     if level == "DEBUG" and not job.debug:
         return
     job.add_log(level, record["message"], record["time"].timestamp())
+    job.note_protocol_step(record["message"])
 
 
 def _console_log_sink(message: Any) -> None:
@@ -1835,7 +1903,7 @@ def _full_log_sink(message: Any) -> None:
         level=record["level"].name,
         message=record["message"],
         ts=record["time"].timestamp(),
-        job_id=str(record["extra"].get("job_id") or ""),
+        job_id=_record_job_id(record),
     )
 
 
@@ -1843,7 +1911,7 @@ def configure_logging() -> None:
     logger.remove()
     logger.add(_console_log_sink, level="INFO")
     logger.add(_full_log_sink, level="DEBUG")
-    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(r["extra"].get("job_id")))
+    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(_record_job_id(r)))
 
 
 # ----------------------------- runner -----------------------------

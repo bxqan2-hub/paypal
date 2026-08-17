@@ -1,4 +1,4 @@
-﻿diff --git a/.env.example b/.env.example
+diff --git a/.env.example b/.env.example
 index df021a1..1699f36 100644
 --- a/.env.example
 +++ b/.env.example
@@ -853,3 +853,326 @@ diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extrac
 @@
 +_watch_sms_job checks consume_sms_send_failure before getStatusV2 polling.
 +On send failure it cancels the current activation with status=8 and immediately executes the existing same-country replacement branch without waiting 150 seconds.
+
+
+# LATEST COMPLETE PROTOCOL LOGGING AND FAILURE ATTRIBUTION
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index 091a785..cce8a2b 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -961,6 +961,7 @@ class WebJob:
+     started_at: float | None = None
+     finished_at: float | None = None
+     status: str = "queued"  # queued | running | awaiting_otp | completed | failed
++    last_protocol_step: str = ""
+     stage: str = "排队中"
+     result: dict[str, Any] | None = None
+     error: str = ""
+@@ -1052,6 +1053,42 @@ class WebJob:
+         if self._cancel_event.is_set():
+             raise RuntimeError("Task cancelled")
+
++    def note_protocol_step(self, message: str) -> None:
++        """Keep the table stage aligned with important upstream log steps."""
++        text = str(message or "")
++        step = ""
++        attempt_match = re.search(r"Step 3: Creating account, signup attempt\s+(\d+/\d+)", text, re.I)
++        if attempt_match:
++            step = f"Phase 3 · createMemberAccount {attempt_match.group(1)}"
++        elif re.search(r"SignUpNewMemberMutation returned errors|onboardAccount is empty", text, re.I):
++            step = "Phase 3 · createMemberAccount failed"
++        elif re.search(r"OTP confirmed successfully", text, re.I):
++            step = "Phase 3 · OTP confirmed"
++        elif re.search(r"Step 2: Confirming OTP", text, re.I):
++            step = "Phase 3 · confirming OTP"
++        elif re.search(r"SMS verification code sent", text, re.I):
++            step = "Phase 3 · waiting for SMS code"
++        elif re.search(r"Step 1: Initiating 2FA", text, re.I):
++            step = "Phase 3 · sending SMS"
++        elif re.search(r"Phase 4|Final authorization", text, re.I):
++            step = "Phase 4 · final authorization"
++        elif re.search(r"Phase 3|Signup form \+ 2FA", text, re.I):
++            step = "Phase 3 · signup and SMS verification"
++        elif re.search(r"Phase 2|Create account flow", text, re.I):
++            step = "Phase 2 · account preparation"
++        elif re.search(r"Phase 1|Risk control signals", text, re.I):
++            step = "Phase 1 · risk controls"
++        elif re.search(r"Phase 0|Initial page load", text, re.I):
++            step = "Phase 0 · agreement page"
++        if not step:
++            return
++        with self._condition:
++            self.last_protocol_step = step
++            if self.status not in {"completed", "failed", "cancelled"}:
++                self.stage = step
++            self.updated_at = now_ts()
++            self._condition.notify_all()
++
+     def cancel(self) -> None:
+         with self._condition:
+             if self.status in {"completed", "failed", "cancelled"}:
+@@ -1317,6 +1354,12 @@ class WebJob:
+             self.awaiting_prompt = ""
+             self.challenge_url = ""
+             self._browser = None
++            summary = (
++                "协议支付执行完成"
++                if succeeded
++                else f"协议支付执行失败：{self.error or result_obj.get('error') or result_obj.get('error_code') or 'unknown error'}"
++            )
++            self._append_log_locked("SUCCESS" if succeeded else "ERROR", summary)
+             self._condition.notify_all()
+
+     def fail(self, exc: BaseException) -> None:
+@@ -1326,6 +1369,7 @@ class WebJob:
+         with self._condition:
+             error_text = str(exc)
+             error_code = str(getattr(exc, "error_code", "") or "")
++            failure_step = self.last_protocol_step or self.stage or "protocol execution"
+             if not error_code and error_text.startswith("PAYPAL_GRAPHQL_AUTH_CHALLENGE:"):
+                 error_code = "PAYPAL_GRAPHQL_AUTH_CHALLENGE"
+             if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
+@@ -1359,7 +1403,14 @@ class WebJob:
+                 }
+                 self.stage = "PayPal edge authentication challenge"
+             else:
+-                self.stage = "Execution failed"
++                self.result = {
++                    "status": "error",
++                    "error_code": error_code or "PROTOCOL_EXECUTION_FAILED",
++                    "error": redact_text(error_text),
++                    "failure_stage": failure_step,
++                    "paypal_authorized": False,
++                }
++                self.stage = f"{failure_step} · failed"
+             self.status = "failed"
+             self.error = redact_text(error_text)
+             self.traceback_text = redact_text(traceback.format_exc()) if (self.debug and ALLOW_DEBUG_LOGS) else ""
+@@ -1368,6 +1419,7 @@ class WebJob:
+             self.awaiting_prompt = ""
+             self.challenge_url = ""
+             self._browser = None
++            self._append_log_locked("ERROR", f"任务结束；失败阶段：{failure_step}；原因：{self.error}")
+             self._condition.notify_all()
+
+     def to_dict(self, *, include_logs: bool = True, log_offset: int = 0) -> dict[str, Any]:
+@@ -1382,6 +1434,7 @@ class WebJob:
+                 "duration": (self.finished_at or now_ts()) - (self.started_at or self.created_at),
+                 "status": self.status,
+                 "stage": self.stage,
++                "last_protocol_step": self.last_protocol_step,
+                 "ba_token": mask_middle(self.ba_token),
+                 "phone": mask_phone(self.phone),
+                 "account_email": self.account_email,
+@@ -1805,9 +1858,23 @@ class WebIdentityElevationPayPalFlow(WebPayPalFlow, IdentityElevationPayPalFlow)
+ # ----------------------------- logging -----------------------------
+
+
++def _record_job_id(record: dict[str, Any]) -> str:
++    """Resolve a job id from loguru context or the dedicated runner thread."""
++    job_id = str(record["extra"].get("job_id") or "").strip()
++    if job_id:
++        return job_id
++    thread_name = str(getattr(record.get("thread"), "name", "") or "")
++    prefix = "paypal-web-"
++    if thread_name.startswith(prefix):
++        candidate = thread_name[len(prefix):].strip()
++        if re.fullmatch(r"[0-9a-f]{12}", candidate):
++            return candidate
++    return ""
++
++
+ def _job_log_sink(message: Any) -> None:
+     record = message.record
+-    job_id = record["extra"].get("job_id")
++    job_id = _record_job_id(record)
+     if not job_id:
+         return
+     with JOBS_LOCK:
+@@ -1818,6 +1885,7 @@ def _job_log_sink(message: Any) -> None:
+     if level == "DEBUG" and not job.debug:
+         return
+     job.add_log(level, record["message"], record["time"].timestamp())
++    job.note_protocol_step(record["message"])
+
+
+ def _console_log_sink(message: Any) -> None:
+@@ -1835,7 +1903,7 @@ def _full_log_sink(message: Any) -> None:
+         level=record["level"].name,
+         message=record["message"],
+         ts=record["time"].timestamp(),
+-        job_id=str(record["extra"].get("job_id") or ""),
++        job_id=_record_job_id(record),
+     )
+
+
+@@ -1843,7 +1911,7 @@ def configure_logging() -> None:
+     logger.remove()
+     logger.add(_console_log_sink, level="INFO")
+     logger.add(_full_log_sink, level="DEBUG")
+-    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(r["extra"].get("job_id")))
++    logger.add(_job_log_sink, level="DEBUG", filter=lambda r: bool(_record_job_id(r)))
+
+
+ # ----------------------------- runner -----------------------------
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index f53196d..e3563bf 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -73,6 +73,9 @@ const state = {
+   prefillEmails: [],
+   queueRenderTimer: null,
+   lastCountry: '',
++  activeLogJobId: '',
++  activeLogToken: '',
++  jobLogTimer: null,
+ };
+
+ const vaultState = {
+@@ -616,12 +619,6 @@ function setProgress(percent, text, stage) {
+   $('orbitValue').style.strokeDashoffset = `${320.44 * (1 - p / 100)}`;
+ }
+
+-function isMajorLog(log) {
+-  const level = String(log.level || '').toUpperCase();
+-  if (level === 'ERROR' || level === 'WARNING' || level === 'WARN' || level === 'SUCCESS') return true;
+-  const message = String(log.message || '');
+-  return /Phase\s*[0-4]|协议支付任务|SMS|OTP|verification code|account|authorization|authorize|completed|success|failed|验证码|短信|授权|注册/.test(message);
+-}
+ function formatTime(ts) {
+   if (!ts) return '--:--:--';
+   return new Date(ts * 1000).toLocaleTimeString('zh-CN', {hour12: false});
+@@ -633,10 +630,9 @@ function renderLogs(logs = []) {
+   const box = $('logBox');
+   const keepTop = box.scrollTop;
+   const wasPinned = state.logPinned || (box.scrollHeight - box.scrollTop - box.clientHeight < 32);
+-  const major = logs.filter(isMajorLog).slice(-100);
+-  const visible = major.length ? major : logs.slice(-100);
++  const visible = logs.slice(-300);
+   if (!visible.length) {
+-    box.innerHTML = '<div class="empty-log">任务已开始，正在等待主要步骤。</div>';
++    box.innerHTML = '<div class="empty-log">任务已开始，正在等待流程日志。</div>';
+     return;
+   }
+   box.innerHTML = visible.map(item => {
+@@ -655,6 +651,9 @@ $('logBox').addEventListener('scroll', () => {
+ function closeJobLogModal() {
+   const modal = $('jobLogModal');
+   if (modal) modal.hidden = true;
++  clearTimeout(state.jobLogTimer);
++  state.activeLogJobId = '';
++  state.activeLogToken = '';
+ }
+
+ function renderFullJobLogs(job, token = '') {
+@@ -674,22 +673,38 @@ function renderFullJobLogs(job, token = '') {
+     : '<div class="empty-log">当前 BA 暂无日志</div>';
+ }
+
+-async function openJobLogs(jobId, token = '') {
++async function refreshOpenJobLogs() {
++  clearTimeout(state.jobLogTimer);
++  const jobId = state.activeLogJobId;
++  const token = state.activeLogToken;
+   const modal = $('jobLogModal');
+-  if (!modal || !jobId) return;
+-  modal.hidden = false;
+-  $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
+-  $('jobLogModalMeta').textContent = '正在加载完整日志…';
+-  $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
++  if (!modal || modal.hidden || !jobId) return;
+   try {
+     const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
++    if (modal.hidden || state.activeLogJobId !== jobId) return;
+     renderFullJobLogs(job, token);
++    if (!terminal(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
+   } catch (error) {
++    if (modal.hidden || state.activeLogJobId !== jobId) return;
+     $('jobLogModalMeta').textContent = '日志加载失败';
+     $('jobLogModalBody').innerHTML = `<div class="full-log-error">${escapeHtml(error.message || '无法加载日志')}</div>`;
++    if (Number(error.status) !== 404) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 2000);
+   }
+ }
+
++async function openJobLogs(jobId, token = '') {
++  const modal = $('jobLogModal');
++  if (!modal || !jobId) return;
++  clearTimeout(state.jobLogTimer);
++  state.activeLogJobId = jobId;
++  state.activeLogToken = token;
++  modal.hidden = false;
++  $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
++  $('jobLogModalMeta').textContent = '正在加载完整日志…，运行期间将自动刷新';
++  $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
++  await refreshOpenJobLogs();
++}
++
+ $('jobLogModalClose').addEventListener('click', closeJobLogModal);
+ $('jobLogModal').addEventListener('click', event => { if (event.target === $('jobLogModal')) closeJobLogModal(); });
+ document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('jobLogModal').hidden) closeJobLogModal(); });
+@@ -1104,7 +1119,7 @@ function renderBatchJobs(jobs) {
+     const prompt = job.awaiting_prompt || (waitingOtp ? '填写短信验证码' : '填写验证结果');
+     const codeValue = pendingValues[job.id] || '';
+     const resultText = terminal(job) ? JSON.stringify(job.result || (job.error ? {error: job.error} : {status: job.status}), null, 2) : '';
+-    const latestLogs = (job.logs || []).filter(isMajorLog).slice(-3);
++    const latestLogs = (job.logs || []).slice(-3);
+     return `<article class="batch-job-card ${escapeHtml(cls)}" data-job-card="${escapeHtml(job.id)}">
+       <div class="batch-card-head"><div><b>#${index} · ${escapeHtml(job.ba_token || job.id)}</b><small>${escapeHtml(job.phone || '')}</small></div><span class="status-badge ${escapeHtml(cls)}">${escapeHtml(label)}</span></div>
+       <div class="batch-card-progress"><i style="width:${percent}%"></i></div>
+diff --git a/paypal_agreement_protocol/web_static/checkout-preview.css b/paypal_agreement_protocol/web_static/checkout-preview.css
+index 138cf1c..994f0cd 100644
+--- a/paypal_agreement_protocol/web_static/checkout-preview.css
++++ b/paypal_agreement_protocol/web_static/checkout-preview.css
+@@ -86,7 +86,7 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
+ .account-table-wrap { overflow: auto; border: 1px solid var(--console-line); border-radius: 8px; background: #fff; }
+ .account-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
+ .account-table th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--console-line); background: #f8fafc; color: #526c87; font-size: 10px; font-weight: 800; text-align: left; white-space: nowrap; }
+-.account-table td { height: 55px; padding: 9px 12px; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 10px; vertical-align: middle; }
++.account-table td { height: 55px; min-width: 0; overflow: hidden; padding: 9px 12px; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 10px; vertical-align: middle; }
+ .account-table tr:last-child td { border-bottom: 0; }
+ .account-table tbody tr { transition: background .15s; }
+ .account-table tbody tr:hover { background: #f9fbfd; }
+@@ -96,11 +96,11 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
+ .account-table .muted-value { color: #93a0af; }
+ .table-status { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: 6px; font-size: 9px; font-weight: 900; white-space: nowrap; }
+ .table-status.idle { color: #67778b; background: #edf1f5; }.table-status.queued,.table-status.awaiting { color: var(--console-amber); background: var(--console-amber-soft); }.table-status.running { color: var(--console-blue); background: var(--console-blue-soft); }.table-status.done { color: var(--console-green); background: var(--console-green-soft); }.table-status.error { color: var(--console-red); background: var(--console-red-soft); }
+-.otp-state { color: var(--console-green); font-weight: 800; }.otp-state.waiting { color: var(--console-amber); }.failure-cell { overflow: hidden; color: var(--console-muted); text-overflow: ellipsis; white-space: nowrap; }.failure-cell.error { color: var(--console-red); }
++.otp-state { color: var(--console-green); font-weight: 800; }.otp-state.waiting { color: var(--console-amber); }.failure-cell { display: -webkit-box; max-width: 100%; overflow: hidden; color: var(--console-muted); line-height: 1.35; overflow-wrap: anywhere; text-overflow: ellipsis; white-space: normal; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.failure-cell.error { color: var(--console-red); }
+ .retry-pill { display: inline-flex; min-width: 36px; justify-content: center; padding: 5px 7px; border-radius: 6px; background: var(--console-amber-soft); color: var(--console-amber); font: 800 10px var(--console-mono); }
+ .table-action { min-height: 30px; padding: 0 10px; border: 1px solid var(--console-line); border-radius: 6px; background: #f7f9fb; color: #35526e; cursor: pointer; font-size: 9px; font-weight: 800; }
+ .table-action:hover { border-color: #9ebcd3; background: #fff; }.table-action.danger { border-color: #efc5cb; color: var(--console-red); background: var(--console-red-soft); }
+-.table-actions { display: flex; align-items: center; gap: 5px; }
++.table-actions { display: flex; max-width: 100%; flex-wrap: wrap; align-items: center; gap: 5px; }.table-actions .table-action { min-width: 0; padding-right: 6px; padding-left: 6px; }
+ .account-empty-row td { height: 125px; text-align: center; }.account-empty-row b,.account-empty-row span { display: block; }.account-empty-row b { color: #526b82; font-size: 12px; }.account-empty-row span { margin-top: 7px; color: #98a5b3; font-size: 10px; }
+
+ .batch-status-strip { padding: 0 20px 18px; }.batch-status-strip[hidden]{display:none}.batch-status-copy { display: flex; align-items: center; justify-content: space-between; color: var(--console-muted); font-size: 10px; }.batch-status-copy b { color: #425c75; }.batch-status-copy span { color: var(--console-blue); font: 800 11px var(--console-mono); }.batch-overall-track { height: 5px; margin-top: 8px; overflow: hidden; border-radius: 99px; background: #e9eef3; }.batch-overall-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg,var(--console-blue),#1ca076); transition: width .25s; }
+@@ -126,7 +126,7 @@ body { font-size: 14px; }
+ .job-log-close { width: 34px; height: 34px; border: 1px solid var(--console-line); border-radius: 7px; background: #fff; color: var(--console-muted); cursor: pointer; font-size: 22px; line-height: 1; }
+ .job-log-body { min-height: 180px; overflow: auto; padding: 12px 18px 20px; background: #fff; }
+ .full-log-row { display: grid; grid-template-columns: 86px 72px minmax(0,1fr); gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 13px; line-height: 1.5; }
+-.full-log-row time { color: var(--console-muted); font: 11px var(--console-mono); }.full-log-row b { color: var(--console-blue); font-size: 10px; }.full-log-row.warn b,.full-log-row.warn span { color: var(--console-amber); }.full-log-row.error b,.full-log-row.error span { color: var(--console-red); }.full-log-error { padding: 24px 0; color: var(--console-red); }
++.full-log-row time { color: var(--console-muted); font: 11px var(--console-mono); }.full-log-row b { color: var(--console-blue); font-size: 10px; }.full-log-row span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }.full-log-row.warn b,.full-log-row.warn span { color: var(--console-amber); }.full-log-row.error b,.full-log-row.error span { color: var(--console-red); }.full-log-error { padding: 24px 0; color: var(--console-red); }
+ .dark .job-log-dialog { border-color: #34495a; background: #101922; }.dark .job-log-head,.dark .job-log-body { background: #111d27; border-color: #293a48; }.dark .job-log-head h2,.dark .full-log-row span { color: #edf3f8; }.dark .job-log-close { background: #0f1922; border-color: #304250; color: #d1dce6; }
+
+ .dark body { background: #0d141c; color: #ecf2f8; }.dark .topbar,.dark .command-bar { background: rgba(14,23,32,.96); border-color: #2a3a49; }.dark .console-heading { border-color: #294b67; background: linear-gradient(115deg,#102234,#14334b); }.dark .account-console,.dark .account-table-wrap { background: #101922; border-color: #293a48; }.dark .ba-source-panel,.dark .account-table th,.dark .settings-drawer { background: #111d27; border-color: #293a48; }.dark .account-board,.dark .account-table td { border-color: #22313e; }.dark .account-table tbody tr:hover { background: #14222d; }.dark .ba-source-panel textarea,.dark .settings-drawer textarea,.dark .settings-drawer input,.dark .settings-drawer select,.dark .toolbar-country-picker .country-picker-toggle,.dark .command-button,.dark .square-command { background: #0f1922; color: #e8eef5; border-color: #304250; }.dark .account-table code { color: #a8d4f4; }.dark .command-label,.dark .account-board-head h2,.dark .section-title-row h2,.dark .settings-head h2 { color: #edf3f8; }.dark .phone-button { background: #112920; border-color: #285040; }.dark .start-button { background: #176eae; border-color: #176eae; }.dark .stop-button { background: #2c171b; border-color: #5d3038; }
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+index c45487a..884d1f1 100644
+--- a/paypal_agreement_protocol/web_static/index.html
++++ b/paypal_agreement_protocol/web_static/index.html
+@@ -8,7 +8,7 @@
+   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
+   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
+   <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
+-  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-5">
++  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260818-complete-logs-1">
+ </head>
+ <body>
+   <div class="paper-noise"></div>
+@@ -152,6 +152,6 @@
+
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
+-  <script src="/paypal-pay/static/app.js?v=20260818-sms-rotation-logs-1"></script>
++  <script src="/paypal-pay/static/app.js?v=20260818-complete-logs-1"></script>
+ </body>
+ </html>

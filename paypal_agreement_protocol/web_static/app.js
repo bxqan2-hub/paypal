@@ -73,6 +73,9 @@ const state = {
   prefillEmails: [],
   queueRenderTimer: null,
   lastCountry: '',
+  activeLogJobId: '',
+  activeLogToken: '',
+  jobLogTimer: null,
 };
 
 const vaultState = {
@@ -616,12 +619,6 @@ function setProgress(percent, text, stage) {
   $('orbitValue').style.strokeDashoffset = `${320.44 * (1 - p / 100)}`;
 }
 
-function isMajorLog(log) {
-  const level = String(log.level || '').toUpperCase();
-  if (level === 'ERROR' || level === 'WARNING' || level === 'WARN' || level === 'SUCCESS') return true;
-  const message = String(log.message || '');
-  return /Phase\s*[0-4]|协议支付任务|SMS|OTP|verification code|account|authorization|authorize|completed|success|failed|验证码|短信|授权|注册/.test(message);
-}
 function formatTime(ts) {
   if (!ts) return '--:--:--';
   return new Date(ts * 1000).toLocaleTimeString('zh-CN', {hour12: false});
@@ -633,10 +630,9 @@ function renderLogs(logs = []) {
   const box = $('logBox');
   const keepTop = box.scrollTop;
   const wasPinned = state.logPinned || (box.scrollHeight - box.scrollTop - box.clientHeight < 32);
-  const major = logs.filter(isMajorLog).slice(-100);
-  const visible = major.length ? major : logs.slice(-100);
+  const visible = logs.slice(-300);
   if (!visible.length) {
-    box.innerHTML = '<div class="empty-log">任务已开始，正在等待主要步骤。</div>';
+    box.innerHTML = '<div class="empty-log">任务已开始，正在等待流程日志。</div>';
     return;
   }
   box.innerHTML = visible.map(item => {
@@ -655,6 +651,9 @@ $('logBox').addEventListener('scroll', () => {
 function closeJobLogModal() {
   const modal = $('jobLogModal');
   if (modal) modal.hidden = true;
+  clearTimeout(state.jobLogTimer);
+  state.activeLogJobId = '';
+  state.activeLogToken = '';
 }
 
 function renderFullJobLogs(job, token = '') {
@@ -674,20 +673,36 @@ function renderFullJobLogs(job, token = '') {
     : '<div class="empty-log">当前 BA 暂无日志</div>';
 }
 
+async function refreshOpenJobLogs() {
+  clearTimeout(state.jobLogTimer);
+  const jobId = state.activeLogJobId;
+  const token = state.activeLogToken;
+  const modal = $('jobLogModal');
+  if (!modal || modal.hidden || !jobId) return;
+  try {
+    const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
+    if (modal.hidden || state.activeLogJobId !== jobId) return;
+    renderFullJobLogs(job, token);
+    if (!terminal(job)) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 1000);
+  } catch (error) {
+    if (modal.hidden || state.activeLogJobId !== jobId) return;
+    $('jobLogModalMeta').textContent = '日志加载失败';
+    $('jobLogModalBody').innerHTML = `<div class="full-log-error">${escapeHtml(error.message || '无法加载日志')}</div>`;
+    if (Number(error.status) !== 404) state.jobLogTimer = setTimeout(refreshOpenJobLogs, 2000);
+  }
+}
+
 async function openJobLogs(jobId, token = '') {
   const modal = $('jobLogModal');
   if (!modal || !jobId) return;
+  clearTimeout(state.jobLogTimer);
+  state.activeLogJobId = jobId;
+  state.activeLogToken = token;
   modal.hidden = false;
   $('jobLogModalTitle').textContent = `BA ${token || '当前任务'} 日志`;
-  $('jobLogModalMeta').textContent = '正在加载完整日志…';
+  $('jobLogModalMeta').textContent = '正在加载完整日志…，运行期间将自动刷新';
   $('jobLogModalBody').innerHTML = '<div class="empty-log">正在加载…</div>';
-  try {
-    const job = await api(`/jobs/${encodeURIComponent(jobId)}?log_offset=0`);
-    renderFullJobLogs(job, token);
-  } catch (error) {
-    $('jobLogModalMeta').textContent = '日志加载失败';
-    $('jobLogModalBody').innerHTML = `<div class="full-log-error">${escapeHtml(error.message || '无法加载日志')}</div>`;
-  }
+  await refreshOpenJobLogs();
 }
 
 $('jobLogModalClose').addEventListener('click', closeJobLogModal);
@@ -1104,7 +1119,7 @@ function renderBatchJobs(jobs) {
     const prompt = job.awaiting_prompt || (waitingOtp ? '填写短信验证码' : '填写验证结果');
     const codeValue = pendingValues[job.id] || '';
     const resultText = terminal(job) ? JSON.stringify(job.result || (job.error ? {error: job.error} : {status: job.status}), null, 2) : '';
-    const latestLogs = (job.logs || []).filter(isMajorLog).slice(-3);
+    const latestLogs = (job.logs || []).slice(-3);
     return `<article class="batch-job-card ${escapeHtml(cls)}" data-job-card="${escapeHtml(job.id)}">
       <div class="batch-card-head"><div><b>#${index} · ${escapeHtml(job.ba_token || job.id)}</b><small>${escapeHtml(job.phone || '')}</small></div><span class="status-badge ${escapeHtml(cls)}">${escapeHtml(label)}</span></div>
       <div class="batch-card-progress"><i style="width:${percent}%"></i></div>

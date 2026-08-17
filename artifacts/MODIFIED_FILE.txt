@@ -254,3 +254,22 @@ four_artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST COMPLETE PROTOCOL LOGGING AND FAILURE ATTRIBUTION
+changed_branch: main
+changed_fields:
+- paypal_agreement_protocol/web.py: infer the current job id from the dedicated paypal-web-{job_id} runner thread when loguru context is missing; append every protocol INFO/WARNING/ERROR/SUCCESS record to that job; keep last_protocol_step synchronized; serialize generic failure_stage/error_code/error; append an explicit success/failure terminal record.
+- paypal_agreement_protocol/web_static/app.js: render the latest 300 unfiltered job records, show the latest three unfiltered batch records, and poll an open per-BA log dialog every second until completed/failed/cancelled so steps after SMS remain visible through the terminal result.
+- paypal_agreement_protocol/web_static/checkout-preview.css: contain table cells, clamp failure attribution to two wrapped lines, wrap action buttons, and wrap long log/failure text.
+- paypal_agreement_protocol/web_static/index.html: cache-bust app.js and checkout-preview.css to 20260818-complete-logs-1.
+original_copies: C:\Temp\paypal-complete-logs-original
+source_blob_hashes:
+- paypal_agreement_protocol/web.py original=091a785efa2cc365546b1e6997e2e27bac5ba1b4 modified=cce8a2bcb8d542ff02531d23341f122cef26d64e
+- paypal_agreement_protocol/web_static/app.js original=f53196d1c8613bcdfc82524b4a49ae64523181b0 modified=e3563bf516253475608fab1f433aadfcecc5fd12
+- paypal_agreement_protocol/web_static/checkout-preview.css original=138cf1c18913d634c30800f9ce4adf210bfa685c modified=994f0cd504f755b4da4f179d5995d0d365dc9525
+- paypal_agreement_protocol/web_static/index.html original=c45487a40332740fbcc7be65cd2d5332892a58b4 modified=884d1f1e421ef9abf1dec5cbb9c0f081d7df1f45
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh

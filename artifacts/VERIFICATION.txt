@@ -416,3 +416,24 @@ ROLLBACK input: temporary marker-modified copies of the HeroSMS parser, WebJob s
 ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; herosms_marker_after=0; web_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 ROLLBACK exit status: 0
 restored behavior/status: the temporary rollback restored commit 87a1ab3; active port 18794 remains on f9e5db5 and live local status polling detected both current HeroSMS codes.
+
+LATEST COMPLETE PROTOCOL LOGGING AND FAILURE ATTRIBUTION
+changed_branch: main
+changed_fields: paypal_agreement_protocol/web.py job-id inference, per-job protocol-step capture, last_protocol_step, structured terminal failure and terminal log; paypal_agreement_protocol/web_static/app.js unfiltered log rendering plus one-second live per-BA log polling until terminal state; paypal_agreement_protocol/web_static/checkout-preview.css contained two-line failure attribution and wrapping; paypal_agreement_protocol/web_static/index.html cache version 20260818-complete-logs-1.
+four_paths: MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt; DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch; VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt; ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+BASELINE command: git show HEAD:paypal_agreement_protocol/web.py; git show HEAD:paypal_agreement_protocol/web_static/app.js; git show HEAD:paypal_agreement_protocol/web_static/checkout-preview.css; git show HEAD:paypal_agreement_protocol/web_static/index.html; inspect complete-log/failure-layout markers
+BASELINE input: commit 1d3a155 before complete per-job logging, live log-dialog refresh, structured generic failure attribution, and cell containment
+BASELINE literal result: baseline_thread_job_inference=False; baseline_terminal_failure_log=False; baseline_structured_generic_failure=False; baseline_major_only_log_filter=True; baseline_live_log_modal_poll=False; baseline_failure_two_line_clamp=False; baseline_cache_complete_logs=False; BASELINE_EXIT=0
+BASELINE exit status: 0
+
+MODIFIED command: set PYTHONPATH to repository root and paypal_agreement_protocol; .venv\Scripts\python.exe C:\Temp\test_complete_logs.py; node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q paypal_agreement_protocol payment_link_extractor; git diff --check; inspect frontend complete-log/live-poll/wrap/cache markers; run WebJob.complete success terminal test
+MODIFIED input: named thread paypal-web-abcdef123456 emitting Phase 0, Phase 1, Phase 2, Phase 3, SMS sent, OTP confirmation, createMemberAccount 5/5, OAS_ERROR, and RuntimeError('Signup failed: no usable access token obtained'); separate successful WebJob result
+MODIFIED literal result: captured_log_count=11; first_log=--- Phase 0: Initial page load ---; post_sms_logs=4; last_protocol_step=Phase 3 · createMemberAccount failed; failure_stage=Phase 3 · createMemberAccount failed; failure_reason=Signup failed: no usable access token obtained; terminal_log=任务结束；失败阶段：Phase 3 · createMemberAccount failed；原因：Signup failed: no usable access token obtained; BACKEND_TEST_EXIT=0; frontend_all_log_render=True; frontend_live_log_modal_poll=True; frontend_terminal_poll_stop=True; frontend_failure_two_line_clamp=True; frontend_failure_wrap=True; frontend_cache_complete_logs=True; success_terminal_status=completed; success_terminal_message_matches=True; SUCCESS_END_TEST_EXIT=0; MODIFIED_EXIT backend=0 node=0 compile=0 diff=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-complete-logs-rollback HEAD; append COMPLETE_LOGS_ROLLBACK_MARKER to paypal_agreement_protocol/web.py, paypal_agreement_protocol/web_static/app.js, paypal_agreement_protocol/web_static/checkout-preview.css, paypal_agreement_protocol/web_static/index.html; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-complete-logs-rollback' && chmod +x ./artifacts/ROLLBACK.sh && ./artifacts/ROLLBACK.sh HEAD"; git diff --exit-code for all four files; git worktree remove --force C:\Temp\paypal-complete-logs-rollback
+ROLLBACK input: temporary worktree at commit 1d3a155 with one marker added to each of the four changed files
+ROLLBACK literal result: restored_to=HEAD; rollback_exit=0; markers_after=False,False,False,False; diff_exit=0; temporary_copy_removed=True; ROLLBACK_TEST_EXIT=0
+ROLLBACK exit status: 0
+restored behavior/status: rollback restored all four temporary copies byte-for-byte to commit 1d3a155; active workspace remains modified with contained failure attribution, complete per-job step logging, live log-dialog polling, explicit failure reason/stage, and terminal success/failure records.
