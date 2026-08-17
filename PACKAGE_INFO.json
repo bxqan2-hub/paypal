@@ -1,0 +1,9 @@
+{
+  "name": "OAI PayPal Extractor Sanitized",
+  "built_at": "2026-08-13T14:29:28",
+  "web_url": "http://127.0.0.1:18794/",
+  "billing_country": "DE",
+  "currency": "EUR",
+  "payment_method": "paypal",
+  "sanitized": true
+}
