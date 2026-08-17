@@ -12285,3 +12285,17 @@ index 8ca34fb..7d51390 100644
  loguru>=0.7,<1
  python-dotenv>=1.0,<2
 +httpx[http2,socks]>=0.27,<1
+diff --git a/artifacts/VERIFICATION.txt b/artifacts/VERIFICATION.txt
+index 494d896..990fbf7 100644
+--- a/artifacts/VERIFICATION.txt
++++ b/artifacts/VERIFICATION.txt
+@@ -24,7 +24,7 @@ MODIFIED visual exit status: 0
+ MODIFIED preview command: GET /; GET /paypal-pay/?ba=BA-DEMO2026081701
+ MODIFIED preview literal result: workbench_status=200; payment_preview_status=200; payment_preview_bytes=16666; checkout_preview_css_status=200 bytes=5858
+ MODIFIED preview exit status: 0
+-ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
+-ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
++ROLLBACK command: artifacts/ROLLBACK.sh HEAD~1
++ROLLBACK literal result: restored_to=HEAD~1; restored_index=True; removed_preview_css=True
+ ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
+ restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch; upstream paypal core files remain byte-for-byte unchanged by the HeroSMS integration.
