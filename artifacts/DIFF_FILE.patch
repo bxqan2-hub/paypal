@@ -837,3 +837,19 @@ diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_
 @@
 -app.js?v=20260818-phone-refresh-1
 +app.js?v=20260818-sms-rotation-logs-1
+
+# LATEST HEROSMS CODE RECEPTION AND IMMEDIATE SEND-FAIL ROTATION DIFF
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+@@
++get_status calls _find_sms_code to normalize structured getStatusV2 sms.code/call.code and nested/legacy response forms.
++_find_sms_code recursively scans OTP-bearing fields and accepts 4-12 digit values.
+
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+@@
++WebJob.report_sms_send_failure/consume_sms_send_failure/clear_sms_send_failure provide a synchronized signal and log record.
++WebPayPalFlow reports _initiate_2fa_phone_confirmation failures immediately.
+
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+@@
++_watch_sms_job checks consume_sms_send_failure before getStatusV2 polling.
++On send failure it cancels the current activation with status=8 and immediately executes the existing same-country replacement branch without waiting 150 seconds.

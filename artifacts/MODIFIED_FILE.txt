@@ -1,4 +1,4 @@
-﻿MODIFIED_FILE
+MODIFIED_FILE
 branch: main
 changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling + selectable billing country
 changed_fields:
@@ -232,6 +232,23 @@ changed_fields:
 - payment_link_extractor/web/templates/index.html increments the app.js cache-bust to 20260818-ui-persist-1 so the browser loads the persistence code after the port restart.
 source_hash_after_change:
 - payment_link_extractor/web/templates/index.html: 7bbe7c75ea326eaa47110b9e1319391c07fbd934eb4a7650b94990e34dab7542
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST HEROSMS CODE RECEPTION AND IMMEDIATE SEND-FAIL ROTATION
+changed_branch: HeroSMS getStatusV2 code normalization and PayPal SMS-send failure handoff
+changed_fields:
+- paypal_agreement_protocol/herosms.py: HeroSMSClient.get_status now extracts OTP codes from structured getStatusV2 responses such as sms.code/call.code, nested data verificationCode, top-level smsCode, and legacy STATUS_OK:CODE text.
+- paypal_agreement_protocol/web.py: WebJob now reports/consumes/clears an sms_send_failed signal; WebPayPalFlow reports every _initiate_2fa_phone_confirmation exception before entering the existing new-phone prompt.
+- payment_link_extractor/web/paypal_protocol.py: _watch_sms_job consumes the send-failure signal before provider polling, cancels the old activation immediately, acquires a same-country replacement, and does not spend the 150-second receive window on a number to which PayPal failed to send.
+original_copies: C:\Temp\paypal-sms-receive-original
+source_blob_hashes:
+- payment_link_extractor/web/paypal_protocol.py original=a555eb3e0040bfa61f6c7d1b8679b34632e2cffd modified=6c3b641a4f3d9226ddf9006222684576c4626ca4
+- paypal_agreement_protocol/herosms.py original=597a9a42f0399bb06b60753f28d432fdca5dc50f modified=bf17f2148a917247db61bb8114a95362b4536100
+- paypal_agreement_protocol/web.py original=18cc14d5c2c1e5b600fb0799f66d9a57d84baefd modified=091a785efa2cc365546b1e6997e2e27bac5ba1b4
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch

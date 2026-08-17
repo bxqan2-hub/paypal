@@ -947,6 +947,8 @@ class WebJob:
     sms_activation_id: str = ""
     sms_attempt: int = 0
     sms_max_attempts: int = 3
+    sms_send_failed: bool = False
+    sms_send_error: str = ""
     debug: bool = False
     max_card_attempts: int = 5
     manual_funding: bool = False
@@ -1006,6 +1008,32 @@ class WebJob:
             self.sms_max_attempts = max(1, int(max_attempts or 3))
             self.updated_at = now_ts()
             self._condition.notify_all()
+
+    def report_sms_send_failure(self, error: str) -> None:
+        """Signal the SMS watcher to rotate immediately instead of waiting."""
+        with self._condition:
+            self.sms_send_failed = True
+            self.sms_send_error = redact_text(str(error or "SMS send failed"))
+            self.updated_at = now_ts()
+            self._append_log_locked("ERROR", f"短信发送失败，准备立即换号：{self.sms_send_error}")
+            self._condition.notify_all()
+
+    def consume_sms_send_failure(self) -> str:
+        with self._condition:
+            if not self.sms_send_failed:
+                return ""
+            error = self.sms_send_error
+            self.sms_send_failed = False
+            self.sms_send_error = ""
+            self.updated_at = now_ts()
+            self._condition.notify_all()
+            return error
+
+    def clear_sms_send_failure(self) -> None:
+        with self._condition:
+            self.sms_send_failed = False
+            self.sms_send_error = ""
+            self.updated_at = now_ts()
 
     def set_status(self, status: str, stage: str | None = None) -> None:
         with self._condition:
@@ -1366,6 +1394,8 @@ class WebJob:
                 "sms_attempt": self.sms_attempt,
                 "sms_max_attempts": self.sms_max_attempts,
                 "sms_current_phone": mask_phone(self.phone) if self.sms_attempt else "",
+                "sms_send_failed": self.sms_send_failed,
+                "sms_send_error": redact_text(self.sms_send_error),
                 "debug": self.debug and ALLOW_DEBUG_LOGS,
                 "max_card_attempts": self.max_card_attempts,
                 "manual_funding": self.manual_funding,
@@ -1722,6 +1752,7 @@ class WebPayPalFlow(PayPalFlow):
                 auth_id, challenge_id = self._initiate_2fa_phone_confirmation(token, signup_url)
             except Exception as e:
                 logger.error("Failed to initiate OTP for {}: {}", self._masked_phone(), e)
+                self.job.report_sms_send_failure(str(e))
                 while True:
                     value = self._prompt_operator(
                         f"发送验证码失败。请输入新的手机号重新发送（如 {phone_example}）；输入 q 退出。"
@@ -1730,6 +1761,7 @@ class WebPayPalFlow(PayPalFlow):
                         raise RuntimeError("OTP confirmation cancelled by user") from e
                     try:
                         self._update_user_phone(value)
+                        self.job.clear_sms_send_failure()
                         break
                     except ValueError as phone_error:
                         logger.warning("手机号无效：{}。请重新输入。", phone_error)

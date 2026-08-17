@@ -1,4 +1,4 @@
-﻿VERIFICATION
+VERIFICATION
 changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling + selectable billing country
 changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; configurable SMS max_price is enforced; extractor billing country is selectable, payload-driven, and backed by all 15 complete billing profiles.
 artifacts:
@@ -384,3 +384,20 @@ ROLLBACK input: tracked bridge/WebJob/UI SMS rotation files from commit 8e4a6f5
 ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; web_marker_after=0; app_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 ROLLBACK exit status: 0
 restored behavior/status: port 18794 is listening with HTTP 200 and serves the SMS rotation/log UI; the temporary rollback restores the selected prior commit without changing the active service.
+
+LATEST HEROSMS CODE RECEPTION AND IMMEDIATE SEND-FAIL ROTATION
+BASELINE command: git show HEAD:paypal_agreement_protocol/herosms.py; git show HEAD:paypal_agreement_protocol/web.py; git show HEAD:payment_link_extractor/web/paypal_protocol.py; inspect nested-code/send-failure markers
+BASELINE input: commit 87a1ab3 with 150-second number windows but no structured getStatusV2 sms.code parser and no immediate PayPal send-failure signal
+BASELINE literal result: baseline_nested_sms_parser=False; baseline_send_failure_signal=False; baseline_immediate_failure_consumer=False; baseline_wait_seconds=SMS_ROTATION_WAIT_SECONDS = 150.0; baseline_exit=0
+BASELINE exit status: 0
+
+MODIFIED command: .venv\Scripts\python.exe nested HeroSMS status parser test; .venv\Scripts\python.exe live read-only getActiveActivations/getStatusV2 test; .venv\Scripts\python.exe immediate send-failure watcher test; .venv\Scripts\python.exe WebJob signal test; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; git diff --check
+MODIFIED input: three mocked status forms (structured sms.code=654321, nested verificationCode=112233, legacy STATUS_OK:445566), two current read-only active activations, and a fake PayPal SMS_LIMIT_EXCEEDED signal on activation a1 followed by replacement a2/code 654321
+MODIFIED literal result: case1_status= code=654321; case2_status=STATUS_OK code=112233; case3_status=STATUS_OK code=445566; case4_code=; nested_status_false_positive_test_exit=0; active_activation_count=2; active_with_nested_code=2; activation_1 response_keys=['call','code','sms','status','verificationType'] code_present=True; activation_2 response_keys=['call','code','sms','status','verificationType'] code_present=True; live_nested_code_test_exit=0; elapsed_ms=0.03; inputs=['+447700900002','654321']; status_ids=['a2']; finish=[('a1',8),('a2',6)]; sms=[('a1','+447700900001',1,3),('a2','+447700900002',2,3)]; immediate_send_failure_test_exit=0; before_failed=True; consumed=SMS_LIMIT_EXCEEDED; after_failed=False; send_failure_signal_test_exit=0; node_exit=0; compile_exit=0; diff_check_exit=0
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-sms-receive-rollback HEAD; append markers to payment_link_extractor/web/paypal_protocol.py, paypal_agreement_protocol/herosms.py, and paypal_agreement_protocol/web.py; copy artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc "cd 'C:/Temp/paypal-sms-receive-rollback' && ./artifacts/ROLLBACK.sh HEAD"; git diff --exit-code -- payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol/herosms.py paypal_agreement_protocol/web.py; git worktree remove --force C:\Temp\paypal-sms-receive-rollback
+ROLLBACK input: temporary worktree with one marker in each SMS-receive/send-failure file
+ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; herosms_marker_after=0; web_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: selected HEAD restores the previous parser/watcher behavior in the temporary copy; the active project keeps structured HeroSMS OTP reception and immediate replacement when PayPal reports an SMS-send failure.

@@ -171,7 +171,10 @@ class HeroSMSClient:
         if isinstance(payload, dict):
             result = dict(payload)
             result.setdefault("status", result.get("state") or result.get("statusCode") or "")
-            result.setdefault("code", result.get("smsCode") or result.get("verificationCode") or "")
+            code = _find_sms_code(result)
+            result.setdefault("code", code)
+            if not result.get("code"):
+                result["code"] = code
             return result
         return {"status": "", "code": ""}
 
@@ -257,6 +260,43 @@ def _parse_activation(payload: Any) -> tuple[str, str, Any]:
                 str(payload.get("phoneNumber") or payload.get("phone") or payload.get("number") or ""),
                 payload.get("activationCost") or payload.get("cost") or payload.get("price"))
     return "", "", None
+
+
+def _find_sms_code(payload: Any) -> str:
+    """Extract a verification code from all HeroSMS response variants."""
+    if isinstance(payload, dict):
+        for key in (
+            "code", "smsCode", "verificationCode", "sms_code", "verification_code",
+            "messageCode", "message_code", "otp", "pin",
+        ):
+            value = payload.get(key)
+            if value not in (None, ""):
+                found = _find_sms_code(value)
+                if found:
+                    return found
+        for key in (
+            "sms", "call", "data", "message", "messages", "activation",
+            "activations", "result", "results", "items",
+        ):
+            value = payload.get(key)
+            if value in (None, ""):
+                continue
+            found = _find_sms_code(value)
+            if found:
+                return found
+        return ""
+    if isinstance(payload, (list, tuple)):
+        for value in payload:
+            found = _find_sms_code(value)
+            if found:
+                return found
+        return ""
+    text = str(payload or "").strip()
+    if not text or text.casefold() in {"none", "null"}:
+        return ""
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1].strip()
+    return text if re.fullmatch(r"\d{4,12}", text) else ""
 
 
 def _normalise_phone(phone: str) -> str:

@@ -185,12 +185,19 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
 
             deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
             timed_out = True
+            immediate_send_failure = False
             while time.monotonic() < deadline:
                 job = _protocol.get_job(job_id)
                 if job is None or job.status in {"completed", "failed", "cancelled"}:
                     return
                 if job.status != "awaiting_otp":
                     timed_out = False
+                    break
+                consume_failure = getattr(job, "consume_sms_send_failure", None)
+                send_failure = consume_failure() if callable(consume_failure) else ""
+                if send_failure:
+                    immediate_send_failure = True
+                    add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
                     break
                 try:
                     status = client.get_status(activation_id)
@@ -218,7 +225,10 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             job = _protocol.get_job(job_id)
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
-            add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
+            if immediate_send_failure:
+                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已直接取消旧号")
+            else:
+                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
             client.finish(activation_id, 8)
             current_closed = True
             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
