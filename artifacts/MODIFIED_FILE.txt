@@ -1,14 +1,19 @@
-MODIFIED_FILE
+﻿MODIFIED_FILE
 branch: main
-changed_branch: extraction-success -> single "push to BA protocol payment" action -> compact payment preview -> HeroSMS country-matched number -> automatic OTP submission
-changed_fields: stale-process cleanup before START; complete STOP process-tree cleanup; single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
-original_hashes:
-  requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
-  payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
-  payment_link_extractor/web/app.py: 6867afef52a51c40b0eefe219aa399d534f46cb0
-  START.bat: 5cfa96d27d34ad5e156086c5dbae0e645f0065b4
-  STOP.bat: 1ef87d0166c4778a5b0b4790b09fb60b06e5f885
-
-upstream_core: paypal_agreement_protocol/paypal/*.py copied byte-for-byte from https://github.com/bxqan2-hub/- at commit 16a985c46a16d0c0b390f8a4679bdda0053a1895
-HeroSMS_adapter: paypal_agreement_protocol/herosms.py; payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/web_static/app.js
-secret_handling: HEROSMS_API_KEY is read from local .env and is not tracked; .env.example contains an empty placeholder
+changed_branch: legacy stacked form -> horizontal account queue console
+changed_fields:
+- top command bar with手机号地区 selector, HeroSMS automatic number allocation, start/stop actions, and compact settings drawer
+- PayPal 付款链接（BA） source textarea receives workbench query prefill and renders one row per BA link
+- account queue table columns: #, 账号（邮箱）, BA link, 接码手机号, 验证码, 状态, current stage, retry, failure attribution, duration, operation
+- multi-account HeroSMS activation mapping; each batch index receives its own SMS watcher and automatic OTP submission
+source_hashes_before_change:
+- paypal_agreement_protocol/web_static/index.html: 64f933545e7e1e8427ff676dc1c18fd3d73bd691
+- paypal_agreement_protocol/web_static/checkout-preview.css: d8a20c317cd906d739ece670153f8fd2d67fe62c
+- paypal_agreement_protocol/web_static/app.js: 0b8fc9c237235c67c889f9d6482f878ace6586fc
+- payment_link_extractor/web/paypal_protocol.py: 28e3042c6a16d8fc8df67fc81843ca6365c528e0
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+'

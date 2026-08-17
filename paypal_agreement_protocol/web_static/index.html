@@ -4,208 +4,144 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;</title>
-  <meta name="description" content="PayPal BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;&#x5DE5;&#x4F5C;&#x53F0;">
+  <title>PayPal BA 协议支付控制台</title>
+  <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
-  <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260812-ba-pool-1">
-  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-preview-1">
+  <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-2">
+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-2">
 </head>
 <body>
   <div class="paper-noise"></div>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Return to extraction workbench">
+    <a class="brand" href="/" aria-label="返回提链工作台">
       <span class="brand-mark">BA<i></i></span>
-      <span><b>&#x534F;&#x8BAE;&#x652F;&#x4ED8;</b><small>PAYPAL BILLING AGREEMENT</small></span>
+      <span><b>协议支付</b><small>PAYPAL BILLING AGREEMENT</small></span>
     </a>
     <div class="top-actions">
-      <a class="nav-return" href="/">&#x8FD4;&#x56DE;&#x63D0;&#x94FE;&#x5DE5;&#x4F5C;&#x53F0;</a>
+      <a class="nav-return" href="/">返回提链工作台</a>
       <span id="serviceState" class="service-dot"><i></i> 服务检测中</span>
       <button id="themeToggle" class="icon-button" type="button" aria-label="切换主题">◐</button>
     </div>
   </header>
 
-  <main class="shell">
-    <section class="payment-overview" aria-labelledby="paymentTitle">
+  <main class="shell account-console-shell">
+    <section class="console-heading" aria-labelledby="paymentTitle">
       <div>
-        <span class="preview-kicker">PAYMENT WORKBENCH</span>
-        <h1 id="paymentTitle">BA &#x534F;&#x8BAE;&#x652F;&#x4ED8;</h1>
-        <p>&#x786E;&#x8BA4;&#x63D0;&#x94FE;&#x7ED3;&#x679C;&#xFF0C;&#x624B;&#x52A8;&#x9009;&#x62E9; PayPal &#x56FD;&#x5BB6;&#xFF0C;&#x7136;&#x540E;&#x542F;&#x52A8;&#x534F;&#x8BAE;&#x652F;&#x4ED8;&#x3002;</p>
+        <span class="preview-kicker">PAYMENT OPERATIONS</span>
+        <h1 id="paymentTitle">PayPal 协议支付控制台</h1>
+        <p>从提链工作台推送的 BA 链接会自动进入账号队列；选择手机号地区后，系统自动取号、发送并接收验证码。</p>
       </div>
-      <ol class="payment-steps" aria-label="Payment steps">
-        <li class="active"><b>1</b><span>&#x786E;&#x8BA4; BA &#x94FE;</span></li>
-        <li><b>2</b><span>&#x9009;&#x62E9;&#x56FD;&#x5BB6;</span></li>
-        <li><b>3</b><span>&#x534F;&#x8BAE;&#x652F;&#x4ED8;</span></li>
-      </ol>
+      <div class="queue-summary" aria-label="任务统计">
+        <span><small>账号</small><b id="queueCount">0</b></span>
+        <span><small>已取号</small><b id="queueReadyCount">0</b></span>
+        <span><small>执行中</small><b id="queueRunningCount">0</b></span>
+        <span><small>已完成</small><b id="queueDoneCount">0</b></span>
+      </div>
     </section>
-    <section class="workspace-grid">
-      <form id="protocolForm" class="panel form-panel">
-        <div class="panel-heading">
-          <div><span class="section-index">01</span><h2>&#x652F;&#x4ED8;&#x4FE1;&#x606F;</h2></div>
-          <span class="quiet">&#x5355;&#x8D26;&#x53F7;&#x4EFB;&#x52A1;</span>
-        </div>
 
-        <div class="public-limit-note"><b>运行说明</b><span>BA 链池与手机号池按行一一对应，最多 20 组；每组独立运行并从代理池随机选择代理。</span></div>
-
-        <div class="protocol-mode-switch" id="protocolModeSwitch">
-          <label class="active"><input type="radio" name="protocolMode" value="legacy" checked><span><b>自动协议支付</b><small>填写链接、手机号、代理；自动识别普通 BA / Grok Braintree</small></span></label>
-          <label id="privateBraintreeMode" hidden><input type="radio" name="protocolMode" value="braintree"><span><b>生成 Braintree BA 链接</b><small>只返回链接，由你自行打开授权</small></span></label>
-        </div>
-
-        <section id="braintreeVaultFields" class="braintree-vault-panel" hidden>
-          <div class="block-heading"><div><span class="section-index">BT</span><div><h3>Braintree PayPal Vault 链接</h3><p>选择账单国家并校验代理出口，服务端仅生成 BA 授权链接；生成后由你自行打开。</p></div></div><span class="optional-tag">SERVER SIDE</span></div>
-          <div class="two-cols">
-            <label class="field"><span>Grok 账号 ID <small>选填</small></span><input id="vaultAccountId" autocomplete="off" placeholder="留空时从账号池随机选择可用账号"></label>
-            <label class="field"><span>账号凭据令牌 <small>必填</small></span><input id="vaultAccessToken" type="password" autocomplete="off" placeholder="私有功能访问令牌"></label>
-          </div>
-          <div class="two-cols">
-            <label class="field"><span>账单国家</span><select id="vaultRegion"><option value="GB" selected>GB · 英国账单</option><option value="US">US · 美国账单</option></select></label>
-            <label class="field"><span>处理方式</span><input value="仅生成 BA 链接" readonly></label>
-          </div>
-          <label class="field"><span>协议生成代理 <small>必填，出口国家必须与账单国家一致</small></span><input id="vaultProxy" autocomplete="off" spellcheck="false" placeholder="host:port:username:password 或 socks5://username:password@host:port"></label>
-          <div id="vaultParameterBox" class="vault-parameter-box"><span>buyerCountry=GB</span><span>locale=en_GB</span><span>vault=true</span><span>intent=tokenize</span><span>fundingSource=paypal</span></div>
-          <button id="loadVaultButton" class="primary-button" type="button"><span>生成英国 Braintree BA 链接</span><i>→</i></button>
-          <div id="vaultStatus" class="vault-status">等待生成 Braintree BA 链接</div>
-          <section id="vaultReturnPanel" class="vault-return-panel" hidden>
-            <label class="field"><span>PayPal 授权返回结果 <small>授权完成后粘贴最终 URL 或 Payer ID</small></span><textarea id="vaultReturnValue" autocomplete="off" spellcheck="false" placeholder="https://...?...PayerID=...  或直接填写 Payer ID"></textarea></label>
-            <button id="completeVaultButton" class="primary-button" type="button"><span>回传 Grok 并确认订阅</span><i>→</i></button>
-          </section>
-        </section>
-
-        <label id="legacyTokenField" class="field token-field protocol-token">
-          <span class="label-row"><b>PayPal 链接 / BA 链池</b><small id="baPoolCount">0 / 20</small></span>
-          <textarea id="baToken" required autocomplete="off" spellcheck="false" placeholder="每行一个完整 PayPal BA 链接或 BA Token，最多 20 条"></textarea>
-          <span class="field-note">第 1 条 BA 链使用第 1 个手机号，第 2 条使用第 2 个手机号，依次对应。</span>
-        </label>
-
-        <div class="herosms-strip"><span>HeroSMS &#x81EA;&#x52A8;&#x63A5;&#x7801;</span><p>&#x56FD;&#x5BB6;&#x7531;&#x4F60;&#x624B;&#x52A8;&#x9009;&#x62E9;&#xFF0C;&#x624B;&#x673A;&#x53F7;&#x548C;&#x77ED;&#x4FE1;&#x9A8C;&#x8BC1;&#x7801;&#x7531;&#x7CFB;&#x7EDF;&#x81EA;&#x52A8;&#x83B7;&#x53D6;&#x5E76;&#x586B;&#x5199;&#x3002;</p></div>
-        <div id="legacyCountryFields" class="two-cols protocol-country-row">
-          <label class="field">
-            <span class="label-row"><b>PayPal 国家</b><small>决定注册资料与地址</small></span>
-            <div id="countryPicker" class="country-picker">
-              <button id="countryPickerToggle" class="country-picker-toggle" type="button" aria-haspopup="listbox" aria-expanded="false">
-                <span id="countryPickerValue">&#x6B63;&#x5728;&#x52A0;&#x8F7D;&#x56FD;&#x5BB6;&#x76EE;&#x5F55;&hellip;</span><i aria-hidden="true"></i>
-              </button>
-              <div id="countryPickerMenu" class="country-picker-menu" hidden>
-                <div class="country-picker-search"><input id="countrySearch" type="search" autocomplete="off" placeholder="&#x641C;&#x7D22; US / &#x7F8E;&#x56FD; / United States"></div>
-                <div id="countryOptionList" class="country-option-list" role="listbox" aria-label="PayPal &#x56FD;&#x5BB6;"></div>
-              </div>
-              <select id="paypalCountry" required hidden aria-hidden="true" tabindex="-1"></select>
+    <form id="protocolForm" class="account-console" autocomplete="off">
+      <section class="command-bar" aria-label="协议支付操作栏">
+        <div class="region-command">
+          <span class="command-label">手机号地区</span>
+          <div id="countryPicker" class="country-picker toolbar-country-picker">
+            <button id="countryPickerToggle" class="country-picker-toggle" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="countryPickerValue">正在加载国家目录…</span><i aria-hidden="true"></i>
+            </button>
+            <div id="countryPickerMenu" class="country-picker-menu" hidden>
+              <div class="country-picker-search"><input id="countrySearch" type="search" autocomplete="off" placeholder="搜索 US / 美国 / United States"></div>
+              <div id="countryOptionList" class="country-option-list" role="listbox" aria-label="PayPal 国家"></div>
             </div>
-          </label>
-          <label class="field auto-phone-field">
-            <span class="label-row"><b id="phoneLabel">巴西手机号池</b><small id="phonePoolCount">0 / 20</small></span>
-            <textarea id="phone" class="phone-pool-input" autocomplete="off" inputmode="tel" spellcheck="false" placeholder="每行一个手机号，顺序与 BA 链池一致"></textarea>
-          </label>
-        </div>
-        <div id="countrySchemaHint" class="field-note protocol-schema-hint">正在读取国家目录…</div>
-        <div id="dynamicCountryNotice" class="dynamic-country-notice" hidden><b>&#x8BD5;&#x8FD0;&#x884C;&#x56FD;&#x5BB6;</b><span>&#x4EC5;&#x4FDD;&#x8BC1;&#x5B57;&#x6BB5;&#x3001;&#x5730;&#x5740;&#x548C; KYC &#x5B9E;&#x65F6;&#x89E3;&#x6790;&#xFF1B;&#x652F;&#x4ED8;&#x7ED3;&#x679C;&#x53D7; PayPal &#x5730;&#x533A;&#x3001;&#x98CE;&#x63A7;&#x548C;&#x8D44;&#x6599;&#x8981;&#x6C42;&#x5F71;&#x54CD;&#xFF0C;&#x4E0D;&#x627F;&#x8BFA;&#x6210;&#x529F;&#x3002;</span></div>
-
-        <div class="two-cols protocol-country-row buyer-config-row">
-          <label class="field">
-            <span class="label-row"><b>Buyer 身份模式</b><small>每个任务独立选择</small></span>
-            <select id="buyerMode" required>
-              <option value="identity_elevation" selected>身份提升流程</option>
-              <option value="original">原版流程</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="label-row"><b>模式说明</b><small>均为纯协议</small></span>
-            <input id="buyerModeHint" value="注册后提升 Guest 身份并绑定当前 EC，再提交授权" readonly>
-          </label>
-        </div>
-
-        <section id="legacyProxyFields" class="proxy-block protocol-proxy" aria-labelledby="proxyTitle">
-          <div class="block-heading">
-            <div><span class="section-index">P</span><div><h3 id="proxyTitle">运行代理池</h3><p>每行一条，任务开始时随机选择；不在任务详情、日志或结果中展示。</p></div></div>
-            <div class="block-tags"><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
+            <select id="paypalCountry" required hidden aria-hidden="true" tabindex="-1"></select>
           </div>
-          <label class="field">
-            <span>代理列表 <small id="proxyCount">0 / 500</small></span>
-            <textarea id="proxies" class="proxy-pool-input" required autocomplete="off" spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port&#10;username:password@host:port"></textarea>
-          </label>
-          <div class="privacy-note"><i></i><span>代理内容不做本地保存；后端只在当前任务内使用，任务结束后释放。</span></div>
-        </section>
-
-        <div id="legacyActions" class="form-actions">
-          <button id="submitButton" class="primary-button" type="submit"><span>&#x5F00;&#x59CB;&#x534F;&#x8BAE;&#x652F;&#x4ED8;</span><i aria-hidden="true">&rarr;</i></button>
-          <button id="cancelBatchButton" class="secondary-button" type="button" hidden>停止全部</button>
-          <button id="cancelButton" class="secondary-button" type="button" hidden>停止任务</button>
+          <small id="selectedRegionMeta" class="region-meta">地区将同步用于 PayPal 资料、代理和接码服务</small>
         </div>
+        <div class="command-actions">
+          <button id="acquirePhonesButton" class="command-button phone-button" type="button"><span class="button-icon">＋</span><span><b>获取接码手机号</b><small>按账号队列自动取号</small></span></button>
+          <button id="submitButton" class="command-button start-button" type="submit"><span class="button-icon">▶</span><span><b>开始协议支付</b><small>自动发送并接收验证码</small></span></button>
+          <button id="cancelBatchButton" class="command-button stop-button" type="button" hidden><span class="button-icon">■</span><span><b>停止全部</b><small>结束执行中任务</small></span></button>
+          <button id="toggleConfigButton" class="square-command" type="button" aria-controls="settingsDrawer" aria-expanded="false" title="运行设置">设置</button>
+        </div>
+      </section>
 
-        <section id="batchRunPanel" class="batch-run-panel" hidden>
-          <div class="batch-run-head">
-            <div><span class="section-index">B</span><div><h3>协议运行状态</h3><p id="batchRunSummary">正在创建任务…</p></div></div>
-            <strong id="batchRunPercent">0%</strong>
-          </div>
-          <div class="batch-overall-track"><i id="batchOverallBar"></i></div>
-          <div id="batchJobGrid" class="batch-job-grid"></div>
+      <section class="ba-source-panel" aria-labelledby="baSourceTitle">
+        <div class="section-title-row">
+          <div><span class="section-index">BA</span><div><h2 id="baSourceTitle">PayPal 付款链接（BA）</h2><p>推送过来的链接会自动填写到这里，并按一行一个账号同步到下方列表。</p></div></div>
+          <span id="baPoolCount" class="count-badge">0 / 20</span>
+        </div>
+        <textarea id="baToken" required autocomplete="off" spellcheck="false" placeholder="等待提链工作台推送 PayPal BA 链接，也可以每行粘贴一条链接…"></textarea>
+      </section>
+
+      <section class="account-board" aria-labelledby="accountBoardTitle">
+        <div class="account-board-head">
+          <div><h2 id="accountBoardTitle">账号队列</h2><p>每一行对应一个独立账号，手机号、验证码和执行状态会实时更新。</p></div>
+          <div class="board-legend"><span class="legend-ready">已取号</span><span class="legend-running">执行中</span><span class="legend-done">已完成</span></div>
+        </div>
+        <div class="account-table-wrap">
+          <table class="account-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>账号（邮箱）</th>
+                <th>PayPal 付款链接（BA）</th>
+                <th>接码手机号</th>
+                <th>验证码</th>
+                <th>状态</th>
+                <th>当前执行阶段</th>
+                <th>重试</th>
+                <th>失败原因与归因步骤</th>
+                <th>耗时</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountQueueBody">
+              <tr class="account-empty-row"><td colspan="11"><b>等待 BA 链接</b><span>从提链工作台推送后，账号会在这里横向排列显示。</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="batchRunPanel" class="batch-status-strip" hidden>
+        <div class="batch-status-copy"><b id="batchRunSummary">正在创建任务…</b><span id="batchRunPercent">0%</span></div>
+        <div class="batch-overall-track"><i id="batchOverallBar"></i></div>
+        <div id="batchJobGrid" hidden></div>
+      </section>
+
+      <section id="settingsDrawer" class="settings-drawer" hidden>
+        <div class="settings-head"><div><h2>运行设置</h2><p>代理不会在任务表、日志或结果中显示。</p></div><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
+        <div class="settings-grid">
+          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="identity_elevation" selected>身份提升流程</option><option value="original">原版流程</option></select></label>
+          <label class="field"><span>模式说明</span><input id="buyerModeHint" value="注册后提升 Guest 身份并绑定当前 EC，再提交授权" readonly></label>
+        </div>
+        <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
+        <div class="privacy-note"><i></i><span>每个账号开始时从代理池随机选择一条与所选地区匹配的代理。</span></div>
+      </section>
+
+      <textarea id="phone" class="compatibility-field" tabindex="-1" aria-hidden="true"></textarea>
+      <span id="phoneLabel" hidden>手机号池</span><span id="phonePoolCount" hidden>0 / 20</span>
+      <div id="countrySchemaHint" hidden></div><div id="dynamicCountryNotice" hidden></div>
+
+      <section class="compatibility-fields" hidden aria-hidden="true">
+        <div id="protocolModeSwitch"><label><input type="radio" name="protocolMode" value="legacy" checked></label><label id="privateBraintreeMode" hidden><input type="radio" name="protocolMode" value="braintree"></label></div>
+        <div id="legacyTokenField"></div><div id="legacyCountryFields"></div><div id="legacyProxyFields"></div><div id="legacyActions"></div>
+        <section id="braintreeVaultFields" hidden>
+          <input id="vaultAccountId"><input id="vaultAccessToken" type="password"><select id="vaultRegion"><option value="GB">GB</option><option value="US">US</option></select><input id="vaultProxy">
+          <div id="vaultParameterBox"></div><button id="loadVaultButton" type="button"><span></span></button><div id="vaultStatus"></div><section id="vaultReturnPanel" hidden><textarea id="vaultReturnValue"></textarea><button id="completeVaultButton" type="button"></button></section>
         </section>
+        <button id="cancelButton" type="button" hidden></button>
+        <div id="recentJobs"></div><button id="refreshJobs" type="button"></button>
+      </section>
 
-        <section class="recent-wrap">
-          <div class="recent-head"><div><span class="section-index">D</span><h3>最近任务</h3></div><button id="refreshJobs" type="button">刷新</button></div>
-          <div id="recentJobs" class="recent-jobs"><div class="empty-log">当前浏览器还没有协议支付任务。</div></div>
-        </section>
-      </form>
-
-      <aside class="right-stack compatibility-runtime" hidden aria-hidden="true">
-        <section class="panel status-panel">
-          <div class="panel-heading"><div><span class="section-index">B</span><h2>运行状态</h2></div><span id="statusBadge" class="status-badge idle">等待</span></div>
-          <div class="progress-orbit"><svg viewBox="0 0 120 120"><circle class="orbit-bg" cx="60" cy="60" r="51"></circle><circle id="orbitValue" class="orbit-value" cx="60" cy="60" r="51"></circle></svg><div><strong id="progressValue">0%</strong><span id="progressText">尚未创建任务</span></div></div>
-          <div class="progress-track" aria-hidden="true"><i id="progressBar"></i></div>
-          <div class="progress-caption"><span>任务进度</span><b id="progressStage">等待开始</b></div>
-
-          <section id="otpPanel" class="otp-panel" hidden>
-            <div class="otp-title"><span>SMS</span><div><b>等待短信验证码</b><small id="otpPrompt">请输入 6 位验证码，也可填写新手机号重新发送。</small></div></div>
-            <div class="otp-entry"><input id="otpValue" autocomplete="one-time-code" inputmode="numeric" placeholder="6 位验证码 / 新手机号"><button id="otpSubmit" type="button">提交</button></div>
-          </section>
-
-          <section id="captchaPanel" class="otp-panel captcha-panel" hidden>
-            <div class="otp-title"><span>CAP</span><div><b>等待手动验证</b><small id="captchaPrompt">打开验证地址完成验证，再粘贴 datadome Cookie 或 adsddtoken。</small></div></div>
-            <a id="captchaLink" class="challenge-link" target="_blank" rel="noopener noreferrer">打开验证地址</a>
-            <div id="browserPanel" class="manual-browser" hidden>
-              <div class="browser-toolbar">
-                <span id="browserStatus">正在启动服务器临时 Chromium…</span>
-                <div>
-                  <button type="button" data-browser-action="reload">刷新</button>
-                  <button type="button" data-browser-action="scroll-up">上滚</button>
-                  <button type="button" data-browser-action="scroll-down">下滚</button>
-                </div>
-              </div>
-              <div class="browser-screen-wrap"><img id="browserFrame" class="browser-screen" alt="临时 Chromium 画面"></div>
-              <div class="browser-input-row">
-                <input id="browserText" autocomplete="off" placeholder="需要输入文字时，先点击画面中的输入框">
-                <button id="browserType" type="button">输入文字</button>
-                <button type="button" data-browser-key="Tab">Tab</button>
-                <button type="button" data-browser-key="Enter">Enter</button>
-                <button id="browserFinish" type="button" class="browser-finish">完成验证并继续</button>
-              </div>
-              <p>画面和操作均运行在服务器任务的同一代理与 Cookie 会话中。</p>
-            </div>
-            <div id="captchaFallback" class="captcha-entry"><textarea id="captchaValue" autocomplete="off" spellcheck="false" placeholder="datadome=...;  或 adsddtoken"></textarea><button id="captchaSubmit" type="button">提交验证结果</button></div>
-          </section>
-
-          <div id="logBox" class="log-box"><div class="empty-log">主要运行步骤会在这里实时出现。</div></div>
-        </section>
-
-        <section id="resultPanel" class="panel result-panel" hidden>
-          <div class="panel-heading"><div><span class="section-index">C</span><h2>协议结果</h2></div><span id="resultSeal" class="seal">READY</span></div>
-          <div class="result-list">
-            <div><span>任务状态</span><b id="resultStatus">—</b></div>
-            <div><span>Payment Action</span><b id="paymentAction">—</b></div>
-            <div><span>到账状态</span><b id="settlementStatus">—</b></div>
-            <div><span>账单国家</span><b id="billingCountry">—</b></div>
-            <div><span>Buyer / User</span><code id="buyerId">—</code></div>
-            <div><span>BA Token</span><code id="resultBa">—</code></div>
-          </div>
-          <label class="field result-link"><span>结果摘要</span><textarea id="resultValue" readonly></textarea></label>
-          <div class="result-actions"><a id="openVerification" class="secondary-button" target="_blank" rel="noopener noreferrer" hidden>打开 OpenAI Pending 页面</a><button id="copyResult" class="secondary-button" type="button">复制结果</button></div>
-        </section>
+      <aside class="compatibility-runtime" hidden aria-hidden="true">
+        <span id="statusBadge"></span><span id="progressValue"></span><span id="progressText"></span><i id="progressBar"></i><span id="progressStage"></span><circle id="orbitValue"></circle>
+        <section id="otpPanel" hidden><span id="otpPrompt"></span><input id="otpValue"><button id="otpSubmit" type="button"></button></section>
+        <section id="captchaPanel" hidden><span id="captchaPrompt"></span><a id="captchaLink"></a><div id="browserPanel" hidden><span id="browserStatus"></span><img id="browserFrame"><input id="browserText"><button id="browserType" type="button"></button><button id="browserFinish" type="button"></button></div><div id="captchaFallback"><textarea id="captchaValue"></textarea><button id="captchaSubmit" type="button"></button></div></section>
+        <div id="logBox"></div><section id="resultPanel" hidden><span id="resultSeal"></span><span id="resultStatus"></span><span id="paymentAction"></span><span id="settlementStatus"></span><span id="billingCountry"></span><span id="buyerId"></span><span id="resultBa"></span><textarea id="resultValue"></textarea><a id="openVerification"></a><button id="copyResult" type="button"></button></section>
       </aside>
-    </section>
+    </form>
   </main>
 
   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
-  <script src="/paypal-pay/static/app.js?v=20260814-reference-proxy-1"></script>
+  <script src="/paypal-pay/static/app.js?v=20260817-account-table-2"></script>
 </body>
 </html>

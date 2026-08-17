@@ -13,6 +13,7 @@ function applyWorkbenchPrefill() {
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
     if ([...select.options].some(option => option.value === country)) select.value = country;
+    if (typeof state !== 'undefined') state.lastCountry = country;
   }
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
 }
@@ -32,6 +33,9 @@ const state = {
   batchJobIds: [],
   batchJobs: [],
   batchPollTimer: null,
+  smsActivations: new Map(),
+  queueRenderTimer: null,
+  lastCountry: '',
 };
 
 const vaultState = {
@@ -145,6 +149,7 @@ function updatePairCounts() {
   $('phonePoolCount').textContent = `${phoneCount} / 20`;
   $('baPoolCount').classList.toggle('over-limit', baCount > 20);
   $('phonePoolCount').classList.toggle('over-limit', phoneCount > 20);
+  renderAccountQueue();
 }
 $('baToken').addEventListener('input', updatePairCounts);
 $('phone').addEventListener('input', updatePairCounts);
@@ -177,6 +182,12 @@ function updateCountryFields() {
   const country = select.value;
   const option = select.selectedOptions[0];
   if (!country || !option) return;
+  if (state.lastCountry && state.lastCountry !== country) {
+    state.smsActivations.clear();
+    $('phone').value = '';
+    updatePairCounts();
+  }
+  state.lastCountry = country;
   const zh = option.dataset.zh || country;
   const calling = option.dataset.calling || '+';
   $('dynamicCountryNotice').hidden = option.dataset.live === '1';
@@ -186,7 +197,10 @@ function updateCountryFields() {
   $('phone').required = true;
   $('phone').disabled = false;
   $('proxyCountryHint').textContent = `\u63a8\u8350\u586b\u5199 ${country}`;
+  const regionMeta = $('selectedRegionMeta');
+  if (regionMeta) regionMeta.textContent = `${country} · ${zh} · HeroSMS ${calling} · PayPal 资料与代理地区同步`;
   updateCountrySchemaHint(country);
+  renderAccountQueue();
 }
 
 function populateCountrySelect() {
@@ -255,6 +269,140 @@ function extractBa(value) {
   const match = value.trim().match(/BA-[A-Za-z0-9]{8,80}/);
   return match ? match[0] : value.trim();
 }
+
+function queueRows() {
+  const links = baPoolLines();
+  const savedPhones = phonePoolLines();
+  return links.map((link, zeroIndex) => {
+    const token = extractBa(link);
+    const activation = state.smsActivations.get(token) || null;
+    const job = state.batchJobs.find(item => Number(item.batch_index || 0) === zeroIndex + 1)
+      || (links.length === 1 ? state.batchJobs[0] : null);
+    return {index: zeroIndex + 1, link, token, activation, phone: activation?.phone || savedPhones[zeroIndex] || '', job};
+  });
+}
+
+function accountForRow(row) {
+  const generated = row.job?.generated || {};
+  return generated.user?.email || generated.email || row.job?.result?.email || row.job?.result?.user_id || '';
+}
+
+function otpStateForRow(row) {
+  const job = row.job;
+  if (!row.phone) return ['等待取号', 'muted-value'];
+  if (!job) return ['已准备', 'otp-state'];
+  if (job.status === 'awaiting_otp') return [row.activation ? '自动接收中' : '等待填写', 'otp-state waiting'];
+  const logs = Array.isArray(job.logs) ? job.logs : [];
+  const submitted = logs.some(item => /code received|验证码.*提交|SMS input received/i.test(item.message || ''));
+  if (submitted || ['completed','failed'].includes(job.status)) return ['已自动提交', 'otp-state'];
+  return ['自动接收', 'otp-state'];
+}
+
+function failureForRow(row) {
+  const job = row.job;
+  if (!job) return ['—', 'failure-cell'];
+  const result = job.result || {};
+  const message = result.error || job.error || '';
+  const step = result.failure_stage || '';
+  return [message ? `${step ? step + ' · ' : ''}${message}` : '—', `failure-cell${message ? ' error' : ''}`];
+}
+
+function bindAccountTableActions() {
+  document.querySelectorAll('[data-queue-cancel]').forEach(button => button.addEventListener('click', () => cancelBatchJob(button.dataset.queueCancel)));
+  document.querySelectorAll('[data-queue-phone]').forEach(button => button.addEventListener('click', () => acquireSmsNumbers([Number(button.dataset.queuePhone) - 1])));
+  document.querySelectorAll('[data-queue-copy]').forEach(button => button.addEventListener('click', async () => {
+    const row = queueRows()[Number(button.dataset.queueCopy) - 1];
+    if (!row) return;
+    try { await navigator.clipboard.writeText(row.link); button.textContent = '已复制'; setTimeout(() => button.textContent = '复制', 900); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-queue-otp]').forEach(button => button.addEventListener('click', async () => {
+    const value = window.prompt('请输入 6 位短信验证码');
+    if (value?.trim()) await submitBatchCode(button.dataset.queueOtp, 'otp', value.trim());
+  }));
+}
+
+function renderAccountQueue() {
+  const body = $('accountQueueBody');
+  if (!body) return;
+  const rows = queueRows();
+  const terminal = job => job && ['completed','failed','cancelled'].includes(job.status);
+  $('queueCount').textContent = String(rows.length);
+  $('queueReadyCount').textContent = String(rows.filter(row => row.phone).length);
+  $('queueRunningCount').textContent = String(rows.filter(row => row.job && !terminal(row.job)).length);
+  $('queueDoneCount').textContent = String(rows.filter(row => row.job?.status === 'completed').length);
+  if (!rows.length) {
+    body.innerHTML = '<tr class="account-empty-row"><td colspan="11"><b>等待 BA 链接</b><span>从提链工作台推送后，账号会在这里横向排列显示。</span></td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(row => {
+    const job = row.job;
+    const [statusLabel, statusClass] = job ? statusMeta(job.status) : (row.phone ? ['已取号','running'] : ['待取号','idle']);
+    const [otpLabel, otpClass] = otpStateForRow(row);
+    const [failure, failureClass] = failureForRow(row);
+    const account = accountForRow(row);
+    const stage = job?.stage || (row.phone ? '手机号已就绪' : '选择地区并获取手机号');
+    const retry = Number(job?.result?.retry_count || 0);
+    const duration = job ? formatDuration(job.duration) : '—';
+    let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
+    if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.index}">取号</button>`;
+    if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
+    if (job?.cancellable) action = `<button class="table-action danger" type="button" data-queue-cancel="${escapeHtml(job.id)}">停止</button>`;
+    return `<tr data-account-row="${row.index}">
+      <td>${row.index}</td>
+      <td><span class="account-value ${account ? '' : 'muted-value'}">${escapeHtml(account || '等待生成账号')}</span></td>
+      <td title="${escapeHtml(row.link)}"><code>${escapeHtml(row.token || row.link)}</code></td>
+      <td><code class="${row.phone ? '' : 'muted-value'}">${escapeHtml(row.phone || '—')}</code></td>
+      <td><span class="${otpClass}">${escapeHtml(otpLabel)}</span></td>
+      <td><span class="table-status ${escapeHtml(statusClass)}">${escapeHtml(statusLabel)}</span></td>
+      <td title="${escapeHtml(stage)}"><span class="failure-cell">${escapeHtml(stage)}</span></td>
+      <td><span class="retry-pill">${retry}/2</span></td>
+      <td title="${escapeHtml(failure)}"><span class="${failureClass}">${escapeHtml(failure)}</span></td>
+      <td><code>${escapeHtml(duration)}</code></td>
+      <td>${action}</td>
+    </tr>`;
+  }).join('');
+  bindAccountTableActions();
+}
+
+function syncPhonePoolFromActivations() {
+  const currentPhones = phonePoolLines();
+  const values = baPoolLines().map((link, index) => state.smsActivations.get(extractBa(link))?.phone || currentPhones[index] || '');
+  $('phone').value = values.join('\n');
+  saveProtocolFormState();
+  updatePairCounts();
+}
+
+async function acquireSmsNumbers(onlyIndexes = null) {
+  const links = baPoolLines();
+  if (!links.length) return showClientError('请先推送或填写 PayPal BA 链接');
+  const country = $('paypalCountry').value;
+  const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : links.map((_, index) => index);
+  const button = $('acquirePhonesButton');
+  if (button) button.disabled = true;
+  try {
+    for (const index of indexes) {
+      const token = extractBa(links[index] || '');
+      if (!token || state.smsActivations.has(token)) continue;
+      if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${links.length}`;
+      const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
+      state.smsActivations.set(token, {...sms, token, index: index + 1});
+      syncPhonePoolFromActivations();
+    }
+  } catch (error) {
+    showClientError(error.message || 'HeroSMS 手机号获取失败');
+  } finally {
+    if (button) { button.disabled = false; button.querySelector('b').textContent = '获取接码手机号'; }
+    renderAccountQueue();
+  }
+}
+
+$('acquirePhonesButton').addEventListener('click', () => acquireSmsNumbers());
+$('toggleConfigButton').addEventListener('click', () => {
+  const drawer = $('settingsDrawer');
+  drawer.hidden = !drawer.hidden;
+  $('toggleConfigButton').setAttribute('aria-expanded', drawer.hidden ? 'false' : 'true');
+  $('toggleConfigButton').textContent = drawer.hidden ? '设置' : '收起';
+});
 
 function statusMeta(status) {
   const map = {
@@ -760,6 +908,7 @@ function renderBatchJobs(jobs) {
   const hasActive = jobs.some(job => !terminal(job));
   $('cancelBatchButton').hidden = !hasActive;
   $('submitButton').disabled = hasActive;
+  renderAccountQueue();
 }
 
 async function refreshBatchJobs() {
@@ -791,9 +940,9 @@ function startBatch(jobs) {
   refreshBatchJobs();
 }
 
-async function submitBatchCode(jobId, action) {
+async function submitBatchCode(jobId, action, explicitValue = '') {
   const input = document.querySelector(`.batch-code-input[data-job-id="${CSS.escape(jobId)}"]`);
-  const value = input?.value.trim();
+  const value = explicitValue || input?.value.trim();
   if (!value) return;
   try {
     await api(`/jobs/${encodeURIComponent(jobId)}/${action}`, {method:'POST', body:JSON.stringify({value})});
@@ -824,21 +973,16 @@ $('protocolForm').addEventListener('submit', async (event) => {
   if (selectedCountryOption?.dataset.live !== '1' && !dynamicCountriesEnabled) return showClientError('\u8be5\u56fd\u5bb6\u5df2\u8fdb\u5165\u5b9e\u65f6\u89e3\u6790\u76ee\u5f55\uff0c\u52a8\u6001\u56fd\u5bb6\u6267\u884c\u5f00\u5173\u5f53\u524d\u5173\u95ed');
   let phones = phonePoolLines();
   const country = $('paypalCountry').value;
-  let smsActivation = null;
   const proxies = proxyLines();
   if (!baValues.length) return showClientError('请填写 BA 链池');
   if (baValues.length > 20) return showClientError('BA 链池最多支持 20 条');
-  if (!phones.length) {
-    if (baValues.length !== 1) return showClientError('HeroSMS automatic retrieval supports one BA chain at a time; fill the phone pool for batches');
-    try {
-      setProgress(4, 'Getting a phone from HeroSMS for the selected country', 'SMS');
-      const sms = await api('/sms/number', {method: 'POST', body: JSON.stringify({country})});
-      smsActivation = sms;
-      $('phone').value = sms.phone;
-      phones = [sms.phone];
-    } catch (error) {
+  if (phones.length !== baValues.length || phones.some(value => !value)) {
+    setProgress(4, '正在按账号队列获取 HeroSMS 手机号', 'SMS');
+    await acquireSmsNumbers();
+    phones = baValues.map(link => state.smsActivations.get(extractBa(link))?.phone || '').filter(Boolean);
+    if (phones.length !== baValues.length) {
       $('submitButton').disabled = false;
-      return showClientError(error.message || 'HeroSMS phone allocation failed');
+      return showClientError('仍有账号未获取到接码手机号，请重试取号');
     }
   }
   if (phones.length > 20) return showClientError('手机号池最多支持 20 条');
@@ -859,10 +1003,14 @@ $('protocolForm').addEventListener('submit', async (event) => {
   $('batchJobGrid').innerHTML = '';
   setProgress(3, '正在创建独立任务', '提交中');
   try {
+    const smsActivations = baValues.map((link, index) => {
+      const activation = state.smsActivations.get(extractBa(link));
+      return activation?.activation_id ? {index: index + 1, activation_id: activation.activation_id, phone: activation.phone, country} : null;
+    });
     const data = await api('/jobs', {method:'POST', body:JSON.stringify({
       ba_pool: baValues, phones, country, proxies, agreement_only: false,
       buyer_mode: $('buyerMode').value,
-      ...(smsActivation?.activation_id ? {sms_activation_id: smsActivation.activation_id} : {}),
+      sms_activations: smsActivations,
     })});
     startBatch(data.jobs || []);
     await refreshJobs();

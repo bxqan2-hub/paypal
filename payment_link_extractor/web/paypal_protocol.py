@@ -135,10 +135,18 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             _SMS_WATCHERS.pop(job_id, None)
 
 
-def _start_sms_watchers(payload: dict[str, Any], activation: dict[str, Any]) -> None:
+def _start_sms_watchers(payload: dict[str, Any], activations: list[dict[str, Any]]) -> None:
     jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else [payload.get("job")]
-    for item in jobs:
+    activation_by_index = {
+        int(item.get("index") or position): item
+        for position, item in enumerate(activations, start=1)
+        if isinstance(item, dict) and str(item.get("activation_id") or "").strip()
+    }
+    for position, item in enumerate(jobs, start=1):
         if not isinstance(item, dict) or not item.get("id"):
+            continue
+        activation = activation_by_index.get(int(item.get("batch_index") or position))
+        if activation is None:
             continue
         job_id = str(item["id"])
         with _SMS_WATCHERS_LOCK:
@@ -169,19 +177,29 @@ def register_paypal_protocol(app: Any) -> None:
                 return jsonify({"ok": False, "error": str(exc)}), 503
         inner_path = "/" + protocol_path if protocol_path else "/"
         body = request.get_data(cache=False)
-        activation = None
+        activations: list[dict[str, Any]] = []
         if protocol_path == "api/jobs" and request.method == "POST":
             try:
                 parsed = json.loads(body.decode("utf-8")) if body else {}
+                raw_activations = parsed.get("sms_activations")
+                if isinstance(raw_activations, list):
+                    activations = [
+                        {
+                            "index": int(item.get("index") or index),
+                            "activation_id": str(item.get("activation_id") or "").strip(),
+                        }
+                        for index, item in enumerate(raw_activations, start=1)
+                        if isinstance(item, dict) and str(item.get("activation_id") or "").strip()
+                    ]
                 activation_id = str(parsed.get("sms_activation_id") or "").strip()
-                if activation_id:
-                    activation = {"activation_id": activation_id}
-            except (ValueError, UnicodeDecodeError):
-                activation = None
+                if activation_id and not activations:
+                    activations = [{"index": 1, "activation_id": activation_id}]
+            except (TypeError, ValueError, UnicodeDecodeError):
+                activations = []
         response = dispatch_protocol_request(inner_path, request.method, body)
-        if activation is not None and response.status_code in {200, 201}:
+        if activations and response.status_code in {200, 201}:
             try:
-                _start_sms_watchers(json.loads(response.get_data(as_text=True)), activation)
+                _start_sms_watchers(json.loads(response.get_data(as_text=True)), activations)
             except (ValueError, TypeError):
                 pass
         return response
