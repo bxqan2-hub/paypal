@@ -5,4 +5,4 @@ MAX_AUTO_RETRIES=3
 TOTAL_ATTEMPTS_ON_RETRY=4
 RETRYABLE=NetworkError|ProtocolError(408,425,429,>=500)|TimeoutError|ConnectionError|OSError
 NON_RETRYABLE=ConfigurationError|ProviderRequiresApproval|ExtractionCancelled|deterministic_protocol_4xx
-'
+
