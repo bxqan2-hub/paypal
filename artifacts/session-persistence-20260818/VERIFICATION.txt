@@ -1,7 +1,7 @@
 OBJECT=protocol payment transient input and buyer mode verification
 BRANCH=main
 BASE_COMMIT=ab677c2
-CHANGED_FIELDS=legacy_ba_prefill,session_runtime_reset,buyer_mode_dispatch_hint
+CHANGED_FIELDS=legacy_ba_prefill,session_runtime_reset,buyer_mode_dispatch_hint,static_cache_busting
 MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/MODIFIED_FILE
 DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/DIFF_FILE.patch
 VERIFICATION_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/VERIFICATION.txt
@@ -55,3 +55,7 @@ MODIFIED_COMMAND_6=Flask test client GET /paypal-pay/api/health
 MODIFIED_LITERAL_OUTPUT_6=status=200; runtime_id=<non-empty>
 MODIFIED_RESULT_6=PASS
 MODIFIED_EXIT_6=0
+MODIFIED_COMMAND_7=static app.js cache-busting URL inspection
+MODIFIED_LITERAL_OUTPUT_7=app.js?v=20260818-session-runtime-1
+MODIFIED_RESULT_7=PASS
+MODIFIED_EXIT_7=0

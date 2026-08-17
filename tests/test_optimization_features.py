@@ -204,6 +204,7 @@ def test_identity_and_original_modes_dispatch_different_flows() -> None:
 def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
     javascript = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
     backend = (PROTOCOL_ROOT / "web.py").read_text(encoding="utf-8")
+    html = (PROTOCOL_ROOT / "web_static" / "index.html").read_text(encoding="utf-8")
     assert "localStorage.setItem(LAST_BA_PREFILL_KEY" not in javascript
     assert "readLastProtocolInputs" not in javascript
     assert "localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY)" in javascript
@@ -213,6 +214,7 @@ def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
     assert "updateBuyerModeHint();" in javascript
     assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
     assert "paypal.protocol.runtime.v2" in javascript
+    assert "app.js?v=20260818-session-runtime-1" in html
 
 
 def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

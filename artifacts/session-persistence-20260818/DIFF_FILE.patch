@@ -213,11 +213,23 @@ index 09b0bbd..29544b1 100644
    if ($('successTotal')) await refreshSuccessStats();
    await refreshJobs();
    let savedBatch = [];
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+index 7740fee..1ac18a9 100644
+--- a/paypal_agreement_protocol/web_static/index.html
++++ b/paypal_agreement_protocol/web_static/index.html
+@@ -152,6 +152,6 @@
+
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
+-  <script src="/paypal-pay/static/app.js?v=20260818-live-logs-retry-1"></script>
++<script src="/paypal-pay/static/app.js?v=20260818-session-runtime-1"></script>
+ </body>
+ </html>
 diff --git a/tests/test_optimization_features.py b/tests/test_optimization_features.py
-index 79eae72..a9feeb1 100644
+index 79eae72..57b1913 100644
 --- a/tests/test_optimization_features.py
 +++ b/tests/test_optimization_features.py
-@@ -148,6 +148,73 @@ def test_explicit_original_mode_dispatches_original_flow() -> None:
+@@ -148,6 +148,75 @@ def test_explicit_original_mode_dispatches_original_flow() -> None:
      assert job.result["redirect_status"] == "success"
 
 
@@ -277,6 +289,7 @@ index 79eae72..a9feeb1 100644
 +def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
 +    javascript = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
 +    backend = (PROTOCOL_ROOT / "web.py").read_text(encoding="utf-8")
++    html = (PROTOCOL_ROOT / "web_static" / "index.html").read_text(encoding="utf-8")
 +    assert "localStorage.setItem(LAST_BA_PREFILL_KEY" not in javascript
 +    assert "readLastProtocolInputs" not in javascript
 +    assert "localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY)" in javascript
@@ -286,6 +299,7 @@ index 79eae72..a9feeb1 100644
 +    assert "updateBuyerModeHint();" in javascript
 +    assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
 +    assert "paypal.protocol.runtime.v2" in javascript
++    assert "app.js?v=20260818-session-runtime-1" in html
 +
 +
  def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
