@@ -258,7 +258,6 @@
   }
 
   function saveFormPreferences() {
-    syncCountryFromProxy();
     const preferences = {
       country: byId("country").value,
       payment_method: byId("payment-method").value,
@@ -276,16 +275,6 @@
       // Storage may be unavailable in private browsing or restricted contexts.
     }
     updateProxyCounts();
-  }
-
-  function syncCountryFromProxy() {
-    if (byId("country").disabled) return;
-    const firstProxy = proxyPoolLines(byId("checkout-proxy").value)[0] || "";
-    const match = firstProxy.match(/-(?:res|country|region|area|dc|res_sc)-([a-z]{2})(?:[-_:]|$)/i);
-    if (!match) return;
-    const country = match[1].toUpperCase();
-    const option = Array.from(byId("country").options).find(item => item.value === country);
-    if (option) byId("country").value = country;
   }
 
   function proxyPoolLines(value) {
@@ -323,10 +312,8 @@
       const response = await apiFetch("/api/defaults");
       const defaults = await response.json();
       if (!response.ok || !defaults || typeof defaults !== "object") return;
-      if (typeof defaults.force_country === "string" && defaults.force_country) {
-        byId("country").value = defaults.force_country;
-        byId("country").disabled = true;
-      } else if (!byId("country").value && typeof defaults.country === "string") {
+      byId("country").disabled = false;
+      if (!byId("country").value && typeof defaults.country === "string") {
         byId("country").value = defaults.country;
       }
       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;

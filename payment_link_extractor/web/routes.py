@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -25,12 +24,11 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
     @app.get("/api/defaults")
     def defaults() -> Any:
         proxy_pool = _configured_proxy_pool()
-        forced_country = os.getenv("OPLL_FORCE_COUNTRY", "").strip().upper()
         return jsonify(
             {
                 "ok": True,
-                "country": forced_country or os.getenv("OPLL_COUNTRY", "DE"),
-                "force_country": forced_country,
+                "country": os.getenv("OPLL_COUNTRY", "DE"),
+                "force_country": "",
                 "payment_method": "paypal",
                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
@@ -185,14 +183,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
     update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
     hcaptcha = _value(payload, "stripe_hcaptcha_token", "OPLL_STRIPE_HCAPTCHA_TOKEN")
-    forced_country = os.getenv("OPLL_FORCE_COUNTRY", "").strip().upper()
-    country = forced_country or str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
-    proxy_country = re.search(
-        r"-(?:res|country|region|area|dc|res_sc)-([A-Za-z]{2})(?:[-_:]|$)",
-        str(checkout_proxy or ""),
-    )
-    if proxy_country and not forced_country:
-        country = proxy_country.group(1).upper()
+    country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
     # Accept both OAICS (oaics_*) and Stripe Checkout (cs_*) PayPal flows.

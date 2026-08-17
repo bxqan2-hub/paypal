@@ -1,6 +1,6 @@
 ﻿MODIFIED_FILE
 branch: main
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling + selectable billing country
 changed_fields:
 - 运行设置恢复两个现有开源版本：original 原版流程、identity_elevation 身份提升流程，前端只选择既有后端流程类，不改 paypal/flow.py 或 paypal/elevation_flow.py 核心步骤
 - 协议支付控制台取消固定 1760px 宽度和表格最小宽度，两侧只保留少量边距并撑满可用空间
@@ -12,6 +12,9 @@ changed_fields:
 - 运行设置新增“取号金额上限”，并持久保存输入值
 - 前端每次取号传递 max_price，超价 422 响应最多自动重取 3 次
 - SMS 桥接服务端二次校验返回价格，超过上限立即取消 activation 并返回 422
+- 提链中心账单国家选择器恢复可选，不再被 OPLL_FORCE_COUNTRY 禁用或覆盖
+- 任务后端使用界面提交的 country，不再被代理标记自动改国家
+- 保留 GB/US/BR/DE/TH/BA/PH/ID/NL/AE/DK/JP/ES/FI/FR 全部 15 个完整账单档案，未改账单地址核心数据
 source_hashes_before_change:
 - paypal_agreement_protocol/web_static/app.js: 132aaac5cee0bad8946287fbb41ef45cfc6dd494
 - paypal_agreement_protocol/web_static/checkout-preview.css: 2e94bb3a68c72423a1db29586340a54e9597e246
@@ -31,6 +34,16 @@ sms_price_cap_source_hashes_after_change:
 - paypal_agreement_protocol/web_static/app.js: 4973f1d048ad994b8e77825a3a2c1ac934b311f55625f75e4d82c9222a94c70b
 - paypal_agreement_protocol/web_static/index.html: d6f8c02fc09369d7f02376149eaaf8c5eed2febe1e7e8ea064ef812770a9812b
 - payment_link_extractor/web/paypal_protocol.py: 2ef2f9771fdc0afb7e9dc6b10836419b0d1021a8e056ca51ce9193a8586cbf40
+billing_country_unlock_source_hashes_before_change:
+- payment_link_extractor/web/routes.py: 93bc200f205a493f326d8bd378041baaf8b266c4d16a96e9cb0380c5206cd82e
+- payment_link_extractor/web/static/app.js: 4f554261de6058ac36dcb92dfff57774095d07b54d62989655b3519b5ccc1ac8
+- payment_link_extractor/web/templates/index.html: 810d9ea114b5b78b8ded45620e0c8d589aa2f5bdd92722ff8c8b0b08e02cd366
+- .env.example: dff060157d52fe46b71a6bbcfd6c05f1d7f8e4fccbc25b654710bd8dbd81e2ba
+billing_country_unlock_source_hashes_after_change:
+- payment_link_extractor/web/routes.py: 07e29ac2cbf1354194ef02362503ea1ad7ffe0dad8c2e69c57c6229d330c2aee
+- payment_link_extractor/web/static/app.js: f3ed456e8f646394543c4e8157081e30e46268788a860d95c8c7b7d5da552916
+- payment_link_extractor/web/templates/index.html: e0229297feb0c6d5f019d1af8be7b6bfd157bff21679a30e6990a7b841686e26
+- .env.example: cc7c7a2d5f462568359a9e074d03e53c793e904dad9aff7af2eb63622ba16c3a
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch

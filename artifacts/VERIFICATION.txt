@@ -1,6 +1,6 @@
 ﻿VERIFICATION
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling
-changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; app.js cache-bust refreshed; configurable SMS max_price is passed and enforced server-side.
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling + selectable billing country
+changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; configurable SMS max_price is enforced; extractor billing country is selectable, payload-driven, and backed by all 15 complete billing profiles.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
@@ -98,3 +98,20 @@ LATEST ROLLBACK SMS-CAP input: temporary copy with markers in UI and SMS bridge 
 LATEST ROLLBACK SMS-CAP literal result: restored_to=HEAD; ui_marker_before=1; bridge_marker_before=1; ui_marker_after=0; bridge_marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains SMS-price-capped
 LATEST ROLLBACK SMS-CAP exit status: 0
 restored behavior/status: temporary rollback copy restored price-setting UI, app.js, SMS bridge, and other tracked protocol UI/entry files to HEAD; active project keeps the enforced SMS price ceiling.
+
+
+LATEST BASELINE BILLING-COUNTRY command: git worktree add --detach C:\Temp\paypal-baseline-country-unlock HEAD; set OPLL_FORCE_COUNTRY=DE and payload country=GB; GET /api/defaults; call _config_from_payload; inspect selector JS/options and billing_for_country; compileall; node --check; git worktree remove --force C:\Temp\paypal-baseline-country-unlock
+LATEST BASELINE BILLING-COUNTRY input: forced country DE, selected country GB, proxy marker US
+LATEST BASELINE BILLING-COUNTRY literal result: baseline_defaults_status=200; baseline_force_country=DE; baseline_payload_country=DE; baseline_selector_disable_code=True; baseline_proxy_sync_code=True; baseline_country_option_count=15; baseline_billing_fields_complete=True; baseline_compile_exit=0; baseline_extractor_js_exit=0; baseline_country_check_exit=0
+LATEST BASELINE BILLING-COUNTRY exit status: 0
+
+LATEST MODIFIED BILLING-COUNTRY command: set OPLL_FORCE_COUNTRY=DE and OPLL_COUNTRY=BR; GET /api/defaults; call _config_from_payload with country=GB and proxy marker US; inspect selector JS/options, all billing_for_country profiles, cache-bust; compileall; node --check; git diff --check
+LATEST MODIFIED BILLING-COUNTRY input: stale force DE, fallback BR, selected country GB, proxy marker US, all 15 supported billing countries
+LATEST MODIFIED BILLING-COUNTRY literal result: modified_defaults_status=200; modified_force_country=''; modified_fallback_country=BR; modified_payload_country=GB; modified_selector_disable_code=False; modified_selector_unlock_code=True; modified_proxy_sync_code=False; modified_country_option_count=15; modified_supported_country_count=15; modified_all_billing_profiles_complete=True; modified_cache_bust=True; modified_country_check_exit=0; modified_compile_exit=0; modified_extractor_js_exit=0; modified_diff_check_exit=0
+LATEST MODIFIED BILLING-COUNTRY exit status: 0
+
+LATEST ROLLBACK BILLING-COUNTRY command: git worktree add --detach C:\Temp\paypal-ui-rollback-country-unlock HEAD; copy current artifacts/ROLLBACK.sh into the worktree; append markers to payment_link_extractor/web/routes.py and payment_link_extractor/web/static/app.js; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- payment_link_extractor/web/routes.py payment_link_extractor/web/static/app.js; git worktree remove --force C:\Temp\paypal-ui-rollback-country-unlock
+LATEST ROLLBACK BILLING-COUNTRY input: temporary copy with markers in extractor country routes and UI script
+LATEST ROLLBACK BILLING-COUNTRY literal result: restored_to=HEAD; route_marker_before=1; ui_marker_before=1; route_marker_after=0; ui_marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains billing-country-unlocked
+LATEST ROLLBACK BILLING-COUNTRY exit status: 0
+restored behavior/status: temporary rollback copy restored extractor country routes/UI and related tracked files to HEAD; active project keeps selectable country plus all complete billing profiles.
