@@ -1,97 +1,13 @@
-﻿diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-index 132aaac..4fb743f 100644
---- a/paypal_agreement_protocol/web_static/app.js
-+++ b/paypal_agreement_protocol/web_static/app.js
-@@ -1272,8 +1272,6 @@ async function refreshSuccessStats() {
- (async function init() {
-   await paypalCountriesReady;
-   restoreProtocolFormState();
--  $('buyerMode').value = 'original';
--  $('buyerMode').dispatchEvent(new Event('change'));
-   applyWorkbenchPrefill();
-   updateProtocolMode();
-   updateVaultRegion();
-diff --git a/paypal_agreement_protocol/web_static/checkout-preview.css b/paypal_agreement_protocol/web_static/checkout-preview.css
-index 2e94bb3..194f85f 100644
---- a/paypal_agreement_protocol/web_static/checkout-preview.css
-+++ b/paypal_agreement_protocol/web_static/checkout-preview.css
-@@ -29,7 +29,7 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
- .service-dot,.nav-return,.icon-button { border-radius: 8px; box-shadow: none; background: #fff; }
- .nav-return { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--console-line); padding: 0 12px; color: var(--console-muted); font-size: 11px; font-weight: 700; text-decoration: none; }
-
--.account-console-shell { width: min(1760px,100%); padding: 25px 24px 56px; }
-+.account-console-shell { width: 100%; max-width: none; padding: 20px 14px 48px; }
- .console-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin-bottom: 16px; padding: 22px 24px; border: 1px solid #203c57; border-radius: 10px; background: linear-gradient(115deg,#132a40,#173751 72%,#174862); color: #fff; box-shadow: 0 12px 30px rgba(18,42,64,.12); }
- .preview-kicker { display: block; margin-bottom: 7px; color: #7fe0bc; font-size: 10px; font-weight: 900; letter-spacing: .13em; }
- .console-heading h1 { margin: 0; font: 700 26px/1.25 var(--display); letter-spacing: 0; }
-@@ -82,7 +82,7 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
- .board-legend span:before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; vertical-align: 0; }
- .legend-ready:before { background: var(--console-cyan); }.legend-running:before { background: var(--console-amber); }.legend-done:before { background: var(--console-green); }
- .account-table-wrap { overflow: auto; border: 1px solid var(--console-line); border-radius: 8px; background: #fff; }
--.account-table { width: 100%; min-width: 1460px; border-collapse: collapse; table-layout: fixed; }
-+.account-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
- .account-table th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--console-line); background: #f8fafc; color: #526c87; font-size: 10px; font-weight: 800; text-align: left; white-space: nowrap; }
- .account-table td { height: 55px; padding: 9px 12px; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 10px; vertical-align: middle; }
- .account-table tr:last-child td { border-bottom: 0; }
-@@ -107,13 +107,15 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
- .compatibility-field,.compatibility-fields,.compatibility-runtime { display: none !important; }
-
- /* Slightly larger console typography keeps the account rows readable at a glance. */
--body { font-size: 13px; }
--.console-heading p { font-size: 13px; }
--.command-label { font-size: 12px; }
--.command-button b { font-size: 12px; }.command-button small { font-size: 10px; }
--.region-meta { font-size: 11px; }
--.account-table th { font-size: 11px; }.account-table td { font-size: 11px; }.account-table code { font-size: 11px; }
--.table-status { font-size: 10px; }.table-action { font-size: 10px; }
-+body { font-size: 14px; }
-+.console-heading p { font-size: 14px; }
-+.command-label { font-size: 13px; }
-+.command-button b { font-size: 13px; }.command-button small { font-size: 11px; }
-+.region-meta { font-size: 12px; }
-+.ba-source-panel textarea { font-size: 13px; }
-+.account-table th { font-size: 12px; }.account-table td { font-size: 12px; }.account-table code { font-size: 12px; }
-+.account-board-head h2 { font-size: 16px; }.account-board-head p { font-size: 11px; }.board-legend { font-size: 10px; }
-+.table-status { font-size: 11px; }.table-action { font-size: 11px; }
-
- .job-log-modal { position: fixed; inset: 0; z-index: 160; display: grid; place-items: center; padding: 24px; background: rgba(9,22,35,.58); }
- .job-log-dialog { width: min(1040px,100%); max-height: min(82vh,820px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #b8c9d8; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(9,22,35,.28); }
-@@ -121,7 +123,7 @@ body { font-size: 13px; }
- .job-log-head h2 { margin: 0; color: var(--console-ink); font-size: 18px; }.job-log-head p { margin: 5px 0 0; color: var(--console-muted); font-size: 11px; }
- .job-log-close { width: 34px; height: 34px; border: 1px solid var(--console-line); border-radius: 7px; background: #fff; color: var(--console-muted); cursor: pointer; font-size: 22px; line-height: 1; }
- .job-log-body { min-height: 180px; overflow: auto; padding: 12px 18px 20px; background: #fff; }
--.full-log-row { display: grid; grid-template-columns: 86px 72px minmax(0,1fr); gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 12px; line-height: 1.5; }
-+.full-log-row { display: grid; grid-template-columns: 86px 72px minmax(0,1fr); gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--console-line-soft); color: var(--console-ink); font-size: 13px; line-height: 1.5; }
- .full-log-row time { color: var(--console-muted); font: 11px var(--console-mono); }.full-log-row b { color: var(--console-blue); font-size: 10px; }.full-log-row.warn b,.full-log-row.warn span { color: var(--console-amber); }.full-log-row.error b,.full-log-row.error span { color: var(--console-red); }.full-log-error { padding: 24px 0; color: var(--console-red); }
- .dark .job-log-dialog { border-color: #34495a; background: #101922; }.dark .job-log-head,.dark .job-log-body { background: #111d27; border-color: #293a48; }.dark .job-log-head h2,.dark .full-log-row span { color: #edf3f8; }.dark .job-log-close { background: #0f1922; border-color: #304250; color: #d1dce6; }
-
-diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
-index 881c9c9..0c8ebcf 100644
---- a/paypal_agreement_protocol/web_static/index.html
-+++ b/paypal_agreement_protocol/web_static/index.html
-@@ -8,7 +8,7 @@
-   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
-   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
-   <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
--  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-4">
-+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-5">
- </head>
- <body>
-   <div class="paper-noise"></div>
-@@ -109,7 +109,7 @@
-       <section id="settingsDrawer" class="settings-drawer" hidden>
-         <div class="settings-head"><div><h2>运行设置</h2><p>代理不会在任务表、日志或结果中显示。</p></div><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
-         <div class="settings-grid">
--          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option></select></label>
-+          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option><option value="identity_elevation">身份提升流程（开源项目版本）</option></select></label>
-           <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
+﻿diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index aa10c8e..8e42831 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -32,7 +32,7 @@
+           <h1>个人提链工作台</h1>
          </div>
-         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
-@@ -150,6 +150,6 @@
-
-   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
-   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
--  <script src="/paypal-pay/static/app.js?v=20260817-account-table-4"></script>
-+  <script src="/paypal-pay/static/app.js?v=20260817-account-table-5"></script>
- </body>
- </html>
+         <div class="topbar-actions">
+-          <a class="payment-preview-link" href="/paypal-pay/?demo=1&amp;ba=BA-DEMO2026081701&amp;country=GB">&#x652F;&#x4ED8;&#x754C;&#x9762;&#x6D4B;&#x8BD5;&#x7248;</a>
++          <a class="payment-preview-link" href="/paypal-pay/">&#x534F;&#x8BAE;&#x652F;&#x4ED8;</a>
+           <div id="socket-status" class="connection offline">
+             <span class="dot"></span>
+             <span>连接中</span>

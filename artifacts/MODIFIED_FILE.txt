@@ -1,15 +1,17 @@
 ﻿MODIFIED_FILE
 branch: main
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry
 changed_fields:
 - 运行设置恢复两个现有开源版本：original 原版流程、identity_elevation 身份提升流程，前端只选择既有后端流程类，不改 paypal/flow.py 或 paypal/elevation_flow.py 核心步骤
 - 协议支付控制台取消固定 1760px 宽度和表格最小宽度，两侧只保留少量边距并撑满可用空间
 - 协议支付正文、表格、按钮、日志字号继续放大
 - 保留 BA 对应邮箱、接码取消旧 activation、日志弹窗和原有账号队列对接
+- 删除协议支付入口中的默认 BA-DEMO 链接和 demo 查询参数，入口改为正式空白协议支付页
 source_hashes_before_change:
 - paypal_agreement_protocol/web_static/app.js: 132aaac5cee0bad8946287fbb41ef45cfc6dd494
 - paypal_agreement_protocol/web_static/checkout-preview.css: 2e94bb3a68c72423a1db29586340a54e9597e246
 - paypal_agreement_protocol/web_static/index.html: 881c9c9f6694247f9f8a3b090cf0ec421212726a
+- payment_link_extractor/web/templates/index.html: f787420c2fdbe2bb52419272cc3c050dfe80ec5d3c15bd1a3aaec85665b950d4
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch

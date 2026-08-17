@@ -1,6 +1,6 @@
 ﻿VERIFICATION
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography
-changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained.
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry
+changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
@@ -42,3 +42,25 @@ ROLLBACK input: append <!-- rollback-marker --> in temporary worktree, then rest
 ROLLBACK literal result: restored_to=HEAD marker_before=1 marker_after=0 rollback_exit=0; project branch remains modified
 ROLLBACK exit status: 0
 restored behavior/status: temporary copy restored current protocol UI files to the selected Git commit; working project remains on the dual-mode, full-width, larger-font branch.
+
+
+LATEST BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-formal HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; inspect payment_link_extractor/web/templates/index.html; git worktree remove --force C:\Temp\paypal-baseline-formal
+LATEST BASELINE input: HEAD checkout template with the previous protocol preview link
+LATEST BASELINE literal result: baseline_link=<a class="payment-preview-link" href="/paypal-pay/?demo=1&amp;ba=BA-DEMO2026081701&amp;country=GB">&#x652F;&#x4ED8;&#x7546;&#x9762;&#x6D4B;&#x8BD5;&#x7248;</a>; baseline_has_demo_ba=True; baseline_href_has_query=True; baseline_template_sha256=f787420c2fdbe2bb52419272cc3c050dfe80ec5d3c15bd1a3aaec85665b950d4; baseline_compile_exit=0; baseline_protocol_js_exit=0; baseline_template_exit=0
+LATEST BASELINE exit status: 0
+
+LATEST MODIFIED formal-entry command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /; GET /paypal-pay/; inspect payment-preview-link"
+LATEST MODIFIED input: current template with no demo query or default BA
+LATEST MODIFIED literal result: modified_link=<a class="payment-preview-link" href="/paypal-pay/">&#x534F;&#x8BAE;&#x652F;&#x4ED8;</a>; modified_has_demo_ba=False; modified_href_plain=True; root_status=200; root_link_plain=True; protocol_status=200; protocol_default_ba_present=False; protocol_query_form_empty=True
+LATEST MODIFIED exit status: 0
+
+LATEST MODIFIED validation command: .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; git diff --check
+LATEST MODIFIED validation input: current working tree source and artifacts
+LATEST MODIFIED validation literal result: modified_compile_exit=0 modified_protocol_js_exit=0 modified_diff_check_exit=0
+LATEST MODIFIED validation exit status: 0
+
+LATEST ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-formal HEAD; copy current artifacts/ROLLBACK.sh into the worktree; append a rollback marker to payment_link_extractor/web/templates/index.html; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- payment_link_extractor/web/templates/index.html; git worktree remove --force C:\Temp\paypal-ui-rollback-formal
+LATEST ROLLBACK input: temporary copy with marker in the formal protocol entry template
+LATEST ROLLBACK literal result: restored_to=HEAD; marker_before=1; marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains formal-use modified
+LATEST ROLLBACK exit status: 0
+restored behavior/status: temporary copy restored the formal protocol entry file and prior protocol UI files to the selected Git commit; working project remains on the formal-use branch with no default BA in the entry link.
