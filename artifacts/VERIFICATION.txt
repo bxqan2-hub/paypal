@@ -401,3 +401,18 @@ ROLLBACK input: temporary worktree with one marker in each SMS-receive/send-fail
 ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; herosms_marker_after=0; web_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 ROLLBACK exit status: 0
 restored behavior/status: selected HEAD restores the previous parser/watcher behavior in the temporary copy; the active project keeps structured HeroSMS OTP reception and immediate replacement when PayPal reports an SMS-send failure.
+
+LATEST SMS RECEIVE FIX DEPLOYMENT
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 43404 -Force
+BASELINE input: service running commit 87a1ab3 before structured getStatusV2/immediate-send-failure deployment
+BASELINE literal result: old_listener_pid=43404; old_listener_stopped=1; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: start .venv\Scripts\python.exe -m payment_link_extractor.web --env-file .env; Invoke-WebRequest http://127.0.0.1:18794/api/health; read-only getActiveActivations; POST active IDs to http://127.0.0.1:18794/paypal-pay/api/sms/status and count non-empty normalized codes without printing IDs/codes
+MODIFIED input: commit f9e5db5 and two current active HeroSMS activations whose getStatusV2 responses contain structured sms/code data
+MODIFIED literal result: start_requested=1; new_listener_pid=50224; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; local_status_http=200; local_activation_count=2; local_codes_detected=2; deployed_live_code_test_exit=0; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh HEAD in C:\Temp\paypal-sms-receive-rollback
+ROLLBACK input: temporary marker-modified copies of the HeroSMS parser, WebJob signal, and Flask SMS watcher
+ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; herosms_marker_after=0; web_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: the temporary rollback restored commit 87a1ab3; active port 18794 remains on f9e5db5 and live local status polling detected both current HeroSMS codes.
