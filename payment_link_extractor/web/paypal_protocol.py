@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 from pathlib import Path
 import sys
+import threading
+import time
 from typing import Any
 
-from flask import Response, request
+from flask import Response, jsonify, request
+
+from paypal_agreement_protocol.herosms import HeroSMSClient, HeroSMSError
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +30,16 @@ if str(_PROTOCOL_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROTOCOL_ROOT))
 
 _protocol = importlib.import_module("paypal_agreement_protocol.web")
+_SMS_CLIENT: HeroSMSClient | None = None
+_SMS_WATCHERS: dict[str, threading.Thread] = {}
+_SMS_WATCHERS_LOCK = threading.RLock()
+
+
+def _sms_client() -> HeroSMSClient:
+    global _SMS_CLIENT
+    if _SMS_CLIENT is None:
+        _SMS_CLIENT = HeroSMSClient()
+    return _SMS_CLIENT
 
 
 class _HeaderMap:
@@ -93,6 +108,47 @@ def dispatch_protocol_request(inner_path: str, method: str, body: bytes = b"") -
     return Response(payload, status=handler._response_status, headers=response_headers)
 
 
+def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+    activation_id = str(activation.get("activation_id") or "")
+    client = _sms_client()
+    submitted = False
+    deadline = time.monotonic() + client.timeout
+    try:
+        while time.monotonic() < deadline:
+            job = _protocol.get_job(job_id)
+            if job is None or job.status in {"completed", "failed", "cancelled"}:
+                break
+            if job.status == "awaiting_otp":
+                if not submitted:
+                    try:
+                        code = client.wait_for_code(activation_id)
+                        job.submit_input(code)
+                        submitted = True
+                    except (HeroSMSError, ValueError):
+                        break
+            else:
+                submitted = False
+            time.sleep(client.poll_interval)
+    finally:
+        client.finish(activation_id, 6)
+        with _SMS_WATCHERS_LOCK:
+            _SMS_WATCHERS.pop(job_id, None)
+
+
+def _start_sms_watchers(payload: dict[str, Any], activation: dict[str, Any]) -> None:
+    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else [payload.get("job")]
+    for item in jobs:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        job_id = str(item["id"])
+        with _SMS_WATCHERS_LOCK:
+            if job_id in _SMS_WATCHERS:
+                continue
+            thread = threading.Thread(target=_watch_sms_job, args=(job_id, dict(activation)), name=f"herosms-{job_id}", daemon=True)
+            _SMS_WATCHERS[job_id] = thread
+            thread.start()
+
+
 def register_paypal_protocol(app: Any) -> None:
     """Register ``/paypal-pay`` and delegate all protocol work to the source."""
 
@@ -100,5 +156,32 @@ def register_paypal_protocol(app: Any) -> None:
     @app.route("/paypal-pay/", defaults={"protocol_path": ""}, methods=["GET", "POST"])
     @app.route("/paypal-pay/<path:protocol_path>", methods=["GET", "POST"])
     def paypal_protocol(protocol_path: str = "") -> Response:
+        if protocol_path == "api/sms/number" and request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            try:
+                activation = _sms_client().acquire_number(
+                    str(data.get("country") or ""),
+                    max_price=float(data["max_price"]) if data.get("max_price") not in (None, "") else None,
+                    service=str(data.get("service") or "") or None,
+                )
+                return jsonify({"ok": True, **activation})
+            except (HeroSMSError, ValueError) as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 503
         inner_path = "/" + protocol_path if protocol_path else "/"
-        return dispatch_protocol_request(inner_path, request.method, request.get_data(cache=False))
+        body = request.get_data(cache=False)
+        activation = None
+        if protocol_path == "api/jobs" and request.method == "POST":
+            try:
+                parsed = json.loads(body.decode("utf-8")) if body else {}
+                activation_id = str(parsed.get("sms_activation_id") or "").strip()
+                if activation_id:
+                    activation = {"activation_id": activation_id}
+            except (ValueError, UnicodeDecodeError):
+                activation = None
+        response = dispatch_protocol_request(inner_path, request.method, body)
+        if activation is not None and response.status_code in {200, 201}:
+            try:
+                _start_sms_watchers(json.loads(response.get_data(as_text=True)), activation)
+            except (ValueError, TypeError):
+                pass
+        return response

@@ -1,10 +1,12 @@
 MODIFIED_FILE
 branch: main
-changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff
-changed_fields: task result action; protocol mount; automatic phone-region prefill; runtime dependency
+changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff -> HeroSMS country-matched number -> automatic OTP submission
+changed_fields: task result action; protocol mount; automatic phone-region prefill; HeroSMS API number allocation and OTP watcher; sanitized HeroSMS configuration example
 original_hashes:
   requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
   payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
   payment_link_extractor/web/app.py: 6867afef52a51c40b0eefe219aa399d534f46cb0
 
 upstream_core: paypal_agreement_protocol/paypal/*.py copied byte-for-byte from https://github.com/bxqan2-hub/- at commit 16a985c46a16d0c0b390f8a4679bdda0053a1895
+HeroSMS_adapter: paypal_agreement_protocol/herosms.py; payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/web_static/app.js
+secret_handling: HEROSMS_API_KEY is read from local .env and is not tracked; .env.example contains an empty placeholder

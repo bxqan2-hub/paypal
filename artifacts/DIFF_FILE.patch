@@ -1,52 +1,70 @@
+diff --git a/.env.example b/.env.example
+index b58f7d9..df021a1 100644
+--- a/.env.example
++++ b/.env.example
+@@ -27,3 +27,11 @@ IPROCKET_BRIDGE_PORT=18796
+ OPLL_LOG_LEVEL=INFO
+ OPLL_LOG_FILE=./data/payment-link.log
+ OPLL_LOG_JSON=false
++
++# HeroSMS automatic country-matched phone/SMS retrieval (keep key only in local .env)
++HEROSMS_API_KEY=
++HEROSMS_BASE_URL=https://hero-sms.com/stubs/handler_api.php
++HEROSMS_SERVICE=paypal
++HEROSMS_MAX_PRICE=
++HEROSMS_POLL_INTERVAL=5
++HEROSMS_TIMEOUT=1800
 diff --git a/artifacts/MODIFIED_FILE.txt b/artifacts/MODIFIED_FILE.txt
 new file mode 100644
-index 0000000..dfbca93
+index 0000000..2bd7474
 --- /dev/null
 +++ b/artifacts/MODIFIED_FILE.txt
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,12 @@
 +MODIFIED_FILE
 +branch: main
-+changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff
-+changed_fields: task result action; protocol mount; automatic phone-region prefill; runtime dependency
++changed_branch: extraction-success -> /paypal-pay/ protocol-payment handoff -> HeroSMS country-matched number -> automatic OTP submission
++changed_fields: task result action; protocol mount; automatic phone-region prefill; HeroSMS API number allocation and OTP watcher; sanitized HeroSMS configuration example
 +original_hashes:
 +  requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
 +  payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
 +  payment_link_extractor/web/app.py: 6867afef52a51c40b0eefe219aa399d534f46cb0
 +
 +upstream_core: paypal_agreement_protocol/paypal/*.py copied byte-for-byte from https://github.com/bxqan2-hub/- at commit 16a985c46a16d0c0b390f8a4679bdda0053a1895
++HeroSMS_adapter: paypal_agreement_protocol/herosms.py; payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/web_static/app.js
++secret_handling: HEROSMS_API_KEY is read from local .env and is not tracked; .env.example contains an empty placeholder
 diff --git a/artifacts/ROLLBACK.sh b/artifacts/ROLLBACK.sh
 new file mode 100755
-index 0000000..2d7fde2
+index 0000000..0f03d52
 --- /dev/null
 +++ b/artifacts/ROLLBACK.sh
 @@ -0,0 +1,5 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +TARGET_COMMIT="${1:-HEAD^}"
-+git restore --source "$TARGET_COMMIT" -- payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol
++git restore --source "$TARGET_COMMIT" -- payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol .env.example
 +printf 'restored_to=%s\n' "$TARGET_COMMIT"
 diff --git a/artifacts/VERIFICATION.txt b/artifacts/VERIFICATION.txt
 new file mode 100644
-index 0000000..bba86e6
+index 0000000..f348459
 --- /dev/null
 +++ b/artifacts/VERIFICATION.txt
 @@ -0,0 +1,24 @@
 +VERIFICATION
-+changed_branch: extraction-success -> /paypal-pay/ -> protocol country/phone form -> /paypal-pay/api/jobs
-+changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, automatic phone-region prefill from task billing_country
++changed_branch: extraction-success -> /paypal-pay/ -> protocol country/phone form -> HeroSMS country lookup/number allocation -> /paypal-pay/api/jobs -> background OTP submission
++changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, automatic phone-region prefill from task billing_country, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
 +artifacts:
-+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
-+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
-+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
-+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
++- MODIFIED_FILE: C:\Users\Administrator\Desktop\??\artifacts\MODIFIED_FILE.txt
++- DIFF_FILE: C:\Users\Administrator\Desktop\??\artifacts\DIFF_FILE.patch
++- VERIFICATION: C:\Users\Administrator\Desktop\??\artifacts\VERIFICATION.txt
++- ROLLBACK: C:\Users\Administrator\Desktop\??\artifacts\ROLLBACK.sh
 +BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-test HEAD; .venv\Scripts\python.exe -m compileall -q C:\Temp\paypal-baseline-test\payment_link_extractor; git worktree remove --force C:\Temp\paypal-baseline-test
 +BASELINE literal result: baseline_compile_exit=0
 +BASELINE exit status: 0
-+MODIFIED command: .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol
-+MODIFIED literal result: modified_compile_exit=0; task billing_country is forwarded as country and billing_country query parameters
-+MODIFIED exit status: 0
-+MODIFIED route command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /paypal-pay/; GET /paypal-pay/api/supported-countries"
-+MODIFIED route literal result: page_status=200 page_bytes=15082; countries_status=200 countries=12
++MODIFIED compile command: .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol
++MODIFIED compile literal result: modified_compile_exit=0
++MODIFIED compile exit status: 0
++MODIFIED route command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /paypal-pay/; GET /paypal-pay/api/supported-countries; POST /paypal-pay/api/sms/number with a fake HeroSMS allocator"
++MODIFIED route literal result: page_status=200 page_bytes=15082; countries_status=200 countries=12; sms_status=200 activation_id=test-act phone=+447700900123
 +MODIFIED route exit status: 0
 +MODIFIED JS command: node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js
 +MODIFIED JS literal result: extractor_js_exit=0 protocol_js_exit=0
@@ -54,7 +72,7 @@ index 0000000..bba86e6
 +ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
 +ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
 +ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
-+restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch.
++restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch; upstream paypal core files remain byte-for-byte unchanged by the HeroSMS integration.
 diff --git a/payment_link_extractor/web/app.py b/payment_link_extractor/web/app.py
 index 40b4366..6867afe 100644
 --- a/payment_link_extractor/web/app.py
@@ -79,10 +97,10 @@ index 40b4366..6867afe 100644
      def require_api_password() -> Any:
 diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
 new file mode 100644
-index 0000000..d0ba8ae
+index 0000000..28e3042
 --- /dev/null
 +++ b/payment_link_extractor/web/paypal_protocol.py
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,187 @@
 +"""Mount the upstream PayPal agreement protocol inside the existing Flask app.
 +
 +The upstream protocol package is copied unchanged under ``paypal_agreement_protocol``.
@@ -94,11 +112,16 @@ index 0000000..d0ba8ae
 +
 +import importlib
 +import io
++import json
 +from pathlib import Path
 +import sys
++import threading
++import time
 +from typing import Any
 +
-+from flask import Response, request
++from flask import Response, jsonify, request
++
++from paypal_agreement_protocol.herosms import HeroSMSClient, HeroSMSError
 +
 +
 +_PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -110,6 +133,16 @@ index 0000000..d0ba8ae
 +    sys.path.insert(0, str(_PROTOCOL_ROOT))
 +
 +_protocol = importlib.import_module("paypal_agreement_protocol.web")
++_SMS_CLIENT: HeroSMSClient | None = None
++_SMS_WATCHERS: dict[str, threading.Thread] = {}
++_SMS_WATCHERS_LOCK = threading.RLock()
++
++
++def _sms_client() -> HeroSMSClient:
++    global _SMS_CLIENT
++    if _SMS_CLIENT is None:
++        _SMS_CLIENT = HeroSMSClient()
++    return _SMS_CLIENT
 +
 +
 +class _HeaderMap:
@@ -178,6 +211,47 @@ index 0000000..d0ba8ae
 +    return Response(payload, status=handler._response_status, headers=response_headers)
 +
 +
++def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
++    activation_id = str(activation.get("activation_id") or "")
++    client = _sms_client()
++    submitted = False
++    deadline = time.monotonic() + client.timeout
++    try:
++        while time.monotonic() < deadline:
++            job = _protocol.get_job(job_id)
++            if job is None or job.status in {"completed", "failed", "cancelled"}:
++                break
++            if job.status == "awaiting_otp":
++                if not submitted:
++                    try:
++                        code = client.wait_for_code(activation_id)
++                        job.submit_input(code)
++                        submitted = True
++                    except (HeroSMSError, ValueError):
++                        break
++            else:
++                submitted = False
++            time.sleep(client.poll_interval)
++    finally:
++        client.finish(activation_id, 6)
++        with _SMS_WATCHERS_LOCK:
++            _SMS_WATCHERS.pop(job_id, None)
++
++
++def _start_sms_watchers(payload: dict[str, Any], activation: dict[str, Any]) -> None:
++    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else [payload.get("job")]
++    for item in jobs:
++        if not isinstance(item, dict) or not item.get("id"):
++            continue
++        job_id = str(item["id"])
++        with _SMS_WATCHERS_LOCK:
++            if job_id in _SMS_WATCHERS:
++                continue
++            thread = threading.Thread(target=_watch_sms_job, args=(job_id, dict(activation)), name=f"herosms-{job_id}", daemon=True)
++            _SMS_WATCHERS[job_id] = thread
++            thread.start()
++
++
 +def register_paypal_protocol(app: Any) -> None:
 +    """Register ``/paypal-pay`` and delegate all protocol work to the source."""
 +
@@ -185,8 +259,35 @@ index 0000000..d0ba8ae
 +    @app.route("/paypal-pay/", defaults={"protocol_path": ""}, methods=["GET", "POST"])
 +    @app.route("/paypal-pay/<path:protocol_path>", methods=["GET", "POST"])
 +    def paypal_protocol(protocol_path: str = "") -> Response:
++        if protocol_path == "api/sms/number" and request.method == "POST":
++            data = request.get_json(silent=True) or {}
++            try:
++                activation = _sms_client().acquire_number(
++                    str(data.get("country") or ""),
++                    max_price=float(data["max_price"]) if data.get("max_price") not in (None, "") else None,
++                    service=str(data.get("service") or "") or None,
++                )
++                return jsonify({"ok": True, **activation})
++            except (HeroSMSError, ValueError) as exc:
++                return jsonify({"ok": False, "error": str(exc)}), 503
 +        inner_path = "/" + protocol_path if protocol_path else "/"
-+        return dispatch_protocol_request(inner_path, request.method, request.get_data(cache=False))
++        body = request.get_data(cache=False)
++        activation = None
++        if protocol_path == "api/jobs" and request.method == "POST":
++            try:
++                parsed = json.loads(body.decode("utf-8")) if body else {}
++                activation_id = str(parsed.get("sms_activation_id") or "").strip()
++                if activation_id:
++                    activation = {"activation_id": activation_id}
++            except (ValueError, UnicodeDecodeError):
++                activation = None
++        response = dispatch_protocol_request(inner_path, request.method, body)
++        if activation is not None and response.status_code in {200, 201}:
++            try:
++                _start_sms_watchers(json.loads(response.get_data(as_text=True)), activation)
++            except (ValueError, TypeError):
++                pass
++        return response
 diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
 index 67c32f1..16c9c44 100644
 --- a/payment_link_extractor/web/static/app.js
@@ -865,6 +966,192 @@ index 0000000..b3eb5bb
 diff --git a/paypal_agreement_protocol/data/used_local_card_hashes.txt b/paypal_agreement_protocol/data/used_local_card_hashes.txt
 new file mode 100644
 index 0000000..e69de29
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+new file mode 100644
+index 0000000..f487fef
+--- /dev/null
++++ b/paypal_agreement_protocol/herosms.py
+@@ -0,0 +1,180 @@
++"""Small synchronous HeroSMS adapter used by the protocol-payment bridge.
++
++The copied PayPal flow is deliberately not modified.  This module only owns
++number allocation and SMS polling, and keeps the API key in the process
++environment instead of source control.
++"""
++from __future__ import annotations
++
++import json
++import os
++import re
++import time
++from typing import Any
++
++import httpx
++
++
++class HeroSMSError(RuntimeError):
++    """Raised when HeroSMS cannot allocate or read an activation."""
++
++
++_FALLBACK_COUNTRY_IDS = {
++    "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
++    "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
++}
++
++
++class HeroSMSClient:
++    def __init__(self) -> None:
++        self.api_key = os.getenv("HEROSMS_API_KEY", "").strip()
++        self.base_url = os.getenv(
++            "HEROSMS_BASE_URL", "https://hero-sms.com/stubs/handler_api.php"
++        ).strip()
++        self.default_service = os.getenv("HEROSMS_SERVICE", "paypal").strip() or "paypal"
++        self.default_max_price = _optional_float(os.getenv("HEROSMS_MAX_PRICE", ""))
++        self.poll_interval = max(2.0, _optional_float(os.getenv("HEROSMS_POLL_INTERVAL", "5")) or 5.0)
++        self.timeout = max(30.0, _optional_float(os.getenv("HEROSMS_TIMEOUT", "1800")) or 1800.0)
++        self._countries: Any = None
++
++    @property
++    def configured(self) -> bool:
++        return bool(self.api_key)
++
++    def _request(self, action: str, **params: Any) -> Any:
++        if not self.configured:
++            raise HeroSMSError("HEROSMS_API_KEY is not configured")
++        query = {"api_key": self.api_key, "action": action}
++        query.update({key: value for key, value in params.items() if value is not None})
++        try:
++            response = httpx.get(self.base_url, params=query, timeout=30.0)
++            response.raise_for_status()
++        except httpx.HTTPError as exc:
++            raise HeroSMSError(f"HeroSMS request failed: {exc}") from exc
++        try:
++            return response.json()
++        except ValueError:
++            return response.text.strip()
++
++    def get_countries(self, *, force: bool = False) -> Any:
++        if self._countries is None or force:
++            self._countries = self._request("getCountries")
++        return self._countries
++
++    def resolve_country_id(self, country: str) -> int:
++        code = str(country or "").strip().upper()
++        if code.isdigit():
++            return int(code)
++        try:
++            payload = self.get_countries()
++            for country_id, item in _country_entries(payload):
++                text = " ".join(str(item.get(key, "")) for key in (
++                    "iso", "isoCode", "countryCode", "code", "name", "name_en", "name_zh", "country"
++                )).upper()
++                if code in text or _country_alias_match(code, text):
++                    return int(country_id)
++        except (HeroSMSError, ValueError, TypeError):
++            pass
++        if code in _FALLBACK_COUNTRY_IDS:
++            return _FALLBACK_COUNTRY_IDS[code]
++        raise HeroSMSError(f"HeroSMS country is unavailable: {code}")
++
++    def acquire_number(
++        self, country: str, *, max_price: float | None = None, service: str | None = None
++    ) -> dict[str, Any]:
++        country_code = str(country or "").strip().upper()
++        country_id = self.resolve_country_id(country_code)
++        price = self.default_max_price if max_price is None else max_price
++        payload = self._request(
++            "getNumberV2", service=(service or self.default_service), country=country_id,
++            maxPrice=price, fixedPrice="1" if price is not None else None,
++        )
++        activation_id, phone, cost = _parse_activation(payload)
++        if not activation_id or not phone:
++            raise HeroSMSError("HeroSMS returned no activation number")
++        return {
++            "activation_id": str(activation_id), "phone": _normalise_phone(phone),
++            "country": country_code, "country_id": country_id,
++            "service": service or self.default_service, "price": cost,
++        }
++
++    def get_status(self, activation_id: str) -> dict[str, Any]:
++        payload = self._request("getStatusV2", id=str(activation_id))
++        if isinstance(payload, str):
++            parts = payload.split(":", 1)
++            return {"status": parts[0], "code": parts[1] if len(parts) == 2 else "", "raw": payload}
++        if isinstance(payload, dict):
++            result = dict(payload)
++            result.setdefault("status", result.get("state") or result.get("statusCode") or "")
++            result.setdefault("code", result.get("smsCode") or result.get("verificationCode") or "")
++            return result
++        return {"status": "", "code": ""}
++
++    def finish(self, activation_id: str, status: int = 6) -> None:
++        try:
++            self._request("setStatus", id=str(activation_id), status=int(status))
++        except HeroSMSError:
++            return
++
++    def wait_for_code(self, activation_id: str) -> str:
++        deadline = time.monotonic() + self.timeout
++        while time.monotonic() < deadline:
++            state = self.get_status(activation_id)
++            code = str(state.get("code") or "").strip()
++            status = str(state.get("status") or "").upper()
++            if code and code.lower() not in {"none", "null"}:
++                return code
++            if status in {"STATUS_CANCEL", "STATUS_FINISH", "STATUS_CANCELLED", "6", "8"}:
++                break
++            time.sleep(self.poll_interval)
++        raise HeroSMSError("HeroSMS SMS wait timed out")
++
++
++def _optional_float(value: str) -> float | None:
++    try:
++        return float(value) if str(value).strip() else None
++    except (TypeError, ValueError):
++        return None
++
++
++def _country_entries(payload: Any):
++    if isinstance(payload, dict):
++        values = payload.get("countries") or payload.get("data") or payload
++        if isinstance(values, dict):
++            for key, item in values.items():
++                if isinstance(item, dict):
++                    yield key, item
++                elif isinstance(item, str):
++                    yield key, {"name": item}
++        elif isinstance(values, list):
++            for item in values:
++                if isinstance(item, dict):
++                    yield item.get("id") or item.get("countryCode") or item.get("code"), item
++    elif isinstance(payload, list):
++        for item in payload:
++            if isinstance(item, dict):
++                yield item.get("id") or item.get("countryCode") or item.get("code"), item
++
++
++def _country_alias_match(code: str, text: str) -> bool:
++    aliases = {"GB": ("UNITED KINGDOM", "ENGLAND", "英国"), "US": ("UNITED STATES", "美国"),
++               "AE": ("UNITED ARAB EMIRATES", "UAE", "阿联酋"), "TW": ("TAIWAN", "台湾")}
++    return any(alias in text for alias in aliases.get(code, ()))
++
++
++def _parse_activation(payload: Any) -> tuple[str, str, Any]:
++    if isinstance(payload, str):
++        parts = payload.split(":")
++        if len(parts) >= 3 and parts[0] in {"ACCESS_NUMBER", "ACCESS_NUMBER_V2"}:
++            return parts[1], parts[2], None
++        return "", "", None
++    if isinstance(payload, dict):
++        return (str(payload.get("activationId") or payload.get("activation_id") or payload.get("id") or ""),
++                str(payload.get("phoneNumber") or payload.get("phone") or payload.get("number") or ""),
++                payload.get("activationCost") or payload.get("cost") or payload.get("price"))
++    return "", "", None
++
++
++def _normalise_phone(phone: str) -> str:
++    digits = re.sub(r"\D", "", str(phone or ""))
++    return f"+{digits}" if digits else ""
 diff --git a/paypal_agreement_protocol/paypal/__init__.py b/paypal_agreement_protocol/paypal/__init__.py
 new file mode 100644
 index 0000000..e69de29
@@ -10181,10 +10468,10 @@ index 0000000..ee5c9d2
 +}
 diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
 new file mode 100644
-index 0000000..3e52e04
+index 0000000..0b8fc9c
 --- /dev/null
 +++ b/paypal_agreement_protocol/web_static/app.js
-@@ -0,0 +1,1035 @@
+@@ -0,0 +1,1050 @@
 +const API_BASE = '/paypal-pay/api';
 +const GROK_API_BASE = '/api/grok-trial';
 +
@@ -11009,11 +11296,25 @@ index 0000000..3e52e04
 +  const baValues = baPoolLines();
 +  const selectedCountryOption = $('paypalCountry').selectedOptions[0];
 +  if (selectedCountryOption?.dataset.live !== '1' && !dynamicCountriesEnabled) return showClientError('\u8be5\u56fd\u5bb6\u5df2\u8fdb\u5165\u5b9e\u65f6\u89e3\u6790\u76ee\u5f55\uff0c\u52a8\u6001\u56fd\u5bb6\u6267\u884c\u5f00\u5173\u5f53\u524d\u5173\u95ed');
-+  const phones = phonePoolLines();
++  let phones = phonePoolLines();
 +  const country = $('paypalCountry').value;
++  let smsActivation = null;
 +  const proxies = proxyLines();
 +  if (!baValues.length) return showClientError('请填写 BA 链池');
 +  if (baValues.length > 20) return showClientError('BA 链池最多支持 20 条');
++  if (!phones.length) {
++    if (baValues.length !== 1) return showClientError('HeroSMS automatic retrieval supports one BA chain at a time; fill the phone pool for batches');
++    try {
++      setProgress(4, 'Getting a phone from HeroSMS for the selected country', 'SMS');
++      const sms = await api('/sms/number', {method: 'POST', body: JSON.stringify({country})});
++      smsActivation = sms;
++      $('phone').value = sms.phone;
++      phones = [sms.phone];
++    } catch (error) {
++      $('submitButton').disabled = false;
++      return showClientError(error.message || 'HeroSMS phone allocation failed');
++    }
++  }
 +  if (phones.length > 20) return showClientError('手机号池最多支持 20 条');
 +  if (baValues.length !== phones.length) return showClientError(`BA 链池与手机号池数量必须一致（当前 ${baValues.length} / ${phones.length}）`);
 +  const baTokens = baValues.map(extractBa);
@@ -11035,6 +11336,7 @@ index 0000000..3e52e04
 +    const data = await api('/jobs', {method:'POST', body:JSON.stringify({
 +      ba_pool: baValues, phones, country, proxies, agreement_only: false,
 +      buyer_mode: $('buyerMode').value,
++      ...(smsActivation?.activation_id ? {sms_activation_id: smsActivation.activation_id} : {}),
 +    })});
 +    startBatch(data.jobs || []);
 +    await refreshJobs();

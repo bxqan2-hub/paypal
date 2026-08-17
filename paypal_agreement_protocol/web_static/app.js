@@ -822,11 +822,25 @@ $('protocolForm').addEventListener('submit', async (event) => {
   const baValues = baPoolLines();
   const selectedCountryOption = $('paypalCountry').selectedOptions[0];
   if (selectedCountryOption?.dataset.live !== '1' && !dynamicCountriesEnabled) return showClientError('\u8be5\u56fd\u5bb6\u5df2\u8fdb\u5165\u5b9e\u65f6\u89e3\u6790\u76ee\u5f55\uff0c\u52a8\u6001\u56fd\u5bb6\u6267\u884c\u5f00\u5173\u5f53\u524d\u5173\u95ed');
-  const phones = phonePoolLines();
+  let phones = phonePoolLines();
   const country = $('paypalCountry').value;
+  let smsActivation = null;
   const proxies = proxyLines();
   if (!baValues.length) return showClientError('请填写 BA 链池');
   if (baValues.length > 20) return showClientError('BA 链池最多支持 20 条');
+  if (!phones.length) {
+    if (baValues.length !== 1) return showClientError('HeroSMS automatic retrieval supports one BA chain at a time; fill the phone pool for batches');
+    try {
+      setProgress(4, 'Getting a phone from HeroSMS for the selected country', 'SMS');
+      const sms = await api('/sms/number', {method: 'POST', body: JSON.stringify({country})});
+      smsActivation = sms;
+      $('phone').value = sms.phone;
+      phones = [sms.phone];
+    } catch (error) {
+      $('submitButton').disabled = false;
+      return showClientError(error.message || 'HeroSMS phone allocation failed');
+    }
+  }
   if (phones.length > 20) return showClientError('手机号池最多支持 20 条');
   if (baValues.length !== phones.length) return showClientError(`BA 链池与手机号池数量必须一致（当前 ${baValues.length} / ${phones.length}）`);
   const baTokens = baValues.map(extractBa);
@@ -848,6 +862,7 @@ $('protocolForm').addEventListener('submit', async (event) => {
     const data = await api('/jobs', {method:'POST', body:JSON.stringify({
       ba_pool: baValues, phones, country, proxies, agreement_only: false,
       buyer_mode: $('buyerMode').value,
+      ...(smsActivation?.activation_id ? {sms_activation_id: smsActivation.activation_id} : {}),
     })});
     startBatch(data.jobs || []);
     await refreshJobs();
