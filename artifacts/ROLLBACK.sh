@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Restores current protocol UI and formal entry files.
 TARGET_COMMIT="${1:-HEAD~1}"
 FILES=(
   paypal_agreement_protocol/web_static/app.js

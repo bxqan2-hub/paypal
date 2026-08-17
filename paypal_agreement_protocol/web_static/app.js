@@ -1,5 +1,14 @@
 const API_BASE = '/paypal-pay/api';
 const GROK_API_BASE = '/api/grok-trial';
+const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
+
+function isDefaultDemoBa(value) {
+  return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
+}
+
+function stripDefaultDemoBa(value) {
+  return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
+}
 
 // A successful extraction can open this page with its PayPal BA URL.  Keep
 // country/phone editable so the operator only needs to fill the SMS region and
@@ -11,7 +20,7 @@ function applyWorkbenchPrefill() {
   const phone = params.get('phone') || '';
   const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-  if (ba && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
+  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
     if ([...select.options].some(option => option.value === country)) select.value = country;
@@ -81,7 +90,7 @@ function restoreProtocolFormState() {
     if (!Object.prototype.hasOwnProperty.call(saved, key)) return;
     if (node.type === 'radio') node.checked = saved[key] === node.value;
     else if (node.type === 'checkbox') node.checked = Boolean(saved[key]);
-    else node.value = String(saved[key] ?? '');
+    else node.value = node.id === 'baToken' ? stripDefaultDemoBa(saved[key]) : String(saved[key] ?? '');
   });
 }
 
@@ -142,7 +151,7 @@ function updateProxyCount() {
 $('proxies').addEventListener('input', updateProxyCount);
 
 function baPoolLines() {
-  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(value => value && !isDefaultDemoBa(value));
 }
 function phonePoolLines() {
   return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
@@ -159,7 +168,13 @@ function updatePairCounts() {
   $('phonePoolCount').classList.toggle('over-limit', phoneCount > 20);
   renderAccountQueue();
 }
-$('baToken').addEventListener('input', updatePairCounts);
+$('baToken').addEventListener('input', () => {
+  const node = $('baToken');
+  const cleaned = stripDefaultDemoBa(node.value);
+  if (cleaned !== node.value) node.value = cleaned;
+  updatePairCounts();
+  saveProtocolFormState();
+});
 $('phone').addEventListener('input', updatePairCounts);
 
 let paypalCountries = [];

@@ -1,6 +1,6 @@
 ﻿VERIFICATION
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry
-changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed.
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh
+changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; app.js cache-bust refreshed.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
@@ -64,3 +64,20 @@ LATEST ROLLBACK input: temporary copy with marker in the formal protocol entry t
 LATEST ROLLBACK literal result: restored_to=HEAD; marker_before=1; marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains formal-use modified
 LATEST ROLLBACK exit status: 0
 restored behavior/status: temporary copy restored the formal protocol entry file and prior protocol UI files to the selected Git commit; working project remains on the formal-use branch with no default BA in the entry link.
+
+
+LATEST BASELINE DEMO-FILTER command: git worktree add --detach C:\Temp\paypal-baseline-demo-filter HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; inspect paypal_agreement_protocol/web_static/app.js and payment_link_extractor/web/templates/index.html; git worktree remove --force C:\Temp\paypal-baseline-demo-filter
+LATEST BASELINE DEMO-FILTER input: HEAD checkout before the stale BA-DEMO cleanup
+LATEST BASELINE DEMO-FILTER literal result: baseline_sanitizer_present=False; baseline_restore_filter_present=False; baseline_entry_demo_ba_present=False; baseline_compile_exit=0; baseline_protocol_js_exit=0; baseline_check_exit=0
+LATEST BASELINE DEMO-FILTER exit status: 0
+
+LATEST MODIFIED DEMO-FILTER command: node C:\Users\ADMINI~1\AppData\Local\Temp\check-demo-filter.js; .venv\Scripts\python.exe -c "create_app(TESTING); GET /paypal-pay/; inspect response"; node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
+LATEST MODIFIED DEMO-FILTER input: stale session/URL/manual value BA-DEMO2026081701 plus one real BA line
+LATEST MODIFIED DEMO-FILTER literal result: sanitizer_present=true; demo_match=true; cleaned=https://paypal.example/BA-REAL2026081702; default_removed=true; protocol_status=200; protocol_default_ba_present=False; ba_field_empty=True; cache_bust_present=True; modified_filter_exit=0; modified_route_exit=0; modified_protocol_js_exit=0; modified_compile_exit=0; modified_diff_check_exit=0
+LATEST MODIFIED DEMO-FILTER exit status: 0
+
+LATEST ROLLBACK DEMO-FILTER command: git worktree add --detach C:\Temp\paypal-ui-rollback-demo-filter HEAD; copy current artifacts/ROLLBACK.sh into the worktree; append a rollback marker to paypal_agreement_protocol/web_static/app.js; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- paypal_agreement_protocol/web_static/app.js; git worktree remove --force C:\Temp\paypal-ui-rollback-demo-filter
+LATEST ROLLBACK DEMO-FILTER input: temporary copy with marker in app.js
+LATEST ROLLBACK DEMO-FILTER literal result: restored_to=HEAD; marker_before=1; marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains stale-demo-suppressed
+LATEST ROLLBACK DEMO-FILTER exit status: 0
+restored behavior/status: temporary rollback copy restored app.js and the other tracked protocol UI/entry files to HEAD; active project keeps stale BA-DEMO suppression.

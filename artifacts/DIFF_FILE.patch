@@ -1,13 +1,73 @@
-﻿diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
-index aa10c8e..8e42831 100644
---- a/payment_link_extractor/web/templates/index.html
-+++ b/payment_link_extractor/web/templates/index.html
-@@ -32,7 +32,7 @@
-           <h1>个人提链工作台</h1>
-         </div>
-         <div class="topbar-actions">
--          <a class="payment-preview-link" href="/paypal-pay/?demo=1&amp;ba=BA-DEMO2026081701&amp;country=GB">&#x652F;&#x4ED8;&#x754C;&#x9762;&#x6D4B;&#x8BD5;&#x7248;</a>
-+          <a class="payment-preview-link" href="/paypal-pay/">&#x534F;&#x8BAE;&#x652F;&#x4ED8;</a>
-           <div id="socket-status" class="connection offline">
-             <span class="dot"></span>
-             <span>连接中</span>
+﻿diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 4fb743f..3fe0002 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -1,5 +1,14 @@
+ const API_BASE = '/paypal-pay/api';
+ const GROK_API_BASE = '/api/grok-trial';
++const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
++
++function isDefaultDemoBa(value) {
++  return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
++}
++
++function stripDefaultDemoBa(value) {
++  return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
++}
+
+ // A successful extraction can open this page with its PayPal BA URL.  Keep
+ // country/phone editable so the operator only needs to fill the SMS region and
+@@ -11,7 +20,7 @@ function applyWorkbenchPrefill() {
+   const phone = params.get('phone') || '';
+   const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
+     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+-  if (ba && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
++  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
+   if (country && document.querySelector('#paypalCountry')) {
+     const select = document.querySelector('#paypalCountry');
+     if ([...select.options].some(option => option.value === country)) select.value = country;
+@@ -81,7 +90,7 @@ function restoreProtocolFormState() {
+     if (!Object.prototype.hasOwnProperty.call(saved, key)) return;
+     if (node.type === 'radio') node.checked = saved[key] === node.value;
+     else if (node.type === 'checkbox') node.checked = Boolean(saved[key]);
+-    else node.value = String(saved[key] ?? '');
++    else node.value = node.id === 'baToken' ? stripDefaultDemoBa(saved[key]) : String(saved[key] ?? '');
+   });
+ }
+
+@@ -142,7 +151,7 @@ function updateProxyCount() {
+ $('proxies').addEventListener('input', updateProxyCount);
+
+ function baPoolLines() {
+-  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
++  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(value => value && !isDefaultDemoBa(value));
+ }
+ function phonePoolLines() {
+   return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
+@@ -159,7 +168,13 @@ function updatePairCounts() {
+   $('phonePoolCount').classList.toggle('over-limit', phoneCount > 20);
+   renderAccountQueue();
+ }
+-$('baToken').addEventListener('input', updatePairCounts);
++$('baToken').addEventListener('input', () => {
++  const node = $('baToken');
++  const cleaned = stripDefaultDemoBa(node.value);
++  if (cleaned !== node.value) node.value = cleaned;
++  updatePairCounts();
++  saveProtocolFormState();
++});
+ $('phone').addEventListener('input', updatePairCounts);
+
+ let paypalCountries = [];
+diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
+index 0c8ebcf..5d915ec 100644
+--- a/paypal_agreement_protocol/web_static/index.html
++++ b/paypal_agreement_protocol/web_static/index.html
+@@ -150,6 +150,6 @@
+
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
+   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
+-  <script src="/paypal-pay/static/app.js?v=20260817-account-table-5"></script>
++  <script src="/paypal-pay/static/app.js?v=20260817-demo-filter-1"></script>
+ </body>
+ </html>
