@@ -261,3 +261,18 @@ command: git worktree add --detach C:\Temp\paypal-herosms-service-rollback HEAD;
 input: temporary copy at C:\Temp\paypal-herosms-service-rollback with one marker
 literal result: restored_to=HEAD; rollback_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 exit status: 0
+
+LATEST SERVICE DEPLOYMENT
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 26820 -Force
+BASELINE input: service process running the pre-normalization HeroSMS adapter
+BASELINE literal result: old_listener_pid=26820; old_listener_stopped=1; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\\Scripts\\python.exe -m payment_link_extractor.web --env-file .env; Invoke-WebRequest http://127.0.0.1:18794/api/health
+MODIFIED input: commit 663eac6 with PayPal service alias normalization
+MODIFIED literal result: start_requested=1; listener_pid=50708; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute artifacts/ROLLBACK.sh HEAD in a temporary worktree
+ROLLBACK input: tracked service-normalization files
+ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps commit 663eac6; EXIT_CODE=0
+ROLLBACK exit status: 0
+restored behavior/status: service 18794 is listening with HTTP 200; PayPal acquisition now sends HeroSMS service=ts instead of service=paypal.
