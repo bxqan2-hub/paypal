@@ -369,3 +369,18 @@ ROLLBACK input: temporary worktree with one marker in each current SMS rotation/
 ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=False; web_marker_after=False; app_marker_after=False; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
 ROLLBACK exit status: 0
 restored behavior/status: selected HEAD restores the pre-rotation bridge, WebJob, and UI behavior; the active project keeps the 3-attempt/150-second automatic replacement flow, replacement phone display, and non-empty SMS log rendering.
+
+LATEST SMS ROTATION DEPLOYMENT
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 25952 -Force
+BASELINE input: service process running commit 8e4a6f5 before automatic rotation/log deployment
+BASELINE literal result: old_listener_pid=25952; old_listener_stopped=1; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\Scripts\python.exe -m payment_link_extractor.web --env-file .env; Get-NetTCPConnection -State Listen -LocalPort 18794; Invoke-WebRequest /api/health; Invoke-WebRequest /paypal-pay/; POST /paypal-pay/api/sms/status with {}
+MODIFIED input: commit faf3047 with SMS_ROTATION_MAX_ATTEMPTS=3, SMS_ROTATION_WAIT_SECONDS=150.0, WebJob log capture, and cache version 20260818-sms-rotation-logs-1
+MODIFIED literal result: new_pid=43404; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; cache_rotation=True; refresh_button=True; sms_status_empty=400; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute artifacts/ROLLBACK.sh HEAD in a temporary worktree
+ROLLBACK input: tracked bridge/WebJob/UI SMS rotation files from commit 8e4a6f5
+ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; web_marker_after=0; app_marker_after=0; rollback_exit=0; diff_exit=0; temporary_copy_removed=1
+ROLLBACK exit status: 0
+restored behavior/status: port 18794 is listening with HTTP 200 and serves the SMS rotation/log UI; the temporary rollback restores the selected prior commit without changing the active service.
