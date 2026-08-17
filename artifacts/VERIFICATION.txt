@@ -223,3 +223,18 @@ MODIFIED command: inspect payment_link_extractor/web/templates/index.html and ru
 MODIFIED input: updated extractor app.js cache version
 MODIFIED literal result: cache_bust_present=True extractor_js=0 protocol_js=0 compile=0 diff_check=0; EXIT_CODE=0
 MODIFIED exit status: 0
+
+PORT RESTART VALIDATION
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 35064 -Force
+BASELINE input: running service listener before cache-bust deployment
+BASELINE literal result: listener_pid=35064; listener_state=Listen; stopped_pid=35064; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\\Scripts\\python.exe -m payment_link_extractor.web --env-file .env; Invoke-WebRequest http://127.0.0.1:18794/api/health; Invoke-WebRequest http://127.0.0.1:18794/
+MODIFIED input: committed UI persistence build 40e6ecc on port 18794
+MODIFIED literal result: listener_pid=26820; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; cache_bust_served=True; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute artifacts/ROLLBACK.sh HEAD in a temporary worktree
+ROLLBACK input: temporary copy of the tracked UI persistence files
+ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps the modified service; EXIT_CODE=0
+ROLLBACK exit status: 0
+restored behavior/status: port 18794 serves HTTP 200 and the 20260818-ui-persist-1 cache-busted UI after restart; task/BA state remains browser-persistent across interface switches.
