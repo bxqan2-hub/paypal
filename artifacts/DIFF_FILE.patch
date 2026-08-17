@@ -532,3 +532,48 @@ index 6af338c..7c40627 100644
                <label class="field">
                  <span>支付方式</span>
                  <select id="payment-method">
+
+
+# LATEST HEROSMS 422 FIX DIFF
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+index cb2cc2d..ae68418 100644
+--- a/paypal_agreement_protocol/herosms.py
++++ b/paypal_agreement_protocol/herosms.py
+@@ -49,8 +49,16 @@ class HeroSMSClient:
+         try:
+             response = httpx.get(self.base_url, params=query, timeout=30.0)
+             response.raise_for_status()
++        except httpx.HTTPStatusError as exc:
++            body = exc.response.text.strip().replace("\n", " ")[:300]
++            detail = f"HTTP {exc.response.status_code}"
++            if body:
++                detail += f": {body}"
++            raise HeroSMSError(f"HeroSMS request failed: {detail}") from exc
++        except httpx.RequestError as exc:
++            raise HeroSMSError("HeroSMS request failed: network error") from exc
+         except httpx.HTTPError as exc:
+-            raise HeroSMSError(f"HeroSMS request failed: {exc}") from exc
++            raise HeroSMSError("HeroSMS request failed: HTTP client error") from exc
+         try:
+             return response.json()
+         except ValueError:
+@@ -86,9 +94,17 @@ class HeroSMSClient:
+         country_code = str(country or "").strip().upper()
+         country_id = self.resolve_country_id(country_code)
+         price = self.default_max_price if max_price is None else max_price
++        number_params: dict[str, Any] = {
++            "service": service or self.default_service,
++            "country": country_id,
++        }
++        if price is not None:
++            # HeroSMS documents fixedPrice as an alias used only when
++            # maxPrice is absent. Sending both makes getNumberV2 reject the
++            # request with HTTP 422.
++            number_params["maxPrice"] = price
+         payload = self._request(
+-            "getNumberV2", service=(service or self.default_service), country=country_id,
+-            maxPrice=price, fixedPrice="1" if price is not None else None,
++            "getNumberV2", **number_params,
+         )
+         activation_id, phone, cost = _parse_activation(payload)
+         if not activation_id or not phone:

@@ -168,3 +168,28 @@ ROLLBACK input: temporary copy with one marker in each billing preview file
 ROLLBACK literal result: restored_to=HEAD; routes_marker_before=1; template_marker_before=1; app_marker_before=1; styles_marker_before=1; routes_marker_after=0; template_marker_after=0; app_marker_after=0; styles_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains billing-profile preview modified
 ROLLBACK exit status: 0
 restored behavior/status: the temporary copy restores all four billing preview files to the selected Git commit; the working project remains on the populated-country-preview branch.
+
+LATEST BASELINE HEROSMS 422
+BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-herosms HEAD; monkeypatch httpx.get; call HeroSMSClient.acquire_number('GB', max_price=0.27); inspect captured getNumberV2 params; git worktree remove --force C:\Temp\paypal-baseline-herosms
+BASELINE input: GB fixture, max_price=0.27, fake country catalogue and activation response
+BASELINE literal result: baseline_params_has_maxPrice=True baseline_params_has_fixedPrice=True baseline_fixedPrice=1 baseline_exit=0
+BASELINE exit status: 0
+
+LATEST MODIFIED HEROSMS 422
+MODIFIED command: monkeypatch httpx.get; call HeroSMSClient.acquire_number('GB', max_price=0.27); raise a fake HTTPStatusError(422) and inspect sanitized HeroSMSError; py_compile; compileall; node --check; git diff --check
+MODIFIED input: GB fixture, max_price=0.27, fake activation response, fake 422 body containing an invalid-price detail
+MODIFIED literal result: modified_acquire=act-fixture modified_params_has_maxPrice=True modified_params_has_fixedPrice=False modified_maxPrice=0.27; modified_error_type=HeroSMSError redacted_key=True has_status=True; modified_test_exit=0 js_exit=0 py_exit=0 compile_exit=0 diff_check_exit=0
+MODIFIED exit status: 0
+
+LATEST ROLLBACK HEROSMS 422
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-herosms HEAD; append a marker to paypal_agreement_protocol/herosms.py; copy current artifacts/ROLLBACK.sh; push location to worktree; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- paypal_agreement_protocol/herosms.py; git worktree remove --force C:\Temp\paypal-ui-rollback-herosms
+ROLLBACK input: temporary copy with one HeroSMS adapter marker
+ROLLBACK literal result: restored_to=HEAD; herosms_marker_before=1; herosms_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains HeroSMS 422 fixed
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores the HeroSMS adapter to the selected Git commit; the working project keeps maxPrice-only requests and sanitized API errors.
+
+MODIFIED SAFE CATALOG CHECK
+MODIFIED command: load .env; HeroSMSClient.get_countries(force=True); HeroSMSClient.resolve_country_id('GB')
+MODIFIED input: configured HeroSMS key; read-only country catalogue action (no number purchase)
+MODIFIED literal result: safe_getCountries_ok=True country_catalog_count=195; resolve_GB_country_id=16; EXIT_CODE=0
+MODIFIED exit status: 0

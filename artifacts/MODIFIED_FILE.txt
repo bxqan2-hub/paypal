@@ -95,3 +95,24 @@ four_artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST HEROSMS 422 FIX
+changed_branch: HeroSMS getNumberV2 request validation and redacted HTTP error reporting
+changed_fields:
+- paypal_agreement_protocol/herosms.py sends maxPrice only when a cap is configured and no longer sends fixedPrice together with maxPrice.
+- HTTP status errors now expose sanitized status/body details without echoing the API key or request URL.
+- Network errors are reported as a stable sanitized message.
+- payment_link_extractor/web/paypal_protocol.py remains unchanged; the existing max-price enforcement and activation cancellation path stays active.
+source_hashes_before_change:
+- paypal_agreement_protocol/herosms.py: c691760b60ac6b2166c46ab7e808b5ef1dc984654380b3e4ffd9405b7cd5cbf8
+- payment_link_extractor/web/paypal_protocol.py: 2ef2f9771fdc0afb7e9dc6b10836419b0d1021a8e056ca51ce9193a8586cbf40
+source_hashes_after_change:
+- paypal_agreement_protocol/herosms.py: 518ccccdf51f30f06723b0b07044e916895d18ec2dc9da42aa12142b9f97964b
+- payment_link_extractor/web/paypal_protocol.py: 2ef2f9771fdc0afb7e9dc6b10836419b0d1021a8e056ca51ce9193a8586cbf40
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+safe_read_only_check: getCountries returned 195 catalogue entries and resolved GB to country id 16 without calling getNumberV2.
