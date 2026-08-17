@@ -45,6 +45,6 @@ MODIFIED exit status: 0
 
 ROLLBACK command: git worktree add --detach C:\Temp\paypal-protocol-rollback-20260818 HEAD; git apply --unidiff-zero DIFF_FILE.patch; Git Bash ROLLBACK.sh HEAD; Python rollback feature probe; git worktree remove --force C:\Temp\paypal-protocol-rollback-20260818.
 ROLLBACK input: detached HEAD copy with DIFF_FILE applied, then ROLLBACK.sh target HEAD.
-ROLLBACK literal output/result: copy_modified_unittest_exit=0 copy_modified_js_exit=0; rollback_target=HEAD; restored_behavior=terminal-log guard removed; bounded current-phone retry removed; failed-job phone replacement removed; bulk BA push removed; terminal_error_restored=True; automatic_retry_removed=True; bulk_push_removed=True; rollback_script_exit=0; rollback_probe_exit=0; rollback hashes matched all recorded baseline hashes; worktree_removed=True.
+ROLLBACK literal output/result: apply_check=0; Ran 3 tests in 0.002s; OK; rollback_target=HEAD; restored_behavior=terminal-log guard removed; bounded current-phone retry removed; failed-job phone replacement removed; bulk BA push removed; terminal_error_restored=True; automatic_retry_removed=True; bulk_push_removed=True; rollback_script=0; worktree_removed=True.
 ROLLBACK exit status: 0
 restored_behavior/status: rollback copy returned to pre-change behavior while the primary working tree remains modified.
