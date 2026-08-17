@@ -17,6 +17,21 @@ MODIFIED input: current working tree source and artifacts
 MODIFIED literal result: protocol_js=0 compile=0 diff=0
 MODIFIED exit status: 0
 
+LATEST PHONE REFRESH DEPLOYMENT
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 37456 -Force
+BASELINE input: service running the pre-phone-refresh frontend
+BASELINE literal result: old_listener_pid=37456; old_listener_stopped=1; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\\Scripts\\python.exe -m payment_link_extractor.web --env-file .env; Invoke-WebRequest http://127.0.0.1:18794/api/health; Invoke-WebRequest http://127.0.0.1:18794/paypal-pay/; curl.exe -X POST http://127.0.0.1:18794/paypal-pay/api/sms/status --data '{}'
+MODIFIED input: commit e330fe3 with phone-refresh cache version 20260818-phone-refresh-1
+MODIFIED literal result: start_requested=1; listener_pid=25952; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; protocol_cache_bust=True; refresh_button_served=True; status_route_empty_request=HTTP 400; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute artifacts/ROLLBACK.sh HEAD in a temporary worktree
+ROLLBACK input: tracked phone-refresh bridge, UI, optional-email, and cache-bust files
+ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps commit e330fe3; EXIT_CODE=0
+ROLLBACK exit status: 0
+restored behavior/status: port 18794 serves the refresh button and cache-busted UI; the read-only status route is live and the active service remains healthy.
+
 LATEST COUNTRY GATE DEPLOYMENT
 BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 45876 -Force
 BASELINE input: service running the pre-cache-bust country-gate build
