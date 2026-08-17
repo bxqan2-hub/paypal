@@ -9,7 +9,12 @@ from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request
 
-from ..config import SUPPORTED_COUNTRIES, country_config, normalize_payment_method
+from ..config import (
+    SUPPORTED_COUNTRIES,
+    billing_dict_for_country,
+    country_config,
+    normalize_payment_method,
+)
 from ..errors import ConfigurationError
 from ..models import ExtractionConfig
 from .proxy_probe import ProxyProbeError, probe_proxy
@@ -24,6 +29,15 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
     @app.get("/api/defaults")
     def defaults() -> Any:
         proxy_pool = _configured_proxy_pool()
+        billing_profiles = {}
+        for code in SUPPORTED_COUNTRIES:
+            _, currency, locale, timezone = country_config(code)
+            billing_profiles[code] = {
+                **billing_dict_for_country(code),
+                "currency": currency,
+                "locale": locale,
+                "timezone": timezone,
+            }
         return jsonify(
             {
                 "ok": True,
@@ -35,6 +49,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
+                "billing_profiles": billing_profiles,
             }
         )
 

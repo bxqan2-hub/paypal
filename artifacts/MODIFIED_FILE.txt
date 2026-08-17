@@ -70,3 +70,28 @@ four_artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST BILLING-PROFILE PREVIEW
+changed_branch: selected-country billing profile preview with complete backend payload
+changed_fields:
+- payment_link_extractor/web/routes.py now returns all 15 complete billing profiles from the existing COUNTRY_PROFILES and _BILLING_VALUES reference configuration through /api/defaults.
+- payment_link_extractor/web/templates/index.html adds a real billing preview panel under the country selector.
+- payment_link_extractor/web/static/app.js renders currency, locale, timezone, name, phone, email, and composed address whenever the country changes, while preserving the selected country in the existing preferences flow.
+- payment_link_extractor/web/static/styles.css adds responsive styling for the populated billing preview; no empty placeholder-only panel is used.
+source_hashes_before_change:
+- payment_link_extractor/web/routes.py: 07e29ac2cbf1354194ef02362503ea1ad7ffe0dad8c2e69c57c6229d330c2aee
+- payment_link_extractor/web/templates/index.html: e0229297feb0c6d5f019d1af8be7b6bfd157bff21679a30e6990a7b841686e26
+- payment_link_extractor/web/static/app.js: f3ed456e8f646394543c4e8157081e30e46268788a860d95c8c7b7d5da552916
+- payment_link_extractor/web/static/styles.css: 22ce3b6ef73d3171ee86a49882854df9a0a12e6b77feb8b5f23b38bbefcc9a2c
+source_hashes_after_change:
+- payment_link_extractor/web/routes.py: 2f9a8b746c579b2df2d79e12aaaf79159d02186a174b75459e511a86f51bced7
+- payment_link_extractor/web/templates/index.html: 999033b5eae8bd5cf2092ecae9c1b2cbc4eac86b94e22fa023bbff29932f4d60
+- payment_link_extractor/web/static/app.js: 9b27811c80df4d33a07aa2eea08213b4c8ad64d27d8bf1d94eb70f3516e9f6dc
+- payment_link_extractor/web/static/styles.css: 7da59883909d30448f7daf4853cb969209f12edabc73d2eb3e499737a42bcdaf
+profile_fields: currency, locale, timezone, name, email, phone, line1, city, state, postal_code
+example_GB: GBP; en-GB; Europe/London; James Smith; +442079250918; 10 Downing Street, London, Greater London, SW1A 2AA
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh

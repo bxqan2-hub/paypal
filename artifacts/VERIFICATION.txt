@@ -144,3 +144,27 @@ ROLLBACK input: temporary copy with one marker in each proxy transport file
 ROLLBACK literal result: restored_to=HEAD; transport_marker_before=1; probe_marker_before=1; transport_marker_after=0; probe_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains proxy-parser modified
 ROLLBACK exit status: 0
 restored behavior/status: the temporary copy returned both proxy files to the selected Git commit; the working project remains on the direct 1024proxy SOCKS5h branch.
+
+LATEST BASELINE BILLING-PROFILE PREVIEW
+BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-billing-preview HEAD; create_app(TESTING); GET /api/defaults; GET /; git worktree remove --force C:\Temp\paypal-baseline-billing-preview
+BASELINE input: HEAD version with country selector and existing country configuration
+BASELINE literal result: baseline_defaults_status=200 billing_profiles_key=False country=DE; baseline_billing_preview_markup=False baseline_billing_details=False; baseline_routes_compile=0; EXIT_CODE=0
+BASELINE exit status: 0
+
+LATEST MODIFIED BILLING-PROFILE PREVIEW
+MODIFIED command: create_app(TESTING); GET /api/defaults with X-Workbench-Password; GET /; inspect returned profile map and billing preview IDs
+MODIFIED input: all 15 supported billing countries; selected-country check for GB
+MODIFIED literal result: modified_defaults_status=200 country_count=15 all_profiles_complete=True; GB_currency=GBP GB_locale=en-GB GB_timezone=Europe/London GB_name=James Smith GB_phone=+442079250918 GB_address=10 Downing Street, London, Greater London, SW1A 2AA; billing_preview_markup=True billing_preview_hidden_default=True; supported_countries=15; EXIT_CODE=0
+MODIFIED exit status: 0
+
+MODIFIED validation command: node --check payment_link_extractor/web/static/app.js; .venv\Scripts\python.exe -m py_compile payment_link_extractor/web/routes.py; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
+MODIFIED input: current billing profile backend, template, UI script, and responsive stylesheet
+MODIFIED literal result: MODIFIED_VALIDATION=0; EXIT_CODE=0
+MODIFIED exit status: 0
+
+LATEST ROLLBACK BILLING-PROFILE PREVIEW
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-billing-preview HEAD; append markers to payment_link_extractor/web/routes.py, payment_link_extractor/web/templates/index.html, payment_link_extractor/web/static/app.js, payment_link_extractor/web/static/styles.css; copy current artifacts/ROLLBACK.sh; push location to worktree; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- payment_link_extractor/web/routes.py payment_link_extractor/web/templates/index.html payment_link_extractor/web/static/app.js payment_link_extractor/web/static/styles.css; git worktree remove --force C:\Temp\paypal-ui-rollback-billing-preview
+ROLLBACK input: temporary copy with one marker in each billing preview file
+ROLLBACK literal result: restored_to=HEAD; routes_marker_before=1; template_marker_before=1; app_marker_before=1; styles_marker_before=1; routes_marker_after=0; template_marker_after=0; app_marker_after=0; styles_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains billing-profile preview modified
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy restores all four billing preview files to the selected Git commit; the working project remains on the populated-country-preview branch.

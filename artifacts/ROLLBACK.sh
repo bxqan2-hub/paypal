@@ -12,6 +12,10 @@ FILES=(
   payment_link_extractor/web/static/app.js
   payment_link_extractor/transport.py
   payment_link_extractor/web/proxy_probe.py
+  payment_link_extractor/web/routes.py
+  payment_link_extractor/web/templates/index.html
+  payment_link_extractor/web/static/app.js
+  payment_link_extractor/web/static/styles.css
   .env.example
 )
 git restore --source "$TARGET_COMMIT" -- "${FILES[@]}"

@@ -79,6 +79,24 @@
                   <option>ES</option><option>FI</option><option>FR</option>
                 </select>
               </label>
+              <section id="billing-preview" class="billing-preview" hidden aria-live="polite" aria-label="所选国家账单配置">
+                <div class="billing-preview-heading">
+                  <div>
+                    <strong id="billing-preview-title">账单配置</strong>
+                    <small id="billing-preview-subtitle">选择国家后显示完整账单资料</small>
+                  </div>
+                  <span id="billing-preview-code" class="billing-preview-code"></span>
+                </div>
+                <div class="billing-preview-grid">
+                  <div><span>币种</span><strong id="billing-currency">—</strong></div>
+                  <div><span>语言区域</span><strong id="billing-locale">—</strong></div>
+                  <div><span>时区</span><strong id="billing-timezone">—</strong></div>
+                  <div><span>姓名</span><strong id="billing-name">—</strong></div>
+                  <div><span>电话</span><strong id="billing-phone">—</strong></div>
+                  <div><span>邮箱</span><strong id="billing-email">—</strong></div>
+                  <div class="billing-preview-wide"><span>账单地址</span><strong id="billing-address">—</strong></div>
+                </div>
+              </section>
               <label class="field">
                 <span>支付方式</span>
                 <select id="payment-method">

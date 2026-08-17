@@ -346,3 +346,189 @@ index e5bb07d..964d274 100644
          if requests is not None and isinstance(exc, requests.exceptions.Timeout):
              raise ProxyProbeError("proxy request timed out", 504) from exc
          if requests is not None and isinstance(exc, requests.exceptions.RequestException):
+
+
+# LATEST BILLING-PROFILE PREVIEW DIFF
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index d574aba..2760277 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -9,7 +9,12 @@ from urllib.request import Request, urlopen
+
+ from flask import Flask, jsonify, request
+
+-from ..config import SUPPORTED_COUNTRIES, country_config, normalize_payment_method
++from ..config import (
++    SUPPORTED_COUNTRIES,
++    billing_dict_for_country,
++    country_config,
++    normalize_payment_method,
++)
+ from ..errors import ConfigurationError
+ from ..models import ExtractionConfig
+ from .proxy_probe import ProxyProbeError, probe_proxy
+@@ -24,6 +29,15 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+     @app.get("/api/defaults")
+     def defaults() -> Any:
+         proxy_pool = _configured_proxy_pool()
++        billing_profiles = {}
++        for code in SUPPORTED_COUNTRIES:
++            _, currency, locale, timezone = country_config(code)
++            billing_profiles[code] = {
++                **billing_dict_for_country(code),
++                "currency": currency,
++                "locale": locale,
++                "timezone": timezone,
++            }
+         return jsonify(
+             {
+                 "ok": True,
+@@ -35,6 +49,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
+                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
+                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
++                "billing_profiles": billing_profiles,
+             }
+         )
+
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index fc0d9ac..158e6c4 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -33,6 +33,7 @@
+   let batchImportFinished = false;
+   let checkoutProxyPoolCursor = 0;
+   let updateProxyPoolCursor = 0;
++  let billingProfiles = {};
+
+   const elements = {};
+
+@@ -287,6 +288,38 @@
+     return proxyPoolLines(value).join("\n");
+   }
+
++  function renderBillingPreview(country = byId("country").value) {
++    const preview = byId("billing-preview");
++    if (!preview) return;
++    const code = String(country || "").trim().toUpperCase();
++    const profile = billingProfiles[code];
++    if (!profile) {
++      preview.hidden = true;
++      return;
++    }
++    const address = [profile.line1, profile.city, profile.state, profile.postal_code]
++      .map(value => String(value || "").trim())
++      .filter(Boolean)
++      .join(", ");
++    const values = {
++      "billing-preview-title": `${code} 实际账单配置`,
++      "billing-preview-subtitle": "提链任务会使用这套完整姓名、电话和地址资料",
++      "billing-preview-code": code,
++      "billing-currency": profile.currency,
++      "billing-locale": profile.locale,
++      "billing-timezone": profile.timezone,
++      "billing-name": profile.name,
++      "billing-phone": profile.phone,
++      "billing-email": profile.email,
++      "billing-address": address,
++    };
++    Object.entries(values).forEach(([id, value]) => {
++      const node = byId(id);
++      if (node) node.textContent = String(value || "—");
++    });
++    preview.hidden = false;
++  }
++
+   function updateProxyCounts() {
+     const checkoutCount = byId("checkout-proxy-count");
+     const updateCount = byId("update-proxy-count");
+@@ -312,10 +345,14 @@
+       const response = await apiFetch("/api/defaults");
+       const defaults = await response.json();
+       if (!response.ok || !defaults || typeof defaults !== "object") return;
++      if (defaults.billing_profiles && typeof defaults.billing_profiles === "object") {
++        billingProfiles = defaults.billing_profiles;
++      }
+       byId("country").disabled = false;
+       if (!byId("country").value && typeof defaults.country === "string") {
+         byId("country").value = defaults.country;
+       }
++      renderBillingPreview();
+       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;
+       let savedPoolId = "";
+       try { savedPoolId = localStorage.getItem(SERVER_PROXY_POOL_KEY) || ""; } catch (error) { /* ignore */ }
+@@ -1590,6 +1627,7 @@
+       field.addEventListener("change", saveFormPreferences);
+       field.addEventListener("input", saveFormPreferences);
+     });
++    byId("country").addEventListener("change", () => renderBillingPreview());
+     byId("refresh-proxy-source").addEventListener("click", refreshProxySource);
+     ["apply-update", "rotate-checkout-proxy", "rotate-update-proxy", "oaics-only"].forEach(id => {
+       byId(id).addEventListener("change", saveFormPreferences);
+@@ -1681,6 +1719,7 @@
+     elements.batchValidateButton = byId("batch-import-validate");
+     elements.batchSubmitButton = byId("batch-import-submit");
+     restoreFormPreferences();
++    renderBillingPreview();
+     restoreTaskViewMode();
+     bindEvents();
+     elements.copyTokenButton.addEventListener("click", copyAccessToken);
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index c21fc04..9531979 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -100,6 +100,16 @@ h2 { margin-bottom: 4px; font-size: 18px; }
+ .account-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .account-preview strong { color: #40505e; font-weight: 650; }
+ .form-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
++.billing-preview { grid-column: 1 / -1; margin: -2px 0 2px; padding: 14px 15px; border: 1px solid #cfe0ef; border-radius: 10px; background: linear-gradient(135deg, #f5faff, #fbfdff); }
++.billing-preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
++.billing-preview-heading strong { display: block; color: #285b86; font-size: 14px; }
++.billing-preview-heading small { display: block; margin-top: 2px; color: #71808e; font-size: 11px; }
++.billing-preview-code { flex: 0 0 auto; border-radius: 999px; padding: 3px 8px; background: #e5f1fb; color: #286596; font-size: 11px; font-weight: 750; }
++.billing-preview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px 14px; }
++.billing-preview-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
++.billing-preview-grid span { color: #7b8996; font-size: 11px; }
++.billing-preview-grid strong { overflow-wrap: anywhere; color: #31495d; font-size: 12px; font-weight: 650; }
++.billing-preview-wide { grid-column: 1 / -1; }
+ .form-actions { margin-top: 22px; }
+ .check-field { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+ .check-field input { accent-color: #2e6da4; }
+@@ -224,6 +234,8 @@ body.modal-open { overflow: hidden; }
+   .task-row-account, .task-row-progress, .task-row-error-field, .task-row-actions { grid-column: 1 / -1; }
+   .task-row-actions { justify-content: flex-start; }
+   .result-details { grid-template-columns: 1fr; }
++  .billing-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++  .billing-preview-wide { grid-column: 1 / -1; }
+   .topbar, .panel-heading { align-items: flex-start; flex-direction: column; }
+   .task-overview { width: 100%; align-items: flex-start; }
+   .task-toolbar { width: 100%; align-items: flex-start; flex-direction: column; }
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 6af338c..7c40627 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -79,6 +79,24 @@
+                   <option>ES</option><option>FI</option><option>FR</option>
+                 </select>
+               </label>
++              <section id="billing-preview" class="billing-preview" hidden aria-live="polite" aria-label="所选国家账单配置">
++                <div class="billing-preview-heading">
++                  <div>
++                    <strong id="billing-preview-title">账单配置</strong>
++                    <small id="billing-preview-subtitle">选择国家后显示完整账单资料</small>
++                  </div>
++                  <span id="billing-preview-code" class="billing-preview-code"></span>
++                </div>
++                <div class="billing-preview-grid">
++                  <div><span>币种</span><strong id="billing-currency">—</strong></div>
++                  <div><span>语言区域</span><strong id="billing-locale">—</strong></div>
++                  <div><span>时区</span><strong id="billing-timezone">—</strong></div>
++                  <div><span>姓名</span><strong id="billing-name">—</strong></div>
++                  <div><span>电话</span><strong id="billing-phone">—</strong></div>
++                  <div><span>邮箱</span><strong id="billing-email">—</strong></div>
++                  <div class="billing-preview-wide"><span>账单地址</span><strong id="billing-address">—</strong></div>
++                </div>
++              </section>
+               <label class="field">
+                 <span>支付方式</span>
+                 <select id="payment-method">

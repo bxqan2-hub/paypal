@@ -33,6 +33,7 @@
   let batchImportFinished = false;
   let checkoutProxyPoolCursor = 0;
   let updateProxyPoolCursor = 0;
+  let billingProfiles = {};
 
   const elements = {};
 
@@ -287,6 +288,38 @@
     return proxyPoolLines(value).join("\n");
   }
 
+  function renderBillingPreview(country = byId("country").value) {
+    const preview = byId("billing-preview");
+    if (!preview) return;
+    const code = String(country || "").trim().toUpperCase();
+    const profile = billingProfiles[code];
+    if (!profile) {
+      preview.hidden = true;
+      return;
+    }
+    const address = [profile.line1, profile.city, profile.state, profile.postal_code]
+      .map(value => String(value || "").trim())
+      .filter(Boolean)
+      .join(", ");
+    const values = {
+      "billing-preview-title": `${code} 实际账单配置`,
+      "billing-preview-subtitle": "提链任务会使用这套完整姓名、电话和地址资料",
+      "billing-preview-code": code,
+      "billing-currency": profile.currency,
+      "billing-locale": profile.locale,
+      "billing-timezone": profile.timezone,
+      "billing-name": profile.name,
+      "billing-phone": profile.phone,
+      "billing-email": profile.email,
+      "billing-address": address,
+    };
+    Object.entries(values).forEach(([id, value]) => {
+      const node = byId(id);
+      if (node) node.textContent = String(value || "—");
+    });
+    preview.hidden = false;
+  }
+
   function updateProxyCounts() {
     const checkoutCount = byId("checkout-proxy-count");
     const updateCount = byId("update-proxy-count");
@@ -312,10 +345,14 @@
       const response = await apiFetch("/api/defaults");
       const defaults = await response.json();
       if (!response.ok || !defaults || typeof defaults !== "object") return;
+      if (defaults.billing_profiles && typeof defaults.billing_profiles === "object") {
+        billingProfiles = defaults.billing_profiles;
+      }
       byId("country").disabled = false;
       if (!byId("country").value && typeof defaults.country === "string") {
         byId("country").value = defaults.country;
       }
+      renderBillingPreview();
       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;
       let savedPoolId = "";
       try { savedPoolId = localStorage.getItem(SERVER_PROXY_POOL_KEY) || ""; } catch (error) { /* ignore */ }
@@ -1590,6 +1627,7 @@
       field.addEventListener("change", saveFormPreferences);
       field.addEventListener("input", saveFormPreferences);
     });
+    byId("country").addEventListener("change", () => renderBillingPreview());
     byId("refresh-proxy-source").addEventListener("click", refreshProxySource);
     ["apply-update", "rotate-checkout-proxy", "rotate-update-proxy", "oaics-only"].forEach(id => {
       byId(id).addEventListener("change", saveFormPreferences);
@@ -1681,6 +1719,7 @@
     elements.batchValidateButton = byId("batch-import-validate");
     elements.batchSubmitButton = byId("batch-import-submit");
     restoreFormPreferences();
+    renderBillingPreview();
     restoreTaskViewMode();
     bindEvents();
     elements.copyTokenButton.addEventListener("click", copyAccessToken);
