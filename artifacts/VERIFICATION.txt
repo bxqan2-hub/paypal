@@ -402,6 +402,24 @@ ROLLBACK literal result: restored_to=HEAD; bridge_marker_after=0; herosms_marker
 ROLLBACK exit status: 0
 restored behavior/status: selected HEAD restores the previous parser/watcher behavior in the temporary copy; the active project keeps structured HeroSMS OTP reception and immediate replacement when PayPal reports an SMS-send failure.
 
+LATEST COMPLETE LOGGING DEPLOYMENT
+changed_branch: main
+changed_fields: deployed commit 627cf1a to port 18794 with live per-BA log polling, complete job-log capture, structured failure reason/stage, terminal result records, and contained failure-attribution cells.
+four_paths: MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt; DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch; VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt; ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Invoke-WebRequest http://127.0.0.1:18794/api/health; stop old listener PID 50224
+BASELINE input: service process started before commit 627cf1a
+BASELINE literal result: listener_pid=50224; process_name=python; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; old_listener_stopped=True; port_released=True; BASELINE_EXIT=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\Scripts\python.exe -m payment_link_extractor.web --env-file .env -WindowStyle Hidden; wait for port 18794; Invoke-WebRequest /api/health, /paypal-pay/, app.js?v=20260818-complete-logs-1, and checkout-preview.css?v=20260818-complete-logs-1; inspect deployment markers
+MODIFIED input: main commit 627cf1a
+MODIFIED literal result: listener_pid=7748; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; page_status=200; cache_complete_logs=True; live_log_poll=True; all_log_render=True; failure_two_line_clamp=True; failure_wrap=True; DEPLOYMENT_TEST_EXIT=0
+MODIFIED exit status: 0
+ROLLBACK command: execute C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh HEAD in C:\Temp\paypal-complete-logs-rollback
+ROLLBACK input: temporary marker-modified copies of web.py, app.js, checkout-preview.css, and index.html
+ROLLBACK literal result: restored_to=HEAD; rollback_exit=0; markers_after=False,False,False,False; diff_exit=0; temporary_copy_removed=True; ROLLBACK_TEST_EXIT=0
+ROLLBACK exit status: 0
+restored behavior/status: temporary rollback restored commit 1d3a155 during the rollback test; active port 18794 serves commit 627cf1a behavior with HTTP 200 and the complete-log UI markers.
+
 LATEST SMS RECEIVE FIX DEPLOYMENT
 BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 43404 -Force
 BASELINE input: service running commit 87a1ab3 before structured getStatusV2/immediate-send-failure deployment
