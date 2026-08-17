@@ -1,6 +1,6 @@
 ﻿MODIFIED_FILE
 branch: main
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling
 changed_fields:
 - 运行设置恢复两个现有开源版本：original 原版流程、identity_elevation 身份提升流程，前端只选择既有后端流程类，不改 paypal/flow.py 或 paypal/elevation_flow.py 核心步骤
 - 协议支付控制台取消固定 1760px 宽度和表格最小宽度，两侧只保留少量边距并撑满可用空间
@@ -9,6 +9,9 @@ changed_fields:
 - 删除协议支付入口中的默认 BA-DEMO 链接和 demo 查询参数，入口改为正式空白协议支付页
 - 清理 sessionStorage、URL 预填和手动输入中的 BA-DEMO2026081701，保留真实 BA 链接并防止默认链接回显
 - 协议支付页 app.js 脚本升级 cache-bust，确保现有浏览器立即加载去默认 BA 过滤代码
+- 运行设置新增“取号金额上限”，并持久保存输入值
+- 前端每次取号传递 max_price，超价 422 响应最多自动重取 3 次
+- SMS 桥接服务端二次校验返回价格，超过上限立即取消 activation 并返回 422
 source_hashes_before_change:
 - paypal_agreement_protocol/web_static/app.js: 132aaac5cee0bad8946287fbb41ef45cfc6dd494
 - paypal_agreement_protocol/web_static/checkout-preview.css: 2e94bb3a68c72423a1db29586340a54e9597e246
@@ -20,6 +23,14 @@ latest_source_hashes_before_change:
 latest_source_hash_after_change:
 - paypal_agreement_protocol/web_static/app.js: a7be4258cc29040e3dcfd95c8382669dda0770b7d6311b09dd6f7f232153bf9c
 - paypal_agreement_protocol/web_static/index.html: 46af8dacd3e1a652d68b2daf0259e76b6f6a536fe6f924111c68ad5356258758
+sms_price_cap_source_hashes_before_change:
+- paypal_agreement_protocol/web_static/app.js: a7be4258cc29040e3dcfd95c8382669dda0770b7d6311b09dd6f7f232153bf9c
+- paypal_agreement_protocol/web_static/index.html: 46af8dacd3e1a652d68b2daf0259e76b6f6a536fe6f924111c68ad5356258758
+- payment_link_extractor/web/paypal_protocol.py: ec1804b42945b78ebef1d12043c0dc6463f055a836fce82f6e9f9fc54195c000
+sms_price_cap_source_hashes_after_change:
+- paypal_agreement_protocol/web_static/app.js: 4973f1d048ad994b8e77825a3a2c1ac934b311f55625f75e4d82c9222a94c70b
+- paypal_agreement_protocol/web_static/index.html: d6f8c02fc09369d7f02376149eaaf8c5eed2febe1e7e8ea064ef812770a9812b
+- payment_link_extractor/web/paypal_protocol.py: 2ef2f9771fdc0afb7e9dc6b10836419b0d1021a8e056ca51ce9193a8586cbf40
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch

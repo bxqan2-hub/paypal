@@ -10,6 +10,15 @@ function stripDefaultDemoBa(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
 }
 
+function readSmsMaxPrice() {
+  const node = $('smsMaxPrice');
+  const raw = node ? node.value.trim() : '';
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) throw new Error('\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u5fc5\u987b\u662f\u5927\u4e8e\u6216\u7b49\u4e8e 0 \u7684\u6570\u5b57');
+  return Math.round(value * 100) / 100;
+}
+
 // A successful extraction can open this page with its PayPal BA URL.  Keep
 // country/phone editable so the operator only needs to fill the SMS region and
 // number before starting the unchanged protocol flow.
@@ -429,6 +438,8 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
   const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
+  let maxPrice = null;
+  try { maxPrice = readSmsMaxPrice(); } catch (error) { showClientError(error.message || '\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u683c\u5f0f\u65e0\u6548'); return; }
   const button = $('acquirePhonesButton');
   if (button) button.disabled = true;
   try {
@@ -448,8 +459,15 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
       if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${entries.length}`;
       let replacement = null;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
-        const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
-        const error = phoneValidationError(sms.phone, country);
+        const smsPayload = {country};
+        if (maxPrice !== null) smsPayload.max_price = maxPrice;
+        let sms;
+        try { sms = await api('/sms/number', {method:'POST', body:JSON.stringify(smsPayload)}); }
+        catch (error) { if (error.status === 422 && attempt < 3) continue; throw error; }
+        const smsPrice = Number(sms.price);
+        const priceError = maxPrice !== null && Number.isFinite(smsPrice) && smsPrice > maxPrice + 1e-9
+          ? `\u8fd4\u56de\u4ef7\u683c ${smsPrice.toFixed(2)} \u8d85\u8fc7\u4e0a\u9650 ${maxPrice.toFixed(2)}` : '';
+        const error = priceError || phoneValidationError(sms.phone, country);
         if (!error) {
           replacement = {...sms, token, index: index + 1};
           break;

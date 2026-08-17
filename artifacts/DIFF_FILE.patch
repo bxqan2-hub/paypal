@@ -1,73 +1,127 @@
-﻿diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-index 4fb743f..3fe0002 100644
+﻿diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index 85e5cfa..5784116 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -10,6 +10,7 @@ from __future__ import annotations
+ import importlib
+ import io
+ import json
++import math
+ from pathlib import Path
+ import sys
+ import threading
+@@ -35,6 +36,18 @@ _SMS_WATCHERS: dict[str, threading.Thread] = {}
+ _SMS_WATCHERS_LOCK = threading.RLock()
+
+
++def _parse_sms_max_price(value: Any) -> float | None:
++    if value in (None, ""):
++        return None
++    try:
++        price = float(value)
++    except (TypeError, ValueError) as exc:
++        raise ValueError("max_price must be numeric") from exc
++    if not math.isfinite(price) or price < 0:
++        raise ValueError("max_price must be a finite non-negative number")
++    return round(price, 2)
++
++
+ def _sms_client() -> HeroSMSClient:
+     global _SMS_CLIENT
+     if _SMS_CLIENT is None:
+@@ -167,12 +180,25 @@ def register_paypal_protocol(app: Any) -> None:
+         if protocol_path == "api/sms/number" and request.method == "POST":
+             data = request.get_json(silent=True) or {}
+             try:
+-                activation = _sms_client().acquire_number(
++                max_price = _parse_sms_max_price(data.get("max_price"))
++                client = _sms_client()
++                activation = client.acquire_number(
+                     str(data.get("country") or ""),
+-                    max_price=float(data["max_price"]) if data.get("max_price") not in (None, "") else None,
++                    max_price=max_price,
+                     service=str(data.get("service") or "") or None,
+                 )
+-                return jsonify({"ok": True, **activation})
++                returned_price = activation.get("price")
++                if max_price is not None and returned_price not in (None, ""):
++                    actual_price = float(returned_price)
++                    if not math.isfinite(actual_price) or actual_price > max_price + 1e-9:
++                        client.finish(str(activation.get("activation_id") or ""), 6)
++                        return jsonify({
++                            "ok": False,
++                            "error": f"HeroSMS price {actual_price:.2f} exceeds max_price {max_price:.2f}",
++                            "max_price": max_price,
++                            "price": actual_price,
++                        }), 422
++                return jsonify({"ok": True, "max_price": max_price, **activation})
+             except (HeroSMSError, ValueError) as exc:
+                 return jsonify({"ok": False, "error": str(exc)}), 503
+         if protocol_path == "api/sms/cancel" and request.method == "POST":
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 3fe0002..06a0454 100644
 --- a/paypal_agreement_protocol/web_static/app.js
 +++ b/paypal_agreement_protocol/web_static/app.js
-@@ -1,5 +1,14 @@
- const API_BASE = '/paypal-pay/api';
- const GROK_API_BASE = '/api/grok-trial';
-+const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
-+
-+function isDefaultDemoBa(value) {
-+  return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
-+}
-+
-+function stripDefaultDemoBa(value) {
-+  return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
-+}
+@@ -10,6 +10,15 @@ function stripDefaultDemoBa(value) {
+   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
+ }
 
++function readSmsMaxPrice() {
++  const node = $('smsMaxPrice');
++  const raw = node ? node.value.trim() : '';
++  if (!raw) return null;
++  const value = Number(raw);
++  if (!Number.isFinite(value) || value < 0) throw new Error('\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u5fc5\u987b\u662f\u5927\u4e8e\u6216\u7b49\u4e8e 0 \u7684\u6570\u5b57');
++  return Math.round(value * 100) / 100;
++}
++
  // A successful extraction can open this page with its PayPal BA URL.  Keep
  // country/phone editable so the operator only needs to fill the SMS region and
-@@ -11,7 +20,7 @@ function applyWorkbenchPrefill() {
-   const phone = params.get('phone') || '';
-   const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
-     .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
--  if (ba && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
-+  if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
-   if (country && document.querySelector('#paypalCountry')) {
-     const select = document.querySelector('#paypalCountry');
-     if ([...select.options].some(option => option.value === country)) select.value = country;
-@@ -81,7 +90,7 @@ function restoreProtocolFormState() {
-     if (!Object.prototype.hasOwnProperty.call(saved, key)) return;
-     if (node.type === 'radio') node.checked = saved[key] === node.value;
-     else if (node.type === 'checkbox') node.checked = Boolean(saved[key]);
--    else node.value = String(saved[key] ?? '');
-+    else node.value = node.id === 'baToken' ? stripDefaultDemoBa(saved[key]) : String(saved[key] ?? '');
-   });
- }
-
-@@ -142,7 +151,7 @@ function updateProxyCount() {
- $('proxies').addEventListener('input', updateProxyCount);
-
- function baPoolLines() {
--  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-+  return $('baToken').value.split(/\r?\n/).map(value => value.trim()).filter(value => value && !isDefaultDemoBa(value));
- }
- function phonePoolLines() {
-   return $('phone').value.split(/\r?\n/).map(value => normalizePhone(value)).filter(Boolean);
-@@ -159,7 +168,13 @@ function updatePairCounts() {
-   $('phonePoolCount').classList.toggle('over-limit', phoneCount > 20);
-   renderAccountQueue();
- }
--$('baToken').addEventListener('input', updatePairCounts);
-+$('baToken').addEventListener('input', () => {
-+  const node = $('baToken');
-+  const cleaned = stripDefaultDemoBa(node.value);
-+  if (cleaned !== node.value) node.value = cleaned;
-+  updatePairCounts();
-+  saveProtocolFormState();
-+});
- $('phone').addEventListener('input', updatePairCounts);
-
- let paypalCountries = [];
+ // number before starting the unchanged protocol flow.
+@@ -429,6 +438,8 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
+   const country = $('paypalCountry').value;
+   const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
++  let maxPrice = null;
++  try { maxPrice = readSmsMaxPrice(); } catch (error) { showClientError(error.message || '\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u683c\u5f0f\u65e0\u6548'); return; }
+   const button = $('acquirePhonesButton');
+   if (button) button.disabled = true;
+   try {
+@@ -448,8 +459,15 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+       if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${entries.length}`;
+       let replacement = null;
+       for (let attempt = 1; attempt <= 3; attempt += 1) {
+-        const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
+-        const error = phoneValidationError(sms.phone, country);
++        const smsPayload = {country};
++        if (maxPrice !== null) smsPayload.max_price = maxPrice;
++        let sms;
++        try { sms = await api('/sms/number', {method:'POST', body:JSON.stringify(smsPayload)}); }
++        catch (error) { if (error.status === 422 && attempt < 3) continue; throw error; }
++        const smsPrice = Number(sms.price);
++        const priceError = maxPrice !== null && Number.isFinite(smsPrice) && smsPrice > maxPrice + 1e-9
++          ? `\u8fd4\u56de\u4ef7\u683c ${smsPrice.toFixed(2)} \u8d85\u8fc7\u4e0a\u9650 ${maxPrice.toFixed(2)}` : '';
++        const error = priceError || phoneValidationError(sms.phone, country);
+         if (!error) {
+           replacement = {...sms, token, index: index + 1};
+           break;
 diff --git a/paypal_agreement_protocol/web_static/index.html b/paypal_agreement_protocol/web_static/index.html
-index 0c8ebcf..5d915ec 100644
+index 5d915ec..36f2d3f 100644
 --- a/paypal_agreement_protocol/web_static/index.html
 +++ b/paypal_agreement_protocol/web_static/index.html
-@@ -150,6 +150,6 @@
+@@ -111,6 +111,7 @@
+         <div class="settings-grid">
+           <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option><option value="identity_elevation">身份提升流程（开源项目版本）</option></select></label>
+           <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
++          <label class="field"><span class="label-row"><b>取号金额上限</b><small>HeroSMS 计价</small></span><input id="smsMaxPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 0.20" aria-describedby="smsMaxPriceHint"><small id="smsMaxPriceHint" class="field-note">设置后，返回价格超过上限的号码会自动取消并重取；留空使用 HeroSMS 默认值。</small></label>
+         </div>
+         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
+         <div class="privacy-note"><i></i><span>每个账号开始时从代理池随机选择一条与所选地区匹配的代理。</span></div>
+@@ -150,6 +151,6 @@
 
    <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
    <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
--  <script src="/paypal-pay/static/app.js?v=20260817-account-table-5"></script>
-+  <script src="/paypal-pay/static/app.js?v=20260817-demo-filter-1"></script>
+-  <script src="/paypal-pay/static/app.js?v=20260817-demo-filter-1"></script>
++  <script src="/paypal-pay/static/app.js?v=20260817-price-limit-1"></script>
  </body>
  </html>

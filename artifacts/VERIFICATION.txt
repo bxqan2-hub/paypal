@@ -1,6 +1,6 @@
 ﻿VERIFICATION
-changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh
-changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; app.js cache-bust refreshed.
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography + formal-use BA entry + stale-demo suppression + cache refresh + SMS price ceiling
+changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained; default demo BA entry removed; persisted, URL, and manual BA-DEMO values are filtered; app.js cache-bust refreshed; configurable SMS max_price is passed and enforced server-side.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
@@ -81,3 +81,20 @@ LATEST ROLLBACK DEMO-FILTER input: temporary copy with marker in app.js
 LATEST ROLLBACK DEMO-FILTER literal result: restored_to=HEAD; marker_before=1; marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains stale-demo-suppressed
 LATEST ROLLBACK DEMO-FILTER exit status: 0
 restored behavior/status: temporary rollback copy restored app.js and the other tracked protocol UI/entry files to HEAD; active project keeps stale BA-DEMO suppression.
+
+
+LATEST BASELINE SMS-CAP command: git worktree add --detach C:\Temp\paypal-baseline-sms-price-cap HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; POST /paypal-pay/api/sms/number with country=GB,max_price=0.20 and fake price=0.35; git worktree remove --force C:\Temp\paypal-baseline-sms-price-cap
+LATEST BASELINE SMS-CAP input: HEAD checkout, max_price=0.20, provider returns price=0.35
+LATEST BASELINE SMS-CAP literal result: baseline_price_field=False; baseline_frontend_payload=False; baseline_over_cap_status=200; baseline_passed_max=0.2; baseline_finished=[]; baseline_compile_exit=0; baseline_protocol_js_exit=0; baseline_cap_check_exit=0
+LATEST BASELINE SMS-CAP exit status: 0
+
+LATEST MODIFIED SMS-CAP command: node C:\Users\ADMINI~1\AppData\Local\Temp\check-sms-price-ui.js; POST /paypal-pay/api/sms/number with max_price=0.20 and fake prices 0.18/0.35; node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
+LATEST MODIFIED SMS-CAP input: UI cap 0.20; under-cap number price 0.18; over-cap number price 0.35
+LATEST MODIFIED SMS-CAP literal result: ui_cap=0.2; ui_empty=null; ui_negative_rejected=true; frontend_payload=true; over_cap_retry=true; price_field=True; min_zero=True; cache_bust=True; under_status=200; under_max=0.2; under_price=0.18; over_status=422; over_error=HeroSMS price 0.35 exceeds max_price 0.20; passed_caps=[0.2, 0.2]; finished=[('act-2', 6)]; modified_ui_exit=0; modified_backend_exit=0; modified_protocol_js_exit=0; modified_compile_exit=0; modified_diff_check_exit=0
+LATEST MODIFIED SMS-CAP exit status: 0
+
+LATEST ROLLBACK SMS-CAP command: git worktree add --detach C:\Temp\paypal-ui-rollback-sms-price-cap HEAD; copy current artifacts/ROLLBACK.sh into the worktree; append markers to paypal_agreement_protocol/web_static/index.html and payment_link_extractor/web/paypal_protocol.py; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- paypal_agreement_protocol/web_static/index.html payment_link_extractor/web/paypal_protocol.py; git worktree remove --force C:\Temp\paypal-ui-rollback-sms-price-cap
+LATEST ROLLBACK SMS-CAP input: temporary copy with markers in UI and SMS bridge files
+LATEST ROLLBACK SMS-CAP literal result: restored_to=HEAD; ui_marker_before=1; bridge_marker_before=1; ui_marker_after=0; bridge_marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains SMS-price-capped
+LATEST ROLLBACK SMS-CAP exit status: 0
+restored behavior/status: temporary rollback copy restored price-setting UI, app.js, SMS bridge, and other tracked protocol UI/entry files to HEAD; active project keeps the enforced SMS price ceiling.

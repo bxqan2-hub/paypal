@@ -111,6 +111,7 @@
         <div class="settings-grid">
           <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option><option value="identity_elevation">身份提升流程（开源项目版本）</option></select></label>
           <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
+          <label class="field"><span class="label-row"><b>取号金额上限</b><small>HeroSMS 计价</small></span><input id="smsMaxPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 0.20" aria-describedby="smsMaxPriceHint"><small id="smsMaxPriceHint" class="field-note">设置后，返回价格超过上限的号码会自动取消并重取；留空使用 HeroSMS 默认值。</small></label>
         </div>
         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
         <div class="privacy-note"><i></i><span>每个账号开始时从代理池随机选择一条与所选地区匹配的代理。</span></div>
@@ -150,6 +151,6 @@
 
   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
-  <script src="/paypal-pay/static/app.js?v=20260817-demo-filter-1"></script>
+  <script src="/paypal-pay/static/app.js?v=20260817-price-limit-1"></script>
 </body>
 </html>

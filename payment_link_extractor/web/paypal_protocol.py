@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import math
 from pathlib import Path
 import sys
 import threading
@@ -33,6 +34,18 @@ _protocol = importlib.import_module("paypal_agreement_protocol.web")
 _SMS_CLIENT: HeroSMSClient | None = None
 _SMS_WATCHERS: dict[str, threading.Thread] = {}
 _SMS_WATCHERS_LOCK = threading.RLock()
+
+
+def _parse_sms_max_price(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_price must be numeric") from exc
+    if not math.isfinite(price) or price < 0:
+        raise ValueError("max_price must be a finite non-negative number")
+    return round(price, 2)
 
 
 def _sms_client() -> HeroSMSClient:
@@ -167,12 +180,25 @@ def register_paypal_protocol(app: Any) -> None:
         if protocol_path == "api/sms/number" and request.method == "POST":
             data = request.get_json(silent=True) or {}
             try:
-                activation = _sms_client().acquire_number(
+                max_price = _parse_sms_max_price(data.get("max_price"))
+                client = _sms_client()
+                activation = client.acquire_number(
                     str(data.get("country") or ""),
-                    max_price=float(data["max_price"]) if data.get("max_price") not in (None, "") else None,
+                    max_price=max_price,
                     service=str(data.get("service") or "") or None,
                 )
-                return jsonify({"ok": True, **activation})
+                returned_price = activation.get("price")
+                if max_price is not None and returned_price not in (None, ""):
+                    actual_price = float(returned_price)
+                    if not math.isfinite(actual_price) or actual_price > max_price + 1e-9:
+                        client.finish(str(activation.get("activation_id") or ""), 6)
+                        return jsonify({
+                            "ok": False,
+                            "error": f"HeroSMS price {actual_price:.2f} exceeds max_price {max_price:.2f}",
+                            "max_price": max_price,
+                            "price": actual_price,
+                        }), 422
+                return jsonify({"ok": True, "max_price": max_price, **activation})
             except (HeroSMSError, ValueError) as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 503
         if protocol_path == "api/sms/cancel" and request.method == "POST":
