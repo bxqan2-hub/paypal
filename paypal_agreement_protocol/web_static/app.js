@@ -270,15 +270,25 @@ function extractBa(value) {
   return match ? match[0] : value.trim();
 }
 
-function queueRows() {
-  const links = baPoolLines();
-  const savedPhones = phonePoolLines();
-  return links.map((link, zeroIndex) => {
+function sortedBaPoolEntries() {
+  const sourcePhones = phonePoolLines();
+  return baPoolLines().map((link, originalIndex) => {
     const token = extractBa(link);
+    return {link, token, originalIndex, manualPhone: sourcePhones[originalIndex] || ''};
+  }).sort((left, right) => {
+    const tokenOrder = left.token.localeCompare(right.token, undefined, {numeric: true, sensitivity: 'base'});
+    return tokenOrder || left.originalIndex - right.originalIndex;
+  });
+}
+
+function queueRows() {
+  const entries = sortedBaPoolEntries();
+  return entries.map((entry, zeroIndex) => {
+    const {link, token} = entry;
     const activation = state.smsActivations.get(token) || null;
     const job = state.batchJobs.find(item => Number(item.batch_index || 0) === zeroIndex + 1)
-      || (links.length === 1 ? state.batchJobs[0] : null);
-    return {index: zeroIndex + 1, link, token, activation, phone: activation?.phone || savedPhones[zeroIndex] || '', job};
+      || (entries.length === 1 ? state.batchJobs[0] : null);
+    return {index: zeroIndex + 1, link, token, activation, phone: activation?.phone || entry.manualPhone || '', job};
   });
 }
 
@@ -365,25 +375,24 @@ function renderAccountQueue() {
 }
 
 function syncPhonePoolFromActivations() {
-  const currentPhones = phonePoolLines();
-  const values = baPoolLines().map((link, index) => state.smsActivations.get(extractBa(link))?.phone || currentPhones[index] || '');
+  const values = sortedBaPoolEntries().map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '');
   $('phone').value = values.join('\n');
   saveProtocolFormState();
   updatePairCounts();
 }
 
 async function acquireSmsNumbers(onlyIndexes = null) {
-  const links = baPoolLines();
-  if (!links.length) return showClientError('请先推送或填写 PayPal BA 链接');
+  const entries = sortedBaPoolEntries();
+  if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
-  const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : links.map((_, index) => index);
+  const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
   const button = $('acquirePhonesButton');
   if (button) button.disabled = true;
   try {
     for (const index of indexes) {
-      const token = extractBa(links[index] || '');
+      const token = entries[index]?.token || '';
       if (!token || state.smsActivations.has(token)) continue;
-      if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${links.length}`;
+      if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${entries.length}`;
       const sms = await api('/sms/number', {method:'POST', body:JSON.stringify({country})});
       state.smsActivations.set(token, {...sms, token, index: index + 1});
       syncPhonePoolFromActivations();
@@ -968,10 +977,11 @@ $('cancelBatchButton').addEventListener('click', async () => {
 $('protocolForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (protocolMode() === 'braintree') return;
-  const baValues = baPoolLines();
+  const baEntries = sortedBaPoolEntries();
+  const baValues = baEntries.map(entry => entry.link);
   const selectedCountryOption = $('paypalCountry').selectedOptions[0];
   if (selectedCountryOption?.dataset.live !== '1' && !dynamicCountriesEnabled) return showClientError('\u8be5\u56fd\u5bb6\u5df2\u8fdb\u5165\u5b9e\u65f6\u89e3\u6790\u76ee\u5f55\uff0c\u52a8\u6001\u56fd\u5bb6\u6267\u884c\u5f00\u5173\u5f53\u524d\u5173\u95ed');
-  let phones = phonePoolLines();
+  let phones = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '').filter(Boolean);
   const country = $('paypalCountry').value;
   const proxies = proxyLines();
   if (!baValues.length) return showClientError('请填写 BA 链池');
@@ -979,7 +989,7 @@ $('protocolForm').addEventListener('submit', async (event) => {
   if (phones.length !== baValues.length || phones.some(value => !value)) {
     setProgress(4, '正在按账号队列获取 HeroSMS 手机号', 'SMS');
     await acquireSmsNumbers();
-    phones = baValues.map(link => state.smsActivations.get(extractBa(link))?.phone || '').filter(Boolean);
+    phones = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || '').filter(Boolean);
     if (phones.length !== baValues.length) {
       $('submitButton').disabled = false;
       return showClientError('仍有账号未获取到接码手机号，请重试取号');
@@ -1003,8 +1013,8 @@ $('protocolForm').addEventListener('submit', async (event) => {
   $('batchJobGrid').innerHTML = '';
   setProgress(3, '正在创建独立任务', '提交中');
   try {
-    const smsActivations = baValues.map((link, index) => {
-      const activation = state.smsActivations.get(extractBa(link));
+    const smsActivations = baEntries.map((entry, index) => {
+      const activation = state.smsActivations.get(entry.token);
       return activation?.activation_id ? {index: index + 1, activation_id: activation.activation_id, phone: activation.phone, country} : null;
     });
     const data = await api('/jobs', {method:'POST', body:JSON.stringify({

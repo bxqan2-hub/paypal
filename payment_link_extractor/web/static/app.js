@@ -1126,6 +1126,18 @@
     return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || "";
   }
 
+  function isPaypalBaLink(url) {
+    try {
+      const parsed = new URL(String(url || ""), window.location.origin);
+      const host = String(parsed.hostname || "").toLowerCase();
+      return (host === "paypal.com" || host.endsWith(".paypal.com"))
+        && parsed.pathname.replace(/\/+$/, "").toLowerCase() === "/agreements/approve"
+        && /^BA-[A-Z0-9]{8,80}$/i.test(parsed.searchParams.get("ba_token") || "");
+    } catch (error) {
+      return false;
+    }
+  }
+
   function succeededTasks() {
     return Array.from(tasks.values()).filter(task => task.status === "succeeded");
   }
@@ -1276,9 +1288,10 @@
 
   function renderResultRow(url, result = {}, task = {}) {
     const protocolUrl = protocolPaymentUrl(result, task);
-    return protocolUrl
-      ? `<div class="result-row result-row-protocol"><a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送到 BA 协议支付</a></div>`
+    const pushButton = protocolUrl && isPaypalBaLink(url)
+      ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>`
       : "";
+    return `<div class="result-row result-row-protocol"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${pushButton}</div>`;
   }
 
   function isFailedTask(task) {
@@ -1362,7 +1375,7 @@
     const protocolUrl = protocolPaymentUrl(result, task);
     const progressOrResult = isComplete
       ? (hasResult
-      ? `<div class="task-row-result">${protocolUrl ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送到 BA 协议支付</a>` : ""}</div>`
+      ? `<div class="task-row-result"><button class="secondary" data-copy="${escapeHtml(url)}">复制链接</button>${protocolUrl && isPaypalBaLink(url) ? `<a class="secondary protocol-pay-link" href="${escapeHtml(protocolUrl)}">推送提链</a>` : ""}</div>`
       : `<span class="task-row-result-empty">未返回链接</span>`)
       : isFailed
       ? `<span class="task-row-error" title="${escapeHtml(taskFailureReason(task))}">${escapeHtml(taskFailureReason(task))}</span>`

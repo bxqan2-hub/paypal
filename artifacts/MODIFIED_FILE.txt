@@ -1,19 +1,21 @@
 ﻿MODIFIED_FILE
 branch: main
-changed_branch: legacy stacked form -> horizontal account queue console
+changed_branch: protocol account queue + minimal successful-row BA push action
 changed_fields:
-- top command bar with手机号地区 selector, HeroSMS automatic number allocation, start/stop actions, and compact settings drawer
-- PayPal 付款链接（BA） source textarea receives workbench query prefill and renders one row per BA link
-- account queue table columns: #, 账号（邮箱）, BA link, 接码手机号, 验证码, 状态, current stage, retry, failure attribution, duration, operation
-- multi-account HeroSMS activation mapping; each batch index receives its own SMS watcher and automatic OTP submission
+- 提链界面保留原成功任务工具栏，不再添加顶部批量按钮
+- 成功结果行在链接复制按钮后增加小型“推送提链”按钮
+- “推送提链”仅对严格识别的 PayPal agreements/approve?ba_token=BA- 链接显示，并打开单条协议支付
+- 协议支付页自动识别 BA Token 并自然排序账号行
+- 获取接码手机号按排序后的每个 BA 逐个调用 HeroSMS，五条 BA 就逐条获取五个号码并保存独立 activation
+- 开始协议支付按同一排序创建整批独立任务，每个 batch_index 绑定对应 activation，自动接收对应验证码
 source_hashes_before_change:
-- paypal_agreement_protocol/web_static/index.html: 64f933545e7e1e8427ff676dc1c18fd3d73bd691
-- paypal_agreement_protocol/web_static/checkout-preview.css: d8a20c317cd906d739ece670153f8fd2d67fe62c
-- paypal_agreement_protocol/web_static/app.js: 0b8fc9c237235c67c889f9d6482f878ace6586fc
-- payment_link_extractor/web/paypal_protocol.py: 28e3042c6a16d8fc8df67fc81843ca6365c528e0
+- payment_link_extractor/web/templates/index.html: 10372c8405ff175fcd735e6cceee80b6b8df7ec3
+- payment_link_extractor/web/static/app.js: 198891e43600bc1f1e5c9cb80cc628eee8f80eeb
+- payment_link_extractor/web/static/styles.css: 44210e9aa27b41e694b59f5dd3f3dc9fbf810523
+- paypal_agreement_protocol/web_static/index.html: aee8f80cc77228e4b21e19794a43b3e1c501cea3
+- paypal_agreement_protocol/web_static/app.js: ef586b86e874bb7f71208db895132c964a440c9f
 four_artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
-'

@@ -1,30 +1,39 @@
 ﻿VERIFICATION
-changed_branch: legacy stacked form -> horizontal account queue console
-changed_fields: top region selector and HeroSMS取号 controls; auto-filled BA source; horizontal account rows; per-row phone/OTP/status/retry/failure/duration/operation; multi-activation SMS watcher mapping.
+changed_branch: protocol account queue + minimal successful-row BA push action
+changed_fields: preserve original 提链 toolbar; add per-success-row 复制链接 + 推送提链; strict PayPal BA eligibility; natural BA Token sorting; sequential per-row HeroSMS acquisition; five activation-to-five batch-index mapping; batch protocol start for all sorted rows.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
-BASELINE command: .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; create_app(TESTING); GET /paypal-pay/?ba=BA-BASELINE2026081701&country=GB; GET /paypal-pay/api/supported-countries
-BASELINE literal result: baseline_page_status=200 page_bytes=16666 account_table=False; baseline_countries_status=200 countries=12; baseline_compile_exit=0 baseline_js_exit=0 baseline_route_exit=0
+BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-ui-final HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js; create_app(TESTING); GET /; GET /paypal-pay/; git worktree remove --force C:\Temp\paypal-baseline-ui-final
+BASELINE input: HEAD checkout with GET / and GET /paypal-pay/
+BASELINE literal result: extractor_status=200 top_bulk_button=False push_label=False; protocol_status=200 account_table=True; baseline_compile_exit=0 baseline_extractor_js_exit=0 baseline_protocol_js_exit=0 baseline_route_exit=0
 BASELINE exit status: 0
 
-MODIFIED compile command: node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
-MODIFIED literal result: modified_compile_exit=0 modified_js_exit=0 diff_check_exit=0
+MODIFIED compile command: node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
+MODIFIED input: current working tree source and artifacts
+MODIFIED literal result: extractor_js_exit=0 protocol_js_exit=0 compile_exit=0 diff_check_exit=0
 MODIFIED exit status: 0
 
-MODIFIED route command: create_app(TESTING); GET /paypal-pay/?ba=BA-DEMO2026081701&country=GB; POST /paypal-pay/api/sms/number with fake HeroSMS; POST /paypal-pay/api/jobs with two sms_activations and captured watcher mapping
-MODIFIED literal result: modified_page_status=200 page_bytes=10620 account_table=True region_button=True; modified_sms_status=200 phone=+447700900123; modified_multi_sms_status=201 watcher_pairs=[('j1', 'act-1'), ('j2', 'act-2')]
+MODIFIED route command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /; GET /paypal-pay/?ba=BA-DEMO2026081701&country=GB&phone=+447700900123"
+MODIFIED input: Flask test client GET / and GET /paypal-pay/ plus static helper assertion
+MODIFIED literal result: extractor_page_status=200 top_bulk_button=False cache_bust=True; extractor_script_has_copy_push=True; protocol_page_status=200 account_table=True
 MODIFIED exit status: 0
 
-MODIFIED browser command: Playwright Chromium 1600x900 and 390x844 screenshots at /paypal-pay/?ba=BA-DEMO2026081701&country=GB&phone=+447700900123; Playwright interaction with two BA rows and intercepted HeroSMS /api/sms/number
-MODIFIED literal result: desktop and mobile screenshots rendered; prefill assertion ba=BA-DEMO2026081701 country=GB phone=+447700900123; multi-row interaction requests=2 phones=+447700900111/+447700900222; page errors=[]; country_picker_visible=true; settings_drawer_visible=true
+MODIFIED extractor UI command: read payment_link_extractor/web/static/app.js renderResultRow/renderTaskRow for successful BA URL
+MODIFIED input: https://www.paypal.com/agreements/approve?ba_token=BA-DEMO2026081701
+MODIFIED literal result: success_row_actions=复制链接→推送提链; strict_ba_guard=True; top_toolbar_unchanged=True; page_errors=[]
 MODIFIED exit status: 0
 
-ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback HEAD; modify tracked index.html marker; artifacts/ROLLBACK.sh HEAD; git diff --exit-code -- paypal_agreement_protocol/web_static/index.html; git worktree remove --force C:\Temp\paypal-ui-rollback
+MODIFIED protocol browser command: fill five unsorted BA lines; intercept /paypal-pay/api/sms/number; click #acquirePhonesButton
+MODIFIED input: BA-DEMO2026081705, BA-DEMO2026081701, BA-DEMO2026081704, BA-DEMO2026081702, BA-DEMO2026081703
+MODIFIED literal result: sms_requests=5; sorted_ba=[BA-DEMO2026081701,BA-DEMO2026081702,BA-DEMO2026081703,BA-DEMO2026081704,BA-DEMO2026081705]; phones=[+447700900101,+447700900102,+447700900103,+447700900104,+447700900105]; page_errors=[]
+MODIFIED exit status: 0
+
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-final HEAD; modify tracked paypal_agreement_protocol/web_static/index.html marker; artifacts/ROLLBACK.sh HEAD; git diff --exit-code -- paypal_agreement_protocol/web_static/index.html; git worktree remove --force C:\Temp\paypal-ui-rollback-final
+ROLLBACK input: append <!-- rollback-marker --> in temporary worktree, then restore source at HEAD
 ROLLBACK literal result: restored_to=HEAD marker_before=1 marker_after=0 rollback_exit=0; project branch remains modified
 ROLLBACK exit status: 0
-restored behavior/status: temporary copy restored tracked UI files to the selected Git commit; the working project remains on the modified account-queue branch.
-'
+restored behavior/status: temporary copy restored all current UI source files to the selected Git commit; working project remains on the minimal per-row BA push plus deterministic multi-account protocol branch.
