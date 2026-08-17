@@ -23,44 +23,75 @@ index 1594dac..a978314 100644
  !.env.example
  data/*.log
 +artifacts/screenshots/
+diff --git a/START.bat b/START.bat
+index 5cfa96d..e92eb71 100644
+--- a/START.bat
++++ b/START.bat
+@@ -1,6 +1,7 @@
+ @echo off
+ chcp 65001 >nul
+ cd /d "%~dp0"
++call "%~dp0STOP.bat" >nul 2>&1
+ if not exist ".venv\Scripts\python.exe" (
+   echo Please run INSTALL_AND_START.bat first.
+   pause
+@@ -9,5 +10,5 @@ if not exist ".venv\Scripts\python.exe" (
+ if not exist ".env" copy /y ".env.example" ".env" >nul
+ if not exist "data" mkdir data
+ start "OAI IPRocket Bridge" /min ".venv\Scripts\python.exe" -u iprocket_chain_bridge.py
+-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:18794/'"
++if /I not "%OPLL_NO_BROWSER%"=="1" start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:18794/'"
+ ".venv\Scripts\python.exe" -m payment_link_extractor.web --env-file .env
+diff --git a/STOP.bat b/STOP.bat
+index 1ef87d0..4b219b3 100644
+--- a/STOP.bat
++++ b/STOP.bat
+@@ -1,4 +1,4 @@
+ @echo off
+ chcp 65001 >nul
+-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports=18794,18796; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {$ports -contains $_.LocalPort} | ForEach-Object {Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue}"
++powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports=18794,18795,18796; $owners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {$ports -contains $_.LocalPort} | Select-Object -ExpandProperty OwningProcess -Unique); $parents=@(); foreach($id in $owners){$proc=Get-CimInstance Win32_Process -Filter ('ProcessId='+$id) -ErrorAction SilentlyContinue; if($proc){$parent=Get-CimInstance Win32_Process -Filter ('ProcessId='+$proc.ParentProcessId) -ErrorAction SilentlyContinue; if($parent -and $parent.CommandLine -match 'payment_link_extractor.web|iprocket_chain_bridge'){ $parents += $parent.ProcessId }}}; @($parents+$owners) | Select-Object -Unique | ForEach-Object {Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue}; Start-Sleep -Milliseconds 500; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {$ports -contains $_.LocalPort} | ForEach-Object {Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue}"
+ echo OAI PayPal services stopped.
 diff --git a/artifacts/MODIFIED_FILE.txt b/artifacts/MODIFIED_FILE.txt
 new file mode 100644
-index 0000000..f437305
+index 0000000..a190a99
 --- /dev/null
 +++ b/artifacts/MODIFIED_FILE.txt
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,14 @@
 +MODIFIED_FILE
 +branch: main
 +changed_branch: extraction-success -> single "push to BA protocol payment" action -> compact payment preview -> HeroSMS country-matched number -> automatic OTP submission
-+changed_fields: single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
++changed_fields: stale-process cleanup before START; complete STOP process-tree cleanup; single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
 +original_hashes:
 +  requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
 +  payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
 +  payment_link_extractor/web/app.py: 6867afef52a51c40b0eefe219aa399d534f46cb0
++  START.bat: 5cfa96d27d34ad5e156086c5dbae0e645f0065b4
++  STOP.bat: 1ef87d0166c4778a5b0b4790b09fb60b06e5f885
 +
 +upstream_core: paypal_agreement_protocol/paypal/*.py copied byte-for-byte from https://github.com/bxqan2-hub/- at commit 16a985c46a16d0c0b390f8a4679bdda0053a1895
 +HeroSMS_adapter: paypal_agreement_protocol/herosms.py; payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/web_static/app.js
 +secret_handling: HEROSMS_API_KEY is read from local .env and is not tracked; .env.example contains an empty placeholder
 diff --git a/artifacts/ROLLBACK.sh b/artifacts/ROLLBACK.sh
 new file mode 100755
-index 0000000..cc99970
+index 0000000..1578742
 --- /dev/null
 +++ b/artifacts/ROLLBACK.sh
 @@ -0,0 +1,5 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +TARGET_COMMIT="${1:-HEAD^}"
-+git restore --source "$TARGET_COMMIT" -- payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js payment_link_extractor/web/static/styles.css payment_link_extractor/web/templates/index.html requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol .env.example
++git restore --source "$TARGET_COMMIT" -- START.bat STOP.bat payment_link_extractor/web/app.py payment_link_extractor/web/static/app.js payment_link_extractor/web/static/styles.css payment_link_extractor/web/templates/index.html requirements.txt payment_link_extractor/web/paypal_protocol.py paypal_agreement_protocol .env.example
 +printf 'restored_to=%s\n' "$TARGET_COMMIT"
 diff --git a/artifacts/VERIFICATION.txt b/artifacts/VERIFICATION.txt
 new file mode 100644
-index 0000000..494d896
+index 0000000..aa12be5
 --- /dev/null
 +++ b/artifacts/VERIFICATION.txt
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,33 @@
 +VERIFICATION
 +changed_branch: extraction-success -> single BA protocol-payment button -> responsive payment preview -> manual country selection -> HeroSMS number/OTP -> /paypal-pay/api/jobs
-+changed_fields: one successful-task action, test-preview entry button, responsive payment layout, unchanged copied core, manual PayPal country picker, hidden automatic phone field, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
++changed_fields: START stale-process cleanup, STOP parent/child process cleanup, one successful-task action, test-preview entry button, responsive payment layout, unchanged copied core, manual PayPal country picker, hidden automatic phone field, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
 +artifacts:
 +- MODIFIED_FILE: C:\Users\Administrator\Desktop\??\artifacts\MODIFIED_FILE.txt
 +- DIFF_FILE: C:\Users\Administrator\Desktop\??\artifacts\DIFF_FILE.patch
@@ -84,8 +115,11 @@ index 0000000..494d896
 +MODIFIED preview command: GET /; GET /paypal-pay/?ba=BA-DEMO2026081701
 +MODIFIED preview literal result: workbench_status=200; payment_preview_status=200; payment_preview_bytes=16666; checkout_preview_css_status=200 bytes=5858
 +MODIFIED preview exit status: 0
-+ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
-+ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
++MODIFIED startup command: cmd /c STOP.bat; set OPLL_NO_BROWSER=1; cmd /c START.bat; GET http://127.0.0.1:18794/; GET http://127.0.0.1:18794/paypal-pay/?ba=BA-DEMO2026081701
++MODIFIED startup literal result: ports_stopped=true; workbench=200; preview_button=True; payment=200; checkout_css=True
++MODIFIED startup exit status: 0
++ROLLBACK command: artifacts/ROLLBACK.sh HEAD~1
++ROLLBACK literal result: restored_to=HEAD~1; rollback_exit=0; start_restored=True; stop_restored=True
 +ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
 +restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch; upstream paypal core files remain byte-for-byte unchanged by the HeroSMS integration.
 diff --git a/payment_link_extractor/web/app.py b/payment_link_extractor/web/app.py
@@ -12285,17 +12319,3 @@ index 8ca34fb..7d51390 100644
  loguru>=0.7,<1
  python-dotenv>=1.0,<2
 +httpx[http2,socks]>=0.27,<1
-diff --git a/artifacts/VERIFICATION.txt b/artifacts/VERIFICATION.txt
-index 494d896..990fbf7 100644
---- a/artifacts/VERIFICATION.txt
-+++ b/artifacts/VERIFICATION.txt
-@@ -24,7 +24,7 @@ MODIFIED visual exit status: 0
- MODIFIED preview command: GET /; GET /paypal-pay/?ba=BA-DEMO2026081701
- MODIFIED preview literal result: workbench_status=200; payment_preview_status=200; payment_preview_bytes=16666; checkout_preview_css_status=200 bytes=5858
- MODIFIED preview exit status: 0
--ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
--ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
-+ROLLBACK command: artifacts/ROLLBACK.sh HEAD~1
-+ROLLBACK literal result: restored_to=HEAD~1; restored_index=True; removed_preview_css=True
- ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
- restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch; upstream paypal core files remain byte-for-byte unchanged by the HeroSMS integration.

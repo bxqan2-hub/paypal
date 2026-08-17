@@ -1,6 +1,6 @@
 VERIFICATION
 changed_branch: extraction-success -> single BA protocol-payment button -> responsive payment preview -> manual country selection -> HeroSMS number/OTP -> /paypal-pay/api/jobs
-changed_fields: one successful-task action, test-preview entry button, responsive payment layout, unchanged copied core, manual PayPal country picker, hidden automatic phone field, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
+changed_fields: START stale-process cleanup, STOP parent/child process cleanup, one successful-task action, test-preview entry button, responsive payment layout, unchanged copied core, manual PayPal country picker, hidden automatic phone field, HeroSMS service/country/max-price configuration, automatic SMS code forwarding
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\??\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\??\artifacts\DIFF_FILE.patch
@@ -24,7 +24,10 @@ MODIFIED visual exit status: 0
 MODIFIED preview command: GET /; GET /paypal-pay/?ba=BA-DEMO2026081701
 MODIFIED preview literal result: workbench_status=200; payment_preview_status=200; payment_preview_bytes=16666; checkout_preview_css_status=200 bytes=5858
 MODIFIED preview exit status: 0
+MODIFIED startup command: cmd /c STOP.bat; set OPLL_NO_BROWSER=1; cmd /c START.bat; GET http://127.0.0.1:18794/; GET http://127.0.0.1:18794/paypal-pay/?ba=BA-DEMO2026081701
+MODIFIED startup literal result: ports_stopped=true; workbench=200; preview_button=True; payment=200; checkout_css=True
+MODIFIED startup exit status: 0
 ROLLBACK command: artifacts/ROLLBACK.sh HEAD~1
-ROLLBACK literal result: restored_to=HEAD~1; restored_index=True; removed_preview_css=True
+ROLLBACK literal result: restored_to=HEAD~1; rollback_exit=0; start_restored=True; stop_restored=True
 ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
 restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch; upstream paypal core files remain byte-for-byte unchanged by the HeroSMS integration.

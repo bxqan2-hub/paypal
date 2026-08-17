@@ -1,11 +1,13 @@
 MODIFIED_FILE
 branch: main
 changed_branch: extraction-success -> single "push to BA protocol payment" action -> compact payment preview -> HeroSMS country-matched number -> automatic OTP submission
-changed_fields: single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
+changed_fields: stale-process cleanup before START; complete STOP process-tree cleanup; single successful-task action; payment preview button; compact responsive payment page; manual PayPal country selection; hidden automatic phone field; protocol mount; HeroSMS API number allocation and OTP watcher
 original_hashes:
   requirements.txt: 7d51390a1e7b96c32d770cfacf55dabeee29290d
   payment_link_extractor/web/static/app.js: 940f992f85f97298f618424b9eac593c499a0d85
   payment_link_extractor/web/app.py: 6867afef52a51c40b0eefe219aa399d534f46cb0
+  START.bat: 5cfa96d27d34ad5e156086c5dbae0e645f0065b4
+  STOP.bat: 1ef87d0166c4778a5b0b4790b09fb60b06e5f885
 
 upstream_core: paypal_agreement_protocol/paypal/*.py copied byte-for-byte from https://github.com/bxqan2-hub/- at commit 16a985c46a16d0c0b390f8a4679bdda0053a1895
 HeroSMS_adapter: paypal_agreement_protocol/herosms.py; payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/web_static/app.js
