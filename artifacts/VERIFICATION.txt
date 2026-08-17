@@ -115,3 +115,32 @@ LATEST ROLLBACK BILLING-COUNTRY input: temporary copy with markers in extractor 
 LATEST ROLLBACK BILLING-COUNTRY literal result: restored_to=HEAD; route_marker_before=1; ui_marker_before=1; route_marker_after=0; ui_marker_after=0; rollback_exit=0; diff_exit=0; mark_command_exit=0; temporary copy restored; project branch remains billing-country-unlocked
 LATEST ROLLBACK BILLING-COUNTRY exit status: 0
 restored behavior/status: temporary rollback copy restored extractor country routes/UI and related tracked files to HEAD; active project keeps selectable country plus all complete billing profiles.
+
+LATEST BASELINE PROXY-PARSER
+BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-proxy-parser HEAD; set PROXY_FIXTURE in process environment; set PYTHONPATH=C:\Temp\paypal-baseline-proxy-parser; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe C:\Users\ADMINI~1\AppData\Local\Temp\proxy_baseline_test.py; git worktree remove --force C:\Temp\paypal-baseline-proxy-parser
+BASELINE input: PROXY_FIXTURE supplied in the four-field host:port:username:password form (credential value omitted from this record)
+BASELINE literal result: normalize_scheme=http loopback=True port=18796; extractor_network_response=False error=ConnectionError; extractor_probe_ok=False error=ProxyProbeError; protocol_scheme=socks5h paypal_proxy_ok=True reason=HTTP 302; EXIT_CODE=0
+BASELINE exit status: 0
+
+LATEST MODIFIED PROXY-PARSER
+MODIFIED command: set PROXY_FIXTURE in process environment; set PYTHONPATH=C:\Users\Administrator\Desktop\提链;C:\Users\Administrator\Desktop\提链\paypal_agreement_protocol; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe C:\Users\ADMINI~1\AppData\Local\Temp\proxy_modified_test.py
+MODIFIED input: same PROXY_FIXTURE; invalid access token fixture for HTTP-only extraction reachability; protocol core hash check
+MODIFIED literal result: normalize_scheme=socks5h host_remote=True port=3000; extractor_probe_ip_present=True country_code=GB; chatgpt_network_response=True status=401; stripe_network_response=True status=401; extract_flow_exception=ProtocolError is_network_error=False; protocol_scheme=socks5h paypal_proxy_ok=True reason=HTTP 302; core_hash paypal_agreement_protocol/paypal/flow.py=ab94ed3b0fbb0b2fc8e61977b38280005c245ec38dfa11abe7b8768e8bc8ce16; core_hash paypal_agreement_protocol/paypal/elevation_flow.py=b731679953286b1fe5d6b8aeaf72b62b9be6b76be9077509a81a1483bed4aa34; EXIT_CODE=0
+MODIFIED exit status: 0
+
+MODIFIED parser and UI route command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe - (parser assertion script); create_app(TESTING); POST /api/proxy/test with X-Workbench-Password
+MODIFIED input: 1024proxy host:3000 parser fixture with a password containing separators; live PROXY_FIXTURE for the authenticated route
+MODIFIED literal result: parser_assertions=True scheme=socks5h host=us.1024proxy.io port=3000 probe_country=GB; http_status=200 ok=True ip_present=True country_code=GB; EXIT_CODE=0
+MODIFIED exit status: 0
+
+MODIFIED validation command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m py_compile payment_link_extractor\transport.py payment_link_extractor\web\proxy_probe.py; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; git diff --check
+MODIFIED input: current working tree source and artifacts
+MODIFIED literal result: py_compile_exit=0; modified_compile_exit=0; modified_protocol_js_exit=0; modified_diff_check_exit=0
+MODIFIED exit status: 0
+
+LATEST ROLLBACK PROXY-PARSER
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-proxy-parser HEAD; append markers to payment_link_extractor/transport.py and payment_link_extractor/web/proxy_probe.py; copy current artifacts/ROLLBACK.sh; C:\Program Files\Git\bin\bash.exe -lc './artifacts/ROLLBACK.sh HEAD'; git diff --exit-code -- payment_link_extractor/transport.py payment_link_extractor/web/proxy_probe.py; git worktree remove --force C:\Temp\paypal-ui-rollback-proxy-parser
+ROLLBACK input: temporary copy with one marker in each proxy transport file
+ROLLBACK literal result: restored_to=HEAD; transport_marker_before=1; probe_marker_before=1; transport_marker_after=0; probe_marker_after=0; rollback_exit=0; diff_exit=0; temporary copy restored; project branch remains proxy-parser modified
+ROLLBACK exit status: 0
+restored behavior/status: the temporary copy returned both proxy files to the selected Git commit; the working project remains on the direct 1024proxy SOCKS5h branch.

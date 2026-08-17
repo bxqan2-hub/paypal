@@ -4,12 +4,20 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+import httpx
+
 try:
     import requests
 except ImportError:  # pragma: no cover - runtime dependency is declared in requirements.txt
     requests = None  # type: ignore[assignment]
 
-from ..transport import normalize_proxy_url
+from ..transport import (
+    CurlCffiSession,
+    new_session,
+    normalize_proxy_url,
+    safe_close,
+    set_proxy_url,
+)
 
 
 IP_LOOKUP_URL = "https://ipwho.is/"
@@ -42,9 +50,23 @@ def probe_proxy(
 ) -> ProxyLocation:
     proxy = _normalize_probe_proxy(checkout_proxy)
     if request_get is None:
-        if requests is None:
-            raise ProxyProbeError("requests is required for proxy testing", 500)
-        request_get = requests.get
+        def request_get(url: str, **kwargs: Any) -> Any:
+            kwargs.pop("proxies", None)
+            request_timeout = kwargs.pop("timeout", timeout)
+            if CurlCffiSession is None:
+                with httpx.Client(
+                    proxy=proxy,
+                    timeout=httpx.Timeout(request_timeout),
+                    follow_redirects=False,
+                    trust_env=False,
+                ) as client:
+                    return client.get(url, **kwargs)
+            session = new_session()
+            try:
+                set_proxy_url(session, proxy)
+                return session.get(url, timeout=request_timeout, **kwargs)
+            finally:
+                safe_close(session)
 
     try:
         response = request_get(
@@ -54,6 +76,10 @@ def probe_proxy(
             timeout=timeout,
         )
     except Exception as exc:
+        if isinstance(exc, httpx.TimeoutException):
+            raise ProxyProbeError("proxy request timed out", 504) from exc
+        if isinstance(exc, httpx.HTTPError):
+            raise ProxyProbeError("proxy connection failed", 502) from exc
         if requests is not None and isinstance(exc, requests.exceptions.Timeout):
             raise ProxyProbeError("proxy request timed out", 504) from exc
         if requests is not None and isinstance(exc, requests.exceptions.RequestException):

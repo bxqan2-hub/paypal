@@ -63,6 +63,20 @@ def safe_close(session: Any) -> None:
             pass
 
 
+def _is_1024proxy_host(host: str) -> bool:
+    lowered = str(host or "").lower().rstrip(".")
+    return lowered == "1024proxy.io" or lowered.endswith(".1024proxy.io")
+
+
+def _direct_authenticated_proxy_url(
+    scheme: str, host: str, port: int | str, username: str, password: str
+) -> str:
+    return (
+        f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}"
+    )
+
+
 def _is_iprocket_host(host: str) -> bool:
     lowered = str(host or "").lower().rstrip(".")
     return (
@@ -169,6 +183,10 @@ def normalize_proxy_url(proxy: str) -> str:
             parsed_vendor = parts[2], parts[3], parts[0], parts[1]
         if parsed_vendor is not None:
             host, port, username, password = parsed_vendor
+            if _is_1024proxy_host(host) and int(port) == 3000:
+                return _direct_authenticated_proxy_url(
+                    "socks5h", host, port, username, password
+                )
             if _is_iprocket_host(host):
                 return _iprocket_bridge_proxy(host, int(port), username, password)
             # Vendor port conventions: IPRocket 9595 and Kookeey gateways are
@@ -212,6 +230,14 @@ def normalize_proxy_url(proxy: str) -> str:
             parsed_port = parsed.port or (9595 if parsed.scheme.lower().startswith("socks") else 5959)
         except ValueError as exc:
             raise ValueError("proxy contains an invalid port") from exc
+        if _is_1024proxy_host(host) and parsed_port == 3000:
+            return _direct_authenticated_proxy_url(
+                "socks5h",
+                host,
+                parsed_port,
+                unquote(parsed.username),
+                unquote(parsed.password or ""),
+            )
         return _iprocket_bridge_proxy(
             host,
             parsed_port,

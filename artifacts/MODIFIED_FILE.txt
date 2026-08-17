@@ -49,3 +49,24 @@ four_artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST PROXY-PARSER FIX
+changed_branch: direct authenticated 1024proxy SOCKS5h extraction transport + native SOCKS5h proxy probe
+changed_fields:
+- payment_link_extractor/transport.py now recognizes 1024proxy.io host:3000 entries before the legacy local IPRocket bridge branch and emits a direct socks5h URL with percent-encoded credentials.
+- payment_link_extractor/web/proxy_probe.py now probes through the same curl_cffi-backed transport as extraction, with an httpx SOCKS fallback when curl_cffi is unavailable; injected request_get tests remain supported.
+- paypal_agreement_protocol/paypal/flow.py and paypal_agreement_protocol/paypal/elevation_flow.py were not modified.
+source_hashes_before_change:
+- payment_link_extractor/transport.py: 0f6a2f9e3bbe2d979b7ebdecc2d6dddc9c74f1292ab62b05dc5ff337e4e1135b
+- payment_link_extractor/web/proxy_probe.py: 249a0350555f9220f6315447b0e07615a72452e7d51b41064c321a247644bfba
+source_hashes_after_change:
+- payment_link_extractor/transport.py: f68f2a8a5aa72bc5fc1ea928eb54421e268bbce42165368663e533dfa9bc27d2
+- payment_link_extractor/web/proxy_probe.py: fa1299dcb9482e20812b10da496b7a16f0b51ae60a310c1c6b452401d6d87b06
+protocol_core_hashes_unchanged:
+- paypal_agreement_protocol/paypal/flow.py: ab94ed3b0fbb0b2fc8e61977b38280005c245ec38dfa11abe7b8768e8bc8ce16
+- paypal_agreement_protocol/paypal/elevation_flow.py: b731679953286b1fe5d6b8aeaf72b62b9be6b76be9077509a81a1483bed4aa34
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
