@@ -1,0 +1,293 @@
+﻿diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index ffe4d65..1933df1 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -39,6 +39,7 @@ from paypal.runtime_country_resolver import infer_dynamic_kyc, resolve_runtime_c
+
+ ROOT = Path(__file__).resolve().parent
+ STATIC_DIR = ROOT / "web_static"
++PROCESS_RUNTIME_ID = uuid.uuid4().hex
+ RUNTIME_DIR = Path(
+     os.getenv("PAYPAL_WEB_RUNTIME_DIR")
+     or str(ROOT.parent.parent / "run" / "paypal_agreement_protocol")
+@@ -2599,7 +2600,7 @@ class WebHandler(BaseHTTPRequestHandler):
+         parsed = urlparse(self.path)
+         path = parsed.path
+         if path == "/api/health":
+-            return self.send_json({"ok": True, "time": now_ts()})
++            return self.send_json({"ok": True, "time": now_ts(), "runtime_id": PROCESS_RUNTIME_ID})
+         if path == "/api/stats":
+             return self.send_json(protocol_metrics_public())
+         if path == "/api/supported-countries":
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 09b0bbd..29544b1 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -1,7 +1,8 @@
+ const API_BASE = '/paypal-pay/api';
+ const GROK_API_BASE = '/api/grok-trial';
+ const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
+-const LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
++const LEGACY_LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
++const PROCESS_RUNTIME_KEY = 'paypal.protocol.runtime.v2';
+
+ function isDefaultDemoBa(value) {
+   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
+@@ -11,15 +12,6 @@ function stripDefaultDemoBa(value) {
+   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
+ }
+
+-function readLastProtocolInputs() {
+-  try {
+-    const saved = JSON.parse(localStorage.getItem(LAST_BA_PREFILL_KEY) || '{}');
+-    return saved && typeof saved === 'object' ? saved : {};
+-  } catch (_) {
+-    return {};
+-  }
+-}
+-
+ function readSmsMaxPrice() {
+   const node = $('smsMaxPrice');
+   const raw = node ? node.value.trim() : '';
+@@ -34,12 +26,11 @@ function readSmsMaxPrice() {
+ // number before starting the unchanged protocol flow.
+ function applyWorkbenchPrefill() {
+   const params = new URLSearchParams(window.location.search);
+-  const saved = readLastProtocolInputs();
+   const existingBa = document.querySelector('#baToken')?.value || '';
+-  const ba = params.get('ba') || params.get('paypal_url') || existingBa || saved.ba || '';
+-  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
+-  const phone = params.get('phone') || saved.phone || '';
+-  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
++  const ba = params.get('ba') || params.get('paypal_url') || existingBa || '';
++  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
++  const phone = params.get('phone') || '';
++  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
+     .split(/\r?\n/).map(value => value.trim());
+   while (emailValues.length && !emailValues[emailValues.length - 1]) emailValues.pop();
+   if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
+@@ -51,7 +42,6 @@ function applyWorkbenchPrefill() {
+   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
+   if (emailValues.some(Boolean) && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
+   if (emailValues.some(Boolean) && typeof state !== 'undefined') state.prefillEmails = emailValues;
+-  persistLastProtocolInputs();
+   saveProtocolFormState();
+ }
+ const $ = (id) => document.getElementById(id);
+@@ -86,8 +76,61 @@ const vaultState = {
+   generated: null,
+ };
+
+-const PROTOCOL_FORM_STATE_KEY = `paypal.protocol.form.${privateBraintreeEnabled ? 'private' : 'standard'}.v1`;
++const PROTOCOL_FORM_STATE_KEY = `paypal.protocol.form.${privateBraintreeEnabled ? 'private' : 'standard'}.v2`;
++const LEGACY_SESSION_KEYS = [
++  'paypal.protocol.form.standard.v1',
++  'paypal.protocol.form.private.v1',
++  'paypal-protocol-job',
++  'paypal-protocol-batch',
++  'pay153-braintree-access-token',
++  'pay153-braintree-proxy',
++];
+ let protocolFormStateTimer = 0;
++
++function clearLegacyPersistentInputs() {
++  try { localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY); } catch (_) {}
++}
++
++function clearTransientSessionState(message = '') {
++  clearTimeout(protocolFormStateTimer);
++  try {
++    sessionStorage.removeItem(PROTOCOL_FORM_STATE_KEY);
++    LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key));
++  } catch (_) {}
++  state.jobId = '';
++  state.job = null;
++  state.batchJobIds = [];
++  state.batchJobs = [];
++  state.prefillEmails = [];
++  state.smsActivations.clear();
++  if (typeof clearMissingJob === 'function') clearMissingJob(message || '当前服务会话已重启，已清除上一会话数据');
++  const clearIds = ['baToken', 'phone', 'emailPool', 'proxies', 'smsMaxPrice', 'vaultAccountId', 'vaultAccessToken', 'vaultProxy'];
++  clearIds.forEach(id => { const node = $(id); if (node) node.value = ''; });
++  const buyerMode = $('buyerMode');
++  if (buyerMode) buyerMode.value = 'identity_elevation';
++  const country = $('paypalCountry');
++  if (country && country.options.length) country.selectedIndex = 0;
++  updateProxyCount();
++  updatePairCounts();
++  renderAccountQueue();
++  updateCountryFields();
++}
++
++function synchronizeProcessRuntime(runtimeId) {
++  const current = String(runtimeId || '').trim();
++  if (!current) return;
++  let previous = '';
++  try { previous = sessionStorage.getItem(PROCESS_RUNTIME_KEY) || ''; } catch (_) {}
++  clearLegacyPersistentInputs();
++  if (previous && previous !== current) clearTransientSessionState();
++  if (!previous) {
++    try { LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key)); } catch (_) {}
++  }
++  try { sessionStorage.setItem(PROCESS_RUNTIME_KEY, current); } catch (_) {}
++}
++
++clearLegacyPersistentInputs();
++
+ function protocolFormStateSnapshot() {
+   const saved = {};
+   $('protocolForm').querySelectorAll('input, textarea, select').forEach(node => {
+@@ -108,20 +151,6 @@ function saveProtocolFormState() {
+   }, 80);
+ }
+
+-function persistLastProtocolInputs() {
+-  const ba = stripDefaultDemoBa($('baToken')?.value || '');
+-  if (!ba) return;
+-  try {
+-    localStorage.setItem(LAST_BA_PREFILL_KEY, JSON.stringify({
+-      ba,
+-      country: $('paypalCountry')?.value || '',
+-      phone: $('phone')?.value || '',
+-      emails: $('emailPool')?.value || '',
+-      updatedAt: new Date().toISOString(),
+-    }));
+-  } catch (_) {}
+-}
+-
+ function restoreProtocolFormState() {
+   let saved = {};
+   try { saved = JSON.parse(sessionStorage.getItem(PROTOCOL_FORM_STATE_KEY) || '{}'); } catch (_) {}
+@@ -137,11 +166,9 @@ function restoreProtocolFormState() {
+
+ $('protocolForm').addEventListener('input', () => {
+   saveProtocolFormState();
+-  persistLastProtocolInputs();
+ });
+ $('protocolForm').addEventListener('change', () => {
+   saveProtocolFormState();
+-  persistLastProtocolInputs();
+ });
+
+ if (privateBraintreeEnabled) {
+@@ -330,12 +357,14 @@ $('paypalCountry').addEventListener('change', updateCountryFields);
+ document.addEventListener('click', event => { if (!$('countryPicker').contains(event.target)) closeCountryPicker(); });
+ const paypalCountriesReady = loadPayPalCountries().catch(() => { $('countrySchemaHint').textContent = '\u56fd\u5bb6\u76ee\u5f55\u52a0\u8f7d\u5931\u8d25'; });
+
+-$('buyerMode').addEventListener('change', () => {
++function updateBuyerModeHint() {
+   const elevated = $('buyerMode').value === 'identity_elevation';
+   $('buyerModeHint').value = elevated
+     ? '注册后提升 Guest 身份并绑定当前 EC，再提交授权'
+     : '按开源项目 Phase 0-4：协议地址、风控、创建账号、短信验证、最终授权';
+-});
++}
++$('buyerMode').addEventListener('change', updateBuyerModeHint);
++updateBuyerModeHint();
+
+ function normalizePhone(value) {
+   return value.replace(/[\s().-]+/g, '');
+@@ -1348,7 +1377,8 @@ $('copyResult').addEventListener('click', async () => {
+
+ async function checkHealth() {
+   try {
+-    await api('/health');
++    const health = await api('/health');
++    synchronizeProcessRuntime(health.runtime_id);
+     $('serviceState').innerHTML = '<i></i> 服务在线';
+   } catch (_) {
+     $('serviceState').innerHTML = '<i class="offline"></i> 服务异常';
+@@ -1432,6 +1462,7 @@ async function refreshSuccessStats() {
+
+ (async function init() {
+   await paypalCountriesReady;
++  await checkHealth();
+   restoreProtocolFormState();
+   applyWorkbenchPrefill();
+   updateProtocolMode();
+@@ -1439,7 +1470,6 @@ async function refreshSuccessStats() {
+   updateCountryFields();
+   updateProxyCount();
+   updatePairCounts();
+-  await checkHealth();
+   if ($('successTotal')) await refreshSuccessStats();
+   await refreshJobs();
+   let savedBatch = [];
+diff --git a/tests/test_optimization_features.py b/tests/test_optimization_features.py
+index 79eae72..a9feeb1 100644
+--- a/tests/test_optimization_features.py
++++ b/tests/test_optimization_features.py
+@@ -148,6 +148,73 @@ def test_explicit_original_mode_dispatches_original_flow() -> None:
+     assert job.result["redirect_status"] == "success"
+
+
++def test_identity_and_original_modes_dispatch_different_flows() -> None:
++    selected: list[str] = []
++
++    class FakeFlow:
++        label = "base"
++
++        def __init__(self, **kwargs):
++            selected.append(self.label)
++            self.job = kwargs["job"]
++
++        def run(self):
++            return {
++                "status": "success",
++                "return_url": "https://merchant.fixture/return?status=success",
++            }
++
++        def close(self):
++            return None
++
++    class FakeOriginalFlow(FakeFlow):
++        label = "original"
++
++    class FakeIdentityFlow(FakeFlow):
++        label = "identity_elevation"
++
++    proxy = ProxyConfig(True, ProxyEntry("127.0.0.1", 9999, "", ""))
++    for buyer_mode, expected in (("identity_elevation", "identity_elevation"), ("original", "original")):
++        job = protocol_web.WebJob(
++            id=f"mode-{buyer_mode}",
++            owner_device_id="devicefixture",
++            ba_token=f"BA-{buyer_mode.upper()}FIXTURE01",
++            phone="+447700900123",
++            country="GB",
++            buyer_mode=buyer_mode,
++            max_card_attempts=1,
++            proxy_enabled=True,
++            _proxy_config=proxy,
++            _proxy_pool=["http://127.0.0.1:9999"],
++        )
++        with (
++            patch.object(protocol_web, "find_authorization_checkpoint", return_value=None),
++            patch.object(protocol_web, "select_working_proxy", return_value=proxy),
++            patch.object(protocol_web, "generate_card", return_value=CardInfo("4111111111111111", "12/2030", "123")),
++            patch.object(protocol_web, "WebPayPalFlow", FakeOriginalFlow),
++            patch.object(protocol_web, "WebIdentityElevationPayPalFlow", FakeIdentityFlow),
++            patch.object(protocol_web, "_authorization_checkpoint_from_result", return_value=None),
++            patch.object(protocol_web, "record_payment_audit"),
++        ):
++            protocol_web._run_job_attempt(job)
++        assert selected[-1] == expected
++        assert job.status == "completed"
++
++
++def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
++    javascript = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
++    backend = (PROTOCOL_ROOT / "web.py").read_text(encoding="utf-8")
++    assert "localStorage.setItem(LAST_BA_PREFILL_KEY" not in javascript
++    assert "readLastProtocolInputs" not in javascript
++    assert "localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY)" in javascript
++    assert "sessionStorage.setItem(PROTOCOL_FORM_STATE_KEY" in javascript
++    assert "synchronizeProcessRuntime(health.runtime_id)" in javascript
++    assert "function updateBuyerModeHint()" in javascript
++    assert "updateBuyerModeHint();" in javascript
++    assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
++    assert "paypal.protocol.runtime.v2" in javascript
++
++
+ def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+     executable = tmp_path / "browser.exe"
+     executable.write_bytes(b"fixture")

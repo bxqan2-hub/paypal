@@ -1,7 +1,8 @@
 const API_BASE = '/paypal-pay/api';
 const GROK_API_BASE = '/api/grok-trial';
 const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
-const LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
+const LEGACY_LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
+const PROCESS_RUNTIME_KEY = 'paypal.protocol.runtime.v2';
 
 function isDefaultDemoBa(value) {
   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
@@ -9,15 +10,6 @@ function isDefaultDemoBa(value) {
 
 function stripDefaultDemoBa(value) {
   return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
-}
-
-function readLastProtocolInputs() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(LAST_BA_PREFILL_KEY) || '{}');
-    return saved && typeof saved === 'object' ? saved : {};
-  } catch (_) {
-    return {};
-  }
 }
 
 function readSmsMaxPrice() {
@@ -34,12 +26,11 @@ function readSmsMaxPrice() {
 // number before starting the unchanged protocol flow.
 function applyWorkbenchPrefill() {
   const params = new URLSearchParams(window.location.search);
-  const saved = readLastProtocolInputs();
   const existingBa = document.querySelector('#baToken')?.value || '';
-  const ba = params.get('ba') || params.get('paypal_url') || existingBa || saved.ba || '';
-  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || saved.country || '').toUpperCase();
-  const phone = params.get('phone') || saved.phone || '';
-  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || saved.emails || '')
+  const ba = params.get('ba') || params.get('paypal_url') || existingBa || '';
+  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
+  const phone = params.get('phone') || '';
+  const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
     .split(/\r?\n/).map(value => value.trim());
   while (emailValues.length && !emailValues[emailValues.length - 1]) emailValues.pop();
   if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
@@ -51,7 +42,6 @@ function applyWorkbenchPrefill() {
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
   if (emailValues.some(Boolean) && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
   if (emailValues.some(Boolean) && typeof state !== 'undefined') state.prefillEmails = emailValues;
-  persistLastProtocolInputs();
   saveProtocolFormState();
 }
 const $ = (id) => document.getElementById(id);
@@ -86,8 +76,61 @@ const vaultState = {
   generated: null,
 };
 
-const PROTOCOL_FORM_STATE_KEY = `paypal.protocol.form.${privateBraintreeEnabled ? 'private' : 'standard'}.v1`;
+const PROTOCOL_FORM_STATE_KEY = `paypal.protocol.form.${privateBraintreeEnabled ? 'private' : 'standard'}.v2`;
+const LEGACY_SESSION_KEYS = [
+  'paypal.protocol.form.standard.v1',
+  'paypal.protocol.form.private.v1',
+  'paypal-protocol-job',
+  'paypal-protocol-batch',
+  'pay153-braintree-access-token',
+  'pay153-braintree-proxy',
+];
 let protocolFormStateTimer = 0;
+
+function clearLegacyPersistentInputs() {
+  try { localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY); } catch (_) {}
+}
+
+function clearTransientSessionState(message = '') {
+  clearTimeout(protocolFormStateTimer);
+  try {
+    sessionStorage.removeItem(PROTOCOL_FORM_STATE_KEY);
+    LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key));
+  } catch (_) {}
+  state.jobId = '';
+  state.job = null;
+  state.batchJobIds = [];
+  state.batchJobs = [];
+  state.prefillEmails = [];
+  state.smsActivations.clear();
+  if (typeof clearMissingJob === 'function') clearMissingJob(message || '当前服务会话已重启，已清除上一会话数据');
+  const clearIds = ['baToken', 'phone', 'emailPool', 'proxies', 'smsMaxPrice', 'vaultAccountId', 'vaultAccessToken', 'vaultProxy'];
+  clearIds.forEach(id => { const node = $(id); if (node) node.value = ''; });
+  const buyerMode = $('buyerMode');
+  if (buyerMode) buyerMode.value = 'identity_elevation';
+  const country = $('paypalCountry');
+  if (country && country.options.length) country.selectedIndex = 0;
+  updateProxyCount();
+  updatePairCounts();
+  renderAccountQueue();
+  updateCountryFields();
+}
+
+function synchronizeProcessRuntime(runtimeId) {
+  const current = String(runtimeId || '').trim();
+  if (!current) return;
+  let previous = '';
+  try { previous = sessionStorage.getItem(PROCESS_RUNTIME_KEY) || ''; } catch (_) {}
+  clearLegacyPersistentInputs();
+  if (previous && previous !== current) clearTransientSessionState();
+  if (!previous) {
+    try { LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key)); } catch (_) {}
+  }
+  try { sessionStorage.setItem(PROCESS_RUNTIME_KEY, current); } catch (_) {}
+}
+
+clearLegacyPersistentInputs();
+
 function protocolFormStateSnapshot() {
   const saved = {};
   $('protocolForm').querySelectorAll('input, textarea, select').forEach(node => {
@@ -108,20 +151,6 @@ function saveProtocolFormState() {
   }, 80);
 }
 
-function persistLastProtocolInputs() {
-  const ba = stripDefaultDemoBa($('baToken')?.value || '');
-  if (!ba) return;
-  try {
-    localStorage.setItem(LAST_BA_PREFILL_KEY, JSON.stringify({
-      ba,
-      country: $('paypalCountry')?.value || '',
-      phone: $('phone')?.value || '',
-      emails: $('emailPool')?.value || '',
-      updatedAt: new Date().toISOString(),
-    }));
-  } catch (_) {}
-}
-
 function restoreProtocolFormState() {
   let saved = {};
   try { saved = JSON.parse(sessionStorage.getItem(PROTOCOL_FORM_STATE_KEY) || '{}'); } catch (_) {}
@@ -137,11 +166,9 @@ function restoreProtocolFormState() {
 
 $('protocolForm').addEventListener('input', () => {
   saveProtocolFormState();
-  persistLastProtocolInputs();
 });
 $('protocolForm').addEventListener('change', () => {
   saveProtocolFormState();
-  persistLastProtocolInputs();
 });
 
 if (privateBraintreeEnabled) {
@@ -330,12 +357,14 @@ $('paypalCountry').addEventListener('change', updateCountryFields);
 document.addEventListener('click', event => { if (!$('countryPicker').contains(event.target)) closeCountryPicker(); });
 const paypalCountriesReady = loadPayPalCountries().catch(() => { $('countrySchemaHint').textContent = '\u56fd\u5bb6\u76ee\u5f55\u52a0\u8f7d\u5931\u8d25'; });
 
-$('buyerMode').addEventListener('change', () => {
+function updateBuyerModeHint() {
   const elevated = $('buyerMode').value === 'identity_elevation';
   $('buyerModeHint').value = elevated
     ? '注册后提升 Guest 身份并绑定当前 EC，再提交授权'
     : '按开源项目 Phase 0-4：协议地址、风控、创建账号、短信验证、最终授权';
-});
+}
+$('buyerMode').addEventListener('change', updateBuyerModeHint);
+updateBuyerModeHint();
 
 function normalizePhone(value) {
   return value.replace(/[\s().-]+/g, '');
@@ -1348,7 +1377,8 @@ $('copyResult').addEventListener('click', async () => {
 
 async function checkHealth() {
   try {
-    await api('/health');
+    const health = await api('/health');
+    synchronizeProcessRuntime(health.runtime_id);
     $('serviceState').innerHTML = '<i></i> 服务在线';
   } catch (_) {
     $('serviceState').innerHTML = '<i class="offline"></i> 服务异常';
@@ -1432,6 +1462,7 @@ async function refreshSuccessStats() {
 
 (async function init() {
   await paypalCountriesReady;
+  await checkHealth();
   restoreProtocolFormState();
   applyWorkbenchPrefill();
   updateProtocolMode();
@@ -1439,7 +1470,6 @@ async function refreshSuccessStats() {
   updateCountryFields();
   updateProxyCount();
   updatePairCounts();
-  await checkHealth();
   if ($('successTotal')) await refreshSuccessStats();
   await refreshJobs();
   let savedBatch = [];

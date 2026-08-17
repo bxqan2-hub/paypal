@@ -1,0 +1,7 @@
+BASE_COMMIT=ab677c2
+STATE=optimized-session-only
+PERSISTENT_LAST_BA=disabled
+STALE_QUEUE_ON_PROCESS_RESTART=cleared
+CURRENT_SESSION_FORM=retained
+BUYER_DEFAULT=identity_elevation
+ORIGINAL_MODE=explicit_compatibility

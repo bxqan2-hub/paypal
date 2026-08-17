@@ -39,6 +39,7 @@ from paypal.runtime_country_resolver import infer_dynamic_kyc, resolve_runtime_c
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web_static"
+PROCESS_RUNTIME_ID = uuid.uuid4().hex
 RUNTIME_DIR = Path(
     os.getenv("PAYPAL_WEB_RUNTIME_DIR")
     or str(ROOT.parent.parent / "run" / "paypal_agreement_protocol")
@@ -2599,7 +2600,7 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/health":
-            return self.send_json({"ok": True, "time": now_ts()})
+            return self.send_json({"ok": True, "time": now_ts(), "runtime_id": PROCESS_RUNTIME_ID})
         if path == "/api/stats":
             return self.send_json(protocol_metrics_public())
         if path == "/api/supported-countries":

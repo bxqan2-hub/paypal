@@ -148,6 +148,73 @@ def test_explicit_original_mode_dispatches_original_flow() -> None:
     assert job.result["redirect_status"] == "success"
 
 
+def test_identity_and_original_modes_dispatch_different_flows() -> None:
+    selected: list[str] = []
+
+    class FakeFlow:
+        label = "base"
+
+        def __init__(self, **kwargs):
+            selected.append(self.label)
+            self.job = kwargs["job"]
+
+        def run(self):
+            return {
+                "status": "success",
+                "return_url": "https://merchant.fixture/return?status=success",
+            }
+
+        def close(self):
+            return None
+
+    class FakeOriginalFlow(FakeFlow):
+        label = "original"
+
+    class FakeIdentityFlow(FakeFlow):
+        label = "identity_elevation"
+
+    proxy = ProxyConfig(True, ProxyEntry("127.0.0.1", 9999, "", ""))
+    for buyer_mode, expected in (("identity_elevation", "identity_elevation"), ("original", "original")):
+        job = protocol_web.WebJob(
+            id=f"mode-{buyer_mode}",
+            owner_device_id="devicefixture",
+            ba_token=f"BA-{buyer_mode.upper()}FIXTURE01",
+            phone="+447700900123",
+            country="GB",
+            buyer_mode=buyer_mode,
+            max_card_attempts=1,
+            proxy_enabled=True,
+            _proxy_config=proxy,
+            _proxy_pool=["http://127.0.0.1:9999"],
+        )
+        with (
+            patch.object(protocol_web, "find_authorization_checkpoint", return_value=None),
+            patch.object(protocol_web, "select_working_proxy", return_value=proxy),
+            patch.object(protocol_web, "generate_card", return_value=CardInfo("4111111111111111", "12/2030", "123")),
+            patch.object(protocol_web, "WebPayPalFlow", FakeOriginalFlow),
+            patch.object(protocol_web, "WebIdentityElevationPayPalFlow", FakeIdentityFlow),
+            patch.object(protocol_web, "_authorization_checkpoint_from_result", return_value=None),
+            patch.object(protocol_web, "record_payment_audit"),
+        ):
+            protocol_web._run_job_attempt(job)
+        assert selected[-1] == expected
+        assert job.status == "completed"
+
+
+def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
+    javascript = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
+    backend = (PROTOCOL_ROOT / "web.py").read_text(encoding="utf-8")
+    assert "localStorage.setItem(LAST_BA_PREFILL_KEY" not in javascript
+    assert "readLastProtocolInputs" not in javascript
+    assert "localStorage.removeItem(LEGACY_LAST_BA_PREFILL_KEY)" in javascript
+    assert "sessionStorage.setItem(PROTOCOL_FORM_STATE_KEY" in javascript
+    assert "synchronizeProcessRuntime(health.runtime_id)" in javascript
+    assert "function updateBuyerModeHint()" in javascript
+    assert "updateBuyerModeHint();" in javascript
+    assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
+    assert "paypal.protocol.runtime.v2" in javascript
+
+
 def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     executable = tmp_path / "browser.exe"
     executable.write_bytes(b"fixture")

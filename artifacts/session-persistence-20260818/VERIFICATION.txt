@@ -1,0 +1,57 @@
+OBJECT=protocol payment transient input and buyer mode verification
+BRANCH=main
+BASE_COMMIT=ab677c2
+CHANGED_FIELDS=legacy_ba_prefill,session_runtime_reset,buyer_mode_dispatch_hint
+MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/MODIFIED_FILE
+DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/DIFF_FILE.patch
+VERIFICATION_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/VERIFICATION.txt
+ROLLBACK_FILE=C:/Users/Administrator/Desktop/提链/artifacts/session-persistence-20260818/ROLLBACK.sh
+
+BASELINE_COMMAND_1=.venv\Scripts\python.exe -m pytest -q tests
+BASELINE_INPUT=HEAD ab677c2 before session persistence change
+BASELINE_LITERAL_OUTPUT_1=29 passed in 0.47s
+BASELINE_RESULT_1=PASS
+BASELINE_EXIT_1=0
+
+BASELINE_COMMAND_2=Push-Location paypal_agreement_protocol; ..\.venv\Scripts\python.exe -m pytest -q ..\tests\reference_protocol; Pop-Location
+BASELINE_INPUT=HEAD ab677c2 before session persistence change
+BASELINE_LITERAL_OUTPUT_2=17 passed in 0.29s
+BASELINE_RESULT_2=PASS
+BASELINE_EXIT_2=0
+
+MODIFIED_COMMAND_1=.venv\Scripts\python.exe -m pytest -q tests/test_optimization_features.py
+MODIFIED_LITERAL_OUTPUT_1=11 passed in 0.43s
+MODIFIED_RESULT_1=PASS
+MODIFIED_EXIT_1=0
+
+MODIFIED_COMMAND_2=.venv\Scripts\python.exe -m pytest -q tests
+MODIFIED_LITERAL_OUTPUT_2=31 passed in 0.44s
+MODIFIED_RESULT_2=PASS
+MODIFIED_EXIT_2=0
+
+MODIFIED_COMMAND_3=Push-Location paypal_agreement_protocol; ..\.venv\Scripts\python.exe -m pytest -q ..\tests\reference_protocol; Pop-Location
+MODIFIED_LITERAL_OUTPUT_3=17 passed in 0.09s
+MODIFIED_RESULT_3=PASS
+MODIFIED_EXIT_3=0
+
+MODIFIED_COMMAND_4=node --check paypal_agreement_protocol/web_static/app.js
+MODIFIED_LITERAL_OUTPUT_4=NODE_CHECK_EXIT=0
+MODIFIED_RESULT_4=PASS
+MODIFIED_EXIT_4=0
+
+MODIFIED_COMMAND_5=.venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+MODIFIED_LITERAL_OUTPUT_5=COMPILE_EXIT=0
+MODIFIED_RESULT_5=PASS
+MODIFIED_EXIT_5=0
+
+ROLLBACK_COMMAND=artifacts/session-persistence-20260818/ROLLBACK.sh --fixture <another-copy>
+ROLLBACK_INPUT=another copy of MODIFIED_FILE
+ROLLBACK_LITERAL_OUTPUT=ROLLED_BACK_FIXTURE <another-copy>
+ROLLBACK_RESULT=PASS
+ROLLBACK_EXIT=0
+RESTORED_BEHAVIOR=legacy session fixture restored; MODIFIED_FILE remains optimized
+MODIFIED_INPUT=legacy localStorage BA removed; process runtime changes clear stale job/form/session state; sessionStorage retains only current process operation; buyer modes dispatch distinct flow classes
+MODIFIED_COMMAND_6=Flask test client GET /paypal-pay/api/health
+MODIFIED_LITERAL_OUTPUT_6=status=200; runtime_id=<non-empty>
+MODIFIED_RESULT_6=PASS
+MODIFIED_EXIT_6=0
