@@ -2413,8 +2413,6 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
     error_code = str(getattr(exc, "error_code", "") or result.get("error_code") or "").upper()
     if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
         return False
-    if "cancelled by user" in str(exc).lower():
-        return False
     return True
 
 

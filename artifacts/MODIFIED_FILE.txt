@@ -24,7 +24,7 @@ source_hashes_before_change:
 - payment_link_extractor/web/static/styles.css: 9531979f9999e0684831dfb117cc2f762c7b81a2
 
 source_hashes_after_change:
-- paypal_agreement_protocol/web.py: 82870edac6fc06e2353dcb06c95f6da59dda113e
+- paypal_agreement_protocol/web.py: 5b81b89a6bc15da37b2a93bbc62095a34db14e5e
 - paypal_agreement_protocol/web_static/app.js: 09b0bbdba45bfa54f5c1143b105f2a1b8aca8202
 - payment_link_extractor/web/paypal_protocol.py: cd7de0b38268d8d9087a10566a889533d8234bc6
 - payment_link_extractor/web/static/app.js: b1e4aa7aa76a6810d83348705f55cfec42825894
