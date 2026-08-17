@@ -8,7 +8,7 @@
   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
   <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
-  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-4">
+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260817-account-table-5">
 </head>
 <body>
   <div class="paper-noise"></div>
@@ -109,7 +109,7 @@
       <section id="settingsDrawer" class="settings-drawer" hidden>
         <div class="settings-head"><div><h2>运行设置</h2><p>代理不会在任务表、日志或结果中显示。</p></div><span id="proxyCountryHint" class="optional-tag">推荐填写 BR</span></div>
         <div class="settings-grid">
-          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option></select></label>
+          <label class="field"><span>Buyer 身份模式</span><select id="buyerMode" required><option value="original" selected>原版流程（开源项目）</option><option value="identity_elevation">身份提升流程（开源项目版本）</option></select></label>
           <label class="field"><span>模式说明</span><input id="buyerModeHint" value="按开源项目 Phase 0–4：协议页、风控、创建账号、短信验证、最终授权" readonly></label>
         </div>
         <label class="field"><span class="label-row"><b>运行代理池</b><small id="proxyCount">0 / 500</small></span><textarea id="proxies" class="proxy-pool-input" required spellcheck="false" placeholder="host:port:username:password&#10;socks5://username:password@host:port"></textarea></label>
@@ -150,6 +150,6 @@
 
   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
-  <script src="/paypal-pay/static/app.js?v=20260817-account-table-4"></script>
+  <script src="/paypal-pay/static/app.js?v=20260817-account-table-5"></script>
 </body>
 </html>

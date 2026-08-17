@@ -1,44 +1,44 @@
 ﻿VERIFICATION
-changed_branch: email-aware BA handoff + replaceable SMS activations + open-source core flow + per-BA full logs
-changed_fields: account_email propagation; emails-to-batch-index mapping; cancel-old-activation-before-retry; larger typography; original open-source Phase 0-4 flow default; per-BA full-log modal.
+changed_branch: open-source dual buyer modes + full-width protocol console + larger protocol typography
+changed_fields: original and identity_elevation options; unchanged core flow source files; full-width shell/table; larger fonts; existing email/SMS/log integration retained.
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
 
-BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-email-log HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js; create_app(TESTING); GET /; GET /paypal-pay/; git worktree remove --force C:\Temp\paypal-baseline-email-log
-BASELINE input: HEAD checkout with GET / and GET /paypal-pay/
-BASELINE literal result: extractor_status=200 email_query_source=False; protocol_status=200 log_modal=False; protocol_app_sms_cancel=False; baseline_compile_exit=0 baseline_extractor_js_exit=0 baseline_protocol_js_exit=0 baseline_route_exit=0
+BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-layout-modes HEAD; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; node --check paypal_agreement_protocol/web_static/app.js; create_app(TESTING); GET /paypal-pay/; git worktree remove --force C:\Temp\paypal-baseline-layout-modes
+BASELINE input: HEAD checkout with GET /paypal-pay/
+BASELINE literal result: protocol_status=200 original_option=True elevation_option=False full_width=False font14=False log_modal=True log_button=True; baseline_compile_exit=0 baseline_protocol_js_exit=0 baseline_route_exit=0
 BASELINE exit status: 0
 
-MODIFIED compile command: node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
+MODIFIED compile command: node --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol; git diff --check
 MODIFIED input: current working tree source and artifacts
-MODIFIED literal result: extractor_js=0 protocol_js=0 compile=0 diff=0
+MODIFIED literal result: protocol_js=0 compile=0 diff=0
 MODIFIED exit status: 0
 
-MODIFIED route command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /; GET /paypal-pay/; POST /paypal-pay/api/sms/cancel"
-MODIFIED input: Flask test client GET /, GET /paypal-pay/, POST activation_id=act-demo-1
-MODIFIED literal result: extractor_status=200 email_query_source=True root_font_16=True; protocol_status=200 log_modal=True email_pool=True original_flow=True log_cancel_status=200 cancel_calls=[('act-demo-1', 6)]
+MODIFIED console route command: create_app(TESTING); GET /paypal-pay/; inspect checkout-preview.css and flow.py
+MODIFIED input: protocol page plus existing open-source flow.py Phase 0–4
+MODIFIED literal result: protocol_status=200 original_option=True elevation_option=True full_width=True font14=True log_modal=True log_button=True phases=True
 MODIFIED exit status: 0
 
-MODIFIED email/core command: .venv\Scripts\python.exe -c "create_job(... account_email=user1@example.com, buyer_mode=original); to_dict(include_logs=True)"
-MODIFIED input: BA-DEMO2026081701, +447700900123, user1@example.com, proxy_pool=http://user:pass@127.0.0.1:8080, two Phase logs
-MODIFIED literal result: job_email=user1@example.com; buyer_mode=original; log_count=2; returned_logs=2
+MODIFIED buyer-mode command: .venv\Scripts\python.exe -c "create_job(... buyer_mode=original); create_job(... buyer_mode=identity_elevation); to_dict(include_logs=False)"
+MODIFIED input: one GB BA/phone/proxy fixture per mode
+MODIFIED literal result: mode=original payload_mode=original; mode=identity_elevation payload_mode=identity_elevation
 MODIFIED exit status: 0
 
-MODIFIED protocol phone command: fill five unsorted BA lines; intercept /paypal-pay/api/sms/number; click #acquirePhonesButton
+MODIFIED SMS bridge command: POST /paypal-pay/api/sms/number; POST /paypal-pay/api/sms/cancel
+MODIFIED input: country=GB; activation_id=act-demo-3
+MODIFIED literal result: number_status=200 activation=act-demo-3 cancel_status=200 finished=[('act-demo-3', 6)]
+MODIFIED exit status: 0
+
+MODIFIED prior batch command: fill five unsorted BA lines; intercept /paypal-pay/api/sms/number; click #acquirePhonesButton
 MODIFIED input: BA-DEMO2026081705, BA-DEMO2026081701, BA-DEMO2026081704, BA-DEMO2026081702, BA-DEMO2026081703
 MODIFIED literal result: sms_requests=5; sorted_ba=[BA-DEMO2026081701,BA-DEMO2026081702,BA-DEMO2026081703,BA-DEMO2026081704,BA-DEMO2026081705]; phones=[+447700900101,+447700900102,+447700900103,+447700900104,+447700900105]; page_errors=[]
 MODIFIED exit status: 0
 
-MODIFIED retry/static command: inspect paypal_agreement_protocol/web_static/app.js and payment_link_extractor/web/static/app.js
-MODIFIED input: successful BA URL plus existing activation and account_email=user1@example.com
-MODIFIED literal result: email_query=True; cancel_endpoint=True; cancel_before_replace=True; retry_limit=3; full_log_query=log_offset=0; top_toolbar_unchanged=True
-MODIFIED exit status: 0
-
-ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-email-log HEAD; modify tracked paypal_agreement_protocol/web_static/index.html marker; artifacts/ROLLBACK.sh HEAD; git diff --exit-code -- paypal_agreement_protocol/web_static/index.html; git worktree remove --force C:\Temp\paypal-ui-rollback-email-log
-ROLLBACK input: append <!-- rollback-marker --> in temporary worktree, then restore all changed source files at HEAD
+ROLLBACK command: git worktree add --detach C:\Temp\paypal-ui-rollback-layout-modes HEAD; modify tracked paypal_agreement_protocol/web_static/index.html marker; artifacts/ROLLBACK.sh HEAD; git diff --exit-code -- paypal_agreement_protocol/web_static/index.html; git worktree remove --force C:\Temp\paypal-ui-rollback-layout-modes
+ROLLBACK input: append <!-- rollback-marker --> in temporary worktree, then restore current changed UI files at HEAD
 ROLLBACK literal result: restored_to=HEAD marker_before=1 marker_after=0 rollback_exit=0; project branch remains modified
 ROLLBACK exit status: 0
-restored behavior/status: temporary copy restored all current source files to the selected Git commit; working project remains on the email-aware, replaceable-SMS, open-source-flow, full-log branch.
+restored behavior/status: temporary copy restored current protocol UI files to the selected Git commit; working project remains on the dual-mode, full-width, larger-font branch.

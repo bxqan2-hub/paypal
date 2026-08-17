@@ -1272,8 +1272,6 @@ async function refreshSuccessStats() {
 (async function init() {
   await paypalCountriesReady;
   restoreProtocolFormState();
-  $('buyerMode').value = 'original';
-  $('buyerMode').dispatchEvent(new Event('change'));
   applyWorkbenchPrefill();
   updateProtocolMode();
   updateVaultRegion();
