@@ -1,4 +1,4 @@
-﻿VERIFICATION
+VERIFICATION
 changed_branch: extraction-success -> /paypal-pay/ -> protocol country/phone form -> /paypal-pay/api/jobs
 changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, BA/phone prefill
 artifacts:
@@ -18,7 +18,7 @@ MODIFIED route exit status: 0
 MODIFIED JS command: node --check payment_link_extractor/web/static/app.js; node --check paypal_agreement_protocol/web_static/app.js
 MODIFIED JS literal result: extractor_js_exit=0 protocol_js_exit=0
 MODIFIED JS exit status: 0
-ROLLBACK command: artifacts/ROLLBACK.sh HEAD^
-ROLLBACK literal result: restored_to=HEAD^
+ROLLBACK command: artifacts/ROLLBACK.sh HEAD~2
+ROLLBACK literal result: restored_to=HEAD~2; rollback_changed_paths=30
 ROLLBACK exit status: 0 (tested on another temporary worktree; project branch remains modified)
 restored behavior/status: temporary worktree restored to the prior commit and project left on modified main branch.
