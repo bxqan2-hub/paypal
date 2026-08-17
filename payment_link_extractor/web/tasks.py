@@ -12,16 +12,25 @@ from typing import Any, Callable
 
 from ..auth import account_email, normalize_access_token
 from ..application import extract_payment_link
-from ..errors import ExtractionCancelled, NetworkError
+from ..errors import (
+    ConfigurationError,
+    ExtractionCancelled,
+    NetworkError,
+    ProtocolError,
+    ProviderRequiresApproval,
+)
 from ..logging_utils import log_context
 from ..models import ExtractionConfig, PaymentLinkResult
 from .events import EVENT_HISTORY_SIZE, make_event, redact_text, utc_timestamp
 
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
+MAX_AUTO_RETRIES = 3
+AUTO_RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 STAGE_PROGRESS = {
     "queued": 0,
     "running": 5,
+    "retrying": 3,
     "eligibility_check": 10,
     "checkout": 15,
     "checkout_update": 25,
@@ -73,6 +82,9 @@ class TaskRecord:
     account_email: str = ""
     session_kind: str | None = None
     retry_of: str | None = None
+    attempt: int = 1
+    retry_count: int = 0
+    max_retries: int = MAX_AUTO_RETRIES
 
 
 class TaskManager:
@@ -187,6 +199,9 @@ class TaskManager:
             "payment_method": record.config.payment_method,
             "billing_country": record.config.country,
             "progress": record.progress,
+            "attempt": record.attempt,
+            "retry_count": record.retry_count,
+            "max_retries": record.max_retries,
         }
         if retry_of:
             created_data["retry_of"] = retry_of
@@ -381,66 +396,176 @@ class TaskManager:
             self._publish_locked(
                 task_id,
                 "task.started",
-                {"status": record.status, "progress": record.progress},
+                {
+                    "status": record.status,
+                    "progress": record.progress,
+                    "attempt": record.attempt,
+                    "retry_count": record.retry_count,
+                    "max_retries": record.max_retries,
+                },
             )
             self._publish_locked(task_id, "task.log", {"message": "task started"})
             task_log.info("task started")
 
-        try:
-            result = self._extractor(
-                record.config,
-                cancel_event=record.cancel_event,
-                stage_callback=lambda stage: self._stage(task_id, stage),
-            )
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is None:
+        while True:
+            try:
+                result = self._extractor(
+                    record.config,
+                    cancel_event=record.cancel_event,
+                    stage_callback=lambda stage: self._stage(task_id, stage),
+                )
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is None:
+                        return
+                    if record.cancel_event.is_set() or record.status == "cancel_requested":
+                        self._finish_cancelled_locked(record)
+                    else:
+                        record.status = "succeeded"
+                        record.stage = "completed"
+                        record.progress = STAGE_PROGRESS[record.stage]
+                        record.error = None
+                        record.network_error = False
+                        record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+                        record.finished_at = utc_timestamp()
+                        self._publish_locked(
+                            task_id,
+                            "task.succeeded",
+                            {
+                                "status": record.status,
+                                "result": record.result,
+                                "checkout_proxy": record.config.checkout_proxy,
+                                "progress": record.progress,
+                                "attempt": record.attempt,
+                                "retry_count": record.retry_count,
+                                "max_retries": record.max_retries,
+                            },
+                        )
+                        task_log.info("task succeeded on attempt {}", record.attempt)
+                return
+            except ExtractionCancelled as exc:
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is not None:
+                        self._finish_cancelled_locked(record, str(exc))
+                return
+            except Exception as exc:
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is None:
+                        return
+                    record.error = redact_text(exc, self._secrets(record.config))
+                    record.network_error = isinstance(exc, NetworkError)
+                    cancelled = record.cancel_event.is_set() or record.status == "cancel_requested"
+                    retryable = self._is_retryable(exc)
+                    if cancelled:
+                        self._finish_cancelled_locked(record, record.error or "")
+                        return
+                    if retryable and record.retry_count < record.max_retries:
+                        record.retry_count += 1
+                        record.attempt = record.retry_count + 1
+                        record.status = "running"
+                        record.stage = "retrying"
+                        record.progress = STAGE_PROGRESS[record.stage]
+                        delay = AUTO_RETRY_BACKOFF_SECONDS[
+                            min(record.retry_count - 1, len(AUTO_RETRY_BACKOFF_SECONDS) - 1)
+                        ]
+                        self._publish_locked(
+                            task_id,
+                            "task.retrying",
+                            {
+                                "status": record.status,
+                                "stage": record.stage,
+                                "progress": record.progress,
+                                "attempt": record.attempt,
+                                "retry_count": record.retry_count,
+                                "max_retries": record.max_retries,
+                                "error": record.error,
+                                "network_error": record.network_error,
+                                "backoff_seconds": delay,
+                            },
+                        )
+                        self._publish_locked(
+                            task_id,
+                            "task.log",
+                            {
+                                "message": (
+                                    f"transient extraction failure; automatic retry "
+                                    f"{record.retry_count}/{record.max_retries}"
+                                )
+                            },
+                        )
+                        task_log.warning(
+                            "transient failure on attempt {}; retry {}/{} after {}s: {}",
+                            record.attempt - 1,
+                            record.retry_count,
+                            record.max_retries,
+                            delay,
+                            record.error,
+                        )
+                    else:
+                        record.status = "failed"
+                        record.stage = "failed"
+                        record.finished_at = utc_timestamp()
+                        self._publish_locked(
+                            task_id,
+                            "task.failed",
+                            {
+                                "status": record.status,
+                                "error": record.error,
+                                "network_error": record.network_error,
+                                "progress": record.progress,
+                                "attempt": record.attempt,
+                                "retry_count": record.retry_count,
+                                "max_retries": record.max_retries,
+                            },
+                        )
+                        task_log.error("task failed on attempt {}: {}", record.attempt, record.error)
+                        return
+
+                if record.cancel_event.wait(delay):
+                    with self._lock:
+                        record = self._tasks.get(task_id)
+                        if record is not None:
+                            self._finish_cancelled_locked(record, record.error or "")
                     return
-                if record.cancel_event.is_set() or record.status == "cancel_requested":
-                    self._finish_cancelled_locked(record)
-                else:
-                    record.status = "succeeded"
-                    record.stage = "completed"
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is None or record.cancel_event.is_set() or record.status == "cancel_requested":
+                        if record is not None:
+                            self._finish_cancelled_locked(record)
+                        return
+                    record.status = "running"
+                    record.stage = "running"
                     record.progress = STAGE_PROGRESS[record.stage]
-                    record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
-                    record.finished_at = utc_timestamp()
                     self._publish_locked(
                         task_id,
-                        "task.succeeded",
+                        "task.retry_started",
                         {
                             "status": record.status,
-                            "result": record.result,
-                            "checkout_proxy": record.config.checkout_proxy,
+                            "stage": record.stage,
                             "progress": record.progress,
+                            "attempt": record.attempt,
+                            "retry_count": record.retry_count,
+                            "max_retries": record.max_retries,
                         },
                     )
-                    task_log.info("task succeeded")
-        except ExtractionCancelled as exc:
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is not None:
-                    self._finish_cancelled_locked(record, str(exc))
-        except Exception as exc:
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is None:
-                    return
-                record.status = "failed"
-                record.stage = "failed"
-                record.error = redact_text(exc, self._secrets(record.config))
-                record.network_error = isinstance(exc, NetworkError)
-                record.finished_at = utc_timestamp()
-                self._publish_locked(
-                    task_id,
-                    "task.failed",
-                    {
-                        "status": record.status,
-                        "error": record.error,
-                        "network_error": record.network_error,
-                        "progress": record.progress,
-                    },
-                )
-                task_log.error("task failed: {}", record.error)
+                    task_log.info("automatic retry attempt {} started", record.attempt)
+
+    @staticmethod
+    def _is_retryable(exc: BaseException) -> bool:
+        """Return True only for failures that can plausibly succeed on retry."""
+        if isinstance(exc, (ExtractionCancelled, ConfigurationError, ProviderRequiresApproval)):
+            return False
+        if isinstance(exc, NetworkError):
+            return True
+        if isinstance(exc, ProtocolError):
+            try:
+                status_code = int(exc.status_code)
+            except (TypeError, ValueError):
+                return False
+            return status_code in {408, 425, 429} or status_code >= 500
+        return isinstance(exc, (TimeoutError, ConnectionError, OSError))
 
     def _stage(self, task_id: str, stage: str) -> None:
         with self._lock:
@@ -512,6 +637,9 @@ class TaskManager:
             "account_email": record.account_email,
             "payment_method": record.config.payment_method,
             "billing_country": record.config.country,
+            "attempt": record.attempt,
+            "retry_count": record.retry_count,
+            "max_retries": record.max_retries,
         }
         if record.session_kind:
             snapshot["session_kind"] = record.session_kind
