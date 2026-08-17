@@ -1,0 +1,34 @@
+CHANGED_BRANCH=main
+CHANGED_FIELD=AGENTS.md repository target/synchronization policy and .gitignore upload exclusions
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+PROTECTED_REMOTE=https://github.com/bxqan2-hub/-pp-.git
+ORIGINAL_GIT_HEAD=7b1a82f57489b81dd18782f09393c1e025d9f620
+ORIGINAL_GITIGNORE_SHA256=f3418db06a0e0c1fa4aa33222a5a0f7ae1d4974543fde6bf7222daaf2048f095
+MODIFIED_AGENTS_SHA256=c3a2f20666ccf0468942c1e0504197c709e963394af4a98e7715286b140b3640
+MODIFIED_GITIGNORE_SHA256=6354c03bef19d8f1dfd875aa1867330252e9598795a0363a9ecf07bed7b0777b
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\AGENTS.md
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\.codex\repository-sync\UPLOAD_RULE.diff
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\.codex\repository-sync\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\.codex\repository-sync\ROLLBACK.sh
+
+BASELINE_COMMAND=
+$p = Join-Path (Get-Location) 'AGENTS.md'; if ((Test-Path -LiteralPath $p) -and (Select-String -LiteralPath $p -SimpleMatch '每次修改后立即提交并推送到 `origin/main`' -Quiet) -and (Select-String -LiteralPath $p -SimpleMatch 'https://github.com/bxqan2-hub/paypal.git' -Quiet)) { Write-Output 'RULE_CONFIGURED_FOR_PAYPAL'; exit 0 } else { Write-Output 'RULE_NOT_CONFIGURED_FOR_PAYPAL'; exit 1 }
+BASELINE_INPUT=workspace=C:\Users\Administrator\Desktop\提链; AGENTS.md absent
+BASELINE_LITERAL_OUTPUT=RULE_NOT_CONFIGURED_FOR_PAYPAL
+BASELINE_EXIT_STATUS=1
+
+MODIFIED_COMMAND=
+$p = Join-Path (Get-Location) 'AGENTS.md'; if ((Test-Path -LiteralPath $p) -and (Select-String -LiteralPath $p -SimpleMatch '每次修改后立即提交并推送到 `origin/main`' -Quiet) -and (Select-String -LiteralPath $p -SimpleMatch 'https://github.com/bxqan2-hub/paypal.git' -Quiet)) { Write-Output 'RULE_CONFIGURED_FOR_PAYPAL'; exit 0 } else { Write-Output 'RULE_NOT_CONFIGURED_FOR_PAYPAL'; exit 1 }
+MODIFIED_INPUT=workspace=C:\Users\Administrator\Desktop\提链; AGENTS.md targets paypal.git
+MODIFIED_LITERAL_OUTPUT=RULE_CONFIGURED_FOR_PAYPAL
+MODIFIED_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=
+$ErrorActionPreference='Stop'; $copyRoot=Join-Path (Get-Location) '.codex\repository-sync\rollback-check'; [System.IO.Directory]::CreateDirectory($copyRoot) | Out-Null; Copy-Item -LiteralPath '.gitignore' -Destination (Join-Path $copyRoot '.gitignore') -Force; Copy-Item -LiteralPath 'AGENTS.md' -Destination (Join-Path $copyRoot 'AGENTS.md') -Force; & 'C:\Program Files\Git\bin\bash.exe' '.codex/repository-sync/ROLLBACK.sh' '.codex/repository-sync/rollback-check'; $hash=(Get-FileHash -Algorithm SHA256 (Join-Path $copyRoot '.gitignore')).Hash.ToLowerInvariant(); if (($hash -eq 'f3418db06a0e0c1fa4aa33222a5a0f7ae1d4974543fde6bf7222daaf2048f095') -and (-not (Test-Path -LiteralPath (Join-Path $copyRoot 'AGENTS.md')))) { Write-Output 'ROLLBACK_RESTORED_ORIGINAL'; $exit=0 } else { Write-Output 'ROLLBACK_FAILED'; $exit=1 }; [System.IO.File]::Delete((Join-Path $copyRoot '.gitignore')); [System.IO.Directory]::Delete($copyRoot); exit $exit
+ROLLBACK_INPUT=copy of modified .gitignore and AGENTS.md at .codex\repository-sync\rollback-check
+ROLLBACK_LITERAL_OUTPUT_START
+ROLLBACK_APPLIED: .gitignore restored and AGENTS.md removed
+ROLLBACK_RESTORED_ORIGINAL
+ROLLBACK_LITERAL_OUTPUT_END
+ROLLBACK_EXIT_STATUS=0
+RESTORED_BEHAVIOR=the rollback copy restored the original .gitignore SHA-256 and removed AGENTS.md; working files remain modified
