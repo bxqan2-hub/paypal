@@ -1,6 +1,6 @@
 VERIFICATION
 changed_branch: extraction-success -> /paypal-pay/ -> protocol country/phone form -> /paypal-pay/api/jobs
-changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, BA/phone prefill
+changed_fields: successful-task result action, Flask in-process adapter, copied upstream core, country catalog, automatic phone-region prefill from task billing_country
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
@@ -10,7 +10,7 @@ BASELINE command: git worktree add --detach C:\Temp\paypal-baseline-test HEAD; .
 BASELINE literal result: baseline_compile_exit=0
 BASELINE exit status: 0
 MODIFIED command: .venv\Scripts\python.exe -m compileall -q payment_link_extractor paypal_agreement_protocol
-MODIFIED literal result: modified_compile_exit=0
+MODIFIED literal result: modified_compile_exit=0; task billing_country is forwarded as country and billing_country query parameters
 MODIFIED exit status: 0
 MODIFIED route command: .venv\Scripts\python.exe -c "create_app(TESTING); GET /paypal-pay/; GET /paypal-pay/api/supported-countries"
 MODIFIED route literal result: page_status=200 page_bytes=15082; countries_status=200 countries=12

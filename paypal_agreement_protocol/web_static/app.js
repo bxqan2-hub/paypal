@@ -7,10 +7,13 @@ const GROK_API_BASE = '/api/grok-trial';
 function applyWorkbenchPrefill() {
   const params = new URLSearchParams(window.location.search);
   const ba = params.get('ba') || params.get('paypal_url') || '';
-  const country = (params.get('country') || '').toUpperCase();
+  const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
   const phone = params.get('phone') || '';
   if (ba && document.querySelector('#baToken')) document.querySelector('#baToken').value = ba;
-  if (country && document.querySelector('#paypalCountry')) document.querySelector('#paypalCountry').value = country;
+  if (country && document.querySelector('#paypalCountry')) {
+    const select = document.querySelector('#paypalCountry');
+    if ([...select.options].some(option => option.value === country)) select.value = country;
+  }
   if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
 }
 const $ = (id) => document.getElementById(id);

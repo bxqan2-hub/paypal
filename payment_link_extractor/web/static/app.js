@@ -1267,15 +1267,15 @@
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   }
 
-  function protocolPaymentUrl(result) {
+  function protocolPaymentUrl(result, task = {}) {
     const url = taskResultUrl(result);
     if (!url) return "";
-    const country = result.billing_country || "";
-    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}` : ""}`;
+    const country = task.billing_country || result.billing_country || task.country || "";
+    return `/paypal-pay/?ba=${encodeURIComponent(url)}${country ? `&country=${encodeURIComponent(country)}&billing_country=${encodeURIComponent(country)}` : ""}`;
   }
 
   function renderResultRow(url, result = {}) {
-    const protocolUrl = protocolPaymentUrl(result);
+    const protocolUrl = protocolPaymentUrl(result, task);
     const protocolAction = protocolUrl
       ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>`
       : "";
@@ -1360,7 +1360,7 @@
     const isComplete = task.status === "succeeded";
     const isFailed = isFailedTask(task);
     const hasResult = isComplete && Boolean(url);
-        const protocolUrl = protocolPaymentUrl(result);
+    const protocolUrl = protocolPaymentUrl(result, task);
     const progressOrResult = isComplete
       ? (hasResult
       ? `<div class="task-row-result"><a class="result-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a><button class="primary" data-copy="${escapeHtml(url)}">复制</button>${protocolUrl ? `<a class="primary protocol-pay-link" href="${escapeHtml(protocolUrl)}" target="_blank" rel="noopener noreferrer">推送到协议支付</a>` : ""}</div>`
