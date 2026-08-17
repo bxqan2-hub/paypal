@@ -17,6 +17,21 @@ MODIFIED input: current working tree source and artifacts
 MODIFIED literal result: protocol_js=0 compile=0 diff=0
 MODIFIED exit status: 0
 
+LATEST COUNTRY GATE DEPLOYMENT
+BASELINE command: Get-NetTCPConnection -State Listen -LocalPort 18794; Stop-Process -Id 45876 -Force
+BASELINE input: service running the pre-cache-bust country-gate build
+BASELINE literal result: old_listener_pid=45876; old_listener_stopped=1; EXIT_CODE=0
+BASELINE exit status: 0
+MODIFIED command: Start-Process .venv\\Scripts\\python.exe -m payment_link_extractor.web --env-file .env; Invoke-WebRequest http://127.0.0.1:18794/api/health; Invoke-WebRequest http://127.0.0.1:18794/paypal-pay/api/supported-countries; Invoke-WebRequest http://127.0.0.1:18794/paypal-pay/
+MODIFIED input: commit b921521 with verified-country response flags and cache version 20260818-country-gate-1
+MODIFIED literal result: start_requested=1; listener_pid=8812; health_status=200; health_body={"ok":true,"service":"payment-link-extractor"}; dynamic_countries_enabled=False; GB_verified=True; protocol_cache_bust=True; EXIT_CODE=0
+MODIFIED exit status: 0
+ROLLBACK command: execute artifacts/ROLLBACK.sh HEAD in a temporary worktree
+ROLLBACK input: tracked country-gate files and protocol cache-bust template
+ROLLBACK literal result: rollback script remains executable and restores the selected commit; active port 18794 keeps commit b921521; EXIT_CODE=0
+ROLLBACK exit status: 0
+restored behavior/status: port 18794 serves HTTP 200, returns GB_verified=True, and serves the cache-busted protocol UI; manually selected verified countries proceed without the dynamic-country-disabled client gate.
+
 MODIFIED console route command: create_app(TESTING); GET /paypal-pay/; inspect checkout-preview.css and flow.py
 MODIFIED input: protocol page plus existing open-source flow.py Phase 0–4
 MODIFIED literal result: protocol_status=200 original_option=True elevation_option=True full_width=True font14=True log_modal=True log_button=True phases=True
