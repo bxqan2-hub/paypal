@@ -134,3 +134,15 @@ four_artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh
+
+LATEST UI CACHE BUST
+changed_branch: extractor UI persistence cache refresh
+changed_fields:
+- payment_link_extractor/web/templates/index.html increments the app.js cache-bust to 20260818-ui-persist-1 so the browser loads the persistence code after the port restart.
+source_hash_after_change:
+- payment_link_extractor/web/templates/index.html: 7bbe7c75ea326eaa47110b9e1319391c07fbd934eb4a7650b94990e34dab7542
+four_artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\MODIFIED_FILE.txt
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ROLLBACK.sh

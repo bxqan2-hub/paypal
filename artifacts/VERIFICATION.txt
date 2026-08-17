@@ -217,3 +217,9 @@ recovered_task: fb33fd49c9b14835851f07026c195d0b
 recovered_ba_url: https://www.paypal.com/agreements/approve?ba_token=BA-3CJ44083AN071740L
 recovered_country: GB
 recovered_account_email: tinabattlefiy@computer4u.com
+
+LATEST UI CACHE BUST
+MODIFIED command: inspect payment_link_extractor/web/templates/index.html and run node --check, compileall, git diff --check
+MODIFIED input: updated extractor app.js cache version
+MODIFIED literal result: cache_bust_present=True extractor_js=0 protocol_js=0 compile=0 diff_check=0; EXIT_CODE=0
+MODIFIED exit status: 0

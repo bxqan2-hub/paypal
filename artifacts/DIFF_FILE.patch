@@ -751,3 +751,18 @@ index 06a0454..0995bc7 100644
 
  if (privateBraintreeEnabled) {
    $('privateBraintreeMode').hidden = false;
+
+
+# LATEST UI CACHE BUST DIFF
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 7c40627..9d24bcc 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -220,6 +220,6 @@
+         </section>
+       </div>
+     </main>
+-    <script src="{{ url_for('static', filename='app.js', v='20260817-country-unlock-1') }}" defer></script>
++    <script src="{{ url_for('static', filename='app.js', v='20260818-ui-persist-1') }}" defer></script>
+   </body>
+ </html>
