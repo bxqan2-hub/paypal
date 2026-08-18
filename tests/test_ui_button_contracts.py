@@ -113,6 +113,18 @@ def test_paypal_account_display_history_is_token_scoped_and_manually_cleared() -
     assert "entries.length === 1 ? state.batchJobs[0]" not in source
 
 
+def test_completed_paypal_accounts_are_excluded_from_phone_actions() -> None:
+    source = PAYPAL_JS.read_text(encoding="utf-8")
+
+    assert "function isCompletedJob(job)" in source
+    assert "job.status === 'completed'" in source
+    assert "!isCompletedJob(item.row?.job)" in source
+    assert "!isCompletedJob(existingRows[index]?.job)" in source
+    assert "if (isCompletedJob(existingRows[index]?.job)) continue;" in source
+    assert "isCompletedJob(job)) action" in source
+    assert "replaceTerminalNumber" not in source
+
+
 def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
     source = EXTRACTOR_JS.read_text(encoding="utf-8")
     bindings = {

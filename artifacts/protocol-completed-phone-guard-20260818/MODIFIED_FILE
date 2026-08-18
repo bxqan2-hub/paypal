@@ -1,0 +1,24 @@
+{
+  "object": "completed-account phone-allocation guard",
+  "branch": "main",
+  "base_commit": "635892f25e817fd93443e9c848245f02cbe44dcb",
+  "changed_fields": {
+    "global_get_phone": "all current rows -> excludes completed rows before allocation",
+    "allocation_loop": "terminal replacement fallback -> hard completed-status guard plus retryable failed/cancelled replacement",
+    "refresh_phone": "all tracked activations -> excludes completed rows",
+    "completed_row_action": "get-new-number -> copy/log only"
+  },
+  "modified_files": {
+    "paypal_agreement_protocol/web_static/app.js": "3ACF82BCB321450313D54AC66137F1536164CBBCCCBDAB67C021171D75EA7076",
+    "tests/test_ui_button_contracts.py": "18077114E2F40D5B1FC197EFB038F7A43F081DB12C8A889C852A577101EAD7EA",
+    "tests/test_protocol_regressions.py": "1EA93DEF795D5BCB524400B12459483FB5B4E2B057648AF1238E602B48171797"
+  },
+  "runtime_result": {
+    "completed_only_sms_number_calls": 0,
+    "mixed_queue_sms_number_calls": 1,
+    "completed_phone_after_click": "+5511888888888",
+    "new_account_phone_after_click": "+5511777777777",
+    "completed_row_status": "已完成"
+  },
+  "core_status": "protocol backend, PayPal payment flow, extraction bridge, and submit payload are unchanged"
+}

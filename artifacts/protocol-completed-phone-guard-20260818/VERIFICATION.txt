@@ -1,0 +1,94 @@
+OBJECT=Completed-account phone-allocation guard
+BRANCH=main
+BASE_COMMIT=635892f25e817fd93443e9c848245f02cbe44dcb
+CHANGED_BRANCH=paypal_agreement_protocol/web_static/app.js::completed-status exclusion in top acquire, refresh, per-row actions, and allocation loop; tests/test_ui_button_contracts.py::completed-account UI guard contract; tests/test_protocol_regressions.py::retryable-terminal replacement contract
+CHANGED_FIELD=Completed account top-acquire eligible->excluded; completed row get-new-number->copy/log only; completed activation refresh eligible->excluded; failed/cancelled replacement preserved; backend/core unchanged
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-completed-phone-guard-20260818\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-completed-phone-guard-20260818\DIFF_FILE
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-completed-phone-guard-20260818\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-completed-phone-guard-20260818\ROLLBACK.sh
+
+ORIGINAL_WORKTREE_APP_JS_SHA256=91F7C7D959FA1E1961211ECC6FFA79B02AEB734EA7E2C38DE6949FB95CABA6D8
+ORIGINAL_WORKTREE_UI_TEST_SHA256=64FCBA85EFF7057FBA0333B7AE276C1D012473AE128686B9E9BEE7204BE9EE24
+ORIGINAL_WORKTREE_REGRESSION_TEST_SHA256=ADA5E15BA2F9941B988F6A19E8F229BFFDB6519EBEADF80BB895B4E92504C6E3
+MODIFIED_APP_JS_SHA256=3ACF82BCB321450313D54AC66137F1536164CBBCCCBDAB67C021171D75EA7076
+MODIFIED_UI_TEST_SHA256=18077114E2F40D5B1FC197EFB038F7A43F081DB12C8A889C852A577101EAD7EA
+MODIFIED_REGRESSION_TEST_SHA256=1EA93DEF795D5BCB524400B12459483FB5B4E2B057648AF1238E602B48171797
+
+BASELINE_COMMAND=PowerShell @'<Python source probe reading git show BASE:app.js>'@ | .\.venv\Scripts\python.exe -B -
+BASELINE_INPUT=Base app.js at 635892f25e817fd93443e9c848245f02cbe44dcb; inspect completed guards, top acquire filter, refresh filter, row action, terminal replacement, and core submit handler.
+BASELINE_LITERAL_OUTPUT_BEGIN
+COMPLETED_JOB_GUARD=False
+GLOBAL_ACQUIRE_COMPLETED_FILTER=False
+LOOP_COMPLETED_GUARD=False
+REFRESH_COMPLETED_FILTER=False
+COMPLETED_ROW_COPY_ONLY=False
+OLD_TERMINAL_REPLACE_BRANCH=True
+CORE_SUBMIT_HANDLER=True
+BASELINE_PROBE_EXIT=0
+BASELINE_LITERAL_OUTPUT_END
+BASELINE_RESULT=Completed rows entered the terminal-number replacement branch and could receive another number from the top acquire action.
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=PowerShell @'<Python source probe reading current app.js>'@ | .\.venv\Scripts\python.exe -B -
+MODIFIED_INPUT=Current app.js; same completed-status and core-handler checks as baseline.
+MODIFIED_LITERAL_OUTPUT_BEGIN
+COMPLETED_JOB_GUARD=True
+GLOBAL_ACQUIRE_COMPLETED_FILTER=True
+LOOP_COMPLETED_GUARD=True
+REFRESH_COMPLETED_FILTER=True
+COMPLETED_ROW_COPY_ONLY=True
+OLD_TERMINAL_REPLACE_BRANCH=False
+CORE_SUBMIT_HANDLER=True
+MODIFIED_PROBE_EXIT=0
+MODIFIED_LITERAL_OUTPUT_END
+MODIFIED_RESULT=Completed rows are excluded before allocation and again inside the loop; failed/cancelled terminal rows retain retryable replacement behavior.
+MODIFIED_EXIT_STATUS=0
+
+BROWSER_COMMAND=& "$env:APPDATA\npm\agent-browser.cmd" --session completed-guard open URL; eval COMPLETED_JOB_FIXTURE; click #acquirePhonesButton; eval RESULT; errors
+BROWSER_INPUT=Completed BA-COMPLETED01 with +5511888888888; then mixed queue containing completed BA-COMPLETED01 and new BA-NEWACCOUNT02 with a mocked +5511777777777 allocation.
+BROWSER_LITERAL_OUTPUT_BEGIN
+COMPLETED_ROW_BEFORE={"status":"已完成","actions":"复制日志","phone":"+5511888888888"}
+COMPLETED_ONLY_AFTER_CLICK={"smsNumberCalls":0,"activationPhone":"+5511888888888","inputPhone":"+5511888888888","status":"已完成","progress":"已完成账号已跳过，不会重复取号"}
+MIXED_QUEUE_AFTER_CLICK={"smsNumberCalls":1,"phones":["+5511888888888","+5511777777777"],"rows":[{"token":"BA-COMPLETED01","phone":"+5511888888888","status":"已完成"},{"token":"BA-NEWACCOUNT02","phone":"+5511777777777","status":"已取号"}]}
+BROWSER_PAGE_ERRORS=0
+COMPLETED_GUARD_BROWSER_EXIT=0
+MIXED_QUEUE_BROWSER_EXIT=0
+BROWSER_LITERAL_OUTPUT_END
+BROWSER_RESULT=Completed-only click produced zero /sms/number calls; mixed click produced exactly one call for the new account while preserving the completed phone unchanged.
+BROWSER_EXIT_STATUS=0
+
+TEST_COMMAND=git diff --check; node --check paypal_agreement_protocol/web_static/app.js; .\.venv\Scripts\python.exe -B -m compileall -q paypal_agreement_protocol payment_link_extractor tests; .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider; git diff --quiet 635892f25e817fd93443e9c848245f02cbe44dcb -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal/flow.py payment_link_extractor/web/paypal_protocol.py
+TEST_INPUT=Current UI source, full suite, and three protocol/extraction core files.
+TEST_LITERAL_OUTPUT_BEGIN
+.......................................                                  [100%]
+39 passed in 0.54s
+DIFF_CHECK_EXIT=0
+NODE_CHECK_EXIT=0
+COMPILE_EXIT=0
+PYTEST_EXIT=0
+CORE_DIFF_EXIT=0
+TEST_LITERAL_OUTPUT_END
+TEST_RESULT=Completed-account guard, existing retryable replacement, syntax, full suite, and exact no-diff core check passed.
+TEST_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=PowerShell @'<Python tempfile copy probe invoking C:\Program Files\Git\bin\bash.exe artifacts/protocol-completed-phone-guard-20260818/ROLLBACK.sh REPOSITORY TARGET_APP_JS TARGET_UI_TEST TARGET_REGRESSION_TEST>'@ | .\.venv\Scripts\python.exe -B -
+ROLLBACK_INPUT=Three temporary copies of modified UI/test files; canonical source blobs at base commit 635892f25e817fd93443e9c848245f02cbe44dcb; working source files were not rollback targets.
+ROLLBACK_LITERAL_OUTPUT_BEGIN
+BEFORE_APP_JS_SHA256=3ACF82BCB321450313D54AC66137F1536164CBBCCCBDAB67C021171D75EA7076
+BEFORE_UI_TEST_SHA256=18077114E2F40D5B1FC197EFB038F7A43F081DB12C8A889C852A577101EAD7EA
+BEFORE_REGRESSION_TEST_SHA256=1EA93DEF795D5BCB524400B12459483FB5B4E2B057648AF1238E602B48171797
+ROLLBACK_BASE=635892f25e817fd93443e9c848245f02cbe44dcb
+RESTORED_APP_JS_SHA256=6F288C22AC935EE703B3EA0E7EBC5C46D4D6A321EC00FB93B4D3D18040C522AA
+RESTORED_UI_TEST_SHA256=64FCBA85EFF7057FBA0333B7AE276C1D012473AE128686B9E9BEE7204BE9EE24
+RESTORED_REGRESSION_TEST_SHA256=ADA5E15BA2F9941B988F6A19E8F229BFFDB6519EBEADF80BB895B4E92504C6E3
+RESTORED_BEHAVIOR=completed rows can enter terminal-number replacement and expose get-new-number action
+ROLLBACK_STATUS=restored
+ROLLBACK_PROBE_EXIT=0
+ROLLBACK_PROCESS_EXIT=0
+ROLLBACK_LITERAL_OUTPUT_END
+ROLLBACK_RESULT=Temporary copies exactly restored to canonical base-commit blobs and baseline behavior; temporary directory was deleted; working UI remains modified.
+ROLLBACK_EXIT_STATUS=0
+
+FINAL_STATUS=Verified UI-only completed-account guard; top acquire never allocates for completed accounts, while new and retryable accounts remain functional and core files are unchanged.

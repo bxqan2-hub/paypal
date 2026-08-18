@@ -408,6 +408,10 @@ function isTerminalJob(job) {
   return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
 }
 
+function isCompletedJob(job) {
+  return Boolean(job && job.status === 'completed');
+}
+
 function compactDisplayJob(job) {
   if (!job || typeof job !== 'object') return null;
   return {
@@ -619,7 +623,8 @@ function renderAccountQueue() {
     const duration = job ? formatDuration(job.duration) : '—';
     let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
     if (!row.history) {
-      if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.queueIndex + 1}">取号</button>`;
+      if (isCompletedJob(job)) action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
+      else if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.queueIndex + 1}">取号</button>`;
       else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">换号</button>`;
       else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">获取新号</button>`;
       if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
@@ -664,9 +669,10 @@ async function cancelSmsActivation(activation) {
 
 async function refreshSmsNumbers() {
   const entries = sortedBaPoolEntries();
+  const existingRows = currentQueueRows();
   const tracked = entries
-    .map((entry, index) => ({entry, index, activation: state.smsActivations.get(entry.token)}))
-    .filter(item => item.activation?.activation_id);
+    .map((entry, index) => ({entry, index, row: existingRows[index], activation: state.smsActivations.get(entry.token)}))
+    .filter(item => item.activation?.activation_id && !isCompletedJob(item.row?.job));
   if (!tracked.length) return showClientError('当前没有可刷新的 HeroSMS 取号记录');
   const button = $('refreshPhonesButton');
   if (button) button.disabled = true;
@@ -715,7 +721,13 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
   const existingRows = currentQueueRows();
   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
-  const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
+  const requestedIndexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
+  const indexes = requestedIndexes.filter(index => entries[index] && !isCompletedJob(existingRows[index]?.job));
+  if (!indexes.length) {
+    setProgress(100, '已完成账号已跳过，不会重复取号', 'SMS');
+    renderAccountQueue();
+    return;
+  }
   let maxPrice = null;
   try { maxPrice = readSmsMaxPrice(); } catch (error) { showClientError(error.message || '\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u683c\u5f0f\u65e0\u6548'); return; }
   const button = $('acquirePhonesButton');
@@ -725,10 +737,11 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
       const entry = entries[index];
       const token = entry?.token || '';
       if (!token) continue;
+      if (isCompletedJob(existingRows[index]?.job)) continue;
       const current = state.smsActivations.get(token);
       const currentError = current ? phoneValidationError(current.phone, country) : '';
-      const replaceTerminalNumber = isTerminalJob(existingRows[index]?.job);
-      if (current && !force && !replaceTerminalNumber && !currentError) continue;
+      const replaceRetryableTerminalNumber = isTerminalJob(existingRows[index]?.job) && !isCompletedJob(existingRows[index]?.job);
+      if (current && !force && !replaceRetryableTerminalNumber && !currentError) continue;
       if (current) {
         await cancelSmsActivation(current);
         state.smsActivations.delete(token);

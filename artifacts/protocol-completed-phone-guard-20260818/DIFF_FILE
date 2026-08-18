@@ -1,0 +1,104 @@
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 0db3e70..29a9ef0 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -408,6 +408,10 @@ function isTerminalJob(job) {
+   return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
+ }
+
++function isCompletedJob(job) {
++  return Boolean(job && job.status === 'completed');
++}
++
+ function compactDisplayJob(job) {
+   if (!job || typeof job !== 'object') return null;
+   return {
+@@ -619,7 +623,8 @@ function renderAccountQueue() {
+     const duration = job ? formatDuration(job.duration) : '—';
+     let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
+     if (!row.history) {
+-      if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.queueIndex + 1}">取号</button>`;
++      if (isCompletedJob(job)) action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
++      else if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.queueIndex + 1}">取号</button>`;
+       else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">换号</button>`;
+       else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">获取新号</button>`;
+       if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
+@@ -664,9 +669,10 @@ async function cancelSmsActivation(activation) {
+
+ async function refreshSmsNumbers() {
+   const entries = sortedBaPoolEntries();
++  const existingRows = currentQueueRows();
+   const tracked = entries
+-    .map((entry, index) => ({entry, index, activation: state.smsActivations.get(entry.token)}))
+-    .filter(item => item.activation?.activation_id);
++    .map((entry, index) => ({entry, index, row: existingRows[index], activation: state.smsActivations.get(entry.token)}))
++    .filter(item => item.activation?.activation_id && !isCompletedJob(item.row?.job));
+   if (!tracked.length) return showClientError('当前没有可刷新的 HeroSMS 取号记录');
+   const button = $('refreshPhonesButton');
+   if (button) button.disabled = true;
+@@ -715,7 +721,13 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+   const existingRows = currentQueueRows();
+   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
+   const country = $('paypalCountry').value;
+-  const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
++  const requestedIndexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
++  const indexes = requestedIndexes.filter(index => entries[index] && !isCompletedJob(existingRows[index]?.job));
++  if (!indexes.length) {
++    setProgress(100, '已完成账号已跳过，不会重复取号', 'SMS');
++    renderAccountQueue();
++    return;
++  }
+   let maxPrice = null;
+   try { maxPrice = readSmsMaxPrice(); } catch (error) { showClientError(error.message || '\u53d6\u53f7\u91d1\u989d\u4e0a\u9650\u683c\u5f0f\u65e0\u6548'); return; }
+   const button = $('acquirePhonesButton');
+@@ -725,10 +737,11 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+       const entry = entries[index];
+       const token = entry?.token || '';
+       if (!token) continue;
++      if (isCompletedJob(existingRows[index]?.job)) continue;
+       const current = state.smsActivations.get(token);
+       const currentError = current ? phoneValidationError(current.phone, country) : '';
+-      const replaceTerminalNumber = isTerminalJob(existingRows[index]?.job);
+-      if (current && !force && !replaceTerminalNumber && !currentError) continue;
++      const replaceRetryableTerminalNumber = isTerminalJob(existingRows[index]?.job) && !isCompletedJob(existingRows[index]?.job);
++      if (current && !force && !replaceRetryableTerminalNumber && !currentError) continue;
+       if (current) {
+         await cancelSmsActivation(current);
+         state.smsActivations.delete(token);
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index 30e0df6..53a9b90 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -76,7 +76,8 @@ class FrontendRegressionTests(unittest.TestCase):
+         self.assertIn("function isTerminalJob", protocol_js)
+         self.assertIn("if (!isTerminalJob(job)) state.jobLogTimer", protocol_js)
+         self.assertNotIn("if (!terminal(job)) state.jobLogTimer", protocol_js)
+-        self.assertIn("replaceTerminalNumber", protocol_js)
++        self.assertIn("replaceRetryableTerminalNumber", protocol_js)
++        self.assertIn("if (isCompletedJob(existingRows[index]?.job)) continue;", protocol_js)
+         self.assertIn(">获取新号</button>", protocol_js)
+         self.assertIn('id="push-selected-paypal"', extractor_html)
+         self.assertIn("function pushPaypalTasks", extractor_js)
+diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
+index 7e7ae54..ab8c962 100644
+--- a/tests/test_ui_button_contracts.py
++++ b/tests/test_ui_button_contracts.py
+@@ -113,6 +113,18 @@ def test_paypal_account_display_history_is_token_scoped_and_manually_cleared() -
+     assert "entries.length === 1 ? state.batchJobs[0]" not in source
+
+
++def test_completed_paypal_accounts_are_excluded_from_phone_actions() -> None:
++    source = PAYPAL_JS.read_text(encoding="utf-8")
++
++    assert "function isCompletedJob(job)" in source
++    assert "job.status === 'completed'" in source
++    assert "!isCompletedJob(item.row?.job)" in source
++    assert "!isCompletedJob(existingRows[index]?.job)" in source
++    assert "if (isCompletedJob(existingRows[index]?.job)) continue;" in source
++    assert "isCompletedJob(job)) action" in source
++    assert "replaceTerminalNumber" not in source
++
++
+ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
+     source = EXTRACTOR_JS.read_text(encoding="utf-8")
+     bindings = {
