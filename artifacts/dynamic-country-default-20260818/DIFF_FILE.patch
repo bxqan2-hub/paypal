@@ -1,0 +1,122 @@
+diff --git a/.env.example b/.env.example
+index d2cd810..785ad09 100644
+--- a/.env.example
++++ b/.env.example
+@@ -29 +29 @@ IPROCKET_BRIDGE_PORT=18796
+-PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES=0
++PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES=1
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index df36f0a..beb71c3 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -101 +101 @@ FULL_LOGS_UI_ENABLED = env_bool("PAYPAL_WEB_FULL_LOGS_UI", False)
+-ENABLE_DYNAMIC_COUNTRIES = env_bool("PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES", False)
++ENABLE_DYNAMIC_COUNTRIES = env_bool("PAYPAL_WEB_ENABLE_DYNAMIC_COUNTRIES", True)
+@@ -2048,0 +2049,24 @@ VERIFIED_PROTOCOL_COUNTRIES = {"BR", "GB", "US", "JP", "TH", "ID", "PH", "TW", "
++def dynamic_schema_country_codes() -> set[str]:
++    """Return the locally catalogued dynamic countries that PayPal supports."""
++    try:
++        catalog_path = ROOT / "data" / "country_discovery" / "country_field_catalog.json"
++        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
++        if not isinstance(catalog, dict):
++            return set()
++        catalog_codes = {
++            str(code or "").strip().upper()
++            for code in catalog
++            if re.fullmatch(r"[A-Z]{2}", str(code or "").strip().upper())
++        }
++        return catalog_codes & supported_country_codes()
++    except Exception:
++        return set()
++
++
++def enabled_protocol_country_codes() -> set[str]:
++    """Return the countries allowed by the current protocol feature flag."""
++    if not ENABLE_DYNAMIC_COUNTRIES:
++        return set(VERIFIED_PROTOCOL_COUNTRIES)
++    return set(VERIFIED_PROTOCOL_COUNTRIES) | dynamic_schema_country_codes()
++
++
+@@ -2104 +2128 @@ def create_job(
+-    allowed_countries = supported_country_codes() if ENABLE_DYNAMIC_COUNTRIES else VERIFIED_PROTOCOL_COUNTRIES
++    allowed_countries = enabled_protocol_country_codes()
+@@ -2619,0 +2644,7 @@ class WebHandler(BaseHTTPRequestHandler):
++            enabled_codes = enabled_protocol_country_codes()
++            countries = [
++                item for item in countries or []
++                if isinstance(item, dict)
++                and str(item.get("code") or "").strip().upper() in enabled_codes
++            ]
++            payload["countries"] = countries
+@@ -2620,0 +2652 @@ class WebHandler(BaseHTTPRequestHandler):
++            payload["enabled_country_count"] = len(countries)
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 5cec4f1..81493e9 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -13,3 +13,3 @@ if str(PROTOCOL_ROOT) not in sys.path:
+-# The production switch remains opt-in.  The regression suite enables it so
+-# every catalog-backed country path is exercised rather than only the verified
+-# compatibility subset.
++# The production switch defaults on.  Set it explicitly so the regression
++# suite exercises every catalog-backed country path rather than only the
++# verified compatibility subset.
+diff --git a/tests/test_optimization_features.py b/tests/test_optimization_features.py
+index 29c534b..8ab912f 100644
+--- a/tests/test_optimization_features.py
++++ b/tests/test_optimization_features.py
+@@ -38,0 +39,7 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
++    supported_codes = {str(item.get("code") or "").upper() for item in supported["countries"]}
++    cached_codes = {
++        str(item.get("code") or "").upper()
++        for item in supported["countries"]
++        if item.get("schema_cached")
++    }
++
+@@ -40 +47,8 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
+-    assert len(fields) == 32
++    assert len(fields) == 43  # 32 discovered + 11 restored; CA overlaps both catalogs
++    assert protocol_web.VERIFIED_PROTOCOL_COUNTRIES.issubset(fields)
++    assert cached_codes == (set(fields) & supported_codes)
++    assert len(cached_codes) == 42  # catalog-only TR is not a supported protocol country
++    for country in protocol_web.VERIFIED_PROTOCOL_COUNTRIES - {"CA"}:
++        assert required_address_fields(country) == ("line1", "city", "postalCode")
++    # Keep the richer discovered CA schema instead of downgrading it to the old generic profile.
++    assert required_address_fields("CA") == ("line1", "city", "state", "postcode")
+@@ -44,0 +59,36 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
++def test_dynamic_default_gate_is_limited_to_paypal_schema_countries(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
++    catalog = json.loads(
++        (PROTOCOL_ROOT / "data" / "country_discovery" / "country_field_catalog.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    supported_codes = {
++        str(item.get("code") or "").upper()
++        for item in json.loads(
++            (PROTOCOL_ROOT / "data" / "paypal_supported_countries.json").read_text(encoding="utf-8")
++        )["countries"]
++    }
++    expected_dynamic = set(catalog) & supported_codes
++    allowed = protocol_web.enabled_protocol_country_codes()
++
++    assert protocol_web.dynamic_schema_country_codes() == expected_dynamic
++    assert len(expected_dynamic) == 42  # merged schemas minus catalog-only TR
++    assert len(allowed) == 42
++    assert {"DE", "ES", "IE", "SG"}.issubset(allowed)
++    assert "AD" not in allowed
++    assert "TR" not in allowed
++
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", False)
++    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
++
++    # A missing/corrupt dynamic catalog must fail closed to the original 12 countries.
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
++    monkeypatch.setattr(protocol_web, "ROOT", tmp_path)
++    assert protocol_web.dynamic_schema_country_codes() == set()
++    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
++
++

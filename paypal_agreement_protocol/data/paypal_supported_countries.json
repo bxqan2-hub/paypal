@@ -225,7 +225,7 @@
       "name_zh": "巴林",
       "calling_code": "+973",
       "verified": true,
-      "schema_cached": true
+      "schema_cached": false
     },
     {
       "code": "BI",

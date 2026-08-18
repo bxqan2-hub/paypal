@@ -1,0 +1,61 @@
+OBJECT=Verified PayPal country field schema merge
+BRANCH=main
+BASE_COMMIT=a1a76fbd5f85df6840824194181e00ba9bb0885d
+CHANGED_BRANCH=paypal_agreement_protocol/data/country_discovery/country_field_catalog.json::verified country schemas; paypal_agreement_protocol/data/paypal_supported_countries.json::schema_cached; tests/test_optimization_features.py::catalog compatibility assertions
+CHANGED_FIELD=catalog 32->43; verified schemas present 1/12->12/12; supported cached schemas 31->42; BH stale cache marker true->false; CA keeps current discovered schema
+
+BASE_CATALOG_WORKTREE_SHA256=E2875923222D2C4261B4754FD4084405D9979E552522534D516C152213894A93
+BASE_SUPPORTED_WORKTREE_SHA256=5A9253533CA3535FC3B80DC022F52A92D363F87AE233FF01C8647BCF3F64FF23
+BASE_CATALOG_GIT_BLOB_SHA256=06B237C75DFEA8F1EBCC1F4B0BDD921BF93A038A0D0E68A42EFA8C3938143394
+BASE_SUPPORTED_GIT_BLOB_SHA256=A324551BC7B5CD6B3A2B964DC297EBD05F2FD033B3235B4294D9D294F905EC9E
+MOD_CATALOG_SHA256=BC22381EB6033ABD3B2918FD4DE58A3E908FD40AA535DD3197BB66D7B21EA2FC
+MOD_SUPPORTED_SHA256=9D159FC6CF1C39B50318FE448976C8E3A6A15BCBD0D0DBF0DCEE460B88D4EEB3
+MOD_TEST_SHA256=61E8C6C336D684BE44F18E67F96E9D0FA18EA5A7DB18D15E0DC62AD34FB7865D
+MODIFIED_FILE_SHA256=BC22381EB6033ABD3B2918FD4DE58A3E908FD40AA535DD3197BB66D7B21EA2FC
+DIFF_FILE_SHA256=331A9F22AE587399954856FBE7841BE905C73CB1B4508F5C94E05D120FB22F76
+ROLLBACK_FILE_SHA256=10EE2CDA447638C124F237552768BE28668A8D5484F910224995F905A96B587E
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/DIFF_FILE.patch
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK.sh
+
+BASELINE_COMMAND_1=PowerShell here-string schema probe | .venv\Scripts\python.exe -B -
+BASELINE_INPUT_1=read catalog and supported-country JSON from Git blobs at a1a76fb; compare verified12, catalog intersection, cache markers, BH and TR
+BASELINE_LITERAL_OUTPUT_1=CATALOG_COUNT=32; VERIFIED_PRESENT_COUNT=1; SUPPORTED_SCHEMA_COUNT=31; CACHE_MARKER_COUNT=43; CACHE_MARKERS_EXACT=False; BH_CACHED=True; TR_SUPPORTED=False; BASELINE_PROBE_EXIT=0
+BASELINE_RESULT_1=OLD_12_SCHEMA_SET_INCOMPLETE_AND_CACHE_MARKERS_INCONSISTENT
+BASELINE_EXIT_1=0
+
+BASELINE_COMMAND_2=.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+BASELINE_INPUT_2=pre-schema-merge working state with default-country gate change
+BASELINE_LITERAL_OUTPUT_2=33 passed in 0.49s
+BASELINE_RESULT_2=PASS
+BASELINE_EXIT_2=0
+
+MODIFIED_COMMAND_1=PowerShell here-string schema probe | .venv\Scripts\python.exe -B -
+MODIFIED_INPUT_1=read merged catalog and supported-country JSON; compare missing old schemas with 92fe8ee and CA with a1a76fb
+MODIFIED_LITERAL_OUTPUT_1=CATALOG_COUNT=43; OLD_11_EXACT=True; CA_CURRENT_EXACT=True; VERIFIED_12_PRESENT=True; SUPPORTED_SCHEMA_COUNT=42; CACHE_MARKERS_EXACT=True; BH_CACHED=False; TR_SUPPORTED=False; MODIFIED_PROBE_EXIT=0
+MODIFIED_RESULT_1=PASS
+MODIFIED_EXIT_1=0
+
+MODIFIED_COMMAND_2=.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/test_optimization_features.py::test_country_catalogs_are_complete_and_keep_verified_schemas tests/test_optimization_features.py::test_dynamic_default_gate_is_limited_to_paypal_schema_countries
+MODIFIED_INPUT_2=verify merged 43-schema catalog, exact cache markers, verified 12 fields, richer CA preservation, supported-only 42-country gate, TR exclusion, flag-off fallback and missing-catalog fail-closed fallback to 12
+MODIFIED_LITERAL_OUTPUT_2=2 passed in 0.18s; TARGETED_EXIT=0
+MODIFIED_RESULT_2=PASS
+MODIFIED_EXIT_2=0
+
+MODIFIED_COMMAND_3=.venv\Scripts\python.exe -B -m compileall -q paypal_agreement_protocol tests; .venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+MODIFIED_INPUT_3=final source tree after verified-schema merge
+MODIFIED_LITERAL_OUTPUT_3=COMPILE_EXIT=0; 33 passed in 0.49s; PYTEST_EXIT=0
+MODIFIED_RESULT_3=PASS
+MODIFIED_EXIT_3=0
+
+ROLLBACK_COMMAND="C:\Program Files\Git\bin\bash.exe" C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK.sh C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK_PROBE_CATALOG.json C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK_PROBE_SUPPORTED.json
+ROLLBACK_INPUT=another copy of merged MODIFIED_FILE plus another copy of modified paypal_supported_countries.json
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_CATALOG_RESTORED=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK_PROBE_CATALOG.json; ROLLBACK_SUPPORTED_RESTORED=C:\Users\Administrator\Desktop\提链/artifacts/verified-schema-merge-20260818/ROLLBACK_PROBE_SUPPORTED.json; CATALOG_BEFORE_SHA256=BC22381EB6033ABD3B2918FD4DE58A3E908FD40AA535DD3197BB66D7B21EA2FC; CATALOG_AFTER_SHA256=06B237C75DFEA8F1EBCC1F4B0BDD921BF93A038A0D0E68A42EFA8C3938143394; SUPPORTED_BEFORE_SHA256=9D159FC6CF1C39B50318FE448976C8E3A6A15BCBD0D0DBF0DCEE460B88D4EEB3; SUPPORTED_AFTER_SHA256=A324551BC7B5CD6B3A2B964DC297EBD05F2FD033B3235B4294D9D294F905EC9E; ROLLBACK_EXIT=0
+ROLLBACK_RESULT=PASS
+ROLLBACK_EXIT=0
+ROLLBACK_RESTORED_BEHAVIOR=catalog returns to 32 entries with only CA from the verified 12; supported-country cache markers return to the a1a76fb state
+ROLLBACK_RESTORED_STATUS=both baseline Git blobs restored on rollback copies; working catalog and supported-country source remain modified
+
+MODIFIED_FILE_REMAINS_CHANGED=catalog has 43 entries; all verified 12 are present; 42 PayPal-supported schema countries are enabled; TR remains excluded; CA is not downgraded

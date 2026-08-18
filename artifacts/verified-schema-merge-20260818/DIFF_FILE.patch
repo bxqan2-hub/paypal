@@ -1,0 +1,368 @@
+diff --git a/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json b/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
+index b04eda2..d10af09 100644
+--- a/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
++++ b/paypal_agreement_protocol/data/country_discovery/country_field_catalog.json
+@@ -1630,0 +1631,297 @@
++  },
++  "US": {
++    "currency": "USD",
++    "calling_code": "+1",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "en-US"
++  },
++  "ID": {
++    "currency": "IDR",
++    "calling_code": "+62",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "id-ID"
++  },
++  "AU": {
++    "currency": "AUD",
++    "calling_code": "+61",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "en-AU"
++  },
++  "MX": {
++    "currency": "MXN",
++    "calling_code": "+52",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "es-MX"
++  },
++  "PH": {
++    "currency": "PHP",
++    "calling_code": "+63",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "en-PH"
++  },
++  "TH": {
++    "currency": "THB",
++    "calling_code": "+66",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "th-TH"
++  },
++  "AE": {
++    "currency": "AED",
++    "calling_code": "+971",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "en-AE"
++  },
++  "GB": {
++    "currency": "GBP",
++    "calling_code": "+44",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "en-GB"
++  },
++  "JP": {
++    "currency": "JPY",
++    "calling_code": "+81",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "ja-JP"
++  },
++  "TW": {
++    "currency": "TWD",
++    "calling_code": "+886",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "zh-TW"
++  },
++  "BR": {
++    "currency": "BRL",
++    "calling_code": "+55",
++    "address_fields": [
++      {
++        "max_length": 100,
++        "paypal_name": "line1",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "city",
++        "required": true
++      },
++      {
++        "max_length": 80,
++        "paypal_name": "state",
++        "required": false
++      },
++      {
++        "max_length": 20,
++        "paypal_name": "postalCode",
++        "required": true
++      }
++    ],
++    "locale": "pt-BR"
+diff --git a/paypal_agreement_protocol/data/paypal_supported_countries.json b/paypal_agreement_protocol/data/paypal_supported_countries.json
+index 4679ea4..2985b0f 100644
+--- a/paypal_agreement_protocol/data/paypal_supported_countries.json
++++ b/paypal_agreement_protocol/data/paypal_supported_countries.json
+@@ -228 +228 @@
+-      "schema_cached": true
++      "schema_cached": false
+diff --git a/tests/test_optimization_features.py b/tests/test_optimization_features.py
+index 29c534b..8ab912f 100644
+--- a/tests/test_optimization_features.py
++++ b/tests/test_optimization_features.py
+@@ -38,0 +39,7 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
++    supported_codes = {str(item.get("code") or "").upper() for item in supported["countries"]}
++    cached_codes = {
++        str(item.get("code") or "").upper()
++        for item in supported["countries"]
++        if item.get("schema_cached")
++    }
++
+@@ -40 +47,8 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
+-    assert len(fields) == 32
++    assert len(fields) == 43  # 32 discovered + 11 restored; CA overlaps both catalogs
++    assert protocol_web.VERIFIED_PROTOCOL_COUNTRIES.issubset(fields)
++    assert cached_codes == (set(fields) & supported_codes)
++    assert len(cached_codes) == 42  # catalog-only TR is not a supported protocol country
++    for country in protocol_web.VERIFIED_PROTOCOL_COUNTRIES - {"CA"}:
++        assert required_address_fields(country) == ("line1", "city", "postalCode")
++    # Keep the richer discovered CA schema instead of downgrading it to the old generic profile.
++    assert required_address_fields("CA") == ("line1", "city", "state", "postcode")
+@@ -44,0 +59,36 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
++def test_dynamic_default_gate_is_limited_to_paypal_schema_countries(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
++    catalog = json.loads(
++        (PROTOCOL_ROOT / "data" / "country_discovery" / "country_field_catalog.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    supported_codes = {
++        str(item.get("code") or "").upper()
++        for item in json.loads(
++            (PROTOCOL_ROOT / "data" / "paypal_supported_countries.json").read_text(encoding="utf-8")
++        )["countries"]
++    }
++    expected_dynamic = set(catalog) & supported_codes
++    allowed = protocol_web.enabled_protocol_country_codes()
++
++    assert protocol_web.dynamic_schema_country_codes() == expected_dynamic
++    assert len(expected_dynamic) == 42  # merged schemas minus catalog-only TR
++    assert len(allowed) == 42
++    assert {"DE", "ES", "IE", "SG"}.issubset(allowed)
++    assert "AD" not in allowed
++    assert "TR" not in allowed
++
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", False)
++    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
++
++    # A missing/corrupt dynamic catalog must fail closed to the original 12 countries.
++    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
++    monkeypatch.setattr(protocol_web, "ROOT", tmp_path)
++    assert protocol_web.dynamic_schema_country_codes() == set()
++    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
++
++

@@ -36,10 +36,60 @@ def test_country_catalogs_are_complete_and_keep_verified_schemas() -> None:
     fields = json.loads(
         (PROTOCOL_ROOT / "data" / "country_discovery" / "country_field_catalog.json").read_text(encoding="utf-8")
     )
+    supported_codes = {str(item.get("code") or "").upper() for item in supported["countries"]}
+    cached_codes = {
+        str(item.get("code") or "").upper()
+        for item in supported["countries"]
+        if item.get("schema_cached")
+    }
+
     assert len(supported["countries"]) == 197
-    assert len(fields) == 32
+    assert len(fields) == 43  # 32 discovered + 11 restored; CA overlaps both catalogs
+    assert protocol_web.VERIFIED_PROTOCOL_COUNTRIES.issubset(fields)
+    assert cached_codes == (set(fields) & supported_codes)
+    assert len(cached_codes) == 42  # catalog-only TR is not a supported protocol country
+    for country in protocol_web.VERIFIED_PROTOCOL_COUNTRIES - {"CA"}:
+        assert required_address_fields(country) == ("line1", "city", "postalCode")
+    # Keep the richer discovered CA schema instead of downgrading it to the old generic profile.
+    assert required_address_fields("CA") == ("line1", "city", "state", "postcode")
     assert required_address_fields("DE") == ("line1", "postcode", "city")
     assert required_address_fields("SG") == ("line1", "postcode")
+
+
+def test_dynamic_default_gate_is_limited_to_paypal_schema_countries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
+    catalog = json.loads(
+        (PROTOCOL_ROOT / "data" / "country_discovery" / "country_field_catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    supported_codes = {
+        str(item.get("code") or "").upper()
+        for item in json.loads(
+            (PROTOCOL_ROOT / "data" / "paypal_supported_countries.json").read_text(encoding="utf-8")
+        )["countries"]
+    }
+    expected_dynamic = set(catalog) & supported_codes
+    allowed = protocol_web.enabled_protocol_country_codes()
+
+    assert protocol_web.dynamic_schema_country_codes() == expected_dynamic
+    assert len(expected_dynamic) == 42  # merged schemas minus catalog-only TR
+    assert len(allowed) == 42
+    assert {"DE", "ES", "IE", "SG"}.issubset(allowed)
+    assert "AD" not in allowed
+    assert "TR" not in allowed
+
+    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", False)
+    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
+
+    # A missing/corrupt dynamic catalog must fail closed to the original 12 countries.
+    monkeypatch.setattr(protocol_web, "ENABLE_DYNAMIC_COUNTRIES", True)
+    monkeypatch.setattr(protocol_web, "ROOT", tmp_path)
+    assert protocol_web.dynamic_schema_country_codes() == set()
+    assert protocol_web.enabled_protocol_country_codes() == protocol_web.VERIFIED_PROTOCOL_COUNTRIES
 
 
 def test_proxy_bridge_api_keeps_direct_1024proxy_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
