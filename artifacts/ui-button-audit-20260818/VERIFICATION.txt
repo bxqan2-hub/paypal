@@ -1,0 +1,106 @@
+OBJECT=Two-interface button contract
+BRANCH=main
+BASE_COMMIT=b3dee28b9832aa6e030f5060530ade98080fc734
+CHANGED_BRANCH=payment_link_extractor/web/static/app.js::authentication/logout and batch validation; payment_link_extractor/web/templates/index.html::filter/view button types; paypal_agreement_protocol/web_static/index.html::compatibility button labels; tests/test_ui_button_contracts.py::button binding and backend-route contracts
+CHANGED_FIELD=PayPal empty static labels 9->0; extractor implicit button types 6->0; password-mode logout always-hidden->visible after authentication and hidden after logout; empty batch check silent->focused validation feedback
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\ui-button-audit-20260818\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\ui-button-audit-20260818\DIFF_FILE
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\ui-button-audit-20260818\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\ui-button-audit-20260818\ROLLBACK.sh
+
+ORIGINAL_HASH_EXTRACTOR_JS=09879B321DB4603614DB1066D599D5B2DC336B81D205900A468760366CC17516
+ORIGINAL_HASH_EXTRACTOR_HTML=49E8B5F571015F432823B6A761D8448D5B2298EB132A3B0163F615E73C12788A
+ORIGINAL_HASH_PAYPAL_HTML=7A11D1C361E8B5A0C87B91CF714F8F431C8B92FAEABC0B246D5F32967159E8BB
+MODIFIED_HASH_EXTRACTOR_JS=5BDDC1E1AB11786336176744936B20FC68F9A9F4CDF7E7FA7426AB27F69ADA0B
+MODIFIED_HASH_EXTRACTOR_HTML=C783FCC73189AE2A4733257824562722E7A0A12815561BB19DE862424FB9F802
+MODIFIED_HASH_PAYPAL_HTML=F6F359A090A448E22A481B25E3F773F9FEC221715E2784EC6DCBA0DE25A037F5
+MODIFIED_HASH_CONTRACT_TEST=D0CB8C97663C0841FFACF5222E68BF621DFE5633BD72CF68D70682AEBFDF3619
+
+BASELINE_COMMAND=PowerShell @'<Python HTMLParser probe>'@ | .\.venv\Scripts\python.exe -B -
+BASELINE_INPUT=Git blobs b3dee28b9832aa6e030f5060530ade98080fc734:{paypal_agreement_protocol/web_static/index.html,payment_link_extractor/web/templates/index.html,payment_link_extractor/web/static/app.js}; parse every button; count missing labels/types; search logout reveal and empty-batch feedback bindings.
+BASELINE_LITERAL_OUTPUT_BEGIN
+PAYPAL_STATIC_BUTTONS=17
+PAYPAL_EMPTY_LABEL_BUTTONS=9
+EXTRACTOR_STATIC_BUTTONS=22
+EXTRACTOR_EMPTY_LABEL_BUTTONS=0
+EXTRACTOR_IMPLICIT_TYPE_BUTTONS=6
+LOGOUT_REVEAL_BINDING=False
+BATCH_EMPTY_FEEDBACK=False
+BASELINE_PROBE_EXIT=0
+BASELINE_LITERAL_OUTPUT_END
+BASELINE_RESULT=Probe completed; 9 PayPal labels, 6 extractor types, logout reveal, and empty-batch feedback required correction.
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=PowerShell @'<Python HTMLParser probe>'@ | .\.venv\Scripts\python.exe -B -
+MODIFIED_INPUT=Current working files {paypal_agreement_protocol/web_static/index.html,payment_link_extractor/web/templates/index.html,payment_link_extractor/web/static/app.js}; same parser, counts, and binding searches as baseline.
+MODIFIED_LITERAL_OUTPUT_BEGIN
+PAYPAL_STATIC_BUTTONS=17
+PAYPAL_EMPTY_LABEL_BUTTONS=0
+EXTRACTOR_STATIC_BUTTONS=22
+EXTRACTOR_EMPTY_LABEL_BUTTONS=0
+EXTRACTOR_IMPLICIT_TYPE_BUTTONS=0
+LOGOUT_REVEAL_BINDING=True
+BATCH_EMPTY_FEEDBACK=True
+MODIFIED_PROBE_EXIT=0
+MODIFIED_LITERAL_OUTPUT_END
+MODIFIED_RESULT=All 39 static buttons have labels and explicit types; repaired branches are present.
+MODIFIED_EXIT_STATUS=0
+
+BROWSER_COMMAND=& "$env:APPDATA\npm\agent-browser.cmd" --session SESSION eval JAVASCRIPT; & "$env:APPDATA\npm\agent-browser.cmd" --session SESSION errors
+BROWSER_INPUT=ui-audit2: count buttons/empty labels and read logout/batch state; ui-auth: authenticate with audit fixture, query gate/workbench/logout, click logout, query restored gate; ui-paypal: count buttons/empty labels and #paypalCountry options.
+BROWSER_LITERAL_OUTPUT_BEGIN
+EXTRACTOR_BUTTONS=22
+EXTRACTOR_EMPTY_BUTTON_LABELS=0
+EXTRACTOR_OPEN_MODE_LOGOUT_HIDDEN=true
+EXTRACTOR_EMPTY_BATCH_FEEDBACK="请至少粘贴一条账号 Token 或 JSON"
+AUTH_AFTER_LOGIN_GATE_HIDDEN=true
+AUTH_AFTER_LOGIN_WORKBENCH_HIDDEN=false
+AUTH_AFTER_LOGIN_LOGOUT_HIDDEN=false
+AUTH_AFTER_LOGOUT_GATE_HIDDEN=false
+AUTH_AFTER_LOGOUT_WORKBENCH_HIDDEN=true
+AUTH_AFTER_LOGOUT_LOGOUT_HIDDEN=true
+AUTH_AFTER_LOGOUT_ERROR="已退出认证，请重新登录"
+PAYPAL_RUNTIME_BUTTONS=59
+PAYPAL_RUNTIME_EMPTY_BUTTON_LABELS=0
+PAYPAL_COUNTRY_OPTIONS=42
+PAYPAL_COUNTRY_VALUES="AE AU BR CA GB ID JP MX PH TH TW US AR AT BE CH CL CO CZ DE DK ES FI FR GR HK IE IL IN IT KR MY NL NO NZ PE PL PT SA SE SG ZA"
+BROWSER_PAGE_ERRORS=0
+BROWSER_AUDIT_EXIT=0
+BROWSER_LITERAL_OUTPUT_END
+BROWSER_RESULT=Both visible interfaces expose functional state changes; password logout relocks the workbench; country catalog remains the 42 PayPal-supported-country selection.
+BROWSER_EXIT_STATUS=0
+
+TEST_COMMAND=git diff --check; node --check paypal_agreement_protocol/web_static/app.js; node --check payment_link_extractor/web/static/app.js; .\.venv\Scripts\python.exe -B -m compileall -q payment_link_extractor paypal_agreement_protocol tests; .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+TEST_INPUT=Current source tree and tests/test_ui_button_contracts.py
+TEST_LITERAL_OUTPUT_BEGIN
+.....................................                                    [100%]
+37 passed in 0.51s
+DIFF_CHECK_EXIT=0
+PAYPAL_JS_CHECK_EXIT=0
+EXTRACTOR_JS_CHECK_EXIT=0
+COMPILE_EXIT=0
+PYTEST_EXIT=0
+TEST_LITERAL_OUTPUT_END
+TEST_RESULT=Syntax, compilation, full suite, button bindings, dynamic actions, and backend route contracts passed.
+TEST_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=PowerShell @'<Python tempfile copy probe invoking C:\Program Files\Git\bin\bash.exe artifacts/ui-button-audit-20260818/ROLLBACK.sh REPOSITORY TARGET_EXTRACTOR_JS TARGET_EXTRACTOR_HTML TARGET_PAYPAL_HTML>'@ | .\.venv\Scripts\python.exe -B -
+ROLLBACK_INPUT=Three temporary copies of the modified source files; repository C:\Users\Administrator\Desktop\提链; base commit b3dee28b9832aa6e030f5060530ade98080fc734. Working source files were not rollback targets.
+ROLLBACK_LITERAL_OUTPUT_BEGIN
+BEFORE_EXTRACTOR_JS_SHA256=5BDDC1E1AB11786336176744936B20FC68F9A9F4CDF7E7FA7426AB27F69ADA0B
+BEFORE_EXTRACTOR_HTML_SHA256=C783FCC73189AE2A4733257824562722E7A0A12815561BB19DE862424FB9F802
+BEFORE_PAYPAL_HTML_SHA256=F6F359A090A448E22A481B25E3F773F9FEC221715E2784EC6DCBA0DE25A037F5
+ROLLBACK_BASE=b3dee28b9832aa6e030f5060530ade98080fc734
+RESTORED_EXTRACTOR_JS_SHA256=09879B321DB4603614DB1066D599D5B2DC336B81D205900A468760366CC17516
+RESTORED_EXTRACTOR_HTML_SHA256=49E8B5F571015F432823B6A761D8448D5B2298EB132A3B0163F615E73C12788A
+RESTORED_PAYPAL_HTML_SHA256=7A11D1C361E8B5A0C87B91CF714F8F431C8B92FAEABC0B246D5F32967159E8BB
+RESTORED_BEHAVIOR=baseline button labels, implicit types, logout visibility, and empty-batch feedback
+ROLLBACK_STATUS=restored
+ROLLBACK_PROBE_EXIT=0
+ROLLBACK_PROCESS_EXIT=0
+ROLLBACK_LITERAL_OUTPUT_END
+ROLLBACK_RESULT=Temporary copies exactly restored to the original CRLF byte hashes and baseline behavior. Temporary directory was deleted; modified working sources remain changed.
+ROLLBACK_EXIT_STATUS=0
+
+FINAL_STATUS=Verified; UI-only/button-contract changes are present, extraction and PayPal protocol core flows are unchanged, and rollback was verified on copies.

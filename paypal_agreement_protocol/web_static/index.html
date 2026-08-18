@@ -128,17 +128,17 @@
         <div id="legacyTokenField"></div><div id="legacyCountryFields"></div><div id="legacyProxyFields"></div><div id="legacyActions"></div>
         <section id="braintreeVaultFields" hidden>
           <input id="vaultAccountId"><input id="vaultAccessToken" type="password"><select id="vaultRegion"><option value="GB">GB</option><option value="US">US</option></select><input id="vaultProxy">
-          <div id="vaultParameterBox"></div><button id="loadVaultButton" type="button"><span></span></button><div id="vaultStatus"></div><section id="vaultReturnPanel" hidden><textarea id="vaultReturnValue"></textarea><button id="completeVaultButton" type="button"></button></section>
+          <div id="vaultParameterBox"></div><button id="loadVaultButton" type="button"><span>生成 Braintree BA 链接</span></button><div id="vaultStatus"></div><section id="vaultReturnPanel" hidden><textarea id="vaultReturnValue"></textarea><button id="completeVaultButton" type="button">完成授权并提交</button></section>
         </section>
-        <button id="cancelButton" type="button" hidden></button>
-        <div id="recentJobs"></div><button id="refreshJobs" type="button"></button>
+        <button id="cancelButton" type="button" hidden>停止当前任务</button>
+        <div id="recentJobs"></div><button id="refreshJobs" type="button">刷新任务</button>
       </section>
 
       <aside class="compatibility-runtime" hidden aria-hidden="true">
         <span id="statusBadge"></span><span id="progressValue"></span><span id="progressText"></span><i id="progressBar"></i><span id="progressStage"></span><circle id="orbitValue"></circle>
-        <section id="otpPanel" hidden><span id="otpPrompt"></span><input id="otpValue"><button id="otpSubmit" type="button"></button></section>
-        <section id="captchaPanel" hidden><span id="captchaPrompt"></span><a id="captchaLink"></a><div id="browserPanel" hidden><span id="browserStatus"></span><img id="browserFrame"><input id="browserText"><button id="browserType" type="button"></button><button id="browserFinish" type="button"></button></div><div id="captchaFallback"><textarea id="captchaValue"></textarea><button id="captchaSubmit" type="button"></button></div></section>
-        <div id="logBox"></div><section id="resultPanel" hidden><span id="resultSeal"></span><span id="resultStatus"></span><span id="paymentAction"></span><span id="settlementStatus"></span><span id="billingCountry"></span><span id="buyerId"></span><span id="resultBa"></span><textarea id="resultValue"></textarea><a id="openVerification"></a><button id="copyResult" type="button"></button></section>
+        <section id="otpPanel" hidden><span id="otpPrompt"></span><input id="otpValue"><button id="otpSubmit" type="button">提交验证码</button></section>
+        <section id="captchaPanel" hidden><span id="captchaPrompt"></span><a id="captchaLink"></a><div id="browserPanel" hidden><span id="browserStatus"></span><img id="browserFrame"><input id="browserText"><button id="browserType" type="button">输入文本</button><button id="browserFinish" type="button">完成浏览器验证</button></div><div id="captchaFallback"><textarea id="captchaValue"></textarea><button id="captchaSubmit" type="button">提交验证结果</button></div></section>
+        <div id="logBox"></div><section id="resultPanel" hidden><span id="resultSeal"></span><span id="resultStatus"></span><span id="paymentAction"></span><span id="settlementStatus"></span><span id="billingCountry"></span><span id="buyerId"></span><span id="resultBa"></span><textarea id="resultValue"></textarea><a id="openVerification"></a><button id="copyResult" type="button">复制结果</button></section>
       </aside>
     </form>
   </main>

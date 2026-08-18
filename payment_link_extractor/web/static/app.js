@@ -114,6 +114,7 @@
   function lockWorkbench(message) {
     authReady = false;
     authPassword = "";
+    if (elements.logoutButton) elements.logoutButton.hidden = true;
     clearSavedPassword();
     if (socket) {
       const currentSocket = socket;
@@ -155,6 +156,7 @@
       setAuthError("");
       elements.authGate.hidden = true;
       elements.workbench.hidden = false;
+      elements.logoutButton.hidden = !password;
       await loadDefaultPreferences();
       await loadExistingTasks();
       connectTaskSocket();
@@ -746,6 +748,14 @@
       .split(/\r\n|\n/)
       .map((raw, index) => ({ raw: raw.trim(), lineNumber: index + 1 }))
       .filter(entry => entry.raw);
+    if (!lines.length) {
+      batchImportEntries = [];
+      batchImportValidated = false;
+      renderBatchImportResults();
+      elements.batchImportSummary.textContent = "请至少粘贴一条账号 Token 或 JSON";
+      elements.batchImportInput.focus();
+      return;
+    }
     const seenAccounts = new Map();
     batchImportEntries = lines.map(entry => {
       try {

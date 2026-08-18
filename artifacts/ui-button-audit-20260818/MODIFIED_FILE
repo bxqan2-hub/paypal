@@ -1,0 +1,26 @@
+{
+  "object": "two-interface button contract",
+  "branch": "main",
+  "base_commit": "b3dee28b9832aa6e030f5060530ade98080fc734",
+  "changed_fields": {
+    "paypal_empty_static_button_labels": "9 -> 0",
+    "extractor_implicit_button_types": "6 -> 0",
+    "password_mode_logout": "always hidden -> visible after authenticated login and hidden after logout",
+    "empty_batch_validation": "silent -> visible feedback plus input focus"
+  },
+  "modified_sources": {
+    "payment_link_extractor/web/static/app.js": "5BDDC1E1AB11786336176744936B20FC68F9A9F4CDF7E7FA7426AB27F69ADA0B",
+    "payment_link_extractor/web/templates/index.html": "C783FCC73189AE2A4733257824562722E7A0A12815561BB19DE862424FB9F802",
+    "paypal_agreement_protocol/web_static/index.html": "F6F359A090A448E22A481B25E3F773F9FEC221715E2784EC6DCBA0DE25A037F5",
+    "tests/test_ui_button_contracts.py": "D0CB8C97663C0841FFACF5222E68BF621DFE5633BD72CF68D70682AEBFDF3619"
+  },
+  "runtime_result": {
+    "paypal_standard_visible_countries": 42,
+    "paypal_runtime_buttons": 59,
+    "paypal_runtime_empty_button_labels": 0,
+    "extractor_password_login_logout_visible": true,
+    "extractor_logout_relocks_workbench": true,
+    "browser_page_errors": 0
+  },
+  "scope": "UI button contracts and regression tests only; extraction and PayPal protocol core flows unchanged"
+}
