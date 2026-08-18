@@ -27,3 +27,34 @@ CORE_COMPARISON_OUTPUT=EXIT=0 (no core extraction diff)
 FULL_TEST_COMMAND=.venv\Scripts\python.exe -m pytest -q
 FULL_TEST_OUTPUT=31 passed in 0.46s
 FULL_TEST_EXIT=0
+
+EXACT_BASELINE_COMMAND:
+$env:PYTHONPATH='.'; @'
+from payment_link_extractor.web.events import make_event
+url='https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456'
+e=make_event('t','task.succeeded',{'result':{'provider_url':url,'paypal_url':url}})
+print(e['data']['result']['provider_url'])
+print(e['data']['result']['paypal_url'])
+'@ | .venv\Scripts\python.exe -
+EXACT_BASELINE_INPUT=https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456
+EXACT_BASELINE_LITERAL_OUTPUT=https://www.paypal.com/agreements/approve?ba_token=<redacted> (twice)
+EXACT_BASELINE_EXIT=0
+
+EXACT_MODIFIED_COMMAND:
+$env:PYTHONPATH='.'; @'
+from payment_link_extractor.web.events import make_event
+url='https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456'
+e=make_event('t','task.succeeded',{'result':{'provider_url':url,'paypal_url':url}})
+assert e['data']['result']['provider_url'] == url, e
+assert e['data']['result']['paypal_url'] == url, e
+print('FUNCTIONAL_BA_URL_PRESERVED=1')
+'@ | .venv\Scripts\python.exe -
+EXACT_MODIFIED_INPUT=https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456
+EXACT_MODIFIED_LITERAL_OUTPUT=FUNCTIONAL_BA_URL_PRESERVED=1
+EXACT_MODIFIED_EXIT=0
+
+EXACT_ROLLBACK_COMMAND:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/ba-link-event-fix-20260818/ROLLBACK.sh' 'artifacts/ba-link-event-fix-20260818/rollback_probe.py'
+EXACT_ROLLBACK_INPUT=MODIFIED_FILE copied to rollback_probe.py
+EXACT_ROLLBACK_LITERAL_OUTPUT=ROLLBACK_RESTORED=artifacts/ba-link-event-fix-20260818/rollback_probe.py; ROLLBACK_HASH=452a20b974225fc70aa8f2d834b47de59411a7b5; EXPECTED_BLOB=452a20b974225fc70aa8f2d834b47de59411a7b5; ROLLBACK_TEST=PASS
+EXACT_ROLLBACK_EXIT=0
