@@ -264,7 +264,7 @@ def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
     assert "updateBuyerModeHint();" in javascript
     assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
     assert "paypal.protocol.runtime.v2" in javascript
-    assert "app.js?v=20260818-session-runtime-1" in html
+    assert "app.js?v=20260818-account-history-1" in html
 
 
 def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

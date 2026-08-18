@@ -8,7 +8,7 @@
   <meta name="description" content="PayPal BA 协议支付与自动接码任务控制台">
   <link rel="stylesheet" href="/paypal-pay/static/styles.css?v=20260720-country01">
   <link rel="stylesheet" href="/paypal-pay/static/protocol.css?v=20260817-account-table-3">
-  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260818-complete-logs-1">
+  <link rel="stylesheet" href="/paypal-pay/static/checkout-preview.css?v=20260818-account-history-1">
 </head>
 <body>
   <div class="paper-noise"></div>
@@ -20,6 +20,7 @@
     <div class="top-actions">
       <a class="nav-return" href="/">返回提链工作台</a>
       <span id="serviceState" class="service-dot"><i></i> 服务检测中</span>
+      <button id="clearInterfaceButton" class="nav-return interface-refresh-button" type="button" title="清空本次打开的账号显示">↻ 刷新界面</button>
       <button id="themeToggle" class="icon-button" type="button" aria-label="切换主题">◐</button>
     </div>
   </header>
@@ -152,6 +153,6 @@
 
   <script src="https://js.braintreegateway.com/web/3.125.0/js/client.min.js"></script>
   <script src="https://js.braintreegateway.com/web/3.125.0/js/paypal-checkout.min.js"></script>
-<script src="/paypal-pay/static/app.js?v=20260818-session-runtime-1"></script>
+<script src="/paypal-pay/static/app.js?v=20260818-account-history-1"></script>
 </body>
 </html>

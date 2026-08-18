@@ -1,0 +1,27 @@
+{
+  "object": "PayPal protocol account-queue display",
+  "branch": "main",
+  "base_commit": "11c264610a13b96476aaf74f999f50a6ebe94753",
+  "changed_fields": {
+    "new_push_phone": "restored previous phone -> blank unless the new push explicitly carries a phone",
+    "job_row_binding": "single-row positional fallback -> BA-token-scoped match with guarded index fallback",
+    "opened_accounts": "current BA only -> session-scoped append-only display history, maximum 20",
+    "manual_refresh": "absent -> top refresh button clears UI history, transient fields, query string, and visible panels"
+  },
+  "modified_files": {
+    "paypal_agreement_protocol/web_static/app.js": "7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4",
+    "paypal_agreement_protocol/web_static/index.html": "42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67",
+    "paypal_agreement_protocol/web_static/checkout-preview.css": "71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C",
+    "tests/test_ui_button_contracts.py": "6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD",
+    "tests/test_optimization_features.py": "261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0"
+  },
+  "runtime_result": {
+    "first_row_phone": "+5511999999999",
+    "second_row_phone": "blank",
+    "queue_after_second_push": 2,
+    "queue_after_manual_refresh": 0,
+    "runtime_empty_button_labels": 0,
+    "browser_page_errors": 0
+  },
+  "core_status": "paypal protocol backend, payment flow, extraction bridge, and form submission payload are unchanged"
+}

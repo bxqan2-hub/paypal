@@ -1,0 +1,108 @@
+OBJECT=PayPal protocol account-queue display
+BRANCH=main
+BASE_COMMIT=11c264610a13b96476aaf74f999f50a6ebe94753
+CHANGED_BRANCH=paypal_agreement_protocol/web_static/app.js::new-push state isolation, token-scoped row binding, opened-account session history, manual UI clear; paypal_agreement_protocol/web_static/index.html::top refresh button and asset versions; paypal_agreement_protocol/web_static/checkout-preview.css::refresh-button presentation; tests/test_ui_button_contracts.py::history/button regression; tests/test_optimization_features.py::asset-version regression
+CHANGED_FIELD=New account phone previous-value->blank unless explicitly supplied; job association positional single-row fallback->BA-token match; account display current-only->append session history up to 20; top refresh absent->manual interface clear; backend/core unchanged
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\DIFF_FILE
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\ROLLBACK.sh
+
+ORIGINAL_WORKTREE_APP_JS_SHA256=9B86E062BB3EC355CB8761A906D1BA2B42034D46C3625801BB11EB75D69FA340
+ORIGINAL_WORKTREE_INDEX_HTML_SHA256=F6F359A090A448E22A481B25E3F773F9FEC221715E2784EC6DCBA0DE25A037F5
+ORIGINAL_WORKTREE_CSS_SHA256=DA75EF4FCC9E4832B8CB4AAB0D8D01634EE853076284C85B423E822909BAF974
+ORIGINAL_WORKTREE_UI_TEST_SHA256=D0CB8C97663C0841FFACF5222E68BF621DFE5633BD72CF68D70682AEBFDF3619
+ORIGINAL_WORKTREE_OPT_TEST_SHA256=61E8C6C336D684BE44F18E67F96E9D0FA18EA5A7DB18D15E0DC62AD34FB7865D
+MODIFIED_APP_JS_SHA256=7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4
+MODIFIED_INDEX_HTML_SHA256=42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67
+MODIFIED_CSS_SHA256=71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C
+MODIFIED_UI_TEST_SHA256=6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD
+MODIFIED_OPT_TEST_SHA256=261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0
+
+RUNTIME_LOG_COMMAND=Invoke-RestMethod -Uri http://127.0.0.1:18794/paypal-pay/api/jobs -TimeoutSec 5
+RUNTIME_LOG_INPUT=Current protocol service recent-job list
+RUNTIME_LOG_LITERAL_OUTPUT=RUNTIME_JOBS=0
+RUNTIME_LOG_RESULT=No retained server job record was available; source-path inspection identified the display-only carry-over branches.
+RUNTIME_LOG_EXIT_STATUS=0
+
+BASELINE_COMMAND=PowerShell @'<Python source probe reading git show BASE:path>'@ | .\.venv\Scripts\python.exe -B -
+BASELINE_INPUT=Base commit app.js and index.html; inspect stale-phone replacement, opened-account history, job-token guard, positional fallback, refresh button, and core submit handler.
+BASELINE_LITERAL_OUTPUT_BEGIN
+STALE_PHONE_CLEARED_ON_NEW_PUSH=False
+OPENED_ACCOUNT_HISTORY=False
+TOKEN_SCOPED_JOB_MATCH=False
+OLD_SINGLE_ROW_JOB_FALLBACK=True
+MANUAL_CLEAR_BUTTON=False
+CORE_SUBMIT_HANDLER=True
+BASELINE_PROBE_EXIT=0
+BASELINE_LITERAL_OUTPUT_END
+BASELINE_RESULT=The restored phone field and unconditional one-row job fallback could attach the previous account phone/job to a newly pushed BA token.
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=PowerShell @'<Python source probe reading current app.js and index.html>'@ | .\.venv\Scripts\python.exe -B -
+MODIFIED_INPUT=Current UI source; same fields and handler checks as baseline.
+MODIFIED_LITERAL_OUTPUT_BEGIN
+STALE_PHONE_CLEARED_ON_NEW_PUSH=True
+OPENED_ACCOUNT_HISTORY=True
+TOKEN_SCOPED_JOB_MATCH=True
+OLD_SINGLE_ROW_JOB_FALLBACK=False
+MANUAL_CLEAR_BUTTON=True
+CORE_SUBMIT_HANDLER=True
+MODIFIED_PROBE_EXIT=0
+MODIFIED_LITERAL_OUTPUT_END
+MODIFIED_RESULT=New pushes clear stale phone display, old rows persist separately, and prior jobs can only bind to the matching BA token.
+MODIFIED_EXIT_STATUS=0
+
+BROWSER_COMMAND=& "$env:APPDATA\npm\agent-browser.cmd" --session display-audit open URL; wait; eval JAVASCRIPT; click #clearInterfaceButton; errors
+BROWSER_INPUT=First push BA-FIRSTACCOUNT01 with +5511999999999, then second push BA-SECONDACCOUNT02 without phone, then manual top refresh.
+BROWSER_LITERAL_OUTPUT_BEGIN
+FIRST_PUSH={"ba":"BA-FIRSTACCOUNT01","phone":"+5511999999999","queue":"1","refreshVisible":true}
+SECOND_PUSH={"queue":"2","currentPhone":"","rows":[{"token":"BA-FIRSTACCOUNT01","phone":"+5511999999999","stage":"本次打开记录"},{"token":"BA-SECONDACCOUNT02","phone":"—","stage":"选择地区并获取手机号"}],"historyCount":1}
+AFTER_REFRESH={"queue":"0","ba":"","phone":"","history":null,"url":"http://127.0.0.1:18798/paypal-pay/","button":"↻ 刷新界面","emptyText":"等待 BA 链接从提链工作台推送后，账号会在这里横向排列显示。"}
+BUTTON_RUNTIME={"buttons":60,"emptyLabels":0,"refreshType":"button"}
+BROWSER_PAGE_ERRORS=0
+DISPLAY_SEQUENCE_EXIT=0
+DISPLAY_CLEAR_EXIT=0
+BUTTON_RUNTIME_EXIT=0
+BROWSER_LITERAL_OUTPUT_END
+BROWSER_RESULT=The first account remains as row 1 with its own phone; the new account is row 2 with no inherited phone; manual refresh alone clears the display and URL prefill.
+BROWSER_EXIT_STATUS=0
+
+TEST_COMMAND=git diff --check; node --check paypal_agreement_protocol/web_static/app.js; .\.venv\Scripts\python.exe -B -m compileall -q paypal_agreement_protocol payment_link_extractor tests; .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider; git diff --quiet HEAD -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal/flow.py payment_link_extractor/web/paypal_protocol.py
+TEST_INPUT=Current source tree, full test suite, and three protocol/extraction core files.
+TEST_LITERAL_OUTPUT_BEGIN
+......................................                                   [100%]
+38 passed in 0.53s
+DIFF_CHECK_EXIT=0
+NODE_CHECK_EXIT=0
+COMPILE_EXIT=0
+PYTEST_EXIT=0
+CORE_DIFF_EXIT=0
+TEST_LITERAL_OUTPUT_END
+TEST_RESULT=UI syntax, compilation, full suite, new display regression, and exact no-diff core check passed.
+TEST_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=PowerShell @'<Python tempfile copy probe invoking C:\Program Files\Git\bin\bash.exe artifacts/protocol-display-history-20260818/ROLLBACK.sh REPOSITORY TARGET_APP_JS TARGET_INDEX_HTML TARGET_CSS TARGET_UI_TEST TARGET_OPT_TEST>'@ | .\.venv\Scripts\python.exe -B -
+ROLLBACK_INPUT=Five temporary copies of modified UI/test files; canonical source blobs at base commit 11c264610a13b96476aaf74f999f50a6ebe94753; working source files were not rollback targets.
+ROLLBACK_LITERAL_OUTPUT_BEGIN
+BEFORE_APP_JS_SHA256=7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4
+BEFORE_INDEX_HTML_SHA256=42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67
+BEFORE_CSS_SHA256=71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C
+BEFORE_UI_TEST_SHA256=6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD
+BEFORE_OPT_TEST_SHA256=261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0
+ROLLBACK_BASE=11c264610a13b96476aaf74f999f50a6ebe94753
+RESTORED_APP_JS_SHA256=55B3F9E579FA78AAAF87336C1187D82D0FF9862DB7B34350DBED89EE75638A1C
+RESTORED_INDEX_HTML_SHA256=1B6A85D61EB3FC30E1361B6E9982D4B354208E7CF15F3A81783DEC35590D2CFC
+RESTORED_CSS_SHA256=DA75EF4FCC9E4832B8CB4AAB0D8D01634EE853076284C85B423E822909BAF974
+RESTORED_UI_TEST_SHA256=D0CB8C97663C0841FFACF5222E68BF621DFE5633BD72CF68D70682AEBFDF3619
+RESTORED_OPT_TEST_SHA256=CD01F048137665E3D307751D1A51B9FF09CE59872C33C002B6BB8265F3C0FABE
+RESTORED_BEHAVIOR=single current row, positional fallback, stale phone retention, and no manual clear button
+ROLLBACK_STATUS=restored
+ROLLBACK_PROBE_EXIT=0
+ROLLBACK_PROCESS_EXIT=0
+ROLLBACK_LITERAL_OUTPUT_END
+ROLLBACK_RESULT=Temporary copies exactly restored to canonical base-commit blobs and baseline behavior; temporary directory was deleted; working UI remains modified.
+ROLLBACK_EXIT_STATUS=0
+
+FINAL_STATUS=Verified UI-only extension; new pushes are isolated by BA token, opened accounts persist until manual refresh, and protocol/payment core files are unchanged.

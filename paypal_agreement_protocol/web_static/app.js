@@ -3,6 +3,8 @@ const GROK_API_BASE = '/api/grok-trial';
 const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
 const LEGACY_LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
 const PROCESS_RUNTIME_KEY = 'paypal.protocol.runtime.v2';
+const OPENED_ACCOUNT_HISTORY_KEY = 'paypal.protocol.opened-accounts.v1';
+const MAX_OPENED_ACCOUNT_HISTORY = 20;
 
 function isDefaultDemoBa(value) {
   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
@@ -27,21 +29,27 @@ function readSmsMaxPrice() {
 function applyWorkbenchPrefill() {
   const params = new URLSearchParams(window.location.search);
   const existingBa = document.querySelector('#baToken')?.value || '';
-  const ba = params.get('ba') || params.get('paypal_url') || existingBa || '';
+  const incomingBa = params.get('ba') || params.get('paypal_url') || '';
+  const ba = incomingBa || existingBa || '';
   const country = (params.get('country') || params.get('billing_country') || params.get('paypal_country') || '').toUpperCase();
   const phone = params.get('phone') || '';
   const emailValues = (params.get('emails') || params.get('email') || params.get('account_email') || '')
     .split(/\r?\n/).map(value => value.trim());
   while (emailValues.length && !emailValues[emailValues.length - 1]) emailValues.pop();
+  const incomingSignature = stripDefaultDemoBa(incomingBa).split(/\r?\n/).map(extractBa).filter(Boolean).join('\n');
+  const existingSignature = stripDefaultDemoBa(existingBa).split(/\r?\n/).map(extractBa).filter(Boolean).join('\n');
+  const isNewPush = Boolean(incomingSignature && incomingSignature !== existingSignature);
+  if (isNewPush && existingSignature) archiveCurrentAccountRows();
   if (ba && !isDefaultDemoBa(ba) && document.querySelector('#baToken')) document.querySelector('#baToken').value = stripDefaultDemoBa(ba);
   if (country && document.querySelector('#paypalCountry')) {
     const select = document.querySelector('#paypalCountry');
     if ([...select.options].some(option => option.value === country)) select.value = country;
     if (typeof state !== 'undefined') state.lastCountry = country;
   }
-  if (phone && document.querySelector('#phone')) document.querySelector('#phone').value = phone;
-  if (emailValues.some(Boolean) && document.querySelector('#emailPool')) document.querySelector('#emailPool').value = emailValues.join('\n');
-  if (emailValues.some(Boolean) && typeof state !== 'undefined') state.prefillEmails = emailValues;
+  if (document.querySelector('#phone') && (phone || isNewPush)) document.querySelector('#phone').value = phone;
+  if (document.querySelector('#emailPool') && (emailValues.some(Boolean) || isNewPush)) document.querySelector('#emailPool').value = emailValues.join('\n');
+  if (typeof state !== 'undefined' && (emailValues.some(Boolean) || isNewPush)) state.prefillEmails = emailValues;
+  if (isNewPush && typeof state !== 'undefined') state.smsActivations.clear();
   saveProtocolFormState();
 }
 const $ = (id) => document.getElementById(id);
@@ -67,6 +75,7 @@ const state = {
   activeLogJobId: '',
   activeLogToken: '',
   jobLogTimer: null,
+  openedAccounts: [],
 };
 
 const vaultState = {
@@ -122,7 +131,10 @@ function synchronizeProcessRuntime(runtimeId) {
   let previous = '';
   try { previous = sessionStorage.getItem(PROCESS_RUNTIME_KEY) || ''; } catch (_) {}
   clearLegacyPersistentInputs();
-  if (previous && previous !== current) clearTransientSessionState();
+  if (previous && previous !== current) {
+    archiveCurrentAccountRows();
+    clearTransientSessionState();
+  }
   if (!previous) {
     try { LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key)); } catch (_) {}
   }
@@ -198,6 +210,25 @@ $('themeToggle').addEventListener('click', () => {
   localStorage.setItem('pay153-theme', next);
   applyTheme(next);
 });
+
+function clearProtocolInterface() {
+  const button = $('clearInterfaceButton');
+  if (button) { button.disabled = true; button.textContent = '已清空'; }
+  clearOpenedAccountHistory();
+  clearTransientSessionState('界面已刷新，等待新账号');
+  try { window.history.replaceState({}, '', window.location.pathname); } catch (_) {}
+  if ($('batchRunPanel')) $('batchRunPanel').hidden = true;
+  if ($('batchJobGrid')) $('batchJobGrid').innerHTML = '';
+  if ($('recentJobs')) $('recentJobs').innerHTML = '<div class="empty-log">界面已刷新，等待新账号。</div>';
+  if ($('logBox')) $('logBox').innerHTML = '<div class="empty-log">界面已刷新，等待新任务。</div>';
+  if (typeof closeJobLogs === 'function') closeJobLogs();
+  renderAccountQueue();
+  setTimeout(() => {
+    if (button) { button.disabled = false; button.textContent = '↻ 刷新界面'; }
+  }, 700);
+}
+
+$('clearInterfaceButton').addEventListener('click', clearProtocolInterface);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if ((localStorage.getItem('pay153-theme') || 'system') === 'system') applyTheme('system');
 });
@@ -378,6 +409,70 @@ function isTerminalJob(job) {
   return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
 }
 
+function compactDisplayJob(job) {
+  if (!job || typeof job !== 'object') return null;
+  return {
+    id: String(job.id || ''),
+    ba_token: String(job.ba_token || ''),
+    account_email: String(job.account_email || ''),
+    phone: String(job.phone || ''),
+    sms_current_phone: String(job.sms_current_phone || ''),
+    sms_activation_id: String(job.sms_activation_id || ''),
+    status: String(job.status || ''),
+    stage: String(job.stage || ''),
+    error: String(job.error || ''),
+    retry_count: Number(job.retry_count || 0),
+    max_retries: Number(job.max_retries ?? 2),
+    duration: Number(job.duration || 0),
+    cancellable: Boolean(job.cancellable),
+    result: job.result && typeof job.result === 'object' ? {
+      email: String(job.result.email || ''),
+      user_id: String(job.result.user_id || ''),
+      error: String(job.result.error || ''),
+      failure_stage: String(job.result.failure_stage || ''),
+      retry_count: Number(job.result.retry_count || 0),
+      max_retries: Number(job.result.max_retries ?? 2),
+    } : {},
+  };
+}
+
+function restoreOpenedAccountHistory() {
+  let saved = [];
+  try { saved = JSON.parse(sessionStorage.getItem(OPENED_ACCOUNT_HISTORY_KEY) || '[]'); } catch (_) {}
+  state.openedAccounts = Array.isArray(saved)
+    ? saved.slice(-MAX_OPENED_ACCOUNT_HISTORY).filter(item => item && extractBa(item.token || item.link || ''))
+    : [];
+}
+
+function persistOpenedAccountHistory() {
+  try { sessionStorage.setItem(OPENED_ACCOUNT_HISTORY_KEY, JSON.stringify(state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY))); } catch (_) {}
+}
+
+function clearOpenedAccountHistory() {
+  state.openedAccounts = [];
+  try { sessionStorage.removeItem(OPENED_ACCOUNT_HISTORY_KEY); } catch (_) {}
+}
+
+function upsertOpenedAccount(snapshot = {}) {
+  const token = extractBa(snapshot.token || snapshot.link || '');
+  if (!token) return;
+  const index = state.openedAccounts.findIndex(item => extractBa(item.token || item.link || '') === token);
+  const previous = index >= 0 ? state.openedAccounts[index] : {};
+  const next = {
+    token,
+    link: String(snapshot.link || previous.link || token),
+    phone: String(snapshot.phone ?? previous.phone ?? ''),
+    email: String(snapshot.email ?? previous.email ?? ''),
+    job: snapshot.job ? compactDisplayJob(snapshot.job) : (previous.job || null),
+    openedAt: Number(previous.openedAt || snapshot.openedAt || Date.now()),
+    updatedAt: Date.now(),
+  };
+  if (index >= 0) state.openedAccounts[index] = next;
+  else state.openedAccounts.push(next);
+  state.openedAccounts = state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY);
+  persistOpenedAccountHistory();
+}
+
 function sortedBaPoolEntries() {
   const sourcePhones = phonePoolLines();
   const sourceEmails = emailPoolLines().length ? emailPoolLines() : state.prefillEmails;
@@ -390,22 +485,71 @@ function sortedBaPoolEntries() {
   });
 }
 
-function queueRows() {
+function jobToken(job) {
+  return extractBa(job?.ba_token || job?.paypal_url || job?.result?.ba_token || '');
+}
+
+function currentQueueRows() {
   const entries = sortedBaPoolEntries();
   return entries.map((entry, zeroIndex) => {
     const {link, token} = entry;
     const activation = state.smsActivations.get(token) || null;
-    const job = state.batchJobs.find(item => Number(item.batch_index || 0) === zeroIndex + 1)
-      || (entries.length === 1 ? state.batchJobs[0] : null);
+    const tokenMatchedJob = state.batchJobs.find(item => jobToken(item) === token);
+    const indexedJob = state.batchJobs.find(item => Number(item.batch_index || 0) === zeroIndex + 1);
+    const indexedJobToken = jobToken(indexedJob);
+    const job = tokenMatchedJob || (indexedJob && (!indexedJobToken || indexedJobToken === token) ? indexedJob : null);
     return {
-      index: zeroIndex + 1,
       link,
       token,
       activation,
       phone: (isTerminalJob(job) ? activation?.phone : job?.sms_current_phone) || activation?.phone || entry.manualPhone || job?.phone || '',
+      email: entry.email || '',
       job,
+      history: false,
+      originalIndex: entry.originalIndex,
+      queueIndex: zeroIndex,
     };
   });
+}
+
+function archiveCurrentAccountRows() {
+  currentQueueRows().forEach(row => upsertOpenedAccount(row));
+}
+
+function rememberBatchJobs(jobs = []) {
+  const entries = sortedBaPoolEntries();
+  jobs.forEach(job => {
+    const token = jobToken(job);
+    if (!token) return;
+    const entry = entries.find(item => item.token === token);
+    const activation = state.smsActivations.get(token);
+    upsertOpenedAccount({
+      token,
+      link: entry?.link || job.ba_token || token,
+      phone: job.sms_current_phone || activation?.phone || entry?.manualPhone || job.phone || '',
+      email: job.account_email || entry?.email || job.result?.email || '',
+      job,
+    });
+  });
+}
+
+function queueRows() {
+  const currentRows = currentQueueRows();
+  const currentTokens = new Set(currentRows.map(row => row.token));
+  const historyRows = state.openedAccounts
+    .filter(item => !currentTokens.has(extractBa(item.token || item.link || '')))
+    .map(item => ({
+      link: item.link || item.token,
+      token: extractBa(item.token || item.link || ''),
+      activation: null,
+      phone: item.phone || item.job?.sms_current_phone || item.job?.phone || '',
+      email: item.email || item.job?.account_email || '',
+      job: item.job || null,
+      history: true,
+      originalIndex: -1,
+      queueIndex: -1,
+    }));
+  return [...historyRows, ...currentRows].map((row, zeroIndex) => ({...row, index: zeroIndex + 1}));
 }
 
 function accountForRow(row) {
@@ -471,17 +615,19 @@ function renderAccountQueue() {
     const [otpLabel, otpClass] = otpStateForRow(row);
     const [failure, failureClass] = failureForRow(row);
     const account = accountForRow(row);
-    const stage = job?.stage || (row.phone ? '手机号已就绪' : '选择地区并获取手机号');
+    const stage = job?.stage || (row.history ? '本次打开记录' : (row.phone ? '手机号已就绪' : '选择地区并获取手机号'));
     const retry = Number(job?.retry_count ?? job?.result?.retry_count ?? 0);
     const maxRetries = Number(job?.max_retries ?? job?.result?.max_retries ?? 2);
     const duration = job ? formatDuration(job.duration) : '—';
     let action = `<button class="table-action" type="button" data-queue-copy="${row.index}">复制</button>`;
-    if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.index}">取号</button>`;
-    else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">换号</button>`;
-    else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.index}">获取新号</button>`;
-    if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
-    if (job?.cancellable) action = `<button class="table-action danger" type="button" data-queue-cancel="${escapeHtml(job.id)}">停止</button>`;
-    if (job) action = `<div class="table-actions">${action}<button class="table-action" type="button" data-queue-log="${escapeHtml(job.id)}" data-queue-token="${escapeHtml(row.token)}">日志</button></div>`;
+    if (!row.history) {
+      if (!row.phone) action = `<button class="table-action" type="button" data-queue-phone="${row.queueIndex + 1}">取号</button>`;
+      else if (!job) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">换号</button>`;
+      else if (isTerminalJob(job)) action = `<button class="table-action" type="button" data-queue-replace-phone="${row.queueIndex + 1}">获取新号</button>`;
+      if (job?.status === 'awaiting_otp' && !row.activation) action = `<button class="table-action" type="button" data-queue-otp="${escapeHtml(job.id)}">填验证码</button>`;
+      if (job?.cancellable) action = `<button class="table-action danger" type="button" data-queue-cancel="${escapeHtml(job.id)}">停止</button>`;
+    }
+    if (job?.id) action = `<div class="table-actions">${action}<button class="table-action" type="button" data-queue-log="${escapeHtml(job.id)}" data-queue-token="${escapeHtml(row.token)}">日志</button></div>`;
     return `<tr data-account-row="${row.index}">
       <td>${row.index}</td>
       <td><span class="account-value ${account ? '' : 'muted-value'}">${escapeHtml(account || '等待生成账号')}</span></td>
@@ -568,7 +714,7 @@ function clearPhoneAtIndex(index, entry = {}) {
 
 async function acquireSmsNumbers(onlyIndexes = null, force = false) {
   const entries = sortedBaPoolEntries();
-  const existingRows = queueRows();
+  const existingRows = currentQueueRows();
   if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
   const country = $('paypalCountry').value;
   const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
@@ -1145,6 +1291,7 @@ function captureBatchInputValues() {
 
 function renderBatchJobs(jobs) {
   state.batchJobs = [...jobs].sort((a, b) => (a.batch_index || 0) - (b.batch_index || 0));
+  rememberBatchJobs(state.batchJobs);
   const panel = $('batchRunPanel');
   panel.hidden = false;
   const terminal = job => ['completed', 'failed', 'cancelled'].includes(job.status);
@@ -1463,6 +1610,7 @@ async function refreshSuccessStats() {
 (async function init() {
   await paypalCountriesReady;
   await checkHealth();
+  restoreOpenedAccountHistory();
   restoreProtocolFormState();
   applyWorkbenchPrefill();
   updateProtocolMode();

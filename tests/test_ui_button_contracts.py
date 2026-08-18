@@ -9,6 +9,7 @@ from payment_link_extractor.web.app import create_app
 ROOT = Path(__file__).resolve().parents[1]
 PAYPAL_HTML = ROOT / "paypal_agreement_protocol" / "web_static" / "index.html"
 PAYPAL_JS = ROOT / "paypal_agreement_protocol" / "web_static" / "app.js"
+PAYPAL_CSS = ROOT / "paypal_agreement_protocol" / "web_static" / "checkout-preview.css"
 EXTRACTOR_HTML = ROOT / "payment_link_extractor" / "web" / "templates" / "index.html"
 EXTRACTOR_JS = ROOT / "payment_link_extractor" / "web" / "static" / "app.js"
 
@@ -42,7 +43,7 @@ def _buttons(path: Path) -> list[dict[str, object]]:
 def test_both_interfaces_have_no_empty_or_implicit_static_buttons() -> None:
     paypal_buttons = _buttons(PAYPAL_HTML)
     extractor_buttons = _buttons(EXTRACTOR_HTML)
-    assert len(paypal_buttons) == 17
+    assert len(paypal_buttons) == 18
     assert len(extractor_buttons) == 22
 
     for button in paypal_buttons + extractor_buttons:
@@ -56,6 +57,7 @@ def test_paypal_interface_static_and_dynamic_buttons_are_wired() -> None:
     source = PAYPAL_JS.read_text(encoding="utf-8")
     direct_click_ids = {
         "themeToggle",
+        "clearInterfaceButton",
         "countryPickerToggle",
         "acquirePhonesButton",
         "refreshPhonesButton",
@@ -87,6 +89,27 @@ def test_paypal_interface_static_and_dynamic_buttons_are_wired() -> None:
         "data-batch-cancel",
     }:
         assert source.count(attribute) >= 2, attribute
+
+
+def test_paypal_account_display_history_is_token_scoped_and_manually_cleared() -> None:
+    source = PAYPAL_JS.read_text(encoding="utf-8")
+    html = PAYPAL_HTML.read_text(encoding="utf-8")
+    css = PAYPAL_CSS.read_text(encoding="utf-8")
+
+    assert 'id="clearInterfaceButton"' in html
+    assert 'type="button"' in html
+    assert "interface-refresh-button" in css
+    assert "const OPENED_ACCOUNT_HISTORY_KEY = 'paypal.protocol.opened-accounts.v1';" in source
+    assert "if (isNewPush && existingSignature) archiveCurrentAccountRows();" in source
+    assert "document.querySelector('#phone') && (phone || isNewPush)" in source
+    assert "const tokenMatchedJob = state.batchJobs.find(item => jobToken(item) === token);" in source
+    assert "indexedJobToken === token" in source
+    assert "return [...historyRows, ...currentRows]" in source
+    assert "const existingRows = currentQueueRows();" in source
+    assert "rememberBatchJobs(state.batchJobs);" in source
+    assert "clearOpenedAccountHistory();" in source
+    assert "window.history.replaceState({}, '', window.location.pathname);" in source
+    assert "entries.length === 1 ? state.batchJobs[0]" not in source
 
 
 def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:

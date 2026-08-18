@@ -28,6 +28,8 @@ body { min-width: 320px; background: var(--console-bg); color: var(--console-ink
 .brand small { letter-spacing: .08em; }
 .service-dot,.nav-return,.icon-button { border-radius: 8px; box-shadow: none; background: #fff; }
 .nav-return { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--console-line); padding: 0 12px; color: var(--console-muted); font-size: 11px; font-weight: 700; text-decoration: none; }
+.interface-refresh-button { cursor: pointer; font: 800 11px var(--body); }
+.interface-refresh-button:disabled { cursor: default; opacity: .62; }
 
 .account-console-shell { width: 100%; max-width: none; padding: 20px 14px 48px; }
 .console-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin-bottom: 16px; padding: 22px 24px; border: 1px solid #203c57; border-radius: 10px; background: linear-gradient(115deg,#132a40,#173751 72%,#174862); color: #fff; box-shadow: 0 12px 30px rgba(18,42,64,.12); }
