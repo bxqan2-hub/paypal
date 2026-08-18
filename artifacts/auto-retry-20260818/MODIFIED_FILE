@@ -1,7 +1,0 @@
-﻿BASE_COMMIT=261a81b3e4a8dfb2cb5069c8cd70dba4b37e8e12
-STATE=optimized-auto-retry
-CHANGED_BRANCH=payment_link_extractor/web/tasks.py: TaskManager._run_with_slot
-MAX_AUTO_RETRIES=3
-TOTAL_ATTEMPTS_ON_RETRY=4
-RETRYABLE=NetworkError|ProtocolError(408,425,429,>=500)|TimeoutError|ConnectionError|OSError
-NON_RETRYABLE=ConfigurationError|ProviderRequiresApproval|ExtractionCancelled|deterministic_protocol_4xx

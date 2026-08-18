@@ -843,25 +843,10 @@
       task.status = data.status || (event.type === "task.started" ? "running" : "queued");
       task.stage = event.type === "task.started" ? "running" : task.stage;
       task.progress = clampProgress(data.progress ?? task.progress);
-      task.attempt = Number(data.attempt ?? task.attempt ?? 1);
-      task.retry_count = Number(data.retry_count ?? task.retry_count ?? 0);
-      task.max_retries = Number(data.max_retries ?? task.max_retries ?? 3);
       task.account_email = data.account_email || task.account_email || "";
       task.payment_method = data.payment_method || task.payment_method || "";
       task.billing_country = data.billing_country || task.billing_country || "";
       task.retry_of = data.retry_of || task.retry_of || "";
-    } else if (event.type === "task.retrying" || event.type === "task.retry_started") {
-      task.status = data.status || "running";
-      task.stage = data.stage || (event.type === "task.retrying" ? "retrying" : "running");
-      task.progress = clampProgress(data.progress ?? task.progress);
-      task.attempt = Number(data.attempt ?? task.attempt ?? 1);
-      task.retry_count = Number(data.retry_count ?? task.retry_count ?? 0);
-      task.max_retries = Number(data.max_retries ?? task.max_retries ?? 3);
-      task.error = data.error || task.error || "";
-      task.network_error = Boolean(data.network_error);
-      task.message = event.type === "task.retrying"
-        ? `自动重试中（第 ${task.retry_count}/${task.max_retries} 次）`
-        : `第 ${task.attempt} 次提链尝试`;
     } else if (event.type === "task.checkout_detected") {
       task.session_kind = data.session_kind || task.session_kind || "";
       task.progress = clampProgress(data.progress ?? task.progress);
@@ -931,7 +916,6 @@
 
   function stageLabel(stage) {
     const labels = {
-      retrying: "自动重试中",
       queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", checkout: "创建 Checkout",
       checkout_update: "更新 Checkout", stripe_init: "初始化支付", elements_session: "准备支付方式",
       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",

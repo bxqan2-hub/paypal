@@ -23,11 +23,9 @@ from paypal.flow import PayPalFlow  # noqa: E402
 from paypal.manual_browser import browser_launch_profile  # noqa: E402
 from paypal.models import CardInfo, SessionState, generate_address, generate_user  # noqa: E402
 from paypal.proxy import ProxyConfig, ProxyEntry  # noqa: E402
-from payment_link_extractor.errors import ConfigurationError, NetworkError, ProtocolError  # noqa: E402
 from payment_link_extractor.models import ExtractionConfig  # noqa: E402
 from payment_link_extractor.web.app import create_app  # noqa: E402
 from payment_link_extractor.web.events import make_event  # noqa: E402
-from payment_link_extractor.web import tasks as task_module  # noqa: E402
 from payment_link_extractor.web.tasks import TaskManager  # noqa: E402
 
 
@@ -361,123 +359,3 @@ def test_extractor_and_protocol_events_share_secret_redaction() -> None:
     assert "+447700900123" not in protocol_encoded
     assert '"otp": "123456"' not in protocol_encoded
     assert "STATUS_WAIT_CODE" in protocol_encoded
-
-
-def _fixture_extraction_config() -> ExtractionConfig:
-    return ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://proxy.example.test:8080",
-        update_proxy="",
-        apply_checkout_update=False,
-    )
-
-
-def test_payment_link_task_retries_transient_failure_and_then_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempts = 0
-
-    def extractor(config, *, cancel_event, stage_callback):
-        nonlocal attempts
-        attempts += 1
-        stage_callback("checkout")
-        if attempts < 4:
-            raise NetworkError("checkout", "fixture transient failure")
-        return {"ok": True, "billing_country": config.country}
-
-    monkeypatch.setattr(task_module, "AUTO_RETRY_BACKOFF_SECONDS", (0, 0, 0))
-    manager = TaskManager(extractor, max_workers=1, concurrency=1)
-    history, subscriber = manager.subscribe()
-    try:
-        task_id = manager.create(_fixture_extraction_config())["task_id"]
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            if (manager.get(task_id) or {}).get("status") == "succeeded":
-                break
-            time.sleep(0.01)
-        snapshot = manager.get(task_id)
-        assert snapshot is not None
-        assert snapshot["status"] == "succeeded"
-        assert attempts == 4
-        assert snapshot["attempt"] == 4
-        assert snapshot["retry_count"] == 3
-        assert snapshot["max_retries"] == 3
-        events = history + list(subscriber.queue)
-        assert sum(event["type"] == "task.retrying" for event in events) == 3
-        assert any(event["type"] == "task.retry_started" for event in events)
-        assert any(event["type"] == "task.succeeded" for event in events)
-        assert not any(event["type"] == "task.failed" for event in events)
-    finally:
-        manager.unsubscribe(subscriber)
-        manager.close()
-
-
-def test_payment_link_task_stops_after_three_automatic_retries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempts = 0
-
-    def extractor(config, *, cancel_event, stage_callback):
-        nonlocal attempts
-        attempts += 1
-        raise NetworkError("checkout", "fixture persistent failure")
-
-    monkeypatch.setattr(task_module, "AUTO_RETRY_BACKOFF_SECONDS", (0, 0, 0))
-    manager = TaskManager(extractor, max_workers=1, concurrency=1)
-    history, subscriber = manager.subscribe()
-    try:
-        task_id = manager.create(_fixture_extraction_config())["task_id"]
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            if (manager.get(task_id) or {}).get("status") == "failed":
-                break
-            time.sleep(0.01)
-        snapshot = manager.get(task_id)
-        assert snapshot is not None
-        assert snapshot["status"] == "failed"
-        assert attempts == 4
-        assert snapshot["attempt"] == 4
-        assert snapshot["retry_count"] == 3
-        events = history + list(subscriber.queue)
-        assert sum(event["type"] == "task.retrying" for event in events) == 3
-        assert sum(event["type"] == "task.failed" for event in events) == 1
-    finally:
-        manager.unsubscribe(subscriber)
-        manager.close()
-
-
-def test_payment_link_task_does_not_retry_configuration_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    attempts = 0
-
-    def extractor(config, *, cancel_event, stage_callback):
-        nonlocal attempts
-        attempts += 1
-        raise ConfigurationError("fixture invalid configuration")
-
-    monkeypatch.setattr(task_module, "AUTO_RETRY_BACKOFF_SECONDS", (0, 0, 0))
-    manager = TaskManager(extractor, max_workers=1, concurrency=1)
-    _, subscriber = manager.subscribe()
-    try:
-        task_id = manager.create(_fixture_extraction_config())["task_id"]
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            if (manager.get(task_id) or {}).get("status") == "failed":
-                break
-            time.sleep(0.01)
-        snapshot = manager.get(task_id)
-        assert snapshot is not None
-        assert snapshot["status"] == "failed"
-        assert attempts == 1
-        assert snapshot["retry_count"] == 0
-    finally:
-        manager.unsubscribe(subscriber)
-        manager.close()
-
-
-def test_payment_link_retry_policy_only_covers_transient_protocol_statuses() -> None:
-    assert TaskManager._is_retryable(ProtocolError(408, "fixture timeout")) is True
-    assert TaskManager._is_retryable(ProtocolError(429, "fixture throttled")) is True
-    assert TaskManager._is_retryable(ProtocolError(503, "fixture upstream")) is True
-    assert TaskManager._is_retryable(ProtocolError(409, "fixture deterministic")) is False
