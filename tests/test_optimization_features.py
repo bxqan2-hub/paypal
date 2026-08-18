@@ -364,3 +364,26 @@ def test_extractor_and_protocol_events_share_secret_redaction() -> None:
     assert "+447700900123" not in protocol_encoded
     assert '"otp": "123456"' not in protocol_encoded
     assert "STATUS_WAIT_CODE" in protocol_encoded
+
+
+def test_protocol_step_emits_stage_event_not_cancelled() -> None:
+    job = protocol_web.WebJob(
+        id="stagefixture",
+        owner_device_id="devicefixture",
+        ba_token="BA-STAGEFIXTURE01",
+        phone="+447700900123",
+    )
+    job.set_status("running", "Starting protocol")
+    job.note_protocol_step("Phase 0: Initial page load")
+
+    assert job.status == "running"
+    assert job.events[-1]["type"] == "protocol.stage"
+    assert job.events[-1]["data"] == {
+        "status": "running",
+        "stage": job.stage,
+    }
+    assert not any(event["type"] == "protocol.cancelled" for event in job.events)
+
+    job.mark_cancelled()
+    assert job.status == "cancelled"
+    assert job.events[-1]["type"] == "protocol.cancelled"

@@ -1,0 +1,59 @@
+OBJECT=PayPal protocol normal-stage event correction
+BRANCH=main
+BASE_COMMIT=0c72c96f3e33d91782beae05cc3dcc46b7b6f285
+CHANGED_BRANCH=paypal_agreement_protocol/web.py::WebJob.note_protocol_step(event_type)
+CHANGED_FIELD=protocol.cancelled->protocol.stage
+RELATED_TEST=tests/test_optimization_features.py::test_protocol_step_emits_stage_event_not_cancelled
+
+ORIGINAL_WORKTREE_WEB_PY_SHA256=AF6894BDADE18F8D6D433B6C82F3279FE7E968EF583A898E8D0B158A564DC920
+BASELINE_GIT_BLOB_SHA256=184C078F90720DC374B5C31B07FB2551B8D074B2BE161F36D0F47A2E69CCA1F6
+MODIFIED_WEB_PY_SHA256=029A7E375A43DDD1B6DF85F63FE95617B06EB7175E6123A7D03DA1C5AEE633C0
+MODIFIED_TEST_SHA256=169BD6870B6F376A5A0192480450A4220EB45AD5FCCB777513B747C4AB23C730
+MODIFIED_FILE_SHA256=029A7E375A43DDD1B6DF85F63FE95617B06EB7175E6123A7D03DA1C5AEE633C0
+DIFF_FILE_SHA256=B7E6A6D69BB01EA4DE4ED84BD14827EDC86A8AB4E2BBCA38E26B66E2B1E46AB1
+ROLLBACK_FILE_SHA256=B9C94CD11D2E8A2CEB6613F9C393F4146DD6E4457CE20FC544C4C09B94D4ABD0
+
+MODIFIED_FILE=C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/MODIFIED_FILE
+DIFF_FILE=C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/DIFF_FILE.patch
+VERIFICATION_FILE=C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/VERIFICATION.txt
+ROLLBACK_FILE=C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/ROLLBACK.sh
+
+BASELINE_COMMAND_1=.venv\Scripts\python.exe -B - < normal-stage event probe
+BASELINE_INPUT_1=WebJob.note_protocol_step('Phase 0: Initial page load') on a queued job; exit 0 only for protocol.stage
+BASELINE_LITERAL_OUTPUT_1=EVENT_TYPE=protocol.cancelled; STATUS=queued
+BASELINE_RESULT_1=EXPECTED_DEFECT_REPRODUCED
+BASELINE_EXIT_1=1
+
+BASELINE_COMMAND_2=.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+BASELINE_INPUT_2=0c72c96 regression suite before the event correction
+BASELINE_LITERAL_OUTPUT_2=31 passed in 0.48s
+BASELINE_RESULT_2=PASS
+BASELINE_EXIT_2=0
+
+MODIFIED_COMMAND_1=.venv\Scripts\python.exe -B - < running normal-stage event probe
+MODIFIED_INPUT_1=WebJob.set_status('running','Starting protocol'); WebJob.note_protocol_step('Phase 0: Initial page load')
+MODIFIED_LITERAL_OUTPUT_1=EVENT_TYPE=protocol.stage; STATUS=running; CANCEL_REQUESTED=False
+MODIFIED_RESULT_1=PASS
+MODIFIED_EXIT_1=0
+
+MODIFIED_COMMAND_2=.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider tests/test_optimization_features.py::test_protocol_step_emits_stage_event_not_cancelled
+MODIFIED_INPUT_2=normal phase event followed by a real mark_cancelled transition
+MODIFIED_LITERAL_OUTPUT_2=1 passed in 0.21s
+MODIFIED_RESULT_2=PASS
+MODIFIED_EXIT_2=0
+
+MODIFIED_COMMAND_3=.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
+MODIFIED_INPUT_3=full regression suite after the event correction
+MODIFIED_LITERAL_OUTPUT_3=32 passed in 0.51s
+MODIFIED_RESULT_3=PASS
+MODIFIED_EXIT_3=0
+
+ROLLBACK_COMMAND="C:\Program Files\Git\bin\bash.exe" C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/ROLLBACK.sh C:/Users/Administrator/Desktop/提链/artifacts/protocol-stage-event-fix-20260818/ROLLBACK_PROBE.py
+ROLLBACK_INPUT=another copy of MODIFIED_FILE
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_RESTORED=C:\Users\Administrator\Desktop\提链\artifacts\protocol-stage-event-fix-20260818\ROLLBACK_PROBE.py; ROLLBACK_COPY_SHA256=184C078F90720DC374B5C31B07FB2551B8D074B2BE161F36D0F47A2E69CCA1F6; ROLLBACK_RESTORED_LINE=1155:self._emit_event_locked("protocol.cancelled", {; ROLLBACK_EXIT=0
+ROLLBACK_RESULT=PASS
+ROLLBACK_EXIT=0
+ROLLBACK_RESTORED_BEHAVIOR=NORMAL_STAGE_EVENT=protocol.cancelled; JOB_STATUS_UNCHANGED
+ROLLBACK_RESTORED_STATUS=baseline Git blob restored on the rollback copy
+
+MODIFIED_FILE_REMAINS_CHANGED=NORMAL_STAGE_EVENT=protocol.stage; JOB_STATUS=running; CANCEL_REQUESTED=False
