@@ -325,19 +325,24 @@ def test_dynamic_concurrency_api_is_authenticated_and_bounded() -> None:
 
 
 def test_extractor_and_protocol_events_share_secret_redaction() -> None:
+    paypal_url = "https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456"
     event = make_event(
         "fixture",
         "task.test",
         {
             "access_token": "secret-access-token",
-            "ba_token": "BA-ABCDEFGH123456",
+            "ba_token": "BA-SECRETEVENT01",
             "message": "Bearer header.payload.signature",
+            "result": {"provider_url": paypal_url, "paypal_url": paypal_url},
         },
     )
     encoded = json.dumps(event)
     assert "secret-access-token" not in encoded
-    assert "BA-ABCDEFGH123456" not in encoded
+    assert "BA-SECRETEVENT01" not in encoded
     assert "header.payload.signature" not in encoded
+    assert paypal_url in encoded
+    assert event["data"]["result"]["provider_url"] == paypal_url
+    assert event["data"]["result"]["paypal_url"] == paypal_url
 
     job = protocol_web.WebJob(
         id="eventfixture",

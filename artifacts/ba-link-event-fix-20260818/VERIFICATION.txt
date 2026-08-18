@@ -1,0 +1,17 @@
+﻿BA_LINK_EVENT_FIX
+BASELINE_COMMIT=5a721151e7217c529292e8768c675dfb620f4f30
+BASELINE_FILE_SHA256=eeb0083d7aca80c55e77bdcba753c4f5fabab401795640c5a7b814cc5406112e
+MODIFIED_FILE_SHA256=820723584643562652ff15653ddad8d316d1fa0abd0bf0301d0219a91a3796ae
+CHANGED_BRANCH=payment_link_extractor/web/events.py::sanitize_event_data(provider_url|paypal_url)
+RELATED_TEST=tests/test_optimization_features.py::test_extractor_and_protocol_events_share_secret_redaction
+
+BASELINE_COMMAND=python make_event(result provider_url=BA URL)
+BASELINE_OUTPUT=https://www.paypal.com/agreements/approve?ba_token=<redacted>
+BASELINE_EXIT=0
+MODIFIED_COMMAND=python make_event(result provider_url=BA URL)
+MODIFIED_OUTPUT=https://www.paypal.com/agreements/approve?ba_token=BA-ABCDEFGH123456
+MODIFIED_EXIT=0
+ROLLBACK_COMMAND=Git Bash ROLLBACK.sh rollback_probe.py
+ROLLBACK_OUTPUT=ROLLBACK_RESTORED=rollback_probe.py; blob matches HEAD
+ROLLBACK_EXIT=0
+RESTORED_BEHAVIOR=rollback copy exactly matches baseline events.py; working source remains modified
