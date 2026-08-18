@@ -15,3 +15,15 @@ ROLLBACK_COMMAND=Git Bash ROLLBACK.sh rollback_probe.py
 ROLLBACK_OUTPUT=ROLLBACK_RESTORED=rollback_probe.py; blob matches HEAD
 ROLLBACK_EXIT=0
 RESTORED_BEHAVIOR=rollback copy exactly matches baseline events.py; working source remains modified
+
+POST_RESTART_COMMAND=GET http://127.0.0.1:18794/api/health
+POST_RESTART_OUTPUT={"ok":true,"service":"payment-link-extractor"}
+POST_RESTART_EXIT=0
+UI_CHECK_COMMAND=GET / plus GET /static/app.js plus GET /paypal-pay/
+UI_CHECK_OUTPUT=PUSH_BUTTON_PRESENT=True; PUSH_HANDLER_PRESENT=True; BA_VALIDATOR_PRESENT=True; PROTOCOL_FORM_PRESENT=True; PHONE_BUTTON_PRESENT=True
+UI_CHECK_EXIT=0
+CORE_COMPARISON_COMMAND=git diff --quiet 92fe8ee ab677c2 -- payment_link_extractor/flows/cs_live.py payment_link_extractor/flows/oaics.py payment_link_extractor/application.py payment_link_extractor/checkout.py payment_link_extractor/stripe_common.py
+CORE_COMPARISON_OUTPUT=EXIT=0 (no core extraction diff)
+FULL_TEST_COMMAND=.venv\Scripts\python.exe -m pytest -q
+FULL_TEST_OUTPUT=31 passed in 0.46s
+FULL_TEST_EXIT=0
