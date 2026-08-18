@@ -5,14 +5,14 @@
   "changed_fields": {
     "new_push_phone": "restored previous phone -> blank unless the new push explicitly carries a phone",
     "job_row_binding": "single-row positional fallback -> BA-token-scoped match with guarded index fallback",
-    "opened_accounts": "current BA only -> session-scoped append-only display history, maximum 20",
+    "opened_accounts": "current BA only -> session-scoped append-only display history with no automatic row removal",
     "manual_refresh": "absent -> top refresh button clears UI history, transient fields, query string, and visible panels"
   },
   "modified_files": {
-    "paypal_agreement_protocol/web_static/app.js": "7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4",
+    "paypal_agreement_protocol/web_static/app.js": "91F7C7D959FA1E1961211ECC6FFA79B02AEB734EA7E2C38DE6949FB95CABA6D8",
     "paypal_agreement_protocol/web_static/index.html": "42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67",
     "paypal_agreement_protocol/web_static/checkout-preview.css": "71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C",
-    "tests/test_ui_button_contracts.py": "6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD",
+    "tests/test_ui_button_contracts.py": "64FCBA85EFF7057FBA0333B7AE276C1D012473AE128686B9E9BEE7204BE9EE24",
     "tests/test_optimization_features.py": "261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0"
   },
   "runtime_result": {

@@ -109,6 +109,7 @@ def test_paypal_account_display_history_is_token_scoped_and_manually_cleared() -
     assert "rememberBatchJobs(state.batchJobs);" in source
     assert "clearOpenedAccountHistory();" in source
     assert "window.history.replaceState({}, '', window.location.pathname);" in source
+    assert "MAX_OPENED_ACCOUNT_HISTORY" not in source
     assert "entries.length === 1 ? state.batchJobs[0]" not in source
 
 

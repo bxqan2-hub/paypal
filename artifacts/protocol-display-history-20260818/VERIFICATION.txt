@@ -2,7 +2,7 @@ OBJECT=PayPal protocol account-queue display
 BRANCH=main
 BASE_COMMIT=11c264610a13b96476aaf74f999f50a6ebe94753
 CHANGED_BRANCH=paypal_agreement_protocol/web_static/app.js::new-push state isolation, token-scoped row binding, opened-account session history, manual UI clear; paypal_agreement_protocol/web_static/index.html::top refresh button and asset versions; paypal_agreement_protocol/web_static/checkout-preview.css::refresh-button presentation; tests/test_ui_button_contracts.py::history/button regression; tests/test_optimization_features.py::asset-version regression
-CHANGED_FIELD=New account phone previous-value->blank unless explicitly supplied; job association positional single-row fallback->BA-token match; account display current-only->append session history up to 20; top refresh absent->manual interface clear; backend/core unchanged
+CHANGED_FIELD=New account phone previous-value->blank unless explicitly supplied; job association positional single-row fallback->BA-token match; account display current-only->append session history without automatic row removal; top refresh absent->manual interface clear; backend/core unchanged
 
 MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\MODIFIED_FILE
 DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\protocol-display-history-20260818\DIFF_FILE
@@ -14,10 +14,10 @@ ORIGINAL_WORKTREE_INDEX_HTML_SHA256=F6F359A090A448E22A481B25E3F773F9FEC221715E27
 ORIGINAL_WORKTREE_CSS_SHA256=DA75EF4FCC9E4832B8CB4AAB0D8D01634EE853076284C85B423E822909BAF974
 ORIGINAL_WORKTREE_UI_TEST_SHA256=D0CB8C97663C0841FFACF5222E68BF621DFE5633BD72CF68D70682AEBFDF3619
 ORIGINAL_WORKTREE_OPT_TEST_SHA256=61E8C6C336D684BE44F18E67F96E9D0FA18EA5A7DB18D15E0DC62AD34FB7865D
-MODIFIED_APP_JS_SHA256=7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4
+MODIFIED_APP_JS_SHA256=91F7C7D959FA1E1961211ECC6FFA79B02AEB734EA7E2C38DE6949FB95CABA6D8
 MODIFIED_INDEX_HTML_SHA256=42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67
 MODIFIED_CSS_SHA256=71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C
-MODIFIED_UI_TEST_SHA256=6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD
+MODIFIED_UI_TEST_SHA256=64FCBA85EFF7057FBA0333B7AE276C1D012473AE128686B9E9BEE7204BE9EE24
 MODIFIED_OPT_TEST_SHA256=261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0
 
 RUNTIME_LOG_COMMAND=Invoke-RestMethod -Uri http://127.0.0.1:18794/paypal-pay/api/jobs -TimeoutSec 5
@@ -69,11 +69,11 @@ BROWSER_LITERAL_OUTPUT_END
 BROWSER_RESULT=The first account remains as row 1 with its own phone; the new account is row 2 with no inherited phone; manual refresh alone clears the display and URL prefill.
 BROWSER_EXIT_STATUS=0
 
-TEST_COMMAND=git diff --check; node --check paypal_agreement_protocol/web_static/app.js; .\.venv\Scripts\python.exe -B -m compileall -q paypal_agreement_protocol payment_link_extractor tests; .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider; git diff --quiet HEAD -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal/flow.py payment_link_extractor/web/paypal_protocol.py
+TEST_COMMAND=git diff --check; node --check paypal_agreement_protocol/web_static/app.js; .\.venv\Scripts\python.exe -B -m compileall -q paypal_agreement_protocol payment_link_extractor tests; .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider; git diff --quiet 11c264610a13b96476aaf74f999f50a6ebe94753 -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal/flow.py payment_link_extractor/web/paypal_protocol.py
 TEST_INPUT=Current source tree, full test suite, and three protocol/extraction core files.
 TEST_LITERAL_OUTPUT_BEGIN
 ......................................                                   [100%]
-38 passed in 0.53s
+38 passed in 0.51s
 DIFF_CHECK_EXIT=0
 NODE_CHECK_EXIT=0
 COMPILE_EXIT=0
@@ -86,10 +86,10 @@ TEST_EXIT_STATUS=0
 ROLLBACK_COMMAND=PowerShell @'<Python tempfile copy probe invoking C:\Program Files\Git\bin\bash.exe artifacts/protocol-display-history-20260818/ROLLBACK.sh REPOSITORY TARGET_APP_JS TARGET_INDEX_HTML TARGET_CSS TARGET_UI_TEST TARGET_OPT_TEST>'@ | .\.venv\Scripts\python.exe -B -
 ROLLBACK_INPUT=Five temporary copies of modified UI/test files; canonical source blobs at base commit 11c264610a13b96476aaf74f999f50a6ebe94753; working source files were not rollback targets.
 ROLLBACK_LITERAL_OUTPUT_BEGIN
-BEFORE_APP_JS_SHA256=7381346033DBC58738C46B3531A8B0C660DD629DEEBF04E8DF46C298BFF243A4
+BEFORE_APP_JS_SHA256=91F7C7D959FA1E1961211ECC6FFA79B02AEB734EA7E2C38DE6949FB95CABA6D8
 BEFORE_INDEX_HTML_SHA256=42502A6D58F048CDBB43E891A5AE69880C264B30C267ECCEB32D296F9A387C67
 BEFORE_CSS_SHA256=71ECEE627167680540477FB47413D8B6657CB5448873D82849AC5E01304AF78C
-BEFORE_UI_TEST_SHA256=6764C0A77B39F789F741EE15AF50B7034B168EF98F0CB1A61EE1C0516F4691FD
+BEFORE_UI_TEST_SHA256=64FCBA85EFF7057FBA0333B7AE276C1D012473AE128686B9E9BEE7204BE9EE24
 BEFORE_OPT_TEST_SHA256=261540EFBB15AF600F22A46606CA9373253BDB45270B88C5192374F5216A83B0
 ROLLBACK_BASE=11c264610a13b96476aaf74f999f50a6ebe94753
 RESTORED_APP_JS_SHA256=55B3F9E579FA78AAAF87336C1187D82D0FF9862DB7B34350DBED89EE75638A1C

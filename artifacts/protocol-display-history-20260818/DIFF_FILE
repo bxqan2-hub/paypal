@@ -1,17 +1,16 @@
 diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
-index 29544b1..fb38bfa 100644
+index 29544b1..0db3e70 100644
 --- a/paypal_agreement_protocol/web_static/app.js
 +++ b/paypal_agreement_protocol/web_static/app.js
-@@ -3,6 +3,8 @@ const GROK_API_BASE = '/api/grok-trial';
+@@ -3,6 +3,7 @@ const GROK_API_BASE = '/api/grok-trial';
  const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
  const LEGACY_LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
  const PROCESS_RUNTIME_KEY = 'paypal.protocol.runtime.v2';
 +const OPENED_ACCOUNT_HISTORY_KEY = 'paypal.protocol.opened-accounts.v1';
-+const MAX_OPENED_ACCOUNT_HISTORY = 20;
 
  function isDefaultDemoBa(value) {
    return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
-@@ -27,21 +29,27 @@ function readSmsMaxPrice() {
+@@ -27,21 +28,27 @@ function readSmsMaxPrice() {
  function applyWorkbenchPrefill() {
    const params = new URLSearchParams(window.location.search);
    const existingBa = document.querySelector('#baToken')?.value || '';
@@ -43,7 +42,7 @@ index 29544b1..fb38bfa 100644
    saveProtocolFormState();
  }
  const $ = (id) => document.getElementById(id);
-@@ -67,6 +75,7 @@ const state = {
+@@ -67,6 +74,7 @@ const state = {
    activeLogJobId: '',
    activeLogToken: '',
    jobLogTimer: null,
@@ -51,7 +50,7 @@ index 29544b1..fb38bfa 100644
  };
 
  const vaultState = {
-@@ -122,7 +131,10 @@ function synchronizeProcessRuntime(runtimeId) {
+@@ -122,7 +130,10 @@ function synchronizeProcessRuntime(runtimeId) {
    let previous = '';
    try { previous = sessionStorage.getItem(PROCESS_RUNTIME_KEY) || ''; } catch (_) {}
    clearLegacyPersistentInputs();
@@ -63,7 +62,7 @@ index 29544b1..fb38bfa 100644
    if (!previous) {
      try { LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key)); } catch (_) {}
    }
-@@ -198,6 +210,25 @@ $('themeToggle').addEventListener('click', () => {
+@@ -198,6 +209,25 @@ $('themeToggle').addEventListener('click', () => {
    localStorage.setItem('pay153-theme', next);
    applyTheme(next);
  });
@@ -89,7 +88,7 @@ index 29544b1..fb38bfa 100644
  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
    if ((localStorage.getItem('pay153-theme') || 'system') === 'system') applyTheme('system');
  });
-@@ -378,6 +409,70 @@ function isTerminalJob(job) {
+@@ -378,6 +408,69 @@ function isTerminalJob(job) {
    return Boolean(job && ['completed', 'failed', 'cancelled'].includes(job.status));
  }
 
@@ -124,12 +123,12 @@ index 29544b1..fb38bfa 100644
 +  let saved = [];
 +  try { saved = JSON.parse(sessionStorage.getItem(OPENED_ACCOUNT_HISTORY_KEY) || '[]'); } catch (_) {}
 +  state.openedAccounts = Array.isArray(saved)
-+    ? saved.slice(-MAX_OPENED_ACCOUNT_HISTORY).filter(item => item && extractBa(item.token || item.link || ''))
++    ? saved.filter(item => item && extractBa(item.token || item.link || ''))
 +    : [];
 +}
 +
 +function persistOpenedAccountHistory() {
-+  try { sessionStorage.setItem(OPENED_ACCOUNT_HISTORY_KEY, JSON.stringify(state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY))); } catch (_) {}
++  try { sessionStorage.setItem(OPENED_ACCOUNT_HISTORY_KEY, JSON.stringify(state.openedAccounts)); } catch (_) {}
 +}
 +
 +function clearOpenedAccountHistory() {
@@ -153,14 +152,13 @@ index 29544b1..fb38bfa 100644
 +  };
 +  if (index >= 0) state.openedAccounts[index] = next;
 +  else state.openedAccounts.push(next);
-+  state.openedAccounts = state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY);
 +  persistOpenedAccountHistory();
 +}
 +
  function sortedBaPoolEntries() {
    const sourcePhones = phonePoolLines();
    const sourceEmails = emailPoolLines().length ? emailPoolLines() : state.prefillEmails;
-@@ -390,24 +485,73 @@ function sortedBaPoolEntries() {
+@@ -390,24 +483,73 @@ function sortedBaPoolEntries() {
    });
  }
 
@@ -238,7 +236,7 @@ index 29544b1..fb38bfa 100644
  function accountForRow(row) {
    const generated = row.job?.generated || {};
    return row.job?.account_email || row.email || generated.user?.email || generated.email || row.job?.result?.email || row.job?.result?.user_id || '';
-@@ -471,17 +615,19 @@ function renderAccountQueue() {
+@@ -471,17 +613,19 @@ function renderAccountQueue() {
      const [otpLabel, otpClass] = otpStateForRow(row);
      const [failure, failureClass] = failureForRow(row);
      const account = accountForRow(row);
@@ -265,7 +263,7 @@ index 29544b1..fb38bfa 100644
      return `<tr data-account-row="${row.index}">
        <td>${row.index}</td>
        <td><span class="account-value ${account ? '' : 'muted-value'}">${escapeHtml(account || '等待生成账号')}</span></td>
-@@ -568,7 +714,7 @@ function clearPhoneAtIndex(index, entry = {}) {
+@@ -568,7 +712,7 @@ function clearPhoneAtIndex(index, entry = {}) {
 
  async function acquireSmsNumbers(onlyIndexes = null, force = false) {
    const entries = sortedBaPoolEntries();
@@ -274,7 +272,7 @@ index 29544b1..fb38bfa 100644
    if (!entries.length) return showClientError('请先推送或填写 PayPal BA 链接');
    const country = $('paypalCountry').value;
    const indexes = Array.isArray(onlyIndexes) ? onlyIndexes : entries.map((_, index) => index);
-@@ -1145,6 +1291,7 @@ function captureBatchInputValues() {
+@@ -1145,6 +1289,7 @@ function captureBatchInputValues() {
 
  function renderBatchJobs(jobs) {
    state.batchJobs = [...jobs].sort((a, b) => (a.batch_index || 0) - (b.batch_index || 0));
@@ -282,7 +280,7 @@ index 29544b1..fb38bfa 100644
    const panel = $('batchRunPanel');
    panel.hidden = false;
    const terminal = job => ['completed', 'failed', 'cancelled'].includes(job.status);
-@@ -1463,6 +1610,7 @@ async function refreshSuccessStats() {
+@@ -1463,6 +1608,7 @@ async function refreshSuccessStats() {
  (async function init() {
    await paypalCountriesReady;
    await checkHealth();
@@ -346,7 +344,7 @@ index 8ab912f..de37a9c 100644
 
  def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
-index a086355..f27d65e 100644
+index a086355..7e7ae54 100644
 --- a/tests/test_ui_button_contracts.py
 +++ b/tests/test_ui_button_contracts.py
 @@ -9,6 +9,7 @@ from payment_link_extractor.web.app import create_app
@@ -374,7 +372,7 @@ index a086355..f27d65e 100644
          "countryPickerToggle",
          "acquirePhonesButton",
          "refreshPhonesButton",
-@@ -89,6 +91,27 @@ def test_paypal_interface_static_and_dynamic_buttons_are_wired() -> None:
+@@ -89,6 +91,28 @@ def test_paypal_interface_static_and_dynamic_buttons_are_wired() -> None:
          assert source.count(attribute) >= 2, attribute
 
 
@@ -396,6 +394,7 @@ index a086355..f27d65e 100644
 +    assert "rememberBatchJobs(state.batchJobs);" in source
 +    assert "clearOpenedAccountHistory();" in source
 +    assert "window.history.replaceState({}, '', window.location.pathname);" in source
++    assert "MAX_OPENED_ACCOUNT_HISTORY" not in source
 +    assert "entries.length === 1 ? state.batchJobs[0]" not in source
 +
 +

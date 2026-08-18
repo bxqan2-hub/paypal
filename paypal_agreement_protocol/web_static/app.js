@@ -4,7 +4,6 @@ const DEFAULT_DEMO_BA = 'BA-DEMO2026081701';
 const LEGACY_LAST_BA_PREFILL_KEY = 'paypal.protocol.last-ba.v1';
 const PROCESS_RUNTIME_KEY = 'paypal.protocol.runtime.v2';
 const OPENED_ACCOUNT_HISTORY_KEY = 'paypal.protocol.opened-accounts.v1';
-const MAX_OPENED_ACCOUNT_HISTORY = 20;
 
 function isDefaultDemoBa(value) {
   return String(value || '').toUpperCase().includes(DEFAULT_DEMO_BA);
@@ -440,12 +439,12 @@ function restoreOpenedAccountHistory() {
   let saved = [];
   try { saved = JSON.parse(sessionStorage.getItem(OPENED_ACCOUNT_HISTORY_KEY) || '[]'); } catch (_) {}
   state.openedAccounts = Array.isArray(saved)
-    ? saved.slice(-MAX_OPENED_ACCOUNT_HISTORY).filter(item => item && extractBa(item.token || item.link || ''))
+    ? saved.filter(item => item && extractBa(item.token || item.link || ''))
     : [];
 }
 
 function persistOpenedAccountHistory() {
-  try { sessionStorage.setItem(OPENED_ACCOUNT_HISTORY_KEY, JSON.stringify(state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY))); } catch (_) {}
+  try { sessionStorage.setItem(OPENED_ACCOUNT_HISTORY_KEY, JSON.stringify(state.openedAccounts)); } catch (_) {}
 }
 
 function clearOpenedAccountHistory() {
@@ -469,7 +468,6 @@ function upsertOpenedAccount(snapshot = {}) {
   };
   if (index >= 0) state.openedAccounts[index] = next;
   else state.openedAccounts.push(next);
-  state.openedAccounts = state.openedAccounts.slice(-MAX_OPENED_ACCOUNT_HISTORY);
   persistOpenedAccountHistory();
 }
 
