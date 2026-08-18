@@ -217,6 +217,8 @@ def test_protocol_inputs_are_transient_and_legacy_prefill_is_removed() -> None:
     assert '"runtime_id": PROCESS_RUNTIME_ID' in backend
     assert "paypal.protocol.runtime.v2" in javascript
     assert "app.js?v=20260818-session-runtime-1" in html
+    workbench_html = (ROOT / "payment_link_extractor" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "20260818-auto-retry-1" in workbench_html
 
 
 def test_browser_launch_profile_is_cross_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
