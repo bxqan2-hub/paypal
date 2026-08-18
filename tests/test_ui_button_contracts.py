@@ -125,6 +125,19 @@ def test_completed_paypal_accounts_are_excluded_from_phone_actions() -> None:
     assert "replaceTerminalNumber" not in source
 
 
+def test_masked_batch_jobs_stay_bound_and_signup_error_is_attributed_to_registration() -> None:
+    source = PAYPAL_JS.read_text(encoding="utf-8")
+
+    assert "const BATCH_ACCOUNT_MAP_KEY = 'paypal.protocol.batch-account-map.v1';" in source
+    assert "function registerBatchAccountMap(jobs = [], entries = sortedBaPoolEntries())" in source
+    assert "const mappedJob = state.batchJobs.find(item => batchAccountForJob(item)?.token === token);" in source
+    assert "const job = mappedJob || tokenMatchedJob" in source
+    assert "if (list[0] && typeof list[0] === 'object') registerBatchAccountMap(list);" in source
+    assert "function isAccountAlreadyExistsWithoutToken(job)" in source
+    assert "账号注册失败（短信验证码已接收并提交）" in source
+    assert "短信验证码已正常接收并提交" in source
+
+
 def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
     source = EXTRACTOR_JS.read_text(encoding="utf-8")
     bindings = {

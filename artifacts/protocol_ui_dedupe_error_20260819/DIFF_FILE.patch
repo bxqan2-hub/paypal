@@ -1,0 +1,123 @@
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 29a9ef0..bf7f9f2 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -6,0 +7 @@ const OPENED_ACCOUNT_HISTORY_KEY = 'paypal.protocol.opened-accounts.v1';
++const BATCH_ACCOUNT_MAP_KEY = 'paypal.protocol.batch-account-map.v1';
+@@ -77,0 +79 @@ const state = {
++  batchAccountMap: new Map(),
+@@ -105,0 +108 @@ function clearTransientSessionState(message = '') {
++    sessionStorage.removeItem(BATCH_ACCOUNT_MAP_KEY);
+@@ -111,0 +115 @@ function clearTransientSessionState(message = '') {
++  state.batchAccountMap.clear();
+@@ -419,0 +424,3 @@ function compactDisplayJob(job) {
++    batch_id: String(job.batch_id || ''),
++    batch_index: Number(job.batch_index || 0),
++    batch_total: Number(job.batch_total || 0),
+@@ -493,0 +501,44 @@ function jobToken(job) {
++function restoreBatchAccountMap() {
++  let saved = [];
++  try { saved = JSON.parse(sessionStorage.getItem(BATCH_ACCOUNT_MAP_KEY) || '[]'); } catch (_) {}
++  const pairs = Array.isArray(saved) ? saved : [];
++  state.batchAccountMap = new Map(pairs.flatMap(pair => {
++    const jobId = String(pair?.[0] || '');
++    const snapshot = pair?.[1] && typeof pair[1] === 'object' ? pair[1] : {};
++    const token = extractBa(snapshot.token || snapshot.link || '');
++    return jobId && token ? [[jobId, {
++      token,
++      link: String(snapshot.link || token),
++      email: String(snapshot.email || ''),
++      manualPhone: String(snapshot.manualPhone || ''),
++    }]] : [];
++  }));
++}
++
++function persistBatchAccountMap() {
++  try { sessionStorage.setItem(BATCH_ACCOUNT_MAP_KEY, JSON.stringify([...state.batchAccountMap])); } catch (_) {}
++}
++
++function registerBatchAccountMap(jobs = [], entries = sortedBaPoolEntries()) {
++  const objects = jobs.filter(job => job && typeof job === 'object' && job.id);
++  if (!objects.length) return;
++  const next = new Map();
++  objects.forEach((job, zeroIndex) => {
++    const queueIndex = Math.max(1, Number(job.batch_index || zeroIndex + 1)) - 1;
++    const entry = entries[queueIndex];
++    if (!entry?.token) return;
++    next.set(String(job.id), {
++      token: entry.token,
++      link: entry.link,
++      email: entry.email || '',
++      manualPhone: entry.manualPhone || '',
++    });
++  });
++  state.batchAccountMap = next;
++  persistBatchAccountMap();
++}
++
++function batchAccountForJob(job) {
++  return state.batchAccountMap.get(String(job?.id || '')) || null;
++}
++
+@@ -498,0 +550 @@ function currentQueueRows() {
++    const mappedJob = state.batchJobs.find(item => batchAccountForJob(item)?.token === token);
+@@ -500,0 +553 @@ function currentQueueRows() {
++    const indexedMapping = batchAccountForJob(indexedJob);
+@@ -502 +555,3 @@ function currentQueueRows() {
+-    const job = tokenMatchedJob || (indexedJob && (!indexedJobToken || indexedJobToken === token) ? indexedJob : null);
++    const job = mappedJob || tokenMatchedJob || (
++      indexedJob && !indexedMapping && (!indexedJobToken || indexedJobToken === token) ? indexedJob : null
++    );
+@@ -524 +579,3 @@ function rememberBatchJobs(jobs = []) {
+-    const token = jobToken(job);
++    const mapped = batchAccountForJob(job);
++    const previous = state.openedAccounts.find(item => String(item.job?.id || '') === String(job.id || ''));
++    const token = mapped?.token || extractBa(previous?.token || previous?.link || '') || jobToken(job);
+@@ -530,3 +587,3 @@ function rememberBatchJobs(jobs = []) {
+-      link: entry?.link || job.ba_token || token,
+-      phone: job.sms_current_phone || activation?.phone || entry?.manualPhone || job.phone || '',
+-      email: job.account_email || entry?.email || job.result?.email || '',
++      link: mapped?.link || entry?.link || previous?.link || job.ba_token || token,
++      phone: activation?.phone || mapped?.manualPhone || entry?.manualPhone || job.sms_current_phone || job.phone || previous?.phone || '',
++      email: job.account_email || mapped?.email || entry?.email || job.result?.email || previous?.email || '',
+@@ -576,0 +634,11 @@ function otpStateForRow(row) {
++function isAccountAlreadyExistsWithoutToken(job) {
++  const result = job?.result || {};
++  const message = `${result.error || ''} ${job?.error || ''}`;
++  return /ACCOUNT_ALREADY_EXISTS/i.test(message) && /no prior access token/i.test(message);
++}
++
++function stageForRow(row) {
++  if (isAccountAlreadyExistsWithoutToken(row.job)) return '账号注册失败（短信验证码已接收并提交）';
++  return row.job?.stage || (row.history ? '本次打开记录' : (row.phone ? '手机号已就绪' : '选择地区并获取手机号'));
++}
++
+@@ -579,0 +648,3 @@ function failureForRow(row) {
++  if (isAccountAlreadyExistsWithoutToken(job)) {
++    return ['账号邮箱已被 PayPal 注册，当前任务会话没有可复用的访问令牌；短信验证码已正常接收并提交。', 'failure-cell error'];
++  }
+@@ -620 +691 @@ function renderAccountQueue() {
+-    const stage = job?.stage || (row.history ? '本次打开记录' : (row.phone ? '手机号已就绪' : '选择地区并获取手机号'));
++    const stage = stageForRow(row);
+@@ -1375,0 +1447 @@ function startBatch(jobs) {
++  if (list[0] && typeof list[0] === 'object') registerBatchAccountMap(list);
+@@ -1623,0 +1696 @@ async function refreshSuccessStats() {
++  restoreBatchAccountMap();
+diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
+index ab8c962..517589f 100644
+--- a/tests/test_ui_button_contracts.py
++++ b/tests/test_ui_button_contracts.py
+@@ -127,0 +128,13 @@ def test_completed_paypal_accounts_are_excluded_from_phone_actions() -> None:
++def test_masked_batch_jobs_stay_bound_and_signup_error_is_attributed_to_registration() -> None:
++    source = PAYPAL_JS.read_text(encoding="utf-8")
++
++    assert "const BATCH_ACCOUNT_MAP_KEY = 'paypal.protocol.batch-account-map.v1';" in source
++    assert "function registerBatchAccountMap(jobs = [], entries = sortedBaPoolEntries())" in source
++    assert "const mappedJob = state.batchJobs.find(item => batchAccountForJob(item)?.token === token);" in source
++    assert "const job = mappedJob || tokenMatchedJob" in source
++    assert "if (list[0] && typeof list[0] === 'object') registerBatchAccountMap(list);" in source
++    assert "function isAccountAlreadyExistsWithoutToken(job)" in source
++    assert "账号注册失败（短信验证码已接收并提交）" in source
++    assert "短信验证码已正常接收并提交" in source
++
++

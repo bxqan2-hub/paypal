@@ -1,0 +1,70 @@
+CHANGED_BRANCH_FIELD: main / 协议支付界面：批次 job.id→原始 BA Token 映射分支；ACCOUNT_ALREADY_EXISTS 无会话令牌的注册阶段展示字段
+
+FOUR_ARTIFACT_PATHS:
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\protocol_ui_dedupe_error_20260819\MODIFIED_FILE.js
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\protocol_ui_dedupe_error_20260819\DIFF_FILE.patch
+VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\protocol_ui_dedupe_error_20260819\VERIFICATION.txt
+ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\protocol_ui_dedupe_error_20260819\ROLLBACK.sh
+
+HASHES:
+BASELINE_WORKTREE_SHA256_COMMAND: Get-FileHash -Algorithm SHA256 paypal_agreement_protocol/web_static/app.js
+BASELINE_WORKTREE_SHA256_INPUT: paypal_agreement_protocol/web_static/app.js at commit 9cfeda28ed3aeb7bddb94429ee591134e62dc437 before modification
+BASELINE_WORKTREE_SHA256_LITERAL_OUTPUT: 3acf82bcb321450313d54ac66137f1536164cbbcccbdab67c021171d75ea7076
+BASELINE_WORKTREE_SHA256_EXIT_STATUS: 0
+MODIFIED_SHA256_COMMAND: Get-FileHash -Algorithm SHA256 paypal_agreement_protocol/web_static/app.js; Get-FileHash -Algorithm SHA256 artifacts/protocol_ui_dedupe_error_20260819/MODIFIED_FILE.js
+MODIFIED_SHA256_INPUT: source file and MODIFIED_FILE copy
+MODIFIED_SHA256_LITERAL_OUTPUT: SOURCE_HASH=30c01844765c4115d0939d7fd79542f2c233f61c8766b143c36041be8e0f66e3; MODIFIED_COPY_HASH=30c01844765c4115d0939d7fd79542f2c233f61c8766b143c36041be8e0f66e3
+MODIFIED_SHA256_EXIT_STATUS: 0
+
+BASELINE_TEST:
+COMMAND: .venv\Scripts\python.exe -m pytest -q
+INPUT: repository HEAD 9cfeda28ed3aeb7bddb94429ee591134e62dc437 before this change
+LITERAL_OUTPUT:
+.......................................                                  [100%]
+39 passed in 0.52s
+BASELINE_EXIT=0
+EXIT_STATUS: 0
+
+BASELINE_BROWSER_REPRO:
+COMMAND: $js | agent-browser --session protocol-ui-baseline eval --stdin
+INPUT: two original BA values BA-0G1378403S294972X and BA-3BE791896V315020B; two API jobs with masked BA values BA-0G1_972X and BA-3BE_020B; second result.error is "Signup failed: ACCOUNT_ALREADY_EXISTS and no prior access token is available for this session."
+LITERAL_OUTPUT: "{\"row_count\":4,\"current_rows\":2,\"history_rows\":2,\"job_bound_current\":0,\"tokens\":[\"BA-0G1_972X\",\"BA-3BE_020B\",\"BA-0G1378403S294972X\",\"BA-3BE791896V315020B\"],\"failure\":\"SMS input received; continuing · Signup failed: ACCOUNT_ALREADY_EXISTS and no prior access token is available for this session.\"}"
+EXIT_STATUS: 0
+BASELINE_RESULT: same two accounts render as four rows; neither current row is bound to its job; the registration failure is presented as an SMS-stage failure.
+
+MODIFIED_TEST:
+COMMAND: C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe --check paypal_agreement_protocol/web_static/app.js; .venv\Scripts\python.exe -m pytest -q
+INPUT: modified UI source plus regression test
+LITERAL_OUTPUT:
+NODE_CHECK_EXIT=0
+........................................                                 [100%]
+40 passed in 0.50s
+MODIFIED_EXIT=0
+EXIT_STATUS: 0
+
+MODIFIED_BROWSER_VERIFICATION:
+COMMAND: $js | agent-browser --session protocol-ui-modified eval --stdin
+INPUT: the same two original BA values, the same two masked API jobs, and the same ACCOUNT_ALREADY_EXISTS error; registerBatchAccountMap(jobs); renderBatchJobs(jobs)
+LITERAL_OUTPUT: "{\"row_count\":2,\"current_rows\":2,\"history_rows\":0,\"job_bound_current\":2,\"tokens\":[\"BA-0G1378403S294972X\",\"BA-3BE791896V315020B\"],\"stage\":\"账号注册失败（短信验证码已接收并提交）\",\"failure\":\"账号邮箱已被 PayPal 注册，当前任务会话没有可复用的访问令牌；短信验证码已正常接收并提交。\",\"otp\":\"已自动提交\"}"
+EXIT_STATUS: 0
+MODIFIED_RESULT: the two accounts remain exactly two rows, both bind to their own jobs, and the failure is attributed to signup while SMS remains shown as submitted.
+
+NEW_PUSH_ISOLATION_VERIFICATION:
+COMMAND: $js | agent-browser --session protocol-ui-modified eval --stdin
+INPUT: archive the verified two-account batch; replace the current input with BA-NEWACCOUNT000001 and BA-NEWACCOUNT000002; renderAccountQueue()
+LITERAL_OUTPUT: "{\"row_count\":4,\"old_history\":2,\"new_current\":2,\"new_job_bound_current\":0,\"current_tokens\":[\"BA-NEWACCOUNT000001\",\"BA-NEWACCOUNT000002\"]}"
+EXIT_STATUS: 0
+RESULT: old rows remain as history, new accounts appear once each, and old completed/failed jobs do not attach to the new accounts.
+
+ROLLBACK_TEST_ON_COPY:
+COMMAND: bash artifacts/protocol_ui_dedupe_error_20260819/ROLLBACK.sh artifacts/protocol_ui_dedupe_error_20260819/rollback_probe.js
+INPUT: rollback_probe.js copied from MODIFIED_FILE.js; source file is not used as rollback target
+LITERAL_OUTPUT: ROLLBACK_OK command=git-show input=artifacts/protocol_ui_dedupe_error_20260819/rollback_probe.js result=restored baseline_worktree_sha256=3acf82bcb321450313d54ac66137f1536164cbbcccbdab67c021171d75ea7076 restored_git_blob_sha256=5041faff9cdbf40de15c7d3fb92e045c0bf900442e0b0e61990ffc4134f58fcf status=0
+EXIT_STATUS: 0
+ROLLBACK_BEHAVIOR_COMMAND: node --check artifacts/protocol_ui_dedupe_error_20260819/rollback_probe.js; inspect restored branch markers
+ROLLBACK_BEHAVIOR_INPUT: rollback_probe.js after ROLLBACK.sh
+ROLLBACK_BEHAVIOR_LITERAL_OUTPUT: {"node_check_exit":0,"mapped_job_branch":false,"account_exists_ui_attribution":false,"raw_failure_branch":true}
+ROLLBACK_BEHAVIOR_EXIT_STATUS: 0
+RESTORED_BEHAVIOR_STATUS: syntax is valid; the copied target is restored to commit 9cfeda28ed3aeb7bddb94429ee591134e62dc437; baseline token-only/index-guard matching and raw failure display are restored. The live MODIFIED_FILE and repository source remain changed.
+
+SCOPE_STATUS: paypal_agreement_protocol/paypal/flow.py and paypal_agreement_protocol/web.py are unchanged. Only UI state reconciliation/error presentation and its regression test changed; the protocol payment execution flow is unchanged.
