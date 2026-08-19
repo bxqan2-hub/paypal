@@ -1,0 +1,620 @@
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index de63684..7339e59 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -11,6 +11,7 @@ import importlib
+ import io
+ import json
+ import math
++import os
+ from pathlib import Path
+ import sys
+ import threading
+@@ -34,8 +35,25 @@ _protocol = importlib.import_module("paypal_agreement_protocol.web")
+ _SMS_CLIENT: HeroSMSClient | None = None
+ _SMS_WATCHERS: dict[str, threading.Thread] = {}
+ _SMS_WATCHERS_LOCK = threading.RLock()
++_SMS_RESERVATIONS_LOCK = threading.RLock()
++_SMS_RESERVATIONS_BY_PHONE: dict[str, dict[str, Any]] = {}
++_SMS_RESERVATIONS_BY_ACTIVATION: dict[str, str] = {}
+ SMS_ROTATION_MAX_ATTEMPTS = 3
+-SMS_ROTATION_WAIT_SECONDS = 150.0
++
++
++def _bounded_seconds_env(name: str, default: float, minimum: float, maximum: float) -> float:
++    try:
++        value = float(os.getenv(name, str(default)) or default)
++    except (TypeError, ValueError):
++        value = default
++    return max(minimum, min(maximum, value))
++
++
++SMS_ROTATION_WAIT_SECONDS = _bounded_seconds_env(
++    "HEROSMS_ROTATION_WAIT_SECONDS", 120.0, 30.0, 300.0,
++)
++SMS_UNIQUE_ACQUIRE_ATTEMPTS = 5
++SMS_RESERVATION_TTL_SECONDS = 60.0 * 60.0
+ SMS_TERMINAL_STATUSES = {
+     "STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8",
+ }
+@@ -60,6 +78,123 @@ def _sms_client() -> HeroSMSClient:
+     return _SMS_CLIENT
+ 
+ 
++def _sms_phone_key(value: Any) -> str:
++    return "".join(char for char in str(value or "") if char.isdigit())
++
++
++def _prune_sms_reservations_locked(now: float | None = None) -> None:
++    current = time.monotonic() if now is None else now
++    stale_ids = [
++        str(item.get("activation_id") or "")
++        for item in _SMS_RESERVATIONS_BY_PHONE.values()
++        if current - float(item.get("touched_at") or item.get("created_at") or current)
++        > SMS_RESERVATION_TTL_SECONDS
++    ]
++    for activation_id in stale_ids:
++        phone_key = _SMS_RESERVATIONS_BY_ACTIVATION.pop(activation_id, "")
++        if phone_key:
++            _SMS_RESERVATIONS_BY_PHONE.pop(phone_key, None)
++
++
++def _reserve_new_sms_activation(activation: dict[str, Any], owner: str = "pending") -> bool:
++    activation_id = str(activation.get("activation_id") or "").strip()
++    phone_key = _sms_phone_key(activation.get("phone"))
++    if not activation_id or not phone_key:
++        return False
++    with _SMS_RESERVATIONS_LOCK:
++        _prune_sms_reservations_locked()
++        if activation_id in _SMS_RESERVATIONS_BY_ACTIVATION or phone_key in _SMS_RESERVATIONS_BY_PHONE:
++            return False
++        now = time.monotonic()
++        _SMS_RESERVATIONS_BY_PHONE[phone_key] = {
++            "activation_id": activation_id,
++            "owner": str(owner or "pending"),
++            "created_at": now,
++            "touched_at": now,
++        }
++        _SMS_RESERVATIONS_BY_ACTIVATION[activation_id] = phone_key
++        return True
++
++
++def _claim_sms_activation(activation: dict[str, Any], owner: str) -> bool:
++    """Bind a pending activation to a job without permitting phone reuse."""
++    activation_id = str(activation.get("activation_id") or "").strip()
++    phone_key = _sms_phone_key(activation.get("phone"))
++    if not activation_id or not phone_key:
++        return False
++    with _SMS_RESERVATIONS_LOCK:
++        _prune_sms_reservations_locked()
++        registered_phone = _SMS_RESERVATIONS_BY_ACTIVATION.get(activation_id)
++        if registered_phone:
++            if registered_phone != phone_key:
++                return False
++            reservation = _SMS_RESERVATIONS_BY_PHONE.get(phone_key)
++            if not reservation:
++                return False
++            existing_owner = str(reservation.get("owner") or "pending")
++            requested_owner = str(owner or "pending")
++            if existing_owner not in {"pending", requested_owner}:
++                return False
++            reservation["owner"] = requested_owner
++            reservation["touched_at"] = time.monotonic()
++            return True
++        if phone_key in _SMS_RESERVATIONS_BY_PHONE:
++            return False
++        now = time.monotonic()
++        _SMS_RESERVATIONS_BY_PHONE[phone_key] = {
++            "activation_id": activation_id,
++            "owner": str(owner or "pending"),
++            "created_at": now,
++            "touched_at": now,
++        }
++        _SMS_RESERVATIONS_BY_ACTIVATION[activation_id] = phone_key
++        return True
++
++
++def _release_sms_reservation(activation_id: Any) -> None:
++    key = str(activation_id or "").strip()
++    if not key:
++        return
++    with _SMS_RESERVATIONS_LOCK:
++        phone_key = _SMS_RESERVATIONS_BY_ACTIVATION.pop(key, "")
++        if phone_key:
++            reservation = _SMS_RESERVATIONS_BY_PHONE.get(phone_key)
++            if str((reservation or {}).get("activation_id") or "") == key:
++                _SMS_RESERVATIONS_BY_PHONE.pop(phone_key, None)
++
++
++def _sms_activation_is_reserved(activation_id: Any) -> bool:
++    key = str(activation_id or "").strip()
++    with _SMS_RESERVATIONS_LOCK:
++        _prune_sms_reservations_locked()
++        return bool(key and key in _SMS_RESERVATIONS_BY_ACTIVATION)
++
++
++def _acquire_unique_sms_number(
++    client: HeroSMSClient,
++    country: str,
++    *,
++    max_price: float | None = None,
++    service: str | None = None,
++    owner: str = "pending",
++) -> dict[str, Any]:
++    """Acquire one number that is not reserved by another account/task."""
++    last_phone = ""
++    for _ in range(SMS_UNIQUE_ACQUIRE_ATTEMPTS):
++        activation = client.acquire_number(country, max_price=max_price, service=service)
++        if _reserve_new_sms_activation(activation, owner=owner):
++            return activation
++        activation_id = str(activation.get("activation_id") or "").strip()
++        last_phone = str(activation.get("phone") or "").strip()
++        # A provider may return the already-active activation itself. Do not
++        # cancel it because another account can still be waiting for its code.
++        if activation_id and not _sms_activation_is_reserved(activation_id):
++            client.finish(activation_id, 6)
++    suffix = _sms_phone_key(last_phone)[-4:]
++    detail = f" (尾号 {suffix})" if suffix else ""
++    raise HeroSMSError(f"HeroSMS 连续返回已分配给其他账号的手机号{detail}，请稍后重试")
++
++
+ class _HeaderMap:
+     def __init__(self, values: dict[str, str]) -> None:
+         self._values = {str(key).lower(): str(value) for key, value in values.items()}
+@@ -183,6 +318,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                 break
+ 
+             if registered_activation_id != activation_id:
++                if not _claim_sms_activation(current, job_id):
++                    add_log(job, "ERROR", "当前手机号已分配给其他账号，短信轮询已停止，请重新取号")
++                    current_closed = True
++                    try:
++                        job.cancel()
++                    except Exception:
++                        pass
++                    break
+                 mark_activation(job, current, attempt)
+                 registered_activation_id = activation_id
+             if job.status != "awaiting_otp":
+@@ -270,6 +413,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             else:
+                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
+             client.finish(activation_id, 8)
++            _release_sms_reservation(activation_id)
+             emit_event(job, "herosms.number.closed", {
+                 "activation_id": activation_id,
+                 "attempt": attempt,
+@@ -286,7 +430,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+ 
+             next_attempt = attempt + 1
+             try:
+-                replacement = client.acquire_number(str(getattr(job, "country", "") or ""))
++                replacement = _acquire_unique_sms_number(
++                    client,
++                    str(getattr(job, "country", "") or ""),
++                    owner=job_id,
++                )
+             except (HeroSMSError, ValueError) as exc:
+                 add_log(job, "ERROR", f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号失败：{exc}")
+                 try:
+@@ -321,6 +469,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+         current_id = str(current.get("activation_id") or "").strip()
+         if current_id and not current_closed:
+             client.finish(current_id, 6 if submitted else 8)
++        _release_sms_reservation(current_id)
+         with _SMS_WATCHERS_LOCK:
+             _SMS_WATCHERS.pop(job_id, None)
+ 
+@@ -359,7 +508,8 @@ def register_paypal_protocol(app: Any) -> None:
+             try:
+                 max_price = _parse_sms_max_price(data.get("max_price"))
+                 client = _sms_client()
+-                activation = client.acquire_number(
++                activation = _acquire_unique_sms_number(
++                    client,
+                     str(data.get("country") or ""),
+                     max_price=max_price,
+                     service=str(data.get("service") or "") or None,
+@@ -368,7 +518,9 @@ def register_paypal_protocol(app: Any) -> None:
+                 if max_price is not None and returned_price not in (None, ""):
+                     actual_price = float(returned_price)
+                     if not math.isfinite(actual_price) or actual_price > max_price + 1e-9:
+-                        client.finish(str(activation.get("activation_id") or ""), 6)
++                        rejected_activation_id = str(activation.get("activation_id") or "")
++                        client.finish(rejected_activation_id, 6)
++                        _release_sms_reservation(rejected_activation_id)
+                         return jsonify({
+                             "ok": False,
+                             "error": f"HeroSMS price {actual_price:.2f} exceeds max_price {max_price:.2f}",
+@@ -397,6 +549,8 @@ def register_paypal_protocol(app: Any) -> None:
+                 try:
+                     status = client.get_status(activation_id)
+                     status_name = str(status.get("status") or "").strip().upper()
++                    if status_name in terminal_statuses:
++                        _release_sms_reservation(activation_id)
+                     results.append({
+                         "activation_id": activation_id,
+                         "status": status_name,
+@@ -418,6 +572,7 @@ def register_paypal_protocol(app: Any) -> None:
+             if not activation_id:
+                 return jsonify({"ok": False, "error": "activation_id is required"}), 400
+             _sms_client().finish(activation_id, 6)
++            _release_sms_reservation(activation_id)
+             return jsonify({"ok": True, "activation_id": activation_id, "status": 6})
+         inner_path = "/" + protocol_path if protocol_path else "/"
+         body = request.get_data(cache=False)
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index bf7f9f2..ab05bf5 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -11,7 +11,10 @@ function isDefaultDemoBa(value) {
+ }
+ 
+ function stripDefaultDemoBa(value) {
+-  return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(item => item && !isDefaultDemoBa(item)).join('\n');
++  // Keep blank rows (especially the trailing row created by Enter) so manual
++  // entry remains a real multiline editor. Only the obsolete demo row is
++  // removed; baPoolLines() still ignores blanks when building the queue.
++  return String(value || '').split(/\r\n|\r|\n/).filter(item => !isDefaultDemoBa(item)).join('\n');
+ }
+ 
+ function readSmsMaxPrice() {
+@@ -77,6 +80,7 @@ const state = {
+   jobLogTimer: null,
+   openedAccounts: [],
+   batchAccountMap: new Map(),
++  baTokenOrder: [],
+ };
+ 
+ const vaultState = {
+@@ -113,6 +117,7 @@ function clearTransientSessionState(message = '') {
+   state.batchJobIds = [];
+   state.batchJobs = [];
+   state.batchAccountMap.clear();
++  state.baTokenOrder = [];
+   state.prefillEmails = [];
+   state.smsActivations.clear();
+   if (typeof clearMissingJob === 'function') clearMissingJob(message || '当前服务会话已重启，已清除上一会话数据');
+@@ -280,10 +285,27 @@ function updatePairCounts() {
+   $('phonePoolCount').classList.toggle('over-limit', phoneCount > 20);
+   renderAccountQueue();
+ }
++
++function reconcileBaPhoneAssignments() {
++  const previousPhones = phonePoolLines();
++  const phoneByToken = new Map();
++  state.baTokenOrder.forEach((token, index) => {
++    const phone = previousPhones[index] || '';
++    if (token && phone) phoneByToken.set(token, phone);
++  });
++  const nextTokens = baPoolLines().map(extractBa);
++  const nextPhones = nextTokens.map(token => (
++    state.smsActivations.get(token)?.phone || phoneByToken.get(token) || ''
++  ));
++  $('phone').value = nextPhones.join('\n');
++  state.baTokenOrder = nextTokens;
++}
++
+ $('baToken').addEventListener('input', () => {
+   const node = $('baToken');
+   const cleaned = stripDefaultDemoBa(node.value);
+   if (cleaned !== node.value) node.value = cleaned;
++  reconcileBaPhoneAssignments();
+   updatePairCounts();
+   saveProtocolFormState();
+ });
+@@ -403,6 +425,18 @@ updateBuyerModeHint();
+ function normalizePhone(value) {
+   return value.replace(/[\s().-]+/g, '');
+ }
++
++function duplicatePhoneIndexes(values) {
++  const seen = new Set();
++  const duplicates = [];
++  values.forEach((value, index) => {
++    const phone = normalizePhone(value || '');
++    if (!phone) return;
++    if (seen.has(phone)) duplicates.push(index);
++    else seen.add(phone);
++  });
++  return duplicates;
++}
+ function extractBa(value) {
+   const match = value.trim().match(/BA-[A-Za-z0-9]{8,80}/);
+   return match ? match[0] : value.trim();
+@@ -416,6 +450,16 @@ function isCompletedJob(job) {
+   return Boolean(job && job.status === 'completed');
+ }
+ 
++function currentQueueHasActiveJob() {
++  return currentQueueRows().some(row => row.job && !isTerminalJob(row.job));
++}
++
++function updateSubmitButtonAvailability() {
++  const button = $('submitButton');
++  if (!button) return;
++  button.disabled = button.dataset.submitting === '1' || currentQueueHasActiveJob();
++}
++
+ function compactDisplayJob(job) {
+   if (!job || typeof job !== 'object') return null;
+   return {
+@@ -522,7 +566,10 @@ function persistBatchAccountMap() {
+ function registerBatchAccountMap(jobs = [], entries = sortedBaPoolEntries()) {
+   const objects = jobs.filter(job => job && typeof job === 'object' && job.id);
+   if (!objects.length) return;
+-  const next = new Map();
++  // Keep mappings for already-running jobs when another independent account is
++  // started from the same page. Replacing this map made the previous task look
++  // like it belonged to the newly entered BA row.
++  const next = new Map(state.batchAccountMap);
+   objects.forEach((job, zeroIndex) => {
+     const queueIndex = Math.max(1, Number(job.batch_index || zeroIndex + 1)) - 1;
+     const entry = entries[queueIndex];
+@@ -680,6 +727,7 @@ function renderAccountQueue() {
+   $('queueDoneCount').textContent = String(rows.filter(row => row.job?.status === 'completed').length);
+   if (!rows.length) {
+     body.innerHTML = '<tr class="account-empty-row"><td colspan="11"><b>等待 BA 链接</b><span>从提链工作台推送后，账号会在这里横向排列显示。</span></td></tr>';
++    updateSubmitButtonAvailability();
+     return;
+   }
+   body.innerHTML = rows.map(row => {
+@@ -717,6 +765,7 @@ function renderAccountQueue() {
+     </tr>`;
+   }).join('');
+   bindAccountTableActions();
++  updateSubmitButtonAvailability();
+ }
+ 
+ function syncPhonePoolFromActivations() {
+@@ -821,6 +870,12 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+       }
+       if (button) button.querySelector('b').textContent = `正在取号 ${index + 1}/${entries.length}`;
+       let replacement = null;
++      const reservedPhones = new Set(
++        [...state.smsActivations.entries()]
++          .filter(([reservedToken]) => reservedToken !== token)
++          .map(([, activation]) => normalizePhone(activation?.phone || ''))
++          .filter(Boolean),
++      );
+       for (let attempt = 1; attempt <= 3; attempt += 1) {
+         const smsPayload = {country};
+         if (maxPrice !== null) smsPayload.max_price = maxPrice;
+@@ -830,12 +885,18 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+         const smsPrice = Number(sms.price);
+         const priceError = maxPrice !== null && Number.isFinite(smsPrice) && smsPrice > maxPrice + 1e-9
+           ? `\u8fd4\u56de\u4ef7\u683c ${smsPrice.toFixed(2)} \u8d85\u8fc7\u4e0a\u9650 ${maxPrice.toFixed(2)}` : '';
+-        const error = priceError || phoneValidationError(sms.phone, country);
++        const normalizedSmsPhone = normalizePhone(sms.phone || '');
++        const duplicateError = reservedPhones.has(normalizedSmsPhone)
++          ? '该手机号已分配给其他账号' : '';
++        const error = priceError || duplicateError || phoneValidationError(sms.phone, country);
+         if (!error) {
+           replacement = {...sms, token, index: index + 1};
+           break;
+         }
+-        await cancelSmsActivation(sms);
++        const duplicatesExistingActivation = [...state.smsActivations.values()].some(activation => (
++          String(activation?.activation_id || '') === String(sms.activation_id || '')
++        ));
++        if (!duplicatesExistingActivation) await cancelSmsActivation(sms);
+         if (attempt === 3) throw new Error(`第 ${index + 1} 个手机号连续无效：${error}`);
+       }
+       state.smsActivations.set(token, replacement);
+@@ -1030,7 +1091,7 @@ function renderJob(job) {
+   setProgress(progressFor(job), job.stage || label, job.status === 'awaiting_otp' ? '需要操作' : label);
+   $('cancelButton').hidden = !job.cancellable;
+   $('cancelButton').disabled = job.status === 'cancelling';
+-  $('submitButton').disabled = job.cancellable;
++  updateSubmitButtonAvailability();
+   $('otpPanel').hidden = !job.awaiting_otp;
+   $('captchaPanel').hidden = !job.awaiting_captcha;
+   if (job.awaiting_otp) {
+@@ -1150,7 +1211,8 @@ function clearMissingJob(message = '') {
+   $('browserPanel').hidden = true;
+   $('cancelButton').hidden = true;
+   $('cancelButton').disabled = false;
+-  $('submitButton').disabled = false;
++  $('submitButton').dataset.submitting = '0';
++  updateSubmitButtonAvailability();
+   $('resultPanel').hidden = true;
+   $('logBox').innerHTML = '<div class="empty-log">\u5f53\u524d\u4efb\u52a1\u5df2\u7ed3\u675f\u6216\u670d\u52a1\u91cd\u542f\uff0c\u8bf7\u91cd\u65b0\u63d0\u4ea4\u3002</div>';
+   $('statusBadge').textContent = '\u7b49\u5f85';
+@@ -1418,7 +1480,6 @@ function renderBatchJobs(jobs) {
+   }
+   const hasActive = jobs.some(job => !terminal(job));
+   $('cancelBatchButton').hidden = !hasActive;
+-  $('submitButton').disabled = hasActive;
+   renderAccountQueue();
+ }
+ 
+@@ -1436,19 +1497,27 @@ async function refreshBatchJobs() {
+   const active = jobs.some(job => !['completed', 'failed', 'cancelled'].includes(job.status));
+   if (active) state.batchPollTimer = setTimeout(refreshBatchJobs, 1800);
+   else {
+-    $('submitButton').disabled = false;
+     $('cancelBatchButton').hidden = true;
+     sessionStorage.removeItem('paypal-protocol-batch');
++    state.batchJobIds = [];
++    updateSubmitButtonAvailability();
+   }
+ }
+ 
+ function startBatch(jobs) {
+   const list = Array.isArray(jobs) ? jobs : [];
+   if (list[0] && typeof list[0] === 'object') registerBatchAccountMap(list);
+-  state.batchJobIds = list.map(job => typeof job === 'string' ? job : job.id).filter(Boolean);
++  const incomingIds = list.map(job => typeof job === 'string' ? job : job.id).filter(Boolean);
++  state.batchJobIds = [...new Set([...state.batchJobIds, ...incomingIds])];
+   if (!state.batchJobIds.length) return;
+   sessionStorage.setItem('paypal-protocol-batch', JSON.stringify(state.batchJobIds));
+-  if (list[0] && typeof list[0] === 'object') renderBatchJobs(list);
++  if (list[0] && typeof list[0] === 'object') {
++    const merged = new Map(
++      state.batchJobs.filter(job => !isTerminalJob(job)).map(job => [String(job.id), job]),
++    );
++    list.forEach(job => merged.set(String(job.id), job));
++    renderBatchJobs([...merged.values()]);
++  }
+   refreshBatchJobs();
+ }
+ 
+@@ -1480,21 +1549,29 @@ $('cancelBatchButton').addEventListener('click', async () => {
+ $('protocolForm').addEventListener('submit', async (event) => {
+   event.preventDefault();
+   if (protocolMode() === 'braintree') return;
++  if (currentQueueHasActiveJob()) return showClientError('当前 BA 账号已经在执行，请填写新的 BA 链接后再开始');
+   const baEntries = sortedBaPoolEntries();
+   const baValues = baEntries.map(entry => entry.link);
+   const selectedCountryOption = $('paypalCountry').selectedOptions[0];
+   if (selectedCountryOption?.dataset.live !== '1' && !dynamicCountriesEnabled) return showClientError('\u8be5\u56fd\u5bb6\u5df2\u8fdb\u5165\u5b9e\u65f6\u89e3\u6790\u76ee\u5f55\uff0c\u52a8\u6001\u56fd\u5bb6\u6267\u884c\u5f00\u5173\u5f53\u524d\u5173\u95ed');
+-  let phones = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '').filter(Boolean);
++  let phoneCandidates = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '');
++  let phones = phoneCandidates.filter(Boolean);
+   const country = $('paypalCountry').value;
+   const proxies = proxyLines();
+   if (!baValues.length) return showClientError('请填写 BA 链池');
+   if (baValues.length > 20) return showClientError('BA 链池最多支持 20 条');
+-  if (phones.length !== baValues.length || phones.some(value => !value)) {
++  let duplicateIndexes = duplicatePhoneIndexes(phoneCandidates);
++  const missingIndexes = phoneCandidates.flatMap((value, index) => value ? [] : [index]);
++  if (missingIndexes.length || duplicateIndexes.length) {
+     setProgress(4, '正在按账号队列获取 HeroSMS 手机号', 'SMS');
+-    await acquireSmsNumbers();
+-    phones = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || '').filter(Boolean);
+-    if (phones.length !== baValues.length) {
+-      $('submitButton').disabled = false;
++    const repairIndexes = [...new Set([...missingIndexes, ...duplicateIndexes])];
++    await acquireSmsNumbers(repairIndexes, duplicateIndexes.length > 0);
++    phoneCandidates = baEntries.map(entry => state.smsActivations.get(entry.token)?.phone || entry.manualPhone || '');
++    phones = phoneCandidates.filter(Boolean);
++    duplicateIndexes = duplicatePhoneIndexes(phoneCandidates);
++    if (phones.length !== baValues.length || duplicateIndexes.length) {
++      $('submitButton').dataset.submitting = '0';
++      updateSubmitButtonAvailability();
+       return showClientError('仍有账号未获取到接码手机号，请重试取号');
+     }
+   }
+@@ -1508,7 +1585,8 @@ $('protocolForm').addEventListener('submit', async (event) => {
+   if (invalidPhoneIndex >= 0) return showClientError(`第 ${invalidPhoneIndex + 1} 个手机号：${phoneValidationError(phones[invalidPhoneIndex], country)}`);
+   if (!proxies.length) return showClientError(`请至少填写一条 ${country} 代理`);
+   if (proxies.length > 500) return showClientError('代理池最多支持 500 条');
+-  $('submitButton').disabled = true;
++  $('submitButton').dataset.submitting = '1';
++  updateSubmitButtonAvailability();
+   $('batchRunPanel').hidden = false;
+   $('batchRunSummary').textContent = `正在创建 ${baValues.length} 个独立任务…`;
+   $('batchRunPercent').textContent = '0%';
+@@ -1529,9 +1607,12 @@ $('protocolForm').addEventListener('submit', async (event) => {
+     if (emailValues.some(Boolean)) payload.emails = emailValues;
+     const data = await api('/jobs', {method:'POST', body:JSON.stringify(payload)});
+     startBatch(data.jobs || []);
++    $('submitButton').dataset.submitting = '0';
++    updateSubmitButtonAvailability();
+     await refreshJobs();
+   } catch (error) {
+-    $('submitButton').disabled = false;
++    $('submitButton').dataset.submitting = '0';
++    updateSubmitButtonAvailability();
+     showClientError(error.message);
+   }
+ });
+@@ -1697,6 +1778,7 @@ async function refreshSuccessStats() {
+   restoreOpenedAccountHistory();
+   restoreProtocolFormState();
+   applyWorkbenchPrefill();
++  state.baTokenOrder = baPoolLines().map(extractBa);
+   updateProtocolMode();
+   updateVaultRegion();
+   updateCountryFields();
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index 53a9b90..d3260c4 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -12,6 +12,7 @@ if str(PROTOCOL_ROOT) not in sys.path:
+     sys.path.insert(0, str(PROTOCOL_ROOT))
+ 
+ import web as protocol_web  # noqa: E402
++from payment_link_extractor.web import paypal_protocol as protocol_bridge  # noqa: E402
+ 
+ 
+ class ProtocolRetryTests(unittest.TestCase):
+@@ -83,6 +84,78 @@ class FrontendRegressionTests(unittest.TestCase):
+         self.assertIn("function pushPaypalTasks", extractor_js)
+         self.assertIn("links.join('\\n')", extractor_js)
+ 
++    def test_multiline_entry_parallel_start_and_phone_rebinding_are_wired(self) -> None:
++        protocol_js = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
++
++        self.assertIn(".filter(item => !isDefaultDemoBa(item)).join('\\n')", protocol_js)
++        self.assertNotIn(".filter(item => item && !isDefaultDemoBa(item)).join('\\n')", protocol_js)
++        self.assertIn("function reconcileBaPhoneAssignments()", protocol_js)
++        self.assertIn("state.baTokenOrder = nextTokens;", protocol_js)
++        self.assertIn("const next = new Map(state.batchAccountMap);", protocol_js)
++        self.assertIn("state.batchJobIds = [...new Set([...state.batchJobIds, ...incomingIds])]", protocol_js)
++        self.assertIn("function currentQueueHasActiveJob()", protocol_js)
++        self.assertNotIn("$('submitButton').disabled = hasActive;", protocol_js)
++        self.assertIn("duplicatePhoneIndexes(phoneCandidates)", protocol_js)
++        bridge_source = (ROOT / "payment_link_extractor" / "web" / "paypal_protocol.py").read_text(encoding="utf-8")
++        self.assertIn('"HEROSMS_ROTATION_WAIT_SECONDS", 120.0, 30.0, 300.0', bridge_source)
++
++
++class SmsReservationRegressionTests(unittest.TestCase):
++    def setUp(self) -> None:
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++    def tearDown(self) -> None:
++        self.setUp()
++
++    def test_unique_acquire_rejects_a_phone_reserved_by_another_account(self) -> None:
++        class FakeClient:
++            def __init__(self) -> None:
++                self.items = [
++                    {"activation_id": "activation-2", "phone": "+447700900122"},
++                    {"activation_id": "activation-3", "phone": "+447700900133"},
++                ]
++                self.finished: list[tuple[str, int]] = []
++
++            def acquire_number(self, *_args, **_kwargs):
++                return self.items.pop(0)
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++        first = {"activation_id": "activation-1", "phone": "+447700900122"}
++        self.assertTrue(protocol_bridge._reserve_new_sms_activation(first, owner="job-1"))
++        client = FakeClient()
++
++        result = protocol_bridge._acquire_unique_sms_number(client, "GB", owner="job-2")
++
++        self.assertEqual(result["activation_id"], "activation-3")
++        self.assertEqual(client.finished, [("activation-2", 6)])
++        self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-1"))
++        self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-3"))
++
++    def test_duplicate_provider_activation_is_never_cancelled(self) -> None:
++        class FakeClient:
++            def __init__(self) -> None:
++                self.finished: list[tuple[str, int]] = []
++
++            def acquire_number(self, *_args, **_kwargs):
++                return {"activation_id": "activation-1", "phone": "+447700900122"}
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++        first = {"activation_id": "activation-1", "phone": "+447700900122"}
++        self.assertTrue(protocol_bridge._reserve_new_sms_activation(first, owner="job-1"))
++        client = FakeClient()
++
++        with self.assertRaises(protocol_bridge.HeroSMSError):
++            protocol_bridge._acquire_unique_sms_number(client, "GB", owner="job-2")
++
++        self.assertEqual(client.finished, [])
++        self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-1"))
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
