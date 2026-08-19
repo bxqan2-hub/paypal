@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+from flask import Flask
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
@@ -12,6 +15,7 @@ if str(PROTOCOL_ROOT) not in sys.path:
     sys.path.insert(0, str(PROTOCOL_ROOT))
 
 import web as protocol_web  # noqa: E402
+from paypal_agreement_protocol import herosms as herosms_module  # noqa: E402
 from payment_link_extractor.web import paypal_protocol as protocol_bridge  # noqa: E402
 
 
@@ -156,6 +160,95 @@ class ProtocolRetryTests(unittest.TestCase):
         self.assertEqual(attempt.call_count, 1)
         self.assertEqual(job.retry_count, 0)
         self.assertEqual(job.status, "failed")
+
+
+class HeroSMSNoNumbersRegressionTests(unittest.TestCase):
+    def test_no_numbers_404_is_classified_as_retryable_inventory_error(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        client.api_key = "fixture-key"
+        request = httpx.Request("GET", client.base_url)
+        response = httpx.Response(
+            404,
+            request=request,
+            json={"title": "NO_NUMBERS", "details": "Numbers Not Found. Try Later"},
+        )
+
+        with patch.object(herosms_module.httpx, "get", return_value=response):
+            with self.assertRaises(herosms_module.HeroSMSNoNumbersError) as raised:
+                client._request("getNumberV2", country=16, service="ts")
+
+        self.assertEqual(raised.exception.provider_code, "NO_NUMBERS")
+        self.assertTrue(raised.exception.retryable)
+        self.assertNotIn("HTTP 404", str(raised.exception))
+
+    def test_number_acquisition_retries_no_inventory_with_backoff(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        client.number_retry_attempts = 3
+        client.number_retry_delay = 0.25
+        no_numbers = herosms_module.HeroSMSNoNumbersError
+        responses = [
+            no_numbers(),
+            no_numbers(),
+            {"activationId": "activation-new", "phoneNumber": "447700900124"},
+        ]
+
+        with (
+            patch.object(client, "resolve_country_id", return_value=16),
+            patch.object(client, "resolve_service_code", return_value="ts"),
+            patch.object(client, "_request", side_effect=responses) as request_call,
+            patch.object(herosms_module.time, "sleep") as sleep,
+        ):
+            activation = client.acquire_number("GB")
+
+        self.assertEqual(activation["phone"], "+447700900124")
+        self.assertEqual(request_call.call_count, 3)
+        self.assertEqual([item.args[0] for item in sleep.call_args_list], [0.25, 0.5])
+
+    def test_number_acquisition_reports_attempt_count_after_inventory_exhaustion(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        client.number_retry_attempts = 3
+        client.number_retry_delay = 0.25
+
+        with (
+            patch.object(client, "resolve_country_id", return_value=16),
+            patch.object(client, "resolve_service_code", return_value="ts"),
+            patch.object(
+                client,
+                "_request",
+                side_effect=[
+                    herosms_module.HeroSMSNoNumbersError(),
+                    herosms_module.HeroSMSNoNumbersError(),
+                    herosms_module.HeroSMSNoNumbersError(),
+                ],
+            ),
+            patch.object(herosms_module.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(herosms_module.HeroSMSNoNumbersError) as raised:
+                client.acquire_number("GB")
+
+        self.assertEqual(raised.exception.attempts, 3)
+        self.assertEqual([item.args[0] for item in sleep.call_args_list], [0.25, 0.5])
+
+    def test_sms_number_route_returns_structured_no_inventory_result(self) -> None:
+        class NoInventoryClient:
+            def acquire_number(self, *_args, **_kwargs):
+                raise herosms_module.HeroSMSNoNumbersError(
+                    attempts=4, retry_after_seconds=4,
+                )
+
+        app = Flask("herosms-no-numbers-test")
+        protocol_bridge.register_paypal_protocol(app)
+        with patch.object(protocol_bridge, "_sms_client", return_value=NoInventoryClient()):
+            response = app.test_client().post(
+                "/paypal-pay/api/sms/number", json={"country": "GB"},
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["code"], "NO_NUMBERS")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["attempts"], 4)
+        self.assertIn("已自动重试 4 次", payload["error"])
 
 
 class FrontendRegressionTests(unittest.TestCase):

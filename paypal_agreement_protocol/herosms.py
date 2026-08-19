@@ -19,6 +19,24 @@ class HeroSMSError(RuntimeError):
     """Raised when HeroSMS cannot allocate or read an activation."""
 
 
+class HeroSMSNoNumbersError(HeroSMSError):
+    """Raised when the selected HeroSMS country/service has no inventory."""
+
+    provider_code = "NO_NUMBERS"
+    retryable = True
+
+    def __init__(
+        self,
+        message: str = "HeroSMS 当前地区暂时没有可用号码，请稍后重试",
+        *,
+        attempts: int = 1,
+        retry_after_seconds: int = 5,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = max(1, int(attempts))
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
 _FALLBACK_COUNTRY_IDS = {
     "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
@@ -44,6 +62,11 @@ class HeroSMSClient:
         self.default_max_price = _optional_float(os.getenv("HEROSMS_MAX_PRICE", ""))
         self.poll_interval = max(2.0, _optional_float(os.getenv("HEROSMS_POLL_INTERVAL", "5")) or 5.0)
         self.timeout = max(30.0, _optional_float(os.getenv("HEROSMS_TIMEOUT", "1800")) or 1800.0)
+        self.number_retry_attempts = _bounded_int(
+            os.getenv("HEROSMS_NUMBER_RETRY_ATTEMPTS", "4"), 4, 1, 8,
+        )
+        retry_delay = _optional_float(os.getenv("HEROSMS_NUMBER_RETRY_DELAY", "1"))
+        self.number_retry_delay = max(0.2, min(5.0, retry_delay if retry_delay is not None else 1.0))
         self._countries: Any = None
         self._services_by_country: dict[int, list[dict[str, str]]] = {}
 
@@ -60,6 +83,18 @@ class HeroSMSClient:
             response = httpx.get(self.base_url, params=query, timeout=30.0)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            error_payload: dict[str, Any] = {}
+            try:
+                parsed_error = exc.response.json()
+                if isinstance(parsed_error, dict):
+                    error_payload = parsed_error
+            except ValueError:
+                pass
+            provider_code = str(
+                error_payload.get("title") or error_payload.get("code") or ""
+            ).strip().upper()
+            if exc.response.status_code == 404 and provider_code == "NO_NUMBERS":
+                raise HeroSMSNoNumbersError() from exc
             body = exc.response.text.strip().replace("\n", " ")[:300]
             detail = f"HTTP {exc.response.status_code}"
             if body:
@@ -151,9 +186,19 @@ class HeroSMSClient:
             # maxPrice is absent. Sending both makes getNumberV2 reject the
             # request with HTTP 422.
             number_params["maxPrice"] = price
-        payload = self._request(
-            "getNumberV2", **number_params,
-        )
+        payload: Any = None
+        for attempt in range(1, self.number_retry_attempts + 1):
+            try:
+                payload = self._request("getNumberV2", **number_params)
+                break
+            except HeroSMSNoNumbersError as exc:
+                exc.attempts = attempt
+                exc.retry_after_seconds = max(
+                    1, int(round(self.number_retry_delay * self.number_retry_attempts)),
+                )
+                if attempt >= self.number_retry_attempts:
+                    raise
+                time.sleep(self.number_retry_delay * attempt)
         activation_id, phone, cost = _parse_activation(payload)
         if not activation_id or not phone:
             raise HeroSMSError("HeroSMS returned no activation number")
@@ -207,6 +252,14 @@ def _optional_float(value: str) -> float | None:
         return float(value) if str(value).strip() else None
     except (TypeError, ValueError):
         return None
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 def _country_entries(payload: Any):

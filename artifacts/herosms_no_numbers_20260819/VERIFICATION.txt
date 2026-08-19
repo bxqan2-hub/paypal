@@ -1,0 +1,48 @@
+BRANCH_FIELD_RESULT=main / HeroSMS getNumberV2 NO_NUMBERS handling / 404 inventory misses are classified and retried with backoff without changing payment core
+BASE_COMMIT=c9c1a75395edca8d0d0c6dba95ec56933b43ef04
+PAYMENT_CORE_CHANGED=false
+PAYMENT_CORE_DIFF_COMMAND=git diff --name-only -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal.py paypal_agreement_protocol/config.py
+PAYMENT_CORE_DIFF_LITERAL_OUTPUT=<empty>
+PAYMENT_CORE_DIFF_EXIT_STATUS=0
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD c9c1a75395edca8d0d0c6dba95ec56933b43ef04 before the NO_NUMBERS adapter patch
+LITERAL_OUTPUT_BEGIN
+..............................................                           [100%]
+46 passed in 0.51s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed; a HeroSMS 404 NO_NUMBERS response was still surfaced as a raw provider request failure.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with only paypal_agreement_protocol/herosms.py, payment_link_extractor/web/paypal_protocol.py, and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+..................................................                       [100%]
+50 passed in 0.49s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The modified suite passed, including 404 classification, bounded 1/2/3-second default backoff retries, successful later allocation, exhausted-attempt reporting, and structured retryable route output.
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\herosms-no-numbers-rollback-7f6ad64c038a488dbb6f9ce690c66a1b"
+INPUT=detached HEAD copy after COMMAND git -C <TEMP_WORKTREE> apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\herosms_no_numbers_20260819\DIFF_FILE"
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+..............................................                           [100%]
+46 passed in 0.50s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh reversed DIFF_FILE, restored the original 46-test behavior, and left the detached verification copy clean; the temporary worktree was removed with WORKTREE_REMOVE_EXIT=0.
+RESTORED_BEHAVIOR_STATUS=Raw NO_NUMBERS behavior was restored only in the rollback verification copy; the primary working tree remains changed in the HeroSMS adapter and bridge while the payment core remains unchanged.

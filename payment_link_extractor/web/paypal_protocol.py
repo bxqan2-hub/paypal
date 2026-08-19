@@ -20,7 +20,11 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from paypal_agreement_protocol.herosms import HeroSMSClient, HeroSMSError
+from paypal_agreement_protocol.herosms import (
+    HeroSMSClient,
+    HeroSMSError,
+    HeroSMSNoNumbersError,
+)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -534,6 +538,18 @@ def register_paypal_protocol(app: Any) -> None:
                             "price": actual_price,
                         }), 422
                 return jsonify({"ok": True, "max_price": max_price, **activation})
+            except HeroSMSNoNumbersError as exc:
+                return jsonify({
+                    "ok": False,
+                    "error": (
+                        f"HeroSMS 当前地区暂时没有可用号码，已自动重试 {exc.attempts} 次，"
+                        "请稍后再次取号"
+                    ),
+                    "code": exc.provider_code,
+                    "retryable": exc.retryable,
+                    "retry_after_seconds": exc.retry_after_seconds,
+                    "attempts": exc.attempts,
+                }), 503
             except (HeroSMSError, ValueError) as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 503
         if protocol_path == "api/sms/status" and request.method == "POST":

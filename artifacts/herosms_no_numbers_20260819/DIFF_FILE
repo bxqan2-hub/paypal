@@ -1,0 +1,252 @@
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index 5537427..780d6a4 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -20,7 +20,11 @@ from typing import Any
+ 
+ from flask import Response, jsonify, request
+ 
+-from paypal_agreement_protocol.herosms import HeroSMSClient, HeroSMSError
++from paypal_agreement_protocol.herosms import (
++    HeroSMSClient,
++    HeroSMSError,
++    HeroSMSNoNumbersError,
++)
+ 
+ 
+ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+@@ -534,6 +538,18 @@ def register_paypal_protocol(app: Any) -> None:
+                             "price": actual_price,
+                         }), 422
+                 return jsonify({"ok": True, "max_price": max_price, **activation})
++            except HeroSMSNoNumbersError as exc:
++                return jsonify({
++                    "ok": False,
++                    "error": (
++                        f"HeroSMS 当前地区暂时没有可用号码，已自动重试 {exc.attempts} 次，"
++                        "请稍后再次取号"
++                    ),
++                    "code": exc.provider_code,
++                    "retryable": exc.retryable,
++                    "retry_after_seconds": exc.retry_after_seconds,
++                    "attempts": exc.attempts,
++                }), 503
+             except (HeroSMSError, ValueError) as exc:
+                 return jsonify({"ok": False, "error": str(exc)}), 503
+         if protocol_path == "api/sms/status" and request.method == "POST":
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+index 26e9b5a..662d817 100644
+--- a/paypal_agreement_protocol/herosms.py
++++ b/paypal_agreement_protocol/herosms.py
+@@ -19,6 +19,24 @@ class HeroSMSError(RuntimeError):
+     """Raised when HeroSMS cannot allocate or read an activation."""
+ 
+ 
++class HeroSMSNoNumbersError(HeroSMSError):
++    """Raised when the selected HeroSMS country/service has no inventory."""
++
++    provider_code = "NO_NUMBERS"
++    retryable = True
++
++    def __init__(
++        self,
++        message: str = "HeroSMS 当前地区暂时没有可用号码，请稍后重试",
++        *,
++        attempts: int = 1,
++        retry_after_seconds: int = 5,
++    ) -> None:
++        super().__init__(message)
++        self.attempts = max(1, int(attempts))
++        self.retry_after_seconds = max(1, int(retry_after_seconds))
++
++
+ _FALLBACK_COUNTRY_IDS = {
+     "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
+     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
+@@ -44,6 +62,11 @@ class HeroSMSClient:
+         self.default_max_price = _optional_float(os.getenv("HEROSMS_MAX_PRICE", ""))
+         self.poll_interval = max(2.0, _optional_float(os.getenv("HEROSMS_POLL_INTERVAL", "5")) or 5.0)
+         self.timeout = max(30.0, _optional_float(os.getenv("HEROSMS_TIMEOUT", "1800")) or 1800.0)
++        self.number_retry_attempts = _bounded_int(
++            os.getenv("HEROSMS_NUMBER_RETRY_ATTEMPTS", "4"), 4, 1, 8,
++        )
++        retry_delay = _optional_float(os.getenv("HEROSMS_NUMBER_RETRY_DELAY", "1"))
++        self.number_retry_delay = max(0.2, min(5.0, retry_delay if retry_delay is not None else 1.0))
+         self._countries: Any = None
+         self._services_by_country: dict[int, list[dict[str, str]]] = {}
+ 
+@@ -60,6 +83,18 @@ class HeroSMSClient:
+             response = httpx.get(self.base_url, params=query, timeout=30.0)
+             response.raise_for_status()
+         except httpx.HTTPStatusError as exc:
++            error_payload: dict[str, Any] = {}
++            try:
++                parsed_error = exc.response.json()
++                if isinstance(parsed_error, dict):
++                    error_payload = parsed_error
++            except ValueError:
++                pass
++            provider_code = str(
++                error_payload.get("title") or error_payload.get("code") or ""
++            ).strip().upper()
++            if exc.response.status_code == 404 and provider_code == "NO_NUMBERS":
++                raise HeroSMSNoNumbersError() from exc
+             body = exc.response.text.strip().replace("\n", " ")[:300]
+             detail = f"HTTP {exc.response.status_code}"
+             if body:
+@@ -151,9 +186,19 @@ class HeroSMSClient:
+             # maxPrice is absent. Sending both makes getNumberV2 reject the
+             # request with HTTP 422.
+             number_params["maxPrice"] = price
+-        payload = self._request(
+-            "getNumberV2", **number_params,
+-        )
++        payload: Any = None
++        for attempt in range(1, self.number_retry_attempts + 1):
++            try:
++                payload = self._request("getNumberV2", **number_params)
++                break
++            except HeroSMSNoNumbersError as exc:
++                exc.attempts = attempt
++                exc.retry_after_seconds = max(
++                    1, int(round(self.number_retry_delay * self.number_retry_attempts)),
++                )
++                if attempt >= self.number_retry_attempts:
++                    raise
++                time.sleep(self.number_retry_delay * attempt)
+         activation_id, phone, cost = _parse_activation(payload)
+         if not activation_id or not phone:
+             raise HeroSMSError("HeroSMS returned no activation number")
+@@ -209,6 +254,14 @@ def _optional_float(value: str) -> float | None:
+         return None
+ 
+ 
++def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
++    try:
++        parsed = int(str(value).strip())
++    except (TypeError, ValueError):
++        parsed = default
++    return max(minimum, min(maximum, parsed))
++
++
+ def _country_entries(payload: Any):
+     if isinstance(payload, dict):
+         values = payload.get("countries") or payload.get("data") or payload
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index eac1b3c..6400bec 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -5,6 +5,9 @@ import unittest
+ from pathlib import Path
+ from unittest.mock import patch
+ 
++import httpx
++from flask import Flask
++
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
+@@ -12,6 +15,7 @@ if str(PROTOCOL_ROOT) not in sys.path:
+     sys.path.insert(0, str(PROTOCOL_ROOT))
+ 
+ import web as protocol_web  # noqa: E402
++from paypal_agreement_protocol import herosms as herosms_module  # noqa: E402
+ from payment_link_extractor.web import paypal_protocol as protocol_bridge  # noqa: E402
+ 
+ 
+@@ -158,6 +162,95 @@ class ProtocolRetryTests(unittest.TestCase):
+         self.assertEqual(job.status, "failed")
+ 
+ 
++class HeroSMSNoNumbersRegressionTests(unittest.TestCase):
++    def test_no_numbers_404_is_classified_as_retryable_inventory_error(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        client.api_key = "fixture-key"
++        request = httpx.Request("GET", client.base_url)
++        response = httpx.Response(
++            404,
++            request=request,
++            json={"title": "NO_NUMBERS", "details": "Numbers Not Found. Try Later"},
++        )
++
++        with patch.object(herosms_module.httpx, "get", return_value=response):
++            with self.assertRaises(herosms_module.HeroSMSNoNumbersError) as raised:
++                client._request("getNumberV2", country=16, service="ts")
++
++        self.assertEqual(raised.exception.provider_code, "NO_NUMBERS")
++        self.assertTrue(raised.exception.retryable)
++        self.assertNotIn("HTTP 404", str(raised.exception))
++
++    def test_number_acquisition_retries_no_inventory_with_backoff(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        client.number_retry_attempts = 3
++        client.number_retry_delay = 0.25
++        no_numbers = herosms_module.HeroSMSNoNumbersError
++        responses = [
++            no_numbers(),
++            no_numbers(),
++            {"activationId": "activation-new", "phoneNumber": "447700900124"},
++        ]
++
++        with (
++            patch.object(client, "resolve_country_id", return_value=16),
++            patch.object(client, "resolve_service_code", return_value="ts"),
++            patch.object(client, "_request", side_effect=responses) as request_call,
++            patch.object(herosms_module.time, "sleep") as sleep,
++        ):
++            activation = client.acquire_number("GB")
++
++        self.assertEqual(activation["phone"], "+447700900124")
++        self.assertEqual(request_call.call_count, 3)
++        self.assertEqual([item.args[0] for item in sleep.call_args_list], [0.25, 0.5])
++
++    def test_number_acquisition_reports_attempt_count_after_inventory_exhaustion(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        client.number_retry_attempts = 3
++        client.number_retry_delay = 0.25
++
++        with (
++            patch.object(client, "resolve_country_id", return_value=16),
++            patch.object(client, "resolve_service_code", return_value="ts"),
++            patch.object(
++                client,
++                "_request",
++                side_effect=[
++                    herosms_module.HeroSMSNoNumbersError(),
++                    herosms_module.HeroSMSNoNumbersError(),
++                    herosms_module.HeroSMSNoNumbersError(),
++                ],
++            ),
++            patch.object(herosms_module.time, "sleep") as sleep,
++        ):
++            with self.assertRaises(herosms_module.HeroSMSNoNumbersError) as raised:
++                client.acquire_number("GB")
++
++        self.assertEqual(raised.exception.attempts, 3)
++        self.assertEqual([item.args[0] for item in sleep.call_args_list], [0.25, 0.5])
++
++    def test_sms_number_route_returns_structured_no_inventory_result(self) -> None:
++        class NoInventoryClient:
++            def acquire_number(self, *_args, **_kwargs):
++                raise herosms_module.HeroSMSNoNumbersError(
++                    attempts=4, retry_after_seconds=4,
++                )
++
++        app = Flask("herosms-no-numbers-test")
++        protocol_bridge.register_paypal_protocol(app)
++        with patch.object(protocol_bridge, "_sms_client", return_value=NoInventoryClient()):
++            response = app.test_client().post(
++                "/paypal-pay/api/sms/number", json={"country": "GB"},
++            )
++
++        payload = response.get_json()
++        self.assertEqual(response.status_code, 503)
++        self.assertEqual(payload["code"], "NO_NUMBERS")
++        self.assertTrue(payload["retryable"])
++        self.assertEqual(payload["attempts"], 4)
++        self.assertIn("已自动重试 4 次", payload["error"])
++
++
+ class FrontendRegressionTests(unittest.TestCase):
+     def test_logs_phone_replacement_and_bulk_push_are_wired(self) -> None:
+         protocol_js = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
