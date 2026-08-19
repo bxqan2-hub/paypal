@@ -37,6 +37,10 @@ class HeroSMSNoNumbersError(HeroSMSError):
         self.retry_after_seconds = max(1, int(retry_after_seconds))
 
 
+class HeroSMSEarlyCancelError(HeroSMSError):
+    """Raised when HeroSMS has not reached its two-minute cancel window."""
+
+
 _FALLBACK_COUNTRY_IDS = {
     "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
@@ -231,7 +235,19 @@ class HeroSMSClient:
 
     def set_status(self, activation_id: str, status: int) -> Any:
         """Update an activation; status 3 requests another SMS on the same number."""
-        return self._request("setStatus", id=str(activation_id), status=int(status))
+        payload = self._request("setStatus", id=str(activation_id), status=int(status))
+        response_code = ""
+        if isinstance(payload, str):
+            response_code = payload.split(":", 1)[0].strip().upper()
+        elif isinstance(payload, dict):
+            response_code = str(
+                payload.get("title") or payload.get("code") or payload.get("error") or ""
+            ).strip().upper()
+        if response_code == "EARLY_CANCEL_DENIED":
+            raise HeroSMSEarlyCancelError(
+                "HeroSMS activation cannot be cancelled before the two-minute window"
+            )
+        return payload
 
     def wait_for_code(self, activation_id: str) -> str:
         deadline = time.monotonic() + self.timeout

@@ -1,0 +1,52 @@
+BRANCH_FIELD_RESULT=main / HeroSMS deferred cancellation and retry phone rotation budget / activations younger than 120 seconds stay reserved and are cancelled by a background worker; protocol retries no longer receive q from an exhausted phone budget
+BASE_COMMIT=576476bd91c8ad1236393ed60765b73abf04db29
+PAYMENT_CORE_CHANGED=false
+PAYMENT_CORE_DIFF_COMMAND=git diff --name-only -- paypal_agreement_protocol/web.py paypal_agreement_protocol/paypal.py paypal_agreement_protocol/config.py
+PAYMENT_CORE_DIFF_LITERAL_OUTPUT=<empty>
+PAYMENT_CORE_DIFF_EXIT_STATUS=0
+
+LOG_FINDING
+INPUT=data/payment-link.log lines around 2026-08-19 22:59:58-23:00:00
+RESULT=PayPal returned PAYER_ACCOUNT_RESTRICTED, the job requested protocol retry 2, and the SMS watcher had already consumed its 3-number resend budget. The watcher submitted q instead of a fresh number, so wait_for_retry_phone emitted Automatic retry cancelled while waiting for a new phone. This was a bridge rotation-budget collision, not a user cancellation.
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 576476bd91c8ad1236393ed60765b73abf04db29 before deferred HeroSMS cancellation and retry-budget reset
+LITERAL_OUTPUT_BEGIN
+..................................................                       [100%]
+50 passed in 0.50s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed; status 8 was attempted immediately and swallowed provider failures, while an exhausted 3-number budget could feed q into a fresh protocol retry.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with only paypal_agreement_protocol/herosms.py, payment_link_extractor/web/paypal_protocol.py, and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+.......................................................                  [100%]
+55 passed in 0.52s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The modified suite passed: activations under 120 seconds remain reserved, a daemon worker cancels at the allowed time and retries every 15 seconds after EARLY_CANCEL_DENIED, cancel API reports deferral, and each protocol retry resets its own 3-number budget instead of submitting q.
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\herosms-deferred-cancel-f5295ad044604f42bfaf0aad9e775dc1"
+INPUT=detached HEAD copy after COMMAND git -C <TEMP_WORKTREE> apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\herosms_deferred_cancel_20260819\DIFF_FILE"
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+..................................................                       [100%]
+50 passed in 0.54s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh reversed DIFF_FILE, restored the original 50-test behavior, and left the detached verification copy clean; the temporary worktree was removed with WORKTREE_REMOVE_EXIT=0.
+RESTORED_BEHAVIOR_STATUS=Immediate status-8 attempts and the shared exhausted phone budget were restored only in the rollback copy; the primary working tree retains deferred cancellation and per-protocol-retry phone budgets while payment core remains unchanged.

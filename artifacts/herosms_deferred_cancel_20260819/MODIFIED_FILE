@@ -1,0 +1,18 @@
+BRANCH_FIELD_RESULT=main / HeroSMS deferred cancellation and retry phone rotation budget / activations younger than 120 seconds stay reserved and are cancelled by a background worker; protocol retries no longer receive q from an exhausted phone budget
+BASE_COMMIT=576476bd91c8ad1236393ed60765b73abf04db29
+PAYMENT_CORE_CHANGED=false
+
+paypal_agreement_protocol/herosms.py
+ORIGINAL_GIT_BLOB=662d8174bb8a06ae6af3de40e9575912316f2ddb
+MODIFIED_SHA256=cc822a3a8351ab01372d929494f94d888e848a53b670f55c6172b159fd2b3aca
+CHANGED_FIELD=HeroSMSEarlyCancelError and EARLY_CANCEL_DENIED classification
+
+payment_link_extractor/web/paypal_protocol.py
+ORIGINAL_GIT_BLOB=780d6a48d6bdbcbee831ac26d452349bb4b0a967
+MODIFIED_SHA256=fde9d80327ef3b2a148c22476352acc88110ab82ff803be42548764d0e506509
+CHANGED_FIELD=_cancel_or_defer_sms_activation,_cancel_sms_activation_worker,protocol retry attempt reset,api/sms/cancel
+
+tests/test_protocol_regressions.py
+ORIGINAL_GIT_BLOB=6400bec1c8a050c1a6a4069a0733a460e9aa6ad4
+MODIFIED_SHA256=622de83bb46447b933d452b803e97ed85be647b9fd92b754deb163fd09cd2970
+CHANGED_FIELD=deferred cancellation,provider retry,route response,and exhausted phone budget regressions

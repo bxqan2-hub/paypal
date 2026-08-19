@@ -42,6 +42,8 @@ _SMS_WATCHERS_LOCK = threading.RLock()
 _SMS_RESERVATIONS_LOCK = threading.RLock()
 _SMS_RESERVATIONS_BY_PHONE: dict[str, dict[str, Any]] = {}
 _SMS_RESERVATIONS_BY_ACTIVATION: dict[str, str] = {}
+_SMS_CANCELLATIONS_LOCK = threading.RLock()
+_SMS_CANCELLATIONS: dict[str, dict[str, Any]] = {}
 SMS_ROTATION_MAX_ATTEMPTS = 3
 
 
@@ -58,6 +60,15 @@ SMS_ROTATION_WAIT_SECONDS = _bounded_seconds_env(
 )
 SMS_UNIQUE_ACQUIRE_ATTEMPTS = 5
 SMS_RESERVATION_TTL_SECONDS = 60.0 * 60.0
+SMS_CANCEL_MIN_AGE_SECONDS = _bounded_seconds_env(
+    "HEROSMS_CANCEL_MIN_AGE_SECONDS", 120.0, 60.0, 300.0,
+)
+SMS_CANCEL_RETRY_SECONDS = _bounded_seconds_env(
+    "HEROSMS_CANCEL_RETRY_SECONDS", 15.0, 2.0, 60.0,
+)
+SMS_CANCEL_RETRY_WINDOW_SECONDS = _bounded_seconds_env(
+    "HEROSMS_CANCEL_RETRY_WINDOW_SECONDS", 600.0, 120.0, 1800.0,
+)
 SMS_TERMINAL_STATUSES = {
     "STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8",
 }
@@ -165,6 +176,92 @@ def _release_sms_reservation(activation_id: Any) -> None:
             reservation = _SMS_RESERVATIONS_BY_PHONE.get(phone_key)
             if str((reservation or {}).get("activation_id") or "") == key:
                 _SMS_RESERVATIONS_BY_PHONE.pop(phone_key, None)
+
+
+def _sms_activation_created_at(activation_id: Any) -> float | None:
+    key = str(activation_id or "").strip()
+    if not key:
+        return None
+    with _SMS_RESERVATIONS_LOCK:
+        phone_key = _SMS_RESERVATIONS_BY_ACTIVATION.get(key, "")
+        reservation = _SMS_RESERVATIONS_BY_PHONE.get(phone_key) if phone_key else None
+        if not reservation:
+            return None
+        try:
+            return float(reservation.get("created_at"))
+        except (TypeError, ValueError):
+            return None
+
+
+def _cancel_sms_activation_worker(
+    client: HeroSMSClient,
+    activation_id: str,
+    not_before: float,
+) -> None:
+    """Cancel one HeroSMS activation once its two-minute hold has elapsed."""
+    try:
+        initial_delay = max(0.0, float(not_before) - time.monotonic())
+        if initial_delay:
+            time.sleep(initial_delay)
+        deadline = time.monotonic() + SMS_CANCEL_RETRY_WINDOW_SECONDS
+        while True:
+            try:
+                client.set_status(activation_id, 8)
+                break
+            except HeroSMSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(SMS_CANCEL_RETRY_SECONDS)
+    finally:
+        _release_sms_reservation(activation_id)
+        with _SMS_CANCELLATIONS_LOCK:
+            _SMS_CANCELLATIONS.pop(activation_id, None)
+
+
+def _cancel_or_defer_sms_activation(
+    client: HeroSMSClient,
+    activation_id: Any,
+) -> dict[str, Any]:
+    """Cancel now when allowed, otherwise keep ownership and cancel in background."""
+    key = str(activation_id or "").strip()
+    if not key:
+        return {"deferred": False, "scheduled_in_seconds": 0}
+    now = time.monotonic()
+    created_at = _sms_activation_created_at(key)
+    not_before = (
+        created_at + SMS_CANCEL_MIN_AGE_SECONDS
+        if created_at is not None else now
+    )
+    if not_before <= now:
+        try:
+            client.set_status(key, 8)
+            _release_sms_reservation(key)
+            return {"deferred": False, "scheduled_in_seconds": 0}
+        except HeroSMSError:
+            not_before = now + SMS_CANCEL_RETRY_SECONDS
+    scheduled_in = max(1, int(math.ceil(not_before - now)))
+    with _SMS_CANCELLATIONS_LOCK:
+        existing = _SMS_CANCELLATIONS.get(key)
+        if existing:
+            return {
+                "deferred": True,
+                "scheduled_in_seconds": max(
+                    1,
+                    int(math.ceil(float(existing.get("not_before") or not_before) - now)),
+                ),
+            }
+        thread = threading.Thread(
+            target=_cancel_sms_activation_worker,
+            args=(client, key, not_before),
+            name=f"herosms-cancel-{key}",
+            daemon=True,
+        )
+        _SMS_CANCELLATIONS[key] = {
+            "not_before": not_before,
+            "thread": thread,
+        }
+        thread.start()
+    return {"deferred": True, "scheduled_in_seconds": scheduled_in}
 
 
 def _sms_activation_is_reserved(activation_id: Any) -> bool:
@@ -413,19 +510,32 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
             if retry_rotation:
-                add_log(job, "WARNING", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：旧手机号已取消")
+                add_log(job, "WARNING", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：已停止使用旧手机号")
             elif immediate_send_failure:
-                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已直接取消旧号")
+                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已停止使用旧号")
             else:
-                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
-            client.finish(activation_id, 8)
-            _release_sms_reservation(activation_id)
+                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已停止使用旧号")
+            cancellation = _cancel_or_defer_sms_activation(client, activation_id)
+            if cancellation["deferred"]:
+                add_log(
+                    job,
+                    "INFO",
+                    f"HeroSMS 旧号未达到可取消时间，后台将在约 {cancellation['scheduled_in_seconds']} 秒后取消并自动重试",
+                )
             emit_event(job, "herosms.number.closed", {
                 "activation_id": activation_id,
                 "attempt": attempt,
                 "reason": rotation_reason,
+                "cancellation_deferred": cancellation["deferred"],
+                "cancel_in_seconds": cancellation["scheduled_in_seconds"],
             })
             current_closed = True
+            if retry_rotation:
+                # The per-phone resend budget belongs to one protocol attempt.
+                # A fresh protocol retry must always start with a fresh number
+                # instead of inheriting an exhausted 3-number budget and
+                # feeding "q" into wait_for_retry_phone().
+                attempt = 0
             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
                 add_log(job, "ERROR", f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次自动换号，短信验证停止")
                 try:
@@ -478,8 +588,11 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
     finally:
         current_id = str(current.get("activation_id") or "").strip()
         if current_id and not current_closed:
-            client.finish(current_id, 6 if submitted else 8)
-        _release_sms_reservation(current_id)
+            if submitted:
+                client.finish(current_id, 6)
+                _release_sms_reservation(current_id)
+            else:
+                _cancel_or_defer_sms_activation(client, current_id)
         with _SMS_WATCHERS_LOCK:
             _SMS_WATCHERS.pop(job_id, None)
 
@@ -593,9 +706,13 @@ def register_paypal_protocol(app: Any) -> None:
             activation_id = str(data.get("activation_id") or data.get("id") or "").strip()
             if not activation_id:
                 return jsonify({"ok": False, "error": "activation_id is required"}), 400
-            _sms_client().finish(activation_id, 6)
-            _release_sms_reservation(activation_id)
-            return jsonify({"ok": True, "activation_id": activation_id, "status": 6})
+            cancellation = _cancel_or_defer_sms_activation(_sms_client(), activation_id)
+            return jsonify({
+                "ok": True,
+                "activation_id": activation_id,
+                "status": 8,
+                **cancellation,
+            })
         inner_path = "/" + protocol_path if protocol_path else "/"
         body = request.get_data(cache=False)
         activations: list[dict[str, Any]] = []
