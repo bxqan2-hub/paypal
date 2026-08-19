@@ -1,0 +1,57 @@
+CHANGE_BRANCH_FIELD: main / batch phone identity, HeroSMS activation ownership, second-account SMS allocation
+ORIGINAL_HEAD: e093762585d97f08842d26462b14ce3f953cd1b7
+DIAGNOSIS: The 21:24 first account and the 21:27 second account both used phone suffix 0122. PayPal accepted the second initiation at 21:27:38, but the second BA row had inherited the first row's phone without an independent HeroSMS activation/watcher, so no automatic code polling or 120-second rotation occurred.
+CHANGED_RESULT: BA rows now compare phone identities by digits, a stale duplicate row does not cancel another row's shared provider activation, and the backend rejects a batch containing duplicate phone identities before any jobs start.
+
+PATHS:
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\protocol_second_sms_audit_20260819\MODIFIED_FILE
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\protocol_second_sms_audit_20260819\DIFF_FILE
+VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\protocol_second_sms_audit_20260819\VERIFICATION.txt
+ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\protocol_second_sms_audit_20260819\ROLLBACK.sh
+
+ORIGINAL_HASHES:
+paypal_agreement_protocol/web.py: git_blob=beb71c3d547ee1cc7bb717a60408cff1356ea545
+paypal_agreement_protocol/web_static/app.js: git_blob=ab05bf5b4833e76ca0524615f9574946b3b44a37
+tests/test_protocol_regressions.py: git_blob=d3260c4c7712e79c4e34796fc0ee565c865efb80
+
+MODIFIED_AND_COPY_HASHES:
+paypal_agreement_protocol/web.py: source_sha256=fa5f9b4160a90124b0185ef8ae52373fb19bde6acb2fdea097b745a03369d60a; copy_sha256=fa5f9b4160a90124b0185ef8ae52373fb19bde6acb2fdea097b745a03369d60a
+paypal_agreement_protocol/web_static/app.js: source_sha256=a0bbedaf8eba13d2826d89212db2f8415199641c6f25a6c44b23461f527f8999; copy_sha256=a0bbedaf8eba13d2826d89212db2f8415199641c6f25a6c44b23461f527f8999
+tests/test_protocol_regressions.py: source_sha256=e1f8588446f48300f3e5e5b2d54bb4d615f463a8d258d6e08626998faaea9e0f; copy=MODIFIED_FILE/tests/test_protocol_regressions.py.txt; copy_sha256=e1f8588446f48300f3e5e5b2d54bb4d615f463a8d258d6e08626998faaea9e0f
+
+BASELINE:
+COMMAND: .venv\Scripts\python.exe -m pytest -q
+INPUT: repository HEAD e093762585d97f08842d26462b14ce3f953cd1b7 before the additional duplicate-phone guard
+LITERAL_OUTPUT: ...........................................                              [100%]
+LITERAL_RESULT: 43 passed in 0.49s
+EXIT_STATUS: 0
+
+MODIFIED:
+COMMAND: .venv\Scripts\python.exe -m pytest -q
+INPUT: modified paypal_agreement_protocol/web.py, paypal_agreement_protocol/web_static/app.js, tests/test_protocol_regressions.py
+LITERAL_OUTPUT: ............................................                             [100%]
+LITERAL_RESULT: 44 passed in 0.51s
+EXIT_STATUS: 0
+COMMAND: node --check .\paypal_agreement_protocol\web_static\app.js
+INPUT: modified frontend JavaScript
+LITERAL_OUTPUT: <empty>
+LITERAL_RESULT: JavaScript syntax valid
+EXIT_STATUS: 0
+COMMAND: git diff --check
+INPUT: modified source/test diff
+LITERAL_OUTPUT: only line-ending conversion notices; no whitespace errors
+LITERAL_RESULT: diff valid
+EXIT_STATUS: 0
+
+ROLLBACK:
+COMMAND: & "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\protocol_second_sms_audit_20260819\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\paypal-rollback-96a9959c85ea472facaff96c6f481a9d"
+INPUT: detached HEAD e093762 worktree after DIFF_FILE was applied; modified test result before rollback was 44 passed in 0.63s with exit 0
+LITERAL_OUTPUT: <empty>
+LITERAL_RESULT: reverse patch applied
+EXIT_STATUS: 0
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+INPUT: rollback worktree after ROLLBACK.sh
+LITERAL_OUTPUT: ...........................................                              [100%]
+LITERAL_RESULT: 43 passed in 0.53s
+EXIT_STATUS: 0
+RESTORED_BEHAVIOR_STATUS: git status --short returned <clean>; original HEAD files and baseline 43-test behavior were restored. The primary MODIFIED_FILE and working source remain changed.

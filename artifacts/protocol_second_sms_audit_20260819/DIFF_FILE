@@ -1,0 +1,119 @@
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index beb71c3..025cf52 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -2083,6 +2083,21 @@ def parse_pool_values(value: Any, *, field_name: str, limit: int = 20) -> list[s
+     return items
+ 
+ 
++def duplicate_phone_indexes(values: list[str]) -> list[int]:
++    """Return zero-based duplicate positions using a formatting-neutral key."""
++    seen: set[str] = set()
++    duplicates: list[int] = []
++    for index, value in enumerate(values):
++        phone_key = "".join(char for char in str(value or "") if char.isdigit())
++        if not phone_key:
++            continue
++        if phone_key in seen:
++            duplicates.append(index)
++        else:
++            seen.add(phone_key)
++    return duplicates
++
++
+ def parse_optional_email_values(value: Any, expected_count: int) -> list[str]:
+     """Keep optional email slots aligned with the BA pool."""
+     if value in (None, "", []):
+@@ -2733,6 +2748,10 @@ class WebHandler(BaseHTTPRequestHandler):
+                     phone_values = parse_pool_values(data.get("phones"), field_name="手机号池")
+                     if len(ba_values) != len(phone_values):
+                         raise ValueError(f"BA 链池与手机号池数量必须一致（当前 {len(ba_values)} / {len(phone_values)}）")
++                    duplicate_phone_positions = duplicate_phone_indexes(phone_values)
++                    if duplicate_phone_positions:
++                        duplicate_number = duplicate_phone_positions[0] + 1
++                        raise ValueError(f"手机号池中存在重复手机号（第 {duplicate_number} 个账号）")
+                     raw_email_values = data.get("emails")
+                     email_values = parse_optional_email_values(raw_email_values, len(ba_values))
+                     ba_tokens = [extract_ba_token(value) for value in ba_values]
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index ab05bf5..35edc10 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -426,11 +426,15 @@ function normalizePhone(value) {
+   return value.replace(/[\s().-]+/g, '');
+ }
+ 
++function phoneIdentity(value) {
++  return normalizePhone(String(value || '')).replace(/\D/g, '');
++}
++
+ function duplicatePhoneIndexes(values) {
+   const seen = new Set();
+   const duplicates = [];
+   values.forEach((value, index) => {
+-    const phone = normalizePhone(value || '');
++    const phone = phoneIdentity(value);
+     if (!phone) return;
+     if (seen.has(phone)) duplicates.push(index);
+     else seen.add(phone);
+@@ -863,7 +867,15 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+       const replaceRetryableTerminalNumber = isTerminalJob(existingRows[index]?.job) && !isCompletedJob(existingRows[index]?.job);
+       if (current && !force && !replaceRetryableTerminalNumber && !currentError) continue;
+       if (current) {
+-        await cancelSmsActivation(current);
++        const currentActivationId = String(current.activation_id || '').trim();
++        const sharedWithAnotherAccount = currentActivationId && [...state.smsActivations.entries()].some(
++          ([otherToken, activation]) => otherToken !== token
++            && String(activation?.activation_id || '').trim() === currentActivationId,
++        );
++        // A stale pre-fix page can hold the same provider activation under two
++        // BA rows. Removing the duplicate row must not cancel the activation
++        // that the first account still owns and is polling.
++        if (!sharedWithAnotherAccount) await cancelSmsActivation(current);
+         state.smsActivations.delete(token);
+         clearPhoneAtIndex(index, entry);
+         syncPhonePoolFromActivations();
+@@ -873,7 +885,7 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+       const reservedPhones = new Set(
+         [...state.smsActivations.entries()]
+           .filter(([reservedToken]) => reservedToken !== token)
+-          .map(([, activation]) => normalizePhone(activation?.phone || ''))
++          .map(([, activation]) => phoneIdentity(activation?.phone))
+           .filter(Boolean),
+       );
+       for (let attempt = 1; attempt <= 3; attempt += 1) {
+@@ -885,7 +897,7 @@ async function acquireSmsNumbers(onlyIndexes = null, force = false) {
+         const smsPrice = Number(sms.price);
+         const priceError = maxPrice !== null && Number.isFinite(smsPrice) && smsPrice > maxPrice + 1e-9
+           ? `\u8fd4\u56de\u4ef7\u683c ${smsPrice.toFixed(2)} \u8d85\u8fc7\u4e0a\u9650 ${maxPrice.toFixed(2)}` : '';
+-        const normalizedSmsPhone = normalizePhone(sms.phone || '');
++        const normalizedSmsPhone = phoneIdentity(sms.phone);
+         const duplicateError = reservedPhones.has(normalizedSmsPhone)
+           ? '该手机号已分配给其他账号' : '';
+         const error = priceError || duplicateError || phoneValidationError(sms.phone, country);
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index d3260c4..28349d4 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -96,9 +96,21 @@ class FrontendRegressionTests(unittest.TestCase):
+         self.assertIn("function currentQueueHasActiveJob()", protocol_js)
+         self.assertNotIn("$('submitButton').disabled = hasActive;", protocol_js)
+         self.assertIn("duplicatePhoneIndexes(phoneCandidates)", protocol_js)
++        self.assertIn("function phoneIdentity(value)", protocol_js)
++        self.assertIn("if (!sharedWithAnotherAccount) await cancelSmsActivation(current);", protocol_js)
+         bridge_source = (ROOT / "payment_link_extractor" / "web" / "paypal_protocol.py").read_text(encoding="utf-8")
+         self.assertIn('"HEROSMS_ROTATION_WAIT_SECONDS", 120.0, 30.0, 300.0', bridge_source)
+ 
++    def test_phone_duplicate_detection_ignores_formatting(self) -> None:
++        self.assertEqual(
++            protocol_web.duplicate_phone_indexes([
++                "+44 7700 900122",
++                "447700900133",
++                "44 (7700) 900-122",
++            ]),
++            [2],
++        )
++
+ 
+ class SmsReservationRegressionTests(unittest.TestCase):
+     def setUp(self) -> None:
