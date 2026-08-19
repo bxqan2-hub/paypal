@@ -228,6 +228,254 @@ class ProtocolRetryTests(unittest.TestCase):
         self.assertNotIn("q", job.submitted)
         self.assertEqual(job.status, "completed")
 
+    def test_sms_send_failures_do_not_consume_effective_timeout_budget(self) -> None:
+        class FakeClient:
+            poll_interval = 0.001
+
+            def get_status(self, _activation_id: str):
+                raise AssertionError("a failed PayPal send must rotate before HeroSMS polling")
+
+            def finish(self, *_args, **_kwargs) -> None:
+                return None
+
+        class FakeJob:
+            id = "send-failure-budget-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.send_failures = 3
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                if self.send_failures <= 0:
+                    return ""
+                self.send_failures -= 1
+                return "SMS_LIMIT_EXCEEDED"
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                if value == "+447700900133":
+                    self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-failed-0", "phone": "+447700900130"}
+        replacements = [
+            {"activation_id": "activation-failed-1", "phone": "+447700900131"},
+            {"activation_id": "activation-failed-2", "phone": "+447700900132"},
+            {"activation_id": "activation-failed-3", "phone": "+447700900133"},
+        ]
+        job = FakeJob()
+        client = FakeClient()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=replacements,
+                ),
+                patch.object(
+                    protocol_bridge,
+                    "_cancel_or_defer_sms_activation",
+                    return_value={"deferred": True, "scheduled_in_seconds": 120},
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(job.submitted, [
+            "+447700900131",
+            "+447700900132",
+            "+447700900133",
+        ])
+        self.assertNotIn("q", job.submitted)
+        self.assertTrue(any("不占用第 1/3 次有效超时名额" in message for _, message in job.logs))
+
+    def test_herosms_status_outage_pauses_timeout_until_polling_recovers(self) -> None:
+        class FakeClient:
+            poll_interval = 0.02
+
+            def __init__(self) -> None:
+                self.status_calls = 0
+
+            def get_status(self, _activation_id: str):
+                self.status_calls += 1
+                if self.status_calls == 1:
+                    raise protocol_bridge.HeroSMSError("temporary provider outage")
+                return {"status": "STATUS_OK", "code": "123456"}
+
+            def finish(self, *_args, **_kwargs) -> None:
+                return None
+
+        class FakeJob:
+            id = "status-outage-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-outage", "phone": "+447700900140"}
+        job = FakeJob()
+        client = FakeClient()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0.01),
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=AssertionError("status outage must not rotate the phone"),
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(client.status_calls, 2)
+        self.assertEqual(job.submitted, ["123456"])
+        self.assertEqual(job.retry_count, 0)
+        self.assertTrue(any("状态轮询已恢复" in message for _, message in job.logs))
+
+    def test_three_effective_timeouts_keep_watcher_alive_for_protocol_retry(self) -> None:
+        class FakeClient:
+            poll_interval = 0.001
+
+            def get_status(self, _activation_id: str):
+                return {"status": "STATUS_WAIT_CODE", "code": ""}
+
+            def finish(self, *_args, **_kwargs) -> None:
+                return None
+
+        class FakeJob:
+            id = "timeout-retry-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                if value == "q":
+                    self.retry_count += 1
+                elif value == "+447700900153":
+                    self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-timeout-0", "phone": "+447700900150"}
+        replacements = [
+            {"activation_id": "activation-timeout-1", "phone": "+447700900151"},
+            {"activation_id": "activation-timeout-2", "phone": "+447700900152"},
+            {"activation_id": "activation-timeout-3", "phone": "+447700900153"},
+        ]
+        job = FakeJob()
+        client = FakeClient()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0),
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=replacements,
+                ),
+                patch.object(
+                    protocol_bridge,
+                    "_cancel_or_defer_sms_activation",
+                    return_value={"deferred": True, "scheduled_in_seconds": 120},
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(job.submitted, [
+            "+447700900151",
+            "+447700900152",
+            "q",
+            "+447700900153",
+        ])
+        self.assertEqual(job.retry_count, 1)
+        self.assertEqual(job.status, "completed")
+        self.assertTrue(any("触发新的协议重试并继续换号" in message for _, message in job.logs))
+
     def test_consumed_ba_failure_is_not_retried(self) -> None:
         job = self.make_job()
         error = protocol_web.ProtocolResultError({

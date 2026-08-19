@@ -379,6 +379,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
     last_submitted_code = ""
     observed_retry_count = 0
     last_status_name = ""
+    status_poll_failures = 0
 
     def add_log(job: Any, level: str, message: str) -> None:
         try:
@@ -462,14 +463,36 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                     if send_failure:
                         immediate_send_failure = True
                         rotation_reason = "send_failed"
-                        add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
+                        add_log(
+                            job,
+                            "WARNING",
+                            f"PayPal 短信发送失败，立即取消当前手机号并换号；本次不计入 "
+                            f"{SMS_ROTATION_MAX_ATTEMPTS} 次有效手机号超时：{send_failure}",
+                        )
                         break
+                    poll_started = time.monotonic()
                     try:
                         status = client.get_status(activation_id)
                     except HeroSMSError as exc:
-                        add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
+                        status_poll_failures += 1
+                        if status_poll_failures == 1 or status_poll_failures % 6 == 0:
+                            add_log(
+                                job,
+                                "WARNING",
+                                "HeroSMS 状态轮询暂时失败，后台继续重试；轮询故障时间不计入 "
+                                f"{int(SMS_ROTATION_WAIT_SECONDS)} 秒等待和 "
+                                f"{SMS_ROTATION_MAX_ATTEMPTS} 次有效超时：{exc}",
+                            )
                         time.sleep(client.poll_interval)
+                        # Provider/API downtime is not an SMS-code timeout.  Move
+                        # the deadline forward by the failed request + backoff so
+                        # a transient status outage cannot exhaust this phone or
+                        # start a clean protocol retry before code polling works.
+                        deadline += max(0.0, time.monotonic() - poll_started)
                         continue
+                    if status_poll_failures:
+                        add_log(job, "INFO", "HeroSMS 状态轮询已恢复，继续等待验证码")
+                        status_poll_failures = 0
                     code = str(status.get("code") or "").strip()
                     status_name = str(status.get("status") or "").strip().upper()
                     if status_name and status_name != last_status_name:
@@ -509,12 +532,34 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             job = _protocol.get_job(job_id)
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
+            timeout_consumed = (
+                not retry_rotation
+                and not immediate_send_failure
+                and rotation_reason == "timeout"
+            )
             if retry_rotation:
                 add_log(job, "WARNING", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：已停止使用旧手机号")
             elif immediate_send_failure:
-                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已停止使用旧号")
+                add_log(
+                    job,
+                    "WARNING",
+                    f"当前手机号发送失败，未等待超时且不占用第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} "
+                    "次有效超时名额，已停止使用旧号",
+                )
+            elif rotation_reason == "provider_terminal":
+                add_log(
+                    job,
+                    "WARNING",
+                    f"HeroSMS 当前手机号提前结束且未返回验证码，不占用第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} "
+                    "次有效超时名额，已停止使用旧号",
+                )
             else:
-                add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已停止使用旧号")
+                add_log(
+                    job,
+                    "WARNING",
+                    f"已成功发送短信的手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 "
+                    f"{int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，计入一次有效超时并停止使用旧号",
+                )
             cancellation = _cancel_or_defer_sms_activation(client, activation_id)
             if cancellation["deferred"]:
                 add_log(
@@ -535,16 +580,37 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 # A fresh protocol retry must always start with a fresh number
                 # instead of inheriting an exhausted 3-number budget and
                 # feeding "q" into wait_for_retry_phone().
-                attempt = 0
-            if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
-                add_log(job, "ERROR", f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次自动换号，短信验证停止")
+                attempt = 1
+            if timeout_consumed and attempt >= SMS_ROTATION_MAX_ATTEMPTS:
+                retry_before = max(0, int(getattr(job, "retry_count", 0) or 0))
+                add_log(
+                    job,
+                    "WARNING",
+                    f"已达到最多 {SMS_ROTATION_MAX_ATTEMPTS} 次有效手机号超时，触发新的协议重试并继续换号",
+                )
                 try:
                     job.submit_input("q")
                 except Exception:
-                    pass
-                break
+                    break
+                # ``q`` wakes the protocol input loop.  Keep this watcher alive
+                # until run_job either enters its bounded clean-session retry or
+                # makes the job terminal; otherwise wait_for_retry_phone has no
+                # watcher left to supply the required fresh number and appears
+                # permanently stuck.
+                while True:
+                    job = _protocol.get_job(job_id)
+                    if job is None or job.status in {"completed", "failed", "cancelled"}:
+                        return
+                    if max(0, int(getattr(job, "retry_count", 0) or 0)) > retry_before:
+                        break
+                    time.sleep(min(0.1, client.poll_interval))
+                continue
 
-            next_attempt = attempt + 1
+            next_attempt = (
+                1
+                if retry_rotation
+                else (attempt + 1 if timeout_consumed else attempt)
+            )
             try:
                 replacement = _acquire_unique_sms_number(
                     client,
@@ -571,6 +637,8 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             attempt = next_attempt
             last_status_name = ""
             last_submitted_code = ""
+            status_poll_failures = 0
+            submitted = False
             current_closed = False
             mark_activation(job, current, attempt)
             registered_activation_id = replacement_id

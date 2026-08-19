@@ -1,0 +1,78 @@
+BRANCH_FIELD_RESULT=main / HeroSMS有效超时计数、状态轮询恢复、协议重试续接 / 发送失败和服务商轮询故障不占用3次有效超时；3次真实超时后短信监视器保活并为自动协议重试提供新号码
+BASE_COMMIT=970010e540aad24e31a68e81c8759e9d41bcc08f
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/web/paypal_protocol.py;tests/test_protocol_regressions.py
+
+LOG_AND_ROOT_CAUSE
+COMMAND=Get-Content -LiteralPath data/payment-link.log -Tail 1200 | Select-String -Pattern 'Failed to initiate OTP|SMS verification code sent|Protocol payment automatic retry|Flow failed'
+INPUT=2026-08-19 23:51 through 23:57 local payment-link runtime log
+LITERAL_OUTPUT_BEGIN
+2026-08-19 23:53:20.312 | ERROR    | app | task=- | Failed to initiate OTP for ********0878: SMS_LIMIT_EXCEEDED: this phone/session has reached the SMS send limit; use a new phone
+2026-08-19 23:53:21.378 | ERROR    | app | task=- | Failed to initiate OTP for ********0236: SMS_LIMIT_EXCEEDED: this phone/session has reached the SMS send limit; use a new phone
+2026-08-19 23:53:22.224 | ERROR    | app | task=- | Flow failed: OTP confirmation cancelled by user
+2026-08-19 23:53:23.821 | INFO     | app | task=- | SMS verification code sent to phone: ********4684
+2026-08-19 23:53:33.386 | INFO     | app | task=- | SMS verification code sent to phone: ********2028
+2026-08-19 23:56:28.564 | WARNING  | app | task=- | Protocol payment automatic retry 1/2 with new phone ********5569
+2026-08-19 23:57:13.081 | ERROR    | app | task=- | Failed to initiate OTP for ********5569: PAYPAL_GRAPHQL_AUTH_CHALLENGE: operation=InitiateRiskBasedTwoFactorPhoneConfirmationMutation; HTTP 200; paypal_debug_id=f305065dd127d; the PayPal edge response is retryable with a clean task/session
+2026-08-19 23:57:18.226 | INFO     | app | task=- | SMS verification code sent to phone: ********2579
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=_watch_sms_job previously incremented its 1/3..3/3 counter for every allocated number, including PayPal SMS send failures. At 3/3 it submitted q and exited; run_job then entered automatic retry and wait_for_retry_phone, but the only HeroSMS watcher capable of submitting the required new number had already terminated, so retry stayed waiting. Transient HeroSMS get_status failures also consumed the same wall-clock deadline and could lead to a false timeout before polling recovered.
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status ec3b42f..HEAD -- paypal_agreement_protocol/paypal ; git diff --name-status HEAD -- paypal_agreement_protocol/paypal
+INPUT=payment core across ec3b42f,e093762,412302e,c9c1a75,576476b,bf807a8,970010e and current working tree
+LITERAL_OUTPUT_BEGIN
+HISTORY_DIFF=<empty>
+WORKTREE_DIFF=<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=No protocol payment core file changed. All eight versions have identical blobs: flow.py=d9be73d4275b6323d8c941b4e69720a62e3e9676; elevation_flow.py=a7940be0c3940209476a901a41f79564b1a789b9; graphql.py=14e7cd686937b05c601f2c701c1c3b1b2aba4bb6; session.py=47ba3643d47c3aa4fe6d50e32124b8e92da21d18; models.py=0bf56b356fbb7ff7fe513fb10705cbb819caffb4; fingerprint.py=f06c38c07d4952fced772345892480deaaace0fd; tealeaf.py=93265c6dc9e5ca11aad51668dca3f285b9062761; analytics.py=47ce9129c1cc79f789f5a693df8cb5a2d8d869d5.
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\sms_timeout_retry_polling_20260820\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\sms_timeout_retry_polling_20260820\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\sms_timeout_retry_polling_20260820\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\sms_timeout_retry_polling_20260820\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 970010e540aad24e31a68e81c8759e9d41bcc08f before HeroSMS effective-timeout/polling/retry continuation changes
+LITERAL_OUTPUT_BEGIN
+........................................................                 [100%]
+56 passed in 0.51s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed, while the watcher still counted send failures in the 3-number budget, let polling outages consume the deadline, and exited before the automatic-retry phone handoff.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with payment_link_extractor/web/paypal_protocol.py and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+...........................................................              [100%]
+59 passed in 0.53s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=All tests pass. Three added regressions prove: three consecutive SMS send failures still rotate to a fourth number without q; one HeroSMS polling outage pauses the timeout then recovers and submits the code without rotating/retrying; three genuine timeouts keep the watcher alive, enter automatic retry 1/2, acquire a new number, and continue instead of blocking.
+
+ROLLBACK
+COMMAND=git worktree add --detach C:\Users\Administrator\AppData\Local\Temp\sms-timeout-retry-297feb2cd3b24ef2ac624b9bf94a5343 HEAD ; git -C <COPY> apply --whitespace=nowarn DIFF_FILE ; .\.venv\Scripts\python.exe -m pytest -q ; "C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <COPY> ; .\.venv\Scripts\python.exe -m pytest -q ; git -C <COPY> status --short ; git worktree remove --force <COPY>
+INPUT=detached HEAD copy with DIFF_FILE applied, then ROLLBACK.sh executed against that copy
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_PREPARE_APPLY_EXIT=0
+...........................................................              [100%]
+59 passed in 0.69s
+ROLLBACK_PRECHECK_MODIFIED_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+........................................................                 [100%]
+56 passed in 0.54s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh restored the original 56-test behavior and a clean detached copy; the temporary worktree was removed. The primary working tree remains modified.
+RESTORED_BEHAVIOR_STATUS=Only the rollback copy restored the old send-failure counting, polling-deadline, and watcher-exit behavior. The primary branch retains effective-timeout-only counting, polling outage pause/recovery, and retry watcher continuation.
