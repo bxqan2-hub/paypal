@@ -1,0 +1,85 @@
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 35edc10..23139ef 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -1495,19 +1495,53 @@ function renderBatchJobs(jobs) {
+   renderAccountQueue();
+ }
+ 
++function staleBatchJob(id) {
++  const previous = state.batchJobs.find(job => String(job?.id || '') === String(id || '')) || {};
++  const error = '后端任务已不存在，已停止显示重试状态；请重新提交该账号';
++  return {
++    ...previous,
++    id: String(id || previous.id || ''),
++    status: 'failed',
++    stage: '服务会话已重启，旧任务已失效',
++    error,
++    cancellable: false,
++    result: {...(previous.result || {}), status: 'failed', error},
++  };
++}
++
+ async function refreshBatchJobs() {
+   clearTimeout(state.batchPollTimer);
+   if (!state.batchJobIds.length) return;
+-  const settled = await Promise.allSettled(state.batchJobIds.map(id => api(`/jobs/${encodeURIComponent(id)}?log_offset=0`)));
+-  const jobs = settled.filter(item => item.status === 'fulfilled').map(item => item.value);
+-  if (!jobs.length) {
++  const requestedIds = [...state.batchJobIds];
++  const settled = await Promise.allSettled(requestedIds.map(id => api(`/jobs/${encodeURIComponent(id)}?log_offset=0`)));
++  const jobs = [];
++  const staleJobs = [];
++  const retainedIds = [];
++  settled.forEach((item, index) => {
++    const id = requestedIds[index];
++    if (item.status === 'fulfilled') {
++      jobs.push(item.value);
++      retainedIds.push(id);
++    } else if (Number(item.reason?.status) === 404) {
++      staleJobs.push(staleBatchJob(id));
++    } else {
++      // Network/transient failures remain pollable; only a definite 404 may
++      // turn an old non-terminal card into a terminal stale card.
++      retainedIds.push(id);
++    }
++  });
++  state.batchJobIds = retainedIds;
++  const displayJobs = [...jobs, ...staleJobs];
++  if (displayJobs.length) renderBatchJobs(displayJobs);
++  if (!state.batchJobIds.length) {
+     sessionStorage.removeItem('paypal-protocol-batch');
+-    state.batchJobIds = [];
++    $('cancelBatchButton').hidden = true;
++    updateSubmitButtonAvailability();
+     return;
+   }
+-  renderBatchJobs(jobs);
+   const active = jobs.some(job => !['completed', 'failed', 'cancelled'].includes(job.status));
+-  if (active) state.batchPollTimer = setTimeout(refreshBatchJobs, 1800);
++  const transientFailure = retainedIds.length > jobs.length;
++  if (active || transientFailure) state.batchPollTimer = setTimeout(refreshBatchJobs, 1800);
+   else {
+     $('cancelBatchButton').hidden = true;
+     sessionStorage.removeItem('paypal-protocol-batch');
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index 663d40a..2a9fc8f 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -387,6 +387,16 @@ class FrontendRegressionTests(unittest.TestCase):
+             [2],
+         )
+ 
++    def test_missing_batch_jobs_are_made_terminal_instead_of_staying_in_retry(self) -> None:
++        protocol_js = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
++
++        self.assertIn("function staleBatchJob(id)", protocol_js)
++        self.assertIn("Number(item.reason?.status) === 404", protocol_js)
++        self.assertIn("state.batchJobIds = retainedIds;", protocol_js)
++        self.assertIn("const displayJobs = [...jobs, ...staleJobs];", protocol_js)
++        self.assertIn("后端任务已不存在，已停止显示重试状态", protocol_js)
++        self.assertIn("const transientFailure = retainedIds.length > jobs.length;", protocol_js)
++
+ 
+ class SmsReservationRegressionTests(unittest.TestCase):
+     def setUp(self) -> None:

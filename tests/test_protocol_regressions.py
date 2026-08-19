@@ -387,6 +387,16 @@ class FrontendRegressionTests(unittest.TestCase):
             [2],
         )
 
+    def test_missing_batch_jobs_are_made_terminal_instead_of_staying_in_retry(self) -> None:
+        protocol_js = (PROTOCOL_ROOT / "web_static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function staleBatchJob(id)", protocol_js)
+        self.assertIn("Number(item.reason?.status) === 404", protocol_js)
+        self.assertIn("state.batchJobIds = retainedIds;", protocol_js)
+        self.assertIn("const displayJobs = [...jobs, ...staleJobs];", protocol_js)
+        self.assertIn("后端任务已不存在，已停止显示重试状态", protocol_js)
+        self.assertIn("const transientFailure = retainedIds.length > jobs.length;", protocol_js)
+
 
 class SmsReservationRegressionTests(unittest.TestCase):
     def setUp(self) -> None:

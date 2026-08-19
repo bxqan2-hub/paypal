@@ -1,0 +1,71 @@
+BRANCH_FIELD_RESULT=main / batch retry stale-session reconciliation / missing backend job IDs are converted to terminal failed cards so the second account cannot remain visually stuck; paypal core blobs remain unchanged
+BASE_COMMIT=bf807a8b25122c9a10fa745d277371fca13ed6c9
+PAYMENT_CORE_CHANGED=false
+
+LOG_AND_RUNTIME_FINDING
+COMMAND=GET http://127.0.0.1:18794/paypal-pay/api/jobs plus Get-Item data/payment-link.log
+INPUT=current service runtime and latest local log
+LITERAL_RESULT={"jobs":[]} ; payment-link.log LastWriteTime=2026-08-19 23:05:54
+EXIT_STATUS=0
+RESULT=No backend job is currently running. The browser retained a previous non-terminal second-account snapshot; refreshBatchJobs removed missing IDs but left state.batchJobs active, so the card and submit lock could remain visually stuck in retry after the in-memory service session changed.
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status ec3b42f..HEAD -- paypal_agreement_protocol/paypal
+INPUT=payment protocol core directory across ec3b42f,e093762,412302e,c9c1a75,576476b,bf807a8
+LITERAL_OUTPUT=<empty>
+EXIT_STATUS=0
+RESULT=No payment-core file changed across the six compared versions.
+CORE_BLOBS_ALL_SIX
+paypal/flow.py=d9be73d4275b6323d8c941b4e69720a62e3e9676
+paypal/elevation_flow.py=a7940be0c3940209476a901a41f79564b1a789b9
+paypal/graphql.py=14e7cd686937b05c601f2c701c1c3b1b2aba4bb6
+paypal/session.py=47ba3643d47c3aa4fe6d50e32124b8e92da21d18
+paypal/models.py=0bf56b356fbb7ff7fe513fb10705cbb819caffb4
+paypal/fingerprint.py=f06c38c07d4952fced772345892480deaaace0fd
+paypal/tealeaf.py=93265c6dc9e5ca11aad51668dca3f285b9062761
+paypal/analytics.py=47ce9129c1cc79f789f5a693df8cb5a2d8d869d5
+WEB_WRAPPER_NOTE=paypal_agreement_protocol/web.py changed in older commits 412302e and c9c1a75 only for duplicate-phone validation and external retry-phone orchestration; this fix does not modify web.py, config.py, or any paypal/ core file.
+CURRENT_FIX_PATHS=paypal_agreement_protocol/web_static/app.js;tests/test_protocol_regressions.py
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD bf807a8b25122c9a10fa745d277371fca13ed6c9 before stale batch-session reconciliation
+LITERAL_OUTPUT_BEGIN
+.......................................................                  [100%]
+55 passed in 0.56s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed; all-404 batch polling could clear IDs without terminalizing the retained active job snapshots.
+
+MODIFIED
+COMMAND=node --check paypal_agreement_protocol\web_static\app.js ; .\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with only paypal_agreement_protocol/web_static/app.js and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+NODE_CHECK_EXIT=0
+........................................................                 [100%]
+56 passed in 0.50s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The modified JavaScript parses and the suite passes; definite 404 jobs become terminal stale cards, transient failures remain pollable, and the submit lock is released when no backend IDs remain.
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\batch-retry-stale-f193575c0fe540508ea63fcdda8e280f"
+INPUT=detached HEAD copy after COMMAND git -C <TEMP_WORKTREE> apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\batch_retry_stale_session_20260819\DIFF_FILE"
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+.......................................................                  [100%]
+55 passed in 0.56s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh reversed DIFF_FILE, restored the original 55-test behavior, and left the detached verification copy clean; the temporary worktree was removed with WORKTREE_REMOVE_EXIT=0.
+RESTORED_BEHAVIOR_STATUS=The stale active-card behavior was restored only in the rollback copy; the primary working tree retains terminal reconciliation while every paypal/ core blob remains unchanged.

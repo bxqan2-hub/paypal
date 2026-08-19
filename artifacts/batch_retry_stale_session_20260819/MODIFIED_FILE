@@ -1,0 +1,23 @@
+BRANCH_FIELD_RESULT=main / batch retry stale-session reconciliation / missing backend job IDs are converted to terminal failed cards so the second account cannot remain visually stuck; paypal core blobs remain unchanged
+BASE_COMMIT=bf807a8b25122c9a10fa745d277371fca13ed6c9
+PAYMENT_CORE_CHANGED=false
+
+paypal_agreement_protocol/web_static/app.js
+ORIGINAL_GIT_BLOB=35edc10f07aec3968dcae982ef6b0b4eabe933ea
+MODIFIED_SHA256=74041b50d96713f7da20ca8307c98aacce40d69086eed410c300e1bff7a7c4af
+CHANGED_FIELD=staleBatchJob,refreshBatchJobs 404 reconciliation,submit-button release
+
+tests/test_protocol_regressions.py
+ORIGINAL_GIT_BLOB=663d40a351ed001b344a20fd2318558ea7332ca4
+MODIFIED_SHA256=2498e828891b0bd90b74f411a0fbc557382775e7a637ee49377b1680c7458bd6
+CHANGED_FIELD=missing batch job terminal-state regression
+
+CORE_COMPARISON_COMMITS=bf807a8,576476b,c9c1a75,412302e,e093762,ec3b42f
+paypal/flow.py=d9be73d4275b6323d8c941b4e69720a62e3e9676 (all six)
+paypal/elevation_flow.py=a7940be0c3940209476a901a41f79564b1a789b9 (all six)
+paypal/graphql.py=14e7cd686937b05c601f2c701c1c3b1b2aba4bb6 (all six)
+paypal/session.py=47ba3643d47c3aa4fe6d50e32124b8e92da21d18 (all six)
+paypal/models.py=0bf56b356fbb7ff7fe513fb10705cbb819caffb4 (all six)
+paypal/fingerprint.py=f06c38c07d4952fced772345892480deaaace0fd (all six)
+paypal/tealeaf.py=93265c6dc9e5ca11aad51668dca3f285b9062761 (all six)
+paypal/analytics.py=47ce9129c1cc79f789f5a693df8cb5a2d8d869d5 (all six)
