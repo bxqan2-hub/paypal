@@ -1,0 +1,448 @@
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index 7339e59..5537427 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -335,70 +335,70 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                 continue
+ 
+             retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
+-            if retry_count > observed_retry_count:
++            retry_rotation = retry_count > observed_retry_count
++            if retry_rotation:
+                 observed_retry_count = retry_count
+-                if last_submitted_code:
+-                    try:
+-                        client.set_status(activation_id, 3)
+-                        add_log(
+-                            job,
+-                            "INFO",
+-                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：继续使用当前手机号并等待新的验证码",
+-                        )
+-                    except HeroSMSError as exc:
+-                        add_log(job, "WARNING", f"当前手机号请求新验证码状态更新失败，继续轮询：{exc}")
++                add_log(
++                    job,
++                    "WARNING",
++                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：立即取消旧手机号并获取新手机号",
++                )
+ 
+-            deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
+             timed_out = True
+             immediate_send_failure = False
+-            while time.monotonic() < deadline:
+-                job = _protocol.get_job(job_id)
+-                if job is None or job.status in {"completed", "failed", "cancelled"}:
+-                    return
+-                if job.status != "awaiting_otp":
+-                    timed_out = False
+-                    break
+-                consume_failure = getattr(job, "consume_sms_send_failure", None)
+-                send_failure = consume_failure() if callable(consume_failure) else ""
+-                if send_failure:
+-                    immediate_send_failure = True
+-                    add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
+-                    break
+-                try:
+-                    status = client.get_status(activation_id)
+-                except HeroSMSError as exc:
+-                    add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
+-                    time.sleep(client.poll_interval)
+-                    continue
+-                code = str(status.get("code") or "").strip()
+-                status_name = str(status.get("status") or "").strip().upper()
+-                if status_name and status_name != last_status_name:
+-                    last_status_name = status_name
+-                    emit_event(job, "herosms.status", {
+-                        "activation_id": activation_id,
+-                        "status": status_name,
+-                        "attempt": attempt,
+-                    })
+-                if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
++            rotation_reason = "protocol_retry" if retry_rotation else "timeout"
++            if not retry_rotation:
++                deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
++                while time.monotonic() < deadline:
++                    job = _protocol.get_job(job_id)
++                    if job is None or job.status in {"completed", "failed", "cancelled"}:
++                        return
++                    if job.status != "awaiting_otp":
++                        timed_out = False
++                        break
++                    consume_failure = getattr(job, "consume_sms_send_failure", None)
++                    send_failure = consume_failure() if callable(consume_failure) else ""
++                    if send_failure:
++                        immediate_send_failure = True
++                        rotation_reason = "send_failed"
++                        add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
++                        break
+                     try:
+-                        job.submit_input(code)
+-                    except ValueError:
++                        status = client.get_status(activation_id)
++                    except HeroSMSError as exc:
++                        add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
++                        time.sleep(client.poll_interval)
++                        continue
++                    code = str(status.get("code") or "").strip()
++                    status_name = str(status.get("status") or "").strip().upper()
++                    if status_name and status_name != last_status_name:
++                        last_status_name = status_name
++                        emit_event(job, "herosms.status", {
++                            "activation_id": activation_id,
++                            "status": status_name,
++                            "attempt": attempt,
++                        })
++                    if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
++                        try:
++                            job.submit_input(code)
++                        except ValueError:
++                            timed_out = False
++                            break
++                        last_submitted_code = code
++                        add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
++                        submitted = True
++                        emit_event(job, "herosms.code.received", {
++                            "activation_id": activation_id,
++                            "attempt": attempt,
++                            "code_received": True,
++                        })
+                         timed_out = False
+                         break
+-                    last_submitted_code = code
+-                    add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
+-                    submitted = True
+-                    emit_event(job, "herosms.code.received", {
+-                        "activation_id": activation_id,
+-                        "attempt": attempt,
+-                        "code_received": True,
+-                    })
+-                    timed_out = False
+-                    break
+-                if status_name in SMS_TERMINAL_STATUSES:
+-                    add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
+-                    break
+-                time.sleep(client.poll_interval)
++                    if status_name in SMS_TERMINAL_STATUSES:
++                        rotation_reason = "provider_terminal"
++                        add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
++                        break
++                    time.sleep(client.poll_interval)
+ 
+             if not timed_out:
+                 # The flow changed state (for example a manual OTP/phone was
+@@ -408,7 +408,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             job = _protocol.get_job(job_id)
+             if job is None or job.status in {"completed", "failed", "cancelled"}:
+                 break
+-            if immediate_send_failure:
++            if retry_rotation:
++                add_log(job, "WARNING", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：旧手机号已取消")
++            elif immediate_send_failure:
+                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已直接取消旧号")
+             else:
+                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
+@@ -417,7 +419,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             emit_event(job, "herosms.number.closed", {
+                 "activation_id": activation_id,
+                 "attempt": attempt,
+-                "reason": "send_failed" if immediate_send_failure else "timeout",
++                "reason": rotation_reason,
+             })
+             current_closed = True
+             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
+@@ -454,10 +456,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             current = dict(replacement)
+             attempt = next_attempt
+             last_status_name = ""
++            last_submitted_code = ""
+             current_closed = False
+             mark_activation(job, current, attempt)
+             registered_activation_id = replacement_id
+-            add_log(job, "INFO", f"已自动获取第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号并重新发送验证码")
++            if retry_rotation:
++                add_log(job, "INFO", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：已获取新手机号并开始新的协议尝试")
++            else:
++                add_log(job, "INFO", f"已自动获取第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号并重新发送验证码")
+             try:
+                 # _confirm_phone_with_retry receives this value through its
+                 # existing new-phone branch and sends the next SMS itself.
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index 025cf52..ed4b642 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -955,6 +955,8 @@ class WebJob:
+     max_card_attempts: int = 5
+     retry_count: int = 0
+     max_retries: int = 2
++    retry_phone_required: bool = False
++    retry_previous_phone: str = ""
+     manual_funding: bool = False
+     agreement_only: bool = False
+     exclude_public_metrics: bool = False
+@@ -1064,12 +1066,14 @@ class WebJob:
+             self.updated_at = now_ts()
+ 
+     def prepare_retry(self, exc: BaseException) -> None:
+-        """Reset volatile attempt state while keeping the current SMS number."""
++        """Reset volatile state and require a distinct phone for the next attempt."""
+         with self._condition:
+             self.retry_count += 1
+             reason = redact_text(str(exc) or type(exc).__name__)
+-            self.status = "queued"
+-            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：继续使用当前手机号"
++            self.retry_previous_phone = self.phone
++            self.retry_phone_required = True
++            self.status = "awaiting_otp"
++            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：正在更换新手机号"
+             self.result = None
+             self.error = ""
+             self.traceback_text = ""
+@@ -1077,7 +1081,7 @@ class WebJob:
+             self.generated = None
+             self.runtime_schema = None
+             self.last_protocol_step = ""
+-            self.awaiting_prompt = ""
++            self.awaiting_prompt = "上次执行失败，自动重试必须获取并使用新的手机号"
+             self.challenge_url = ""
+             self.sms_send_failed = False
+             self.sms_send_error = ""
+@@ -1087,15 +1091,56 @@ class WebJob:
+             self.updated_at = now_ts()
+             self._append_log_locked(
+                 "WARNING",
+-                f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
++                f"第 {self.retry_count}/{self.max_retries} 次自动重试：停止使用旧手机号并等待新手机号；上次失败：{reason}",
+             )
+             self._emit_event_locked("protocol.retry", {
+                 "retry_count": self.retry_count,
+                 "max_retries": self.max_retries,
+                 "stage": self.stage,
+                 "reason": reason,
++                "requires_new_phone": True,
++            })
++            self._condition.notify_all()
++
++    def wait_for_retry_phone(self) -> str:
++        """Wait without occupying a runner slot until a distinct phone arrives."""
++        self.release_execution_slot()
++        with self._condition:
++            if not self.retry_phone_required:
++                raise RuntimeError("Automatic retry did not request a new phone")
++            deadline = now_ts() + OTP_INPUT_TIMEOUT_SECONDS
++            while not self._input_queue:
++                self.check_cancelled()
++                remaining = deadline - now_ts()
++                if remaining <= 0:
++                    raise TimeoutError("Waiting for a new retry phone timed out")
++                self._condition.wait(timeout=min(0.5, remaining))
++            value = self._input_queue.pop(0).strip()
++            self.check_cancelled()
++            if value.lower() in {"q", "quit", "exit"}:
++                raise RuntimeError("Automatic retry cancelled while waiting for a new phone")
++            digits = "".join(char for char in value if char.isdigit())
++            previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
++            if not 8 <= len(digits) <= 20 or digits == previous_digits:
++                raise ValueError("Automatic retry requires a valid new phone number")
++            self.phone = f"+{digits}"
++            self.retry_phone_required = False
++            self.retry_previous_phone = ""
++            self.status = "queued"
++            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
++            self.awaiting_prompt = ""
++            self.updated_at = now_ts()
++            self._append_log_locked(
++                "INFO",
++                f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}",
++            )
++            self._emit_event_locked("protocol.retry.phone_changed", {
++                "retry_count": self.retry_count,
++                "max_retries": self.max_retries,
++                "phone": mask_phone(self.phone),
+             })
+             self._condition.notify_all()
++            return self.phone
+ 
+     def set_status(self, status: str, stage: str | None = None) -> None:
+         with self._condition:
+@@ -1393,6 +1438,14 @@ class WebJob:
+         with self._condition:
+             if self.status != "awaiting_otp":
+                 raise ValueError("This job is not waiting for an SMS code")
++            if self.retry_phone_required and value.lower() not in {"q", "quit", "exit"}:
++                digits = "".join(char for char in value if char.isdigit())
++                previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
++                if not 8 <= len(digits) <= 20:
++                    raise ValueError("自动重试必须提交新的有效手机号，不能提交验证码")
++                if digits == previous_digits:
++                    raise ValueError("自动重试不能继续使用旧手机号")
++                value = f"+{digits}"
+             self._input_queue.append(value)
+             self.stage = "已提交验证码/手机号，等待程序处理"
+             self.updated_at = now_ts()
+@@ -1561,6 +1614,7 @@ class WebJob:
+                 "max_card_attempts": self.max_card_attempts,
+                 "retry_count": self.retry_count,
+                 "max_retries": self.max_retries,
++                "retry_phone_required": self.retry_phone_required,
+                 "manual_funding": self.manual_funding,
+                 "agreement_only": self.agreement_only,
+                 "generated": sanitize_payload(self.generated),
+@@ -2528,7 +2582,7 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
+ 
+ 
+ def run_job(job: WebJob) -> None:
+-    """Run a job with bounded clean-session retries on the current phone."""
++    """Run bounded clean-session retries, rotating the phone before each retry."""
+     try:
+         while True:
+             try:
+@@ -2543,11 +2597,22 @@ def run_job(job: WebJob) -> None:
+                         job.fail(exc)
+                     break
+                 job.prepare_retry(exc)
++                try:
++                    retry_phone = job.wait_for_retry_phone()
++                except BaseException as phone_error:
++                    with logger.contextualize(job_id=job.id):
++                        logger.error("Protocol payment retry phone rotation failed: {}", redact_text(phone_error))
++                    if job._cancel_event.is_set():
++                        job.mark_cancelled()
++                    else:
++                        job.fail(phone_error)
++                    break
+                 with logger.contextualize(job_id=job.id):
+                     logger.warning(
+-                        "Protocol payment automatic retry {}/{} with current phone",
++                        "Protocol payment automatic retry {}/{} with new phone {}",
+                         job.retry_count,
+                         job.max_retries,
++                        mask_phone(retry_phone),
+                     )
+                 continue
+             break
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index 28349d4..eac1b3c 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -24,9 +24,10 @@ class ProtocolRetryTests(unittest.TestCase):
+             phone="+447700900123",
+         )
+ 
+-    def test_automatic_retry_keeps_current_phone_and_stops_after_success(self) -> None:
++    def test_automatic_retry_uses_a_new_phone_for_every_attempt(self) -> None:
+         job = self.make_job()
+         phones: list[str] = []
++        replacement_phones = iter(["+447700900124", "+447700900125"])
+ 
+         def attempt(current: protocol_web.WebJob) -> None:
+             phones.append(current.phone)
+@@ -34,18 +35,107 @@ class ProtocolRetryTests(unittest.TestCase):
+                 raise RuntimeError(f"transient failure {len(phones)}")
+             current.complete({"status": "success"})
+ 
++        def rotate_phone() -> str:
++            phone = next(replacement_phones)
++            job.phone = phone
++            job.retry_phone_required = False
++            job.retry_previous_phone = ""
++            job.status = "queued"
++            return phone
++
+         with (
+             patch.object(protocol_web, "_run_job_attempt", side_effect=attempt),
++            patch.object(job, "wait_for_retry_phone", side_effect=rotate_phone) as rotation,
+             patch.object(protocol_web, "record_protocol_metric"),
+             patch.object(protocol_web, "record_payment_audit"),
+         ):
+             protocol_web.run_job(job)
+ 
+-        self.assertEqual(phones, ["+447700900123"] * 3)
++        self.assertEqual(phones, ["+447700900123", "+447700900124", "+447700900125"])
++        self.assertEqual(rotation.call_count, 2)
+         self.assertEqual(job.retry_count, 2)
+         self.assertEqual(job.status, "completed")
+         self.assertEqual(job.result["retry_count"], 2)
+-        self.assertTrue(any("继续使用当前手机号" in item["message"] for item in job.logs))
++        self.assertTrue(any("停止使用旧手机号" in item["message"] for item in job.logs))
++
++    def test_retry_phone_gate_rejects_old_phone_and_codes(self) -> None:
++        job = self.make_job()
++        job.prepare_retry(RuntimeError("transient"))
++
++        with self.assertRaisesRegex(ValueError, "新的有效手机号"):
++            job.submit_input("123456")
++        with self.assertRaisesRegex(ValueError, "旧手机号"):
++            job.submit_input("+447700900123")
++
++        job.submit_input("+447700900124")
++        self.assertEqual(job.wait_for_retry_phone(), "+447700900124")
++        self.assertFalse(job.retry_phone_required)
++
++    def test_sms_watcher_rotates_immediately_when_protocol_retry_starts(self) -> None:
++        class FakeClient:
++            poll_interval = 0.01
++
++            def __init__(self) -> None:
++                self.finished: list[tuple[str, int]] = []
++                self.status_calls = 0
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++            def get_status(self, _activation_id: str):
++                self.status_calls += 1
++                raise AssertionError("retry rotation must not poll the old activation")
++
++        class FakeJob:
++            id = "retry-job"
++            status = "awaiting_otp"
++            retry_count = 1
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.logs: list[tuple[str, str]] = []
++                self.submitted: list[str] = []
++
++            def add_log(self, level: str, message: str) -> None:
++                self.logs.append((level, message))
++
++            def emit_event(self, *_args) -> None:
++                return None
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                self.status = "completed"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        initial = {"activation_id": "activation-old", "phone": "+447700900123"}
++        replacement = {"activation_id": "activation-new", "phone": "+447700900124"}
++        client = FakeClient()
++        job = FakeJob()
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(protocol_bridge, "_acquire_unique_sms_number", return_value=replacement),
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(job.submitted, ["+447700900124"])
++        self.assertIn(("activation-old", 8), client.finished)
++        self.assertEqual(client.status_calls, 0)
+ 
+     def test_consumed_ba_failure_is_not_retried(self) -> None:
+         job = self.make_job()

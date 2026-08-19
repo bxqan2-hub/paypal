@@ -955,6 +955,8 @@ class WebJob:
     max_card_attempts: int = 5
     retry_count: int = 0
     max_retries: int = 2
+    retry_phone_required: bool = False
+    retry_previous_phone: str = ""
     manual_funding: bool = False
     agreement_only: bool = False
     exclude_public_metrics: bool = False
@@ -1064,12 +1066,14 @@ class WebJob:
             self.updated_at = now_ts()
 
     def prepare_retry(self, exc: BaseException) -> None:
-        """Reset volatile attempt state while keeping the current SMS number."""
+        """Reset volatile state and require a distinct phone for the next attempt."""
         with self._condition:
             self.retry_count += 1
             reason = redact_text(str(exc) or type(exc).__name__)
-            self.status = "queued"
-            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：继续使用当前手机号"
+            self.retry_previous_phone = self.phone
+            self.retry_phone_required = True
+            self.status = "awaiting_otp"
+            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：正在更换新手机号"
             self.result = None
             self.error = ""
             self.traceback_text = ""
@@ -1077,7 +1081,7 @@ class WebJob:
             self.generated = None
             self.runtime_schema = None
             self.last_protocol_step = ""
-            self.awaiting_prompt = ""
+            self.awaiting_prompt = "上次执行失败，自动重试必须获取并使用新的手机号"
             self.challenge_url = ""
             self.sms_send_failed = False
             self.sms_send_error = ""
@@ -1087,15 +1091,56 @@ class WebJob:
             self.updated_at = now_ts()
             self._append_log_locked(
                 "WARNING",
-                f"第 {self.retry_count}/{self.max_retries} 次自动重试：继续使用当前手机号；上次失败：{reason}",
+                f"第 {self.retry_count}/{self.max_retries} 次自动重试：停止使用旧手机号并等待新手机号；上次失败：{reason}",
             )
             self._emit_event_locked("protocol.retry", {
                 "retry_count": self.retry_count,
                 "max_retries": self.max_retries,
                 "stage": self.stage,
                 "reason": reason,
+                "requires_new_phone": True,
             })
             self._condition.notify_all()
+
+    def wait_for_retry_phone(self) -> str:
+        """Wait without occupying a runner slot until a distinct phone arrives."""
+        self.release_execution_slot()
+        with self._condition:
+            if not self.retry_phone_required:
+                raise RuntimeError("Automatic retry did not request a new phone")
+            deadline = now_ts() + OTP_INPUT_TIMEOUT_SECONDS
+            while not self._input_queue:
+                self.check_cancelled()
+                remaining = deadline - now_ts()
+                if remaining <= 0:
+                    raise TimeoutError("Waiting for a new retry phone timed out")
+                self._condition.wait(timeout=min(0.5, remaining))
+            value = self._input_queue.pop(0).strip()
+            self.check_cancelled()
+            if value.lower() in {"q", "quit", "exit"}:
+                raise RuntimeError("Automatic retry cancelled while waiting for a new phone")
+            digits = "".join(char for char in value if char.isdigit())
+            previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
+            if not 8 <= len(digits) <= 20 or digits == previous_digits:
+                raise ValueError("Automatic retry requires a valid new phone number")
+            self.phone = f"+{digits}"
+            self.retry_phone_required = False
+            self.retry_previous_phone = ""
+            self.status = "queued"
+            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
+            self.awaiting_prompt = ""
+            self.updated_at = now_ts()
+            self._append_log_locked(
+                "INFO",
+                f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}",
+            )
+            self._emit_event_locked("protocol.retry.phone_changed", {
+                "retry_count": self.retry_count,
+                "max_retries": self.max_retries,
+                "phone": mask_phone(self.phone),
+            })
+            self._condition.notify_all()
+            return self.phone
 
     def set_status(self, status: str, stage: str | None = None) -> None:
         with self._condition:
@@ -1393,6 +1438,14 @@ class WebJob:
         with self._condition:
             if self.status != "awaiting_otp":
                 raise ValueError("This job is not waiting for an SMS code")
+            if self.retry_phone_required and value.lower() not in {"q", "quit", "exit"}:
+                digits = "".join(char for char in value if char.isdigit())
+                previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
+                if not 8 <= len(digits) <= 20:
+                    raise ValueError("自动重试必须提交新的有效手机号，不能提交验证码")
+                if digits == previous_digits:
+                    raise ValueError("自动重试不能继续使用旧手机号")
+                value = f"+{digits}"
             self._input_queue.append(value)
             self.stage = "已提交验证码/手机号，等待程序处理"
             self.updated_at = now_ts()
@@ -1561,6 +1614,7 @@ class WebJob:
                 "max_card_attempts": self.max_card_attempts,
                 "retry_count": self.retry_count,
                 "max_retries": self.max_retries,
+                "retry_phone_required": self.retry_phone_required,
                 "manual_funding": self.manual_funding,
                 "agreement_only": self.agreement_only,
                 "generated": sanitize_payload(self.generated),
@@ -2528,7 +2582,7 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
 
 
 def run_job(job: WebJob) -> None:
-    """Run a job with bounded clean-session retries on the current phone."""
+    """Run bounded clean-session retries, rotating the phone before each retry."""
     try:
         while True:
             try:
@@ -2543,11 +2597,22 @@ def run_job(job: WebJob) -> None:
                         job.fail(exc)
                     break
                 job.prepare_retry(exc)
+                try:
+                    retry_phone = job.wait_for_retry_phone()
+                except BaseException as phone_error:
+                    with logger.contextualize(job_id=job.id):
+                        logger.error("Protocol payment retry phone rotation failed: {}", redact_text(phone_error))
+                    if job._cancel_event.is_set():
+                        job.mark_cancelled()
+                    else:
+                        job.fail(phone_error)
+                    break
                 with logger.contextualize(job_id=job.id):
                     logger.warning(
-                        "Protocol payment automatic retry {}/{} with current phone",
+                        "Protocol payment automatic retry {}/{} with new phone {}",
                         job.retry_count,
                         job.max_retries,
+                        mask_phone(retry_phone),
                     )
                 continue
             break

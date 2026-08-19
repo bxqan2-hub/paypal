@@ -1,0 +1,44 @@
+BRANCH_FIELD_RESULT=main / protocol retry phone rotation / old HeroSMS activation is cancelled and every retry waits for a distinct new phone
+BASE_COMMIT=412302e692f36eed0d5661298e845298bef80ae9
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 412302e692f36eed0d5661298e845298bef80ae9 before retry-phone rotation patch
+LITERAL_OUTPUT_BEGIN
+............................................                             [100%]
+44 passed in 0.49s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed; protocol retries still reused the current phone.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with paypal_agreement_protocol/web.py, payment_link_extractor/web/paypal_protocol.py, and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+..............................................                           [100%]
+46 passed in 0.48s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The modified suite passed, including rejection of an old retry phone and immediate HeroSMS rotation before retry.
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\paypal-retry-rollback-a8c047a7c12246afb44f5eba5e8017f3"
+INPUT=detached HEAD copy after COMMAND git -C <TEMP_WORKTREE> apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\retry_new_phone_20260819\DIFF_FILE"
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+............................................                             [100%]
+44 passed in 0.51s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh reversed DIFF_FILE, restored the original 44-test behavior, and left the detached verification copy clean; the temporary worktree was then removed with WORKTREE_REMOVE_EXIT=0.
+RESTORED_BEHAVIOR_STATUS=Original current-phone retry behavior restored only in the rollback verification copy; the primary working tree remains changed to require a distinct new phone on every retry.

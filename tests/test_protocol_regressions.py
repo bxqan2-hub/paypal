@@ -24,9 +24,10 @@ class ProtocolRetryTests(unittest.TestCase):
             phone="+447700900123",
         )
 
-    def test_automatic_retry_keeps_current_phone_and_stops_after_success(self) -> None:
+    def test_automatic_retry_uses_a_new_phone_for_every_attempt(self) -> None:
         job = self.make_job()
         phones: list[str] = []
+        replacement_phones = iter(["+447700900124", "+447700900125"])
 
         def attempt(current: protocol_web.WebJob) -> None:
             phones.append(current.phone)
@@ -34,18 +35,107 @@ class ProtocolRetryTests(unittest.TestCase):
                 raise RuntimeError(f"transient failure {len(phones)}")
             current.complete({"status": "success"})
 
+        def rotate_phone() -> str:
+            phone = next(replacement_phones)
+            job.phone = phone
+            job.retry_phone_required = False
+            job.retry_previous_phone = ""
+            job.status = "queued"
+            return phone
+
         with (
             patch.object(protocol_web, "_run_job_attempt", side_effect=attempt),
+            patch.object(job, "wait_for_retry_phone", side_effect=rotate_phone) as rotation,
             patch.object(protocol_web, "record_protocol_metric"),
             patch.object(protocol_web, "record_payment_audit"),
         ):
             protocol_web.run_job(job)
 
-        self.assertEqual(phones, ["+447700900123"] * 3)
+        self.assertEqual(phones, ["+447700900123", "+447700900124", "+447700900125"])
+        self.assertEqual(rotation.call_count, 2)
         self.assertEqual(job.retry_count, 2)
         self.assertEqual(job.status, "completed")
         self.assertEqual(job.result["retry_count"], 2)
-        self.assertTrue(any("继续使用当前手机号" in item["message"] for item in job.logs))
+        self.assertTrue(any("停止使用旧手机号" in item["message"] for item in job.logs))
+
+    def test_retry_phone_gate_rejects_old_phone_and_codes(self) -> None:
+        job = self.make_job()
+        job.prepare_retry(RuntimeError("transient"))
+
+        with self.assertRaisesRegex(ValueError, "新的有效手机号"):
+            job.submit_input("123456")
+        with self.assertRaisesRegex(ValueError, "旧手机号"):
+            job.submit_input("+447700900123")
+
+        job.submit_input("+447700900124")
+        self.assertEqual(job.wait_for_retry_phone(), "+447700900124")
+        self.assertFalse(job.retry_phone_required)
+
+    def test_sms_watcher_rotates_immediately_when_protocol_retry_starts(self) -> None:
+        class FakeClient:
+            poll_interval = 0.01
+
+            def __init__(self) -> None:
+                self.finished: list[tuple[str, int]] = []
+                self.status_calls = 0
+
+            def finish(self, activation_id: str, status: int = 6) -> None:
+                self.finished.append((activation_id, status))
+
+            def get_status(self, _activation_id: str):
+                self.status_calls += 1
+                raise AssertionError("retry rotation must not poll the old activation")
+
+        class FakeJob:
+            id = "retry-job"
+            status = "awaiting_otp"
+            retry_count = 1
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.logs: list[tuple[str, str]] = []
+                self.submitted: list[str] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-old", "phone": "+447700900123"}
+        replacement = {"activation_id": "activation-new", "phone": "+447700900124"}
+        client = FakeClient()
+        job = FakeJob()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(protocol_bridge, "_acquire_unique_sms_number", return_value=replacement),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(job.submitted, ["+447700900124"])
+        self.assertIn(("activation-old", 8), client.finished)
+        self.assertEqual(client.status_calls, 0)
 
     def test_consumed_ba_failure_is_not_retried(self) -> None:
         job = self.make_job()

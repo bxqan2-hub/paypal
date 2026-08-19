@@ -1,0 +1,17 @@
+BRANCH_FIELD_RESULT=main / protocol retry phone rotation / old HeroSMS activation is cancelled and every retry waits for a distinct new phone
+BASE_COMMIT=412302e692f36eed0d5661298e845298bef80ae9
+
+paypal_agreement_protocol/web.py
+ORIGINAL_GIT_BLOB=025cf52ce19972aad9cc13a5a2c574aa071ad8bd
+MODIFIED_SHA256=1ff7fec280cd33df373c407f9aa6254cdbb6997934becfc7cd959e9af8191929
+CHANGED_FIELD=retry_phone_required,retry_previous_phone,wait_for_retry_phone
+
+payment_link_extractor/web/paypal_protocol.py
+ORIGINAL_GIT_BLOB=7339e590a9dfecabc7bacf07a68e6cde99952beb
+MODIFIED_SHA256=0547ad42ae627c67f0ac3affa827fdfac40b773d046877597aaa63aeeab74961
+CHANGED_FIELD=_watch_sms_job protocol_retry rotation branch
+
+tests/test_protocol_regressions.py
+ORIGINAL_GIT_BLOB=28349d46156331a9144f17d043090674a6460fb5
+MODIFIED_SHA256=9d7f9f3e6683522e785f57463212c69849d410692843e311ebd4fbbd229cda40
+CHANGED_FIELD=new-number retry gate and immediate watcher rotation regressions

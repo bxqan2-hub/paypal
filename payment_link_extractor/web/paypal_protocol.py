@@ -335,70 +335,70 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 continue
 
             retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
-            if retry_count > observed_retry_count:
+            retry_rotation = retry_count > observed_retry_count
+            if retry_rotation:
                 observed_retry_count = retry_count
-                if last_submitted_code:
-                    try:
-                        client.set_status(activation_id, 3)
-                        add_log(
-                            job,
-                            "INFO",
-                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：继续使用当前手机号并等待新的验证码",
-                        )
-                    except HeroSMSError as exc:
-                        add_log(job, "WARNING", f"当前手机号请求新验证码状态更新失败，继续轮询：{exc}")
+                add_log(
+                    job,
+                    "WARNING",
+                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：立即取消旧手机号并获取新手机号",
+                )
 
-            deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
             timed_out = True
             immediate_send_failure = False
-            while time.monotonic() < deadline:
-                job = _protocol.get_job(job_id)
-                if job is None or job.status in {"completed", "failed", "cancelled"}:
-                    return
-                if job.status != "awaiting_otp":
-                    timed_out = False
-                    break
-                consume_failure = getattr(job, "consume_sms_send_failure", None)
-                send_failure = consume_failure() if callable(consume_failure) else ""
-                if send_failure:
-                    immediate_send_failure = True
-                    add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
-                    break
-                try:
-                    status = client.get_status(activation_id)
-                except HeroSMSError as exc:
-                    add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
-                    time.sleep(client.poll_interval)
-                    continue
-                code = str(status.get("code") or "").strip()
-                status_name = str(status.get("status") or "").strip().upper()
-                if status_name and status_name != last_status_name:
-                    last_status_name = status_name
-                    emit_event(job, "herosms.status", {
-                        "activation_id": activation_id,
-                        "status": status_name,
-                        "attempt": attempt,
-                    })
-                if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
-                    try:
-                        job.submit_input(code)
-                    except ValueError:
+            rotation_reason = "protocol_retry" if retry_rotation else "timeout"
+            if not retry_rotation:
+                deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
+                while time.monotonic() < deadline:
+                    job = _protocol.get_job(job_id)
+                    if job is None or job.status in {"completed", "failed", "cancelled"}:
+                        return
+                    if job.status != "awaiting_otp":
                         timed_out = False
                         break
-                    last_submitted_code = code
-                    add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
-                    submitted = True
-                    emit_event(job, "herosms.code.received", {
-                        "activation_id": activation_id,
-                        "attempt": attempt,
-                        "code_received": True,
-                    })
-                    timed_out = False
-                    break
-                if status_name in SMS_TERMINAL_STATUSES:
-                    add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
-                    break
-                time.sleep(client.poll_interval)
+                    consume_failure = getattr(job, "consume_sms_send_failure", None)
+                    send_failure = consume_failure() if callable(consume_failure) else ""
+                    if send_failure:
+                        immediate_send_failure = True
+                        rotation_reason = "send_failed"
+                        add_log(job, "WARNING", f"PayPal 短信发送失败，立即取消当前手机号并换号：{send_failure}")
+                        break
+                    try:
+                        status = client.get_status(activation_id)
+                    except HeroSMSError as exc:
+                        add_log(job, "WARNING", f"HeroSMS 状态轮询失败，继续重试：{exc}")
+                        time.sleep(client.poll_interval)
+                        continue
+                    code = str(status.get("code") or "").strip()
+                    status_name = str(status.get("status") or "").strip().upper()
+                    if status_name and status_name != last_status_name:
+                        last_status_name = status_name
+                        emit_event(job, "herosms.status", {
+                            "activation_id": activation_id,
+                            "status": status_name,
+                            "attempt": attempt,
+                        })
+                    if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
+                        try:
+                            job.submit_input(code)
+                        except ValueError:
+                            timed_out = False
+                            break
+                        last_submitted_code = code
+                        add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
+                        submitted = True
+                        emit_event(job, "herosms.code.received", {
+                            "activation_id": activation_id,
+                            "attempt": attempt,
+                            "code_received": True,
+                        })
+                        timed_out = False
+                        break
+                    if status_name in SMS_TERMINAL_STATUSES:
+                        rotation_reason = "provider_terminal"
+                        add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
+                        break
+                    time.sleep(client.poll_interval)
 
             if not timed_out:
                 # The flow changed state (for example a manual OTP/phone was
@@ -408,7 +408,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             job = _protocol.get_job(job_id)
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
-            if immediate_send_failure:
+            if retry_rotation:
+                add_log(job, "WARNING", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：旧手机号已取消")
+            elif immediate_send_failure:
                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次发送失败，未等待超时，已直接取消旧号")
             else:
                 add_log(job, "WARNING", f"手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次等待 {int(SMS_ROTATION_WAIT_SECONDS)} 秒仍未收到验证码，已取消旧号")
@@ -417,7 +419,7 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             emit_event(job, "herosms.number.closed", {
                 "activation_id": activation_id,
                 "attempt": attempt,
-                "reason": "send_failed" if immediate_send_failure else "timeout",
+                "reason": rotation_reason,
             })
             current_closed = True
             if attempt >= SMS_ROTATION_MAX_ATTEMPTS:
@@ -454,10 +456,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             current = dict(replacement)
             attempt = next_attempt
             last_status_name = ""
+            last_submitted_code = ""
             current_closed = False
             mark_activation(job, current, attempt)
             registered_activation_id = replacement_id
-            add_log(job, "INFO", f"已自动获取第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号并重新发送验证码")
+            if retry_rotation:
+                add_log(job, "INFO", f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：已获取新手机号并开始新的协议尝试")
+            else:
+                add_log(job, "INFO", f"已自动获取第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号并重新发送验证码")
             try:
                 # _confirm_phone_with_retry receives this value through its
                 # existing new-phone branch and sends the next SMS itself.
