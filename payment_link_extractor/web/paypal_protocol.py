@@ -69,6 +69,9 @@ SMS_CANCEL_RETRY_SECONDS = _bounded_seconds_env(
 SMS_CANCEL_RETRY_WINDOW_SECONDS = _bounded_seconds_env(
     "HEROSMS_CANCEL_RETRY_WINDOW_SECONDS", 600.0, 120.0, 1800.0,
 )
+SMS_REPLACEMENT_RETRY_SECONDS = _bounded_seconds_env(
+    "HEROSMS_REPLACEMENT_RETRY_SECONDS", 5.0, 0.0, 60.0,
+)
 SMS_TERMINAL_STATUSES = {
     "STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8",
 }
@@ -611,28 +614,68 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 if retry_rotation
                 else (attempt + 1 if timeout_consumed else attempt)
             )
-            try:
-                replacement = _acquire_unique_sms_number(
-                    client,
-                    str(getattr(job, "country", "") or ""),
-                    owner=job_id,
-                )
-            except (HeroSMSError, ValueError) as exc:
-                add_log(job, "ERROR", f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号失败：{exc}")
+            replacement_failures = 0
+            while True:
+                job = _protocol.get_job(job_id)
+                if job is None or job.status in {"completed", "failed", "cancelled"}:
+                    return
                 try:
-                    job.submit_input("q")
-                except Exception:
-                    pass
-                break
-            replacement_id = str(replacement.get("activation_id") or "").strip()
-            replacement_phone = str(replacement.get("phone") or "").strip()
-            if not replacement_id or not replacement_phone:
-                add_log(job, "ERROR", f"HeroSMS 第 {next_attempt} 个手机号返回数据不完整，短信验证停止")
-                try:
-                    job.submit_input("q")
-                except Exception:
-                    pass
-                break
+                    replacement = _acquire_unique_sms_number(
+                        client,
+                        str(getattr(job, "country", "") or ""),
+                        owner=job_id,
+                    )
+                    replacement_id = str(replacement.get("activation_id") or "").strip()
+                    replacement_phone = str(replacement.get("phone") or "").strip()
+                    if not replacement_id or not replacement_phone:
+                        raise HeroSMSError("HeroSMS returned incomplete replacement data")
+                    if replacement_failures:
+                        add_log(
+                            job,
+                            "INFO",
+                            f"HeroSMS 换号取号已恢复，成功获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号",
+                        )
+                    break
+                except HeroSMSError as exc:
+                    replacement_failures += 1
+                    try:
+                        retry_delay = float(
+                            getattr(exc, "retry_after_seconds", SMS_REPLACEMENT_RETRY_SECONDS)
+                            or SMS_REPLACEMENT_RETRY_SECONDS
+                        )
+                    except (TypeError, ValueError):
+                        retry_delay = SMS_REPLACEMENT_RETRY_SECONDS
+                    retry_delay = max(0.0, min(60.0, retry_delay))
+                    if replacement_failures == 1 or replacement_failures % 6 == 0:
+                        add_log(
+                            job,
+                            "WARNING",
+                            f"HeroSMS 第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个换号号码暂未取到，"
+                            f"后台将在约 {retry_delay:g} 秒后继续取号；任务不会退出：{exc}",
+                        )
+                    emit_event(job, "herosms.number.retry_wait", {
+                        "attempt": next_attempt,
+                        "acquire_failures": replacement_failures,
+                        "retry_in_seconds": retry_delay,
+                    })
+                    retry_deadline = time.monotonic() + retry_delay
+                    while time.monotonic() < retry_deadline:
+                        job = _protocol.get_job(job_id)
+                        if job is None or job.status in {"completed", "failed", "cancelled"}:
+                            return
+                        time.sleep(min(0.5, retry_deadline - time.monotonic()))
+                    continue
+                except ValueError as exc:
+                    add_log(
+                        job,
+                        "ERROR",
+                        f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号参数无效：{exc}",
+                    )
+                    try:
+                        job.submit_input("q")
+                    except Exception:
+                        pass
+                    return
             current = dict(replacement)
             attempt = next_attempt
             last_status_name = ""

@@ -1,0 +1,73 @@
+BRANCH_FIELD_RESULT=main / HeroSMS replacement-number acquisition retry / a temporary replacement acquisition failure now stays in background retry and never submits synthetic q; successful recovery supplies the new phone to the waiting payment job
+BASE_COMMIT=542d75323ea78ce2a85ee3f6adfeddabe7109c49
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/web/paypal_protocol.py;tests/test_protocol_regressions.py
+
+LOG_AND_ROOT_CAUSE
+COMMAND=Get-Content -LiteralPath data/payment-link.log | Where-Object { $_ -match '^2026-08-21 02:(3[0-9]|4[0-9]):' }
+INPUT=latest fifth payment process at 2026-08-21 02:31 through 02:34
+LITERAL_OUTPUT_BEGIN
+2026-08-21 02:31:32.061 | INFO     | app | task=- | Protocol payment job started
+2026-08-21 02:32:04.502 | INFO     | app | task=- | SMS verification code sent to phone: ********2276
+2026-08-21 02:34:52.618 | ERROR    | app | task=- | Flow failed: OTP confirmation cancelled by user
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The SMS was accepted at 02:32:04, the 120-second wait expired, then replacement-number acquisition failed. The adapter's old exception branch immediately submitted synthetic q and stopped its only watcher, so the upstream flow rendered the misleading cancelled-by-user error instead of continuing replacement acquisition. This is an inference confirmed by the 168-second timing and the exact _watch_sms_job branch that was the only post-timeout path capable of submitting q on the first phone.
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status ec3b42f..HEAD -- paypal_agreement_protocol/paypal ; git diff --name-status HEAD -- paypal_agreement_protocol/paypal
+INPUT=payment protocol core history and current working tree
+LITERAL_OUTPUT_BEGIN
+HISTORY_DIFF=<empty>
+WORKTREE_DIFF=<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=No protocol payment core file changed. The optimization is confined to the HeroSMS web adapter and its regression test.
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_replacement_acquire_retry_20260821\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_replacement_acquire_retry_20260821\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\herosms_replacement_acquire_retry_20260821\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\herosms_replacement_acquire_retry_20260821\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 542d75323ea78ce2a85ee3f6adfeddabe7109c49 before replacement-acquisition background retry
+LITERAL_OUTPUT_BEGIN
+...........................................................              [100%]
+59 passed in 0.60s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed while a post-timeout HeroSMS replacement acquisition error still submitted q and terminated the payment flow.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with payment_link_extractor/web/paypal_protocol.py and tests/test_protocol_regressions.py changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+............................................................             [100%]
+60 passed in 0.52s
+MODIFIED_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=All tests pass. The added regression forces the first replacement acquisition to fail and the second to succeed; observed submission is only +447700900161, q is absent, the job completes, and retry-wait plus recovery events/logs are emitted.
+
+ROLLBACK
+COMMAND=git worktree add --detach C:\Users\Administrator\AppData\Local\Temp\herosms-replacement-retry-03e2f40280c24d05bd5a9808393dc24f HEAD ; git -C <COPY> apply --whitespace=nowarn DIFF_FILE ; .\.venv\Scripts\python.exe -m pytest -q ; "C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <COPY> ; .\.venv\Scripts\python.exe -m pytest -q ; git -C <COPY> status --short ; git worktree remove --force <COPY>
+INPUT=detached HEAD copy with DIFF_FILE applied, then ROLLBACK.sh executed against that copy
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_PREPARE_APPLY_EXIT=0
+............................................................             [100%]
+60 passed in 0.67s
+ROLLBACK_PRECHECK_MODIFIED_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+...........................................................              [100%]
+59 passed in 0.55s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh restored the original 59-test behavior and a clean detached copy; the temporary worktree was removed. The primary working tree remains modified.
+RESTORED_BEHAVIOR_STATUS=Only the rollback copy restores the old synthetic-q termination after a replacement acquisition failure. The primary working tree keeps the watcher alive, waits with a visible retry status, and submits the newly acquired phone after HeroSMS inventory/network recovery.

@@ -1,0 +1,18 @@
+BRANCH_FIELD_RESULT=main / HeroSMS replacement-number acquisition retry / a temporary replacement acquisition failure now stays in background retry and never submits synthetic q; successful recovery supplies the new phone to the waiting payment job
+BASE_COMMIT=542d75323ea78ce2a85ee3f6adfeddabe7109c49
+PAYMENT_CORE_CHANGED=false
+
+payment_link_extractor/web/paypal_protocol.py
+ORIGINAL_SHA256=6AD5930435D4E7C82A91834EC6E87A6946B5B5BFA0DFB8333F4DDF5A9BB62CA8
+ORIGINAL_GIT_BLOB=aeb95600c14d6dc6363980696c6f634d1e0d0e53
+MODIFIED_SHA256=F1C9BA83E4F9901E4B9410AB682382F2C46A818921A87D082A67FD419EE65855
+CHANGED_FIELD=SMS_REPLACEMENT_RETRY_SECONDS and _watch_sms_job replacement acquisition wait/recovery loop
+
+tests/test_protocol_regressions.py
+ORIGINAL_SHA256=0762531FDBBBFB48215918BF749AAFA9DA960C7E88C6B242865BE370BF0A661D
+ORIGINAL_GIT_BLOB=fa4b28e1ad8ea6fc6b572765ca842fd242e6691b
+MODIFIED_SHA256=09ABE36426BEDA455D53C9811F85CDDCDB0CF7A09E76DAC1BA3517281982CEA6
+CHANGED_FIELD=temporary replacement inventory failure regression proving no q and eventual new-phone delivery
+
+PAYMENT_CORE_SCOPE=paypal_agreement_protocol/paypal/**
+PAYMENT_CORE_WORKTREE_DIFF=<empty>

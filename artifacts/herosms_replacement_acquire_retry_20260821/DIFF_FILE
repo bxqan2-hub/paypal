@@ -1,0 +1,199 @@
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index aeb9560..9b2fac4 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -69,6 +69,9 @@ SMS_CANCEL_RETRY_SECONDS = _bounded_seconds_env(
+ SMS_CANCEL_RETRY_WINDOW_SECONDS = _bounded_seconds_env(
+     "HEROSMS_CANCEL_RETRY_WINDOW_SECONDS", 600.0, 120.0, 1800.0,
+ )
++SMS_REPLACEMENT_RETRY_SECONDS = _bounded_seconds_env(
++    "HEROSMS_REPLACEMENT_RETRY_SECONDS", 5.0, 0.0, 60.0,
++)
+ SMS_TERMINAL_STATUSES = {
+     "STATUS_CANCEL", "STATUS_CANCELLED", "STATUS_FINISH", "6", "8",
+ }
+@@ -611,28 +614,68 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                 if retry_rotation
+                 else (attempt + 1 if timeout_consumed else attempt)
+             )
+-            try:
+-                replacement = _acquire_unique_sms_number(
+-                    client,
+-                    str(getattr(job, "country", "") or ""),
+-                    owner=job_id,
+-                )
+-            except (HeroSMSError, ValueError) as exc:
+-                add_log(job, "ERROR", f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号失败：{exc}")
+-                try:
+-                    job.submit_input("q")
+-                except Exception:
+-                    pass
+-                break
+-            replacement_id = str(replacement.get("activation_id") or "").strip()
+-            replacement_phone = str(replacement.get("phone") or "").strip()
+-            if not replacement_id or not replacement_phone:
+-                add_log(job, "ERROR", f"HeroSMS 第 {next_attempt} 个手机号返回数据不完整，短信验证停止")
++            replacement_failures = 0
++            while True:
++                job = _protocol.get_job(job_id)
++                if job is None or job.status in {"completed", "failed", "cancelled"}:
++                    return
+                 try:
+-                    job.submit_input("q")
+-                except Exception:
+-                    pass
+-                break
++                    replacement = _acquire_unique_sms_number(
++                        client,
++                        str(getattr(job, "country", "") or ""),
++                        owner=job_id,
++                    )
++                    replacement_id = str(replacement.get("activation_id") or "").strip()
++                    replacement_phone = str(replacement.get("phone") or "").strip()
++                    if not replacement_id or not replacement_phone:
++                        raise HeroSMSError("HeroSMS returned incomplete replacement data")
++                    if replacement_failures:
++                        add_log(
++                            job,
++                            "INFO",
++                            f"HeroSMS 换号取号已恢复，成功获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号",
++                        )
++                    break
++                except HeroSMSError as exc:
++                    replacement_failures += 1
++                    try:
++                        retry_delay = float(
++                            getattr(exc, "retry_after_seconds", SMS_REPLACEMENT_RETRY_SECONDS)
++                            or SMS_REPLACEMENT_RETRY_SECONDS
++                        )
++                    except (TypeError, ValueError):
++                        retry_delay = SMS_REPLACEMENT_RETRY_SECONDS
++                    retry_delay = max(0.0, min(60.0, retry_delay))
++                    if replacement_failures == 1 or replacement_failures % 6 == 0:
++                        add_log(
++                            job,
++                            "WARNING",
++                            f"HeroSMS 第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个换号号码暂未取到，"
++                            f"后台将在约 {retry_delay:g} 秒后继续取号；任务不会退出：{exc}",
++                        )
++                    emit_event(job, "herosms.number.retry_wait", {
++                        "attempt": next_attempt,
++                        "acquire_failures": replacement_failures,
++                        "retry_in_seconds": retry_delay,
++                    })
++                    retry_deadline = time.monotonic() + retry_delay
++                    while time.monotonic() < retry_deadline:
++                        job = _protocol.get_job(job_id)
++                        if job is None or job.status in {"completed", "failed", "cancelled"}:
++                            return
++                        time.sleep(min(0.5, retry_deadline - time.monotonic()))
++                    continue
++                except ValueError as exc:
++                    add_log(
++                        job,
++                        "ERROR",
++                        f"自动获取第 {next_attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 个手机号参数无效：{exc}",
++                    )
++                    try:
++                        job.submit_input("q")
++                    except Exception:
++                        pass
++                    return
+             current = dict(replacement)
+             attempt = next_attempt
+             last_status_name = ""
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index fa4b28e..ffa305a 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -476,6 +476,90 @@ class ProtocolRetryTests(unittest.TestCase):
+         self.assertEqual(job.status, "completed")
+         self.assertTrue(any("触发新的协议重试并继续换号" in message for _, message in job.logs))
+ 
++    def test_replacement_inventory_failure_retries_without_cancelling_flow(self) -> None:
++        class FakeClient:
++            poll_interval = 0.001
++
++            def get_status(self, _activation_id: str):
++                return {"status": "STATUS_WAIT_CODE", "code": ""}
++
++            def finish(self, *_args, **_kwargs) -> None:
++                return None
++
++        class FakeJob:
++            id = "replacement-retry-job"
++            status = "awaiting_otp"
++            retry_count = 0
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.submitted: list[str] = []
++                self.logs: list[tuple[str, str]] = []
++                self.events: list[tuple[str, dict]] = []
++
++            def add_log(self, level: str, message: str) -> None:
++                self.logs.append((level, message))
++
++            def emit_event(self, event_type: str, data: dict) -> None:
++                self.events.append((event_type, data))
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def consume_sms_send_failure(self) -> str:
++                return ""
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                if value == "+447700900161":
++                    self.status = "completed"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        initial = {"activation_id": "activation-inventory-0", "phone": "+447700900160"}
++        replacement = {"activation_id": "activation-inventory-1", "phone": "+447700900161"}
++        job = FakeJob()
++        client = FakeClient()
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0),
++                patch.object(protocol_bridge, "SMS_REPLACEMENT_RETRY_SECONDS", 0),
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(
++                    protocol_bridge,
++                    "_acquire_unique_sms_number",
++                    side_effect=[
++                        protocol_bridge.HeroSMSError("temporary number inventory failure"),
++                        replacement,
++                    ],
++                ) as acquire,
++                patch.object(
++                    protocol_bridge,
++                    "_cancel_or_defer_sms_activation",
++                    return_value={"deferred": True, "scheduled_in_seconds": 120},
++                ),
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(acquire.call_count, 2)
++        self.assertEqual(job.submitted, ["+447700900161"])
++        self.assertNotIn("q", job.submitted)
++        self.assertEqual(job.status, "completed")
++        self.assertTrue(any("任务不会退出" in message for _, message in job.logs))
++        self.assertTrue(any("换号取号已恢复" in message for _, message in job.logs))
++        self.assertTrue(any(event == "herosms.number.retry_wait" for event, _ in job.events))
++
+     def test_consumed_ba_failure_is_not_retried(self) -> None:
+         job = self.make_job()
+         error = protocol_web.ProtocolResultError({
