@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import random
 from typing import Callable
-import uuid
 from typing import Any
 
 from ..checkout import (
@@ -22,6 +20,7 @@ from ..config import (
 from ..errors import ProtocolError
 from ..models import CheckoutData, ExtractionConfig, StripeContext
 from ..providers import provider_redirect_config
+from ..risk_params import time_on_page_ms
 from ..stripe_common import (
     cs_stripe_headers,
     ensure_payment_method_offered,
@@ -197,7 +196,7 @@ def openai_confirmation_token(
         "payment_method_data[billing_details][phone]": billing["phone"],
         "payment_method_data[payment_user_agent]": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
         "payment_method_data[referrer]": "https://chatgpt.com",
-        "payment_method_data[time_on_page]": str(random.randint(45000, 85000)),
+        "payment_method_data[time_on_page]": str(time_on_page_ms(45000, 85000)),
         "payment_method_data[guid]": ctx["guid"],
         "payment_method_data[muid]": ctx["muid"],
         "payment_method_data[sid]": ctx["sid"],
@@ -338,14 +337,7 @@ def extract_oaics_provider(
     init_payload = openai_checkout_init_payload(checkout)
     ensure_payment_method_offered(init_payload, payment_method, "oaics checkout")
     ctx = stripe_context(init_payload, checkout)
-    ctx.update(
-        {
-            "runtime_version": OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION,
-            "guid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
-            "muid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
-            "sid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
-        }
-    )
+    ctx["runtime_version"] = OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION
     if stage_callback:
         stage_callback("elements_session")
     openai_elements_session(stripe, config, checkout, init_payload, ctx, log)

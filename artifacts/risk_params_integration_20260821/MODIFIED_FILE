@@ -1,0 +1,39 @@
+BRANCH_FIELD_RESULT=main / Stripe browser risk parameter integration / OAICS and CS now reuse one prefixed guid/muid/sid set per checkout context, use helper-generated stripe_js_id, and retain each flow's bounded midpoint-weighted time-on-page range
+BASE_COMMIT=214a6e348845df3bf74051403e5b58feec85a724
+PAYMENT_CORE_CHANGED=false
+
+payment_link_extractor/risk_params.py
+PROVENANCE=USER_PROVIDED_UNTRACKED
+ORIGINAL_SHA256=358F1BA34E4B052578906371BC52A810959671006D2B8B49FD6667A0F24838EB
+ORIGINAL_GIT_BLOB=<absent>
+MODIFIED_SHA256=2D5436D850F317FD6C719BFB3773A8E26D1A0F961B3CB85AF0B22F67D5BCC72C
+CHANGED_FIELD=clean UTF-8 helper module; prefixed URL-safe risk ids; UUID stripe_js_id; genuinely midpoint-weighted bounded time_on_page_ms
+
+payment_link_extractor/stripe_common.py
+ORIGINAL_SHA256=86C6D2F54F4A7A92786D88F7748C5291A9B9FD3F56435534EA89BE53209A7568
+ORIGINAL_GIT_BLOB=48b985980523ba3597d8b07374969e6e3d71debb
+MODIFIED_SHA256=146298D3BEC461096361EB90D07D6FDA0D64AF40C97512850471420B4C3C24E6
+CHANGED_FIELD=stripe_context generates one guid/muid/sid/stripe_js_id set per checkout context
+
+payment_link_extractor/flows/oaics.py
+ORIGINAL_SHA256=76847779A46451195784AE09EEAAFC15273A60A521791491F8E7076F2AF22F50
+ORIGINAL_GIT_BLOB=e80ab9eaa021bdac8d164691af732f1939da4c4d
+MODIFIED_SHA256=069B9D355619269287FF46538AD6D476E86D2872D25B047A64A598956BF97819
+CHANGED_FIELD=OAICS confirmation reuses context risk ids and 45000-85000 helper time range
+
+payment_link_extractor/flows/cs_live.py
+ORIGINAL_SHA256=A273FC0DFFC8A9A976EC253D0594583703895CC7782F6B1710D062060B136C42
+ORIGINAL_GIT_BLOB=338803f7def8faf302a1d10aabdbbc0b8f61c22c
+MODIFIED_SHA256=9B5D421A8BE2C2A481A0335CC8DD702BA2310F5BF896F1EEE3906FBE79E5FE39
+CHANGED_FIELD=CS init uses helper stripe_js_id; payment-method and confirm delays preserve 25000-55000 and 45000-120000 ranges; confirm reuses context risk ids
+
+tests/test_risk_params_integration.py
+PROVENANCE=NEW_REGRESSION_TEST
+ORIGINAL_SHA256=<absent>
+ORIGINAL_GIT_BLOB=<absent>
+MODIFIED_SHA256=D066058736E9AC77BA145B35779DBC9A8B5B568FA7AD3EA09809EB7A419F1A2B
+CHANGED_FIELD=format, UUID, distribution, context consistency, OAICS payload, CS init and CS confirm contracts
+
+REVIEW_FINDINGS=The supplied file was structurally self-contained and compatible with both flows. Before integration it contained U+FFFD replacement characters in documentation and described midpoint-favoured timing while implementing a uniform randint. The integrated copy removes the damaged characters and makes the implementation match the stated midpoint-weighted behavior.
+PAYMENT_CORE_SCOPE=paypal_agreement_protocol/paypal/**
+PAYMENT_CORE_WORKTREE_DIFF=<empty>

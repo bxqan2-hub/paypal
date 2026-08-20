@@ -1,0 +1,76 @@
+BRANCH_FIELD_RESULT=main / Stripe browser risk parameter integration / OAICS and CS now reuse one prefixed guid/muid/sid set per checkout context, use helper-generated stripe_js_id, and retain each flow's bounded midpoint-weighted time-on-page range
+BASE_COMMIT=214a6e348845df3bf74051403e5b58feec85a724
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/risk_params.py;payment_link_extractor/stripe_common.py;payment_link_extractor/flows/oaics.py;payment_link_extractor/flows/cs_live.py;tests/test_risk_params_integration.py
+ORIGINAL_USER_FILE_SHA256=358F1BA34E4B052578906371BC52A810959671006D2B8B49FD6667A0F24838EB
+DIFF_FILE_SHA256=EEEC19A037F4ADD488B19ED3AF1D82E1FE6A08AB5A8D3F89EC20C146594FAE32
+
+SOURCE_REVIEW
+COMMAND=rg -n "random|uuid|time_on_page|guid|muid|sid|stripe_js_id" payment_link_extractor/stripe_common.py payment_link_extractor/flows/oaics.py payment_link_extractor/flows/cs_live.py ; .\.venv\Scripts\python.exe -c "from pathlib import Path; s=Path('payment_link_extractor/risk_params.py').read_text(encoding='utf-8'); print(f'UTF8=OK U+FFFD_COUNT={s.count(chr(0xfffd))}')"
+INPUT=user-provided payment_link_extractor/risk_params.py plus the three original risk-field call sites
+LITERAL_OUTPUT_BEGIN
+OAICS_CONFIRM_TIME_RANGE=45000..85000
+CS_PAYMENT_METHOD_TIME_RANGE=25000..55000
+CS_CONFIRM_TIME_RANGE=45000..120000
+STRIPE_CONTEXT_FIELDS=stripe_js_id,guid,muid,sid
+UTF8=OK U+FFFD_COUNT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The helper module is wired at every former ad-hoc generator. One risk-id set is created per checkout context and is reused in the OAICS or CS confirmation payload; existing per-flow delay bounds are retained. The supplied file's damaged documentation bytes were cleaned and its claimed midpoint weighting now uses random.triangular.
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status 214a6e348845df3bf74051403e5b58feec85a724 -- paypal_agreement_protocol/paypal ; git diff --cached --name-status -- paypal_agreement_protocol/paypal
+INPUT=payment protocol core at base commit versus integrated working tree and staged index
+LITERAL_OUTPUT_BEGIN
+HISTORY_TO_WORKTREE_DIFF=<empty>
+STAGED_DIFF=<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=No PayPal protocol payment core file changed. Integration is confined to the payment-link extractor risk parameters, OAICS/CS flow adapters, and regression tests.
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\risk_params_integration_20260821\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\risk_params_integration_20260821\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\risk_params_integration_20260821\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\risk_params_integration_20260821\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 214a6e348845df3bf74051403e5b58feec85a724 before checkout flows import the supplied risk_params.py
+LITERAL_OUTPUT_BEGIN
+............................................................             [100%]
+60 passed in 0.54s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed while OAICS and CS still generated incompatible risk-id shapes independently and used uniform randint page times.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with the five source/test paths changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+.....................................................................    [100%]
+69 passed in 0.53s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=All tests pass, including nine new cases covering identifier format and uniqueness, UUID validity, midpoint timing bounds, checkout-context consistency, OAICS confirmation payloads, CS init, and CS confirmation payloads.
+
+ROLLBACK
+COMMAND=git worktree add --detach <COPY> 214a6e348845df3bf74051403e5b58feec85a724 ; git -C <COPY> apply --whitespace=nowarn DIFF_FILE ; .\.venv\Scripts\python.exe -m pytest -q ; "C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <COPY> ; .\.venv\Scripts\python.exe -m pytest -q ; git -C <COPY> status --short ; git worktree remove --force <COPY>
+INPUT=detached base-commit copy with DIFF_FILE applied, then ROLLBACK.sh executed against that copy
+LITERAL_OUTPUT_BEGIN
+WORKTREE_ADD_EXIT=0
+ROLLBACK_PREPARE_APPLY_EXIT=0
+.....................................................................    [100%]
+69 passed in 0.66s
+ROLLBACK_PRECHECK_MODIFIED_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+............................................................             [100%]
+60 passed in 0.53s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh removes the new helper/test files and restores the three original call sites on a detached copy; the restored 60-test suite passes and the copy is clean. The primary working tree remains integrated.
+RESTORED_BEHAVIOR_STATUS=Only the rollback copy returns to independent UUID/hex risk ids and uniform randint delays. The primary working tree keeps shared prefixed risk ids, helper-generated stripe_js_id, and midpoint-weighted bounded page times.

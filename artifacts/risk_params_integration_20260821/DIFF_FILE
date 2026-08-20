@@ -1,0 +1,376 @@
+diff --git a/payment_link_extractor/flows/cs_live.py b/payment_link_extractor/flows/cs_live.py
+index 338803f..8a5ba0e 100644
+--- a/payment_link_extractor/flows/cs_live.py
++++ b/payment_link_extractor/flows/cs_live.py
+@@ -1,8 +1,6 @@
+ from __future__ import annotations
+ 
+-import random
+ from typing import Callable
+-import uuid
+ from typing import Any
+ 
+ from ..checkout import (
+@@ -24,6 +22,7 @@ from ..errors import ProtocolError, ProviderRequiresApproval
+ from ..logging_utils import emit_log, safe_log_text
+ from ..models import CheckoutData, ExtractionConfig, StripeContext
+ from ..providers import provider_redirect_config
++from ..risk_params import stripe_js_id as new_stripe_js_id, time_on_page_ms
+ from ..stripe_common import (
+     STRIPE_CLIENT_BETAS,
+     cs_billing_address,
+@@ -116,7 +115,7 @@ def cs_elements_session(
+ 
+ 
+ def stripe_init(config: ExtractionConfig, checkout: CheckoutData, log: Any | None, stripe: Any) -> tuple[dict[str, Any], str]:
+-    stripe_js_id = str(uuid.uuid4())
++    stripe_js_id = new_stripe_js_id()
+     common = {
+         "browser_locale": config_locale(config),
+         "browser_timezone": config_timezone(config),
+@@ -288,7 +287,7 @@ def stripe_create_payment_method(
+         "type": payment_method,
+         "payment_user_agent": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
+         "referrer": "https://chatgpt.com",
+-        "time_on_page": str(random.randint(25000, 55000)),
++        "time_on_page": str(time_on_page_ms(25000, 55000)),
+         "client_attribution_metadata[checkout_session_id]": checkout["cs_id"],
+         "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
+         "client_attribution_metadata[checkout_config_id]": ctx["config_id"],
+@@ -338,9 +337,9 @@ def stripe_confirm_cs_live(
+     elements_session_config_id = str(ctx.get("elements_session_config_id") or "")
+     checkout_config_id = str(ctx.get("config_id") or "")
+     body = {
+-        "guid": uuid.uuid4().hex,
+-        "muid": uuid.uuid4().hex,
+-        "sid": uuid.uuid4().hex,
++        "guid": ctx["guid"],
++        "muid": ctx["muid"],
++        "sid": ctx["sid"],
+         "init_checksum": str(init_payload.get("init_checksum") or ctx.get("init_checksum") or ""),
+         "version": runtime,
+         "expected_amount": str(amount),
+@@ -373,7 +372,7 @@ def stripe_confirm_cs_live(
+             "payment_method_data[billing_details][address][country]": billing["country"],
+             "payment_method_data[payment_user_agent]": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
+             "payment_method_data[referrer]": "https://chatgpt.com",
+-            "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
++            "payment_method_data[time_on_page]": str(time_on_page_ms(45000, 120000)),
+             "payment_method_data[client_attribution_metadata][client_session_id]": ctx["stripe_js_id"],
+             "payment_method_data[client_attribution_metadata][checkout_session_id]": checkout["cs_id"],
+             "payment_method_data[client_attribution_metadata][merchant_integration_source]": "elements",
+diff --git a/payment_link_extractor/flows/oaics.py b/payment_link_extractor/flows/oaics.py
+index e80ab9e..0e1748e 100644
+--- a/payment_link_extractor/flows/oaics.py
++++ b/payment_link_extractor/flows/oaics.py
+@@ -1,8 +1,6 @@
+ from __future__ import annotations
+ 
+-import random
+ from typing import Callable
+-import uuid
+ from typing import Any
+ 
+ from ..checkout import (
+@@ -22,6 +20,7 @@ from ..config import (
+ from ..errors import ProtocolError
+ from ..models import CheckoutData, ExtractionConfig, StripeContext
+ from ..providers import provider_redirect_config
++from ..risk_params import time_on_page_ms
+ from ..stripe_common import (
+     cs_stripe_headers,
+     ensure_payment_method_offered,
+@@ -197,7 +196,7 @@ def openai_confirmation_token(
+         "payment_method_data[billing_details][phone]": billing["phone"],
+         "payment_method_data[payment_user_agent]": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
+         "payment_method_data[referrer]": "https://chatgpt.com",
+-        "payment_method_data[time_on_page]": str(random.randint(45000, 85000)),
++        "payment_method_data[time_on_page]": str(time_on_page_ms(45000, 85000)),
+         "payment_method_data[guid]": ctx["guid"],
+         "payment_method_data[muid]": ctx["muid"],
+         "payment_method_data[sid]": ctx["sid"],
+@@ -338,14 +337,7 @@ def extract_oaics_provider(
+     init_payload = openai_checkout_init_payload(checkout)
+     ensure_payment_method_offered(init_payload, payment_method, "oaics checkout")
+     ctx = stripe_context(init_payload, checkout)
+-    ctx.update(
+-        {
+-            "runtime_version": OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION,
+-            "guid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
+-            "muid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
+-            "sid": str(uuid.uuid4()) + uuid.uuid4().hex[:6],
+-        }
+-    )
++    ctx["runtime_version"] = OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION
+     if stage_callback:
+         stage_callback("elements_session")
+     openai_elements_session(stripe, config, checkout, init_payload, ctx, log)
+diff --git a/payment_link_extractor/risk_params.py b/payment_link_extractor/risk_params.py
+new file mode 100644
+index 0000000..9f70e68
+--- /dev/null
++++ b/payment_link_extractor/risk_params.py
+@@ -0,0 +1,53 @@
++"""Stripe.js-v3-style browser risk identifiers for OAICS and CS checkouts.
++
++The Stripe confirmation requests used by both checkout flows carry ``guid``,
++``muid``, ``sid`` and ``stripe_js_id`` browser-session fields.  These helpers
++centralize their construction so a checkout context reuses one internally
++consistent set instead of mixing unrelated ad-hoc UUID formats.
++"""
++
++from __future__ import annotations
++
++import random
++import secrets
++import string
++import uuid
++
++
++# URL-safe base64url alphabet: no padding and no ``+`` or ``/``.
++_BASE64URL = string.ascii_letters + string.digits + "-_"
++
++
++def _machine_id(prefix: str, size: int = 30) -> str:
++    """Build ``prefix`` plus 29-33 URL-safe characters."""
++    length = size + random.randint(-1, 3)
++    return prefix + "".join(secrets.choice(_BASE64URL) for _ in range(length))
++
++
++def stripe_guid() -> str:
++    """Return a per-visit browser identifier in ``guid_...`` form."""
++    return _machine_id("guid_")
++
++
++def stripe_muid() -> str:
++    """Return a merchant-user identifier in ``muid_...`` form."""
++    return _machine_id("muid_")
++
++
++def stripe_sid() -> str:
++    """Return a session identifier in ``sid_...`` form."""
++    return _machine_id("sid_")
++
++
++def stripe_js_id() -> str:
++    """Return the UUID-form Stripe.js client-session identifier."""
++    return str(uuid.uuid4())
++
++
++def time_on_page_ms(lo: int = 45000, hi: int = 85000) -> int:
++    """Return a bounded, midpoint-weighted time-on-page value in milliseconds."""
++    if hi <= lo:
++        return lo
++    midpoint = (lo + hi) / 2
++    value = round(random.triangular(lo, hi, midpoint))
++    return max(lo, min(hi, value))
+diff --git a/payment_link_extractor/stripe_common.py b/payment_link_extractor/stripe_common.py
+index 48b9859..49971c4 100644
+--- a/payment_link_extractor/stripe_common.py
++++ b/payment_link_extractor/stripe_common.py
+@@ -16,6 +16,12 @@ from .errors import ProtocolError, ProviderRequiresApproval
+ from .logging_utils import emit_log, safe_log_text
+ from .models import CheckoutData, StripeContext
+ from .providers import provider_redirect_config
++from .risk_params import (
++    stripe_guid,
++    stripe_js_id as new_stripe_js_id,
++    stripe_muid,
++    stripe_sid,
++)
+ from .transport import response_json, stage_http_request
+ 
+ STRIPE_CLIENT_BETAS = (
+@@ -114,7 +120,10 @@ def stripe_context(
+     stripe_js_id: str = "",
+ ) -> StripeContext:
+     return {
+-        "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
++        "stripe_js_id": str(stripe_js_id or new_stripe_js_id()),
++        "guid": stripe_guid(),
++        "muid": stripe_muid(),
++        "sid": stripe_sid(),
+         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
+         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
+         "config_id": str(init_payload.get("config_id") or ""),
+diff --git a/tests/test_risk_params_integration.py b/tests/test_risk_params_integration.py
+new file mode 100644
+index 0000000..1b22b8b
+--- /dev/null
++++ b/tests/test_risk_params_integration.py
+@@ -0,0 +1,175 @@
++from __future__ import annotations
++
++import re
++import uuid
++from types import SimpleNamespace
++from typing import Any
++
++import pytest
++
++from payment_link_extractor import risk_params, stripe_common
++from payment_link_extractor.flows import cs_live, oaics
++from payment_link_extractor.models import ExtractionConfig
++
++
++class _JsonResponse(SimpleNamespace):
++    def json(self) -> dict[str, Any]:
++        return self.payload
++
++
++def _response(payload: dict[str, Any]) -> _JsonResponse:
++    return _JsonResponse(status_code=200, text="", payload=payload)
++
++
++@pytest.mark.parametrize(
++    ("factory", "prefix"),
++    (
++        (risk_params.stripe_guid, "guid_"),
++        (risk_params.stripe_muid, "muid_"),
++        (risk_params.stripe_sid, "sid_"),
++    ),
++)
++def test_machine_risk_ids_have_expected_prefix_alphabet_and_length(factory, prefix: str) -> None:
++    values = {factory() for _ in range(40)}
++
++    assert len(values) == 40
++    for value in values:
++        assert re.fullmatch(rf"{prefix}[A-Za-z0-9_-]{{29,33}}", value)
++
++
++def test_stripe_js_id_is_a_uuid() -> None:
++    value = risk_params.stripe_js_id()
++
++    assert str(uuid.UUID(value)) == value
++
++
++def test_time_on_page_is_midpoint_weighted_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
++    observed: list[tuple[int, int, float]] = []
++
++    def fake_triangular(lo: int, hi: int, mode: float) -> float:
++        observed.append((lo, hi, mode))
++        return hi + 100
++
++    monkeypatch.setattr(risk_params.random, "triangular", fake_triangular)
++
++    assert risk_params.time_on_page_ms(25_000, 55_000) == 55_000
++    assert observed == [(25_000, 55_000, 40_000.0)]
++    assert risk_params.time_on_page_ms(12, 12) == 12
++
++
++def test_stripe_context_generates_one_consistent_risk_set(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setattr(stripe_common, "new_stripe_js_id", lambda: "js-fixture")
++    monkeypatch.setattr(stripe_common, "stripe_guid", lambda: "guid_fixture")
++    monkeypatch.setattr(stripe_common, "stripe_muid", lambda: "muid_fixture")
++    monkeypatch.setattr(stripe_common, "stripe_sid", lambda: "sid_fixture")
++
++    ctx = stripe_common.stripe_context({}, {"currency": "GBP"})
++
++    assert {key: ctx[key] for key in ("stripe_js_id", "guid", "muid", "sid")} == {
++        "stripe_js_id": "js-fixture",
++        "guid": "guid_fixture",
++        "muid": "muid_fixture",
++        "sid": "sid_fixture",
++    }
++
++
++def test_cs_init_uses_risk_helper_for_stripe_js_id(monkeypatch: pytest.MonkeyPatch) -> None:
++    captured: dict[str, str] = {}
++    monkeypatch.setattr(cs_live, "new_stripe_js_id", lambda: "js-from-helper")
++
++    def fake_request(*args, **kwargs):
++        captured.update(kwargs["data"])
++        return _response({"id": "cs_fixture"})
++
++    monkeypatch.setattr(cs_live, "stage_http_request", fake_request)
++    config = ExtractionConfig(access_token="fixture", checkout_proxy="", update_proxy="")
++
++    _, stripe_js_id = cs_live.stripe_init(config, {"cs_id": "cs_fixture"}, None, object())
++
++    assert stripe_js_id == "js-from-helper"
++    assert captured["elements_session_client[stripe_js_id]"] == "js-from-helper"
++
++
++def test_oaics_confirmation_reuses_context_risk_ids(monkeypatch: pytest.MonkeyPatch) -> None:
++    captured: dict[str, str] = {}
++    monkeypatch.setattr(oaics, "time_on_page_ms", lambda lo, hi: 65_432)
++
++    def fake_request(*args, **kwargs):
++        captured.update(kwargs["data"])
++        return _response({"id": "ctoken_fixture"})
++
++    monkeypatch.setattr(oaics, "stage_http_request", fake_request)
++    config = ExtractionConfig(access_token="fixture", checkout_proxy="", update_proxy="")
++    ctx = {
++        "stripe_js_id": "js_fixture",
++        "guid": "guid_fixture",
++        "muid": "muid_fixture",
++        "sid": "sid_fixture",
++        "elements_session_id": "elements_fixture",
++        "elements_session_config_id": "config_fixture",
++    }
++    billing = {
++        "name": "Test User",
++        "phone": "+440000000000",
++        "line1": "1 Test Street",
++        "city": "London",
++        "postal_code": "SW1A 1AA",
++        "state": "",
++    }
++
++    token = oaics.openai_confirmation_token(
++        object(), config, {"publishable_key": "pk_test"}, billing, ctx, "paypal", None
++    )
++
++    assert token == "ctoken_fixture"
++    assert captured["payment_method_data[time_on_page]"] == "65432"
++    assert captured["payment_method_data[guid]"] == "guid_fixture"
++    assert captured["payment_method_data[muid]"] == "muid_fixture"
++    assert captured["payment_method_data[sid]"] == "sid_fixture"
++
++
++def test_cs_confirm_reuses_context_risk_ids(monkeypatch: pytest.MonkeyPatch) -> None:
++    captured: dict[str, str] = {}
++    monkeypatch.setattr(cs_live, "time_on_page_ms", lambda lo, hi: 91_234)
++
++    def fake_request(*args, **kwargs):
++        captured.update(kwargs["data"])
++        return _response({"status": "requires_action"})
++
++    monkeypatch.setattr(cs_live, "stage_http_request", fake_request)
++    ctx = {
++        "stripe_js_id": "js_fixture",
++        "guid": "guid_fixture",
++        "muid": "muid_fixture",
++        "sid": "sid_fixture",
++        "elements_session_id": "elements_fixture",
++        "elements_session_config_id": "config_fixture",
++        "config_id": "config_fixture",
++        "checkout_amount": "2000",
++    }
++    billing = {
++        "name": "Test User",
++        "email": "test@example.com",
++        "line1": "1 Test Street",
++        "city": "London",
++        "postal_code": "SW1A 1AA",
++        "country": "GB",
++        "state": "",
++    }
++
++    result = cs_live.stripe_confirm_cs_live(
++        object(),
++        {"cs_id": "cs_fixture", "publishable_key": "pk_test"},
++        {},
++        ctx,
++        "https://checkout.stripe.com/c/pay/cs_fixture",
++        "paypal",
++        billing,
++        None,
++    )
++
++    assert result == {"status": "requires_action"}
++    assert captured["guid"] == "guid_fixture"
++    assert captured["muid"] == "muid_fixture"
++    assert captured["sid"] == "sid_fixture"
++    assert captured["payment_method_data[time_on_page]"] == "91234"
