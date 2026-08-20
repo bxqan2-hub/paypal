@@ -1,0 +1,838 @@
+diff --git a/payment_link_extractor/models.py b/payment_link_extractor/models.py
+index 869dfed..1064ca9 100644
+--- a/payment_link_extractor/models.py
++++ b/payment_link_extractor/models.py
+@@ -15,6 +15,9 @@ class ExtractionConfig:
+     apply_checkout_update: bool = True
+     verbose: bool = True
+     oaics_only: bool = False
++    retry_count: int = 0
++    checkout_proxy_attempts: tuple[str, ...] = ()
++    update_proxy_attempts: tuple[str, ...] = ()
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 9bb90e7..7afb7b7 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -49,6 +49,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
+                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
+                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
++                "retry_count": _retry_count_value(os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2")),
+                 "billing_profiles": billing_profiles,
+             }
+         )
+@@ -154,11 +155,32 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+         update_proxy = payload.get("update_proxy")
+         if update_proxy is not None and not isinstance(update_proxy, str):
+             return _error("update_proxy must be a string", 400)
++        try:
++            retry_count = (
++                _retry_count_value(payload.get("retry_count"))
++                if "retry_count" in payload
++                else None
++            )
++            checkout_proxy_attempts = (
++                _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts")
++                if "checkout_proxy_attempts" in payload
++                else None
++            )
++            update_proxy_attempts = (
++                _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts")
++                if "update_proxy_attempts" in payload
++                else None
++            )
++        except ConfigurationError as exc:
++            return _error(str(exc), 400)
+         try:
+             snapshot = manager.retry(
+                 task_id,
+                 checkout_proxy=checkout_proxy,
+                 update_proxy=update_proxy,
++                retry_count=retry_count,
++                checkout_proxy_attempts=checkout_proxy_attempts,
++                update_proxy_attempts=update_proxy_attempts,
+             )
+         except TaskNotFoundError:
+             return _error("task not found", 404)
+@@ -217,6 +239,9 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+     country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
+     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
+     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
++    retry_count = _retry_count_value(
++        payload.get("retry_count", os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2"))
++    )
+     # Accept both OAICS (oaics_*) and Stripe Checkout (cs_*) PayPal flows.
+     # Old browser preferences could keep oaics_only=true and discard most
+     # otherwise usable accounts before provider confirmation.
+@@ -232,6 +257,17 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+     if country not in SUPPORTED_COUNTRIES:
+         country_config(country)
+     normalize_payment_method(payment_method)
++    total_attempts = retry_count + 1
++    checkout_proxy_attempts = _fit_proxy_attempt_values(
++        checkout_proxy,
++        _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts"),
++        total_attempts,
++    )
++    update_proxy_attempts = _fit_proxy_attempt_values(
++        update_proxy,
++        _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts"),
++        total_attempts,
++    )
+     return ExtractionConfig(
+         access_token=str(access_token).strip(),
+         checkout_proxy=str(checkout_proxy).strip(),
+@@ -242,9 +278,54 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         apply_checkout_update=apply_update,
+         verbose=False,
+         oaics_only=oaics_only,
++        retry_count=retry_count,
++        checkout_proxy_attempts=checkout_proxy_attempts,
++        update_proxy_attempts=update_proxy_attempts,
+     )
+ 
+ 
++def _retry_count_value(value: Any) -> int:
++    if isinstance(value, bool):
++        raise ConfigurationError("retry_count must be an integer between 0 and 10")
++    try:
++        retry_count = int(value)
++    except (TypeError, ValueError) as exc:
++        raise ConfigurationError("retry_count must be an integer between 0 and 10") from exc
++    if retry_count < 0 or retry_count > 10:
++        raise ConfigurationError("retry_count must be between 0 and 10")
++    return retry_count
++
++
++def _proxy_attempt_values(value: Any, field: str) -> tuple[str, ...]:
++    if value is None:
++        return ()
++    if not isinstance(value, list):
++        raise ConfigurationError(f"{field} must be an array of proxy strings")
++    values: list[str] = []
++    for item in value:
++        if not isinstance(item, str) or not item.strip():
++            raise ConfigurationError(f"{field} must contain only non-empty proxy strings")
++        values.append(item.strip())
++    return tuple(values)
++
++
++def _fit_proxy_attempt_values(
++    primary: str,
++    candidates: tuple[str, ...],
++    total_attempts: int,
++) -> tuple[str, ...]:
++    primary = str(primary or "").strip()
++    values = list(candidates)
++    if primary and (not values or values[0] != primary):
++        values.insert(0, primary)
++    if not values:
++        return ()
++    seed = tuple(values)
++    while len(values) < total_attempts:
++        values.append(seed[len(values) % len(seed)])
++    return tuple(values[:total_attempts])
++
++
+ def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -> Any:
+     value = payload.get(key)
+     return value if value is not None else os.getenv(env_key, default)
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 7de9371..db01be3 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -303,6 +303,7 @@
+       apply_checkout_update: byId("apply-update").checked,
+       rotate_checkout_proxy: byId("rotate-checkout-proxy").checked,
+       rotate_update_proxy: byId("rotate-update-proxy").checked,
++      retry_count: failureRetryCount(),
+       oaics_only: byId("oaics-only").checked,
+     };
+     try {
+@@ -448,6 +449,9 @@
+       if (typeof preferences.checkout_proxy === "string") byId("checkout-proxy").value = preferences.checkout_proxy;
+       if (typeof preferences.update_proxy === "string") byId("update-proxy").value = preferences.update_proxy;
+       if (byId("proxy-source-url") && typeof preferences.proxy_source_url === "string") byId("proxy-source-url").value = preferences.proxy_source_url;
++      if (Number.isInteger(Number(preferences.retry_count))) {
++        byId("failure-retry-count").value = String(Math.max(0, Math.min(10, Number(preferences.retry_count))));
++      }
+       const checkboxPreferences = [
+         ["apply_checkout_update", "apply-update"],
+         ["rotate_checkout_proxy", "rotate-checkout-proxy"],
+@@ -494,6 +498,7 @@
+   function formOverrides() {
+     const result = {
+       apply_checkout_update: byId("apply-update").checked,
++      retry_count: failureRetryCount(),
+       oaics_only: byId("oaics-only").checked,
+     };
+     const values = [
+@@ -508,6 +513,28 @@
+     return result;
+   }
+ 
++  function failureRetryCount() {
++    const field = byId("failure-retry-count");
++    const parsed = Number.parseInt(field?.value || "0", 10);
++    const normalized = Number.isFinite(parsed) ? Math.max(0, Math.min(10, parsed)) : 0;
++    if (field) field.value = String(normalized);
++    return normalized;
++  }
++
++  function buildProxyAttempts(value, kind, rotateInitial, retryCount) {
++    const attempts = [];
++    for (let index = 0; index <= retryCount; index += 1) {
++      const selected = selectProxyFromPool(value, kind);
++      if (!selected) break;
++      const mustRotate = rotateInitial || index > 0;
++      const proxy = mustRotate
++        ? (kind === "update" ? rotateUpdateProxy(selected) : rotateCheckoutProxy(selected))
++        : selected;
++      attempts.push(proxy);
++    }
++    return attempts;
++  }
++
+   function buildTaskPayload(
+     credential,
+     overrides = formOverrides(),
+@@ -515,13 +542,17 @@
+     rotateUpdate = byId("rotate-update-proxy").checked,
+   ) {
+     const payload = { ...parseCredentialInput(credential), ...overrides };
++    const retryCount = failureRetryCount();
++    payload.retry_count = retryCount;
+     if (payload.checkout_proxy) {
+-      payload.checkout_proxy = selectProxyFromPool(payload.checkout_proxy, "checkout");
+-      if (rotateCheckout) payload.checkout_proxy = rotateCheckoutProxy(payload.checkout_proxy);
++      const attempts = buildProxyAttempts(payload.checkout_proxy, "checkout", rotateCheckout, retryCount);
++      payload.checkout_proxy = attempts[0] || "";
++      payload.checkout_proxy_attempts = attempts;
+     }
+     if (payload.update_proxy) {
+-      payload.update_proxy = selectProxyFromPool(payload.update_proxy, "update");
+-      if (rotateUpdate) payload.update_proxy = rotateUpdateProxy(payload.update_proxy);
++      const attempts = buildProxyAttempts(payload.update_proxy, "update", rotateUpdate, retryCount);
++      payload.update_proxy = attempts[0] || "";
++      payload.update_proxy_attempts = attempts;
+     }
+     return payload;
+   }
+@@ -857,6 +888,18 @@
+       task.payment_method = data.payment_method || task.payment_method || "";
+       task.billing_country = data.billing_country || task.billing_country || "";
+       task.retry_of = data.retry_of || task.retry_of || "";
++      task.attempt = data.attempt || task.attempt || 1;
++      task.max_attempts = data.max_attempts || task.max_attempts || 1;
++    } else if (event.type === "task.retrying") {
++      task.status = "running";
++      task.stage = "retrying";
++      task.progress = clampProgress(data.progress ?? 0);
++      task.attempt = data.next_attempt || task.attempt || 1;
++      task.max_attempts = data.max_attempts || task.max_attempts || 1;
++      task.session_kind = "";
++      task.result = null;
++      task.error = "";
++      task.message = `第 ${task.attempt}/${task.max_attempts} 次完整提链：已更换代理 IP`;
+     } else if (event.type === "task.checkout_detected") {
+       task.session_kind = data.session_kind || task.session_kind || "";
+       task.progress = clampProgress(data.progress ?? task.progress);
+@@ -927,6 +970,7 @@
+   function stageLabel(stage) {
+     const labels = {
+       queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", checkout: "创建 Checkout",
++      retrying: "更换代理 IP 后完整重试",
+       checkout_update: "更新 Checkout", stripe_init: "初始化支付", elements_session: "准备支付方式",
+       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
+       completed: "任务完成", cancelled: "任务已取消", failed: "任务失败",
+@@ -1010,18 +1054,23 @@
+     if (rotateUpdateIp && byId("apply-update").checked && !updateProxyInput) {
+       throw new Error("请先填写新的 Update Proxy");
+     }
++    const retryCount = failureRetryCount();
+     const originalProxy = rotateCheckoutIp
+-      ? selectProxyFromPool(checkoutProxyInput, "checkout")
++      ? checkoutProxyInput
+       : (taskCheckoutProxies.get(taskId) || checkoutProxyInput);
+     const originalUpdateProxy = rotateUpdateIp
+-      ? selectProxyFromPool(updateProxyInput, "update")
++      ? updateProxyInput
+       : (taskUpdateProxies.get(taskId) || updateProxyInput);
+-    const payload = {};
++    const payload = { retry_count: retryCount };
+     if (originalProxy) {
+-      payload.checkout_proxy = rotateCheckoutIp ? rotateCheckoutProxy(originalProxy) : originalProxy;
++      const attempts = buildProxyAttempts(originalProxy, "checkout", rotateCheckoutIp, retryCount);
++      payload.checkout_proxy = attempts[0] || "";
++      payload.checkout_proxy_attempts = attempts;
+     }
+     if (originalUpdateProxy) {
+-      payload.update_proxy = rotateUpdateIp ? rotateUpdateProxy(originalUpdateProxy) : originalUpdateProxy;
++      const attempts = buildProxyAttempts(originalUpdateProxy, "update", rotateUpdateIp, retryCount);
++      payload.update_proxy = attempts[0] || "";
++      payload.update_proxy_attempts = attempts;
+     }
+     const response = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+       method: "POST",
+@@ -1694,7 +1743,7 @@
+     elements.logoutButton.addEventListener("click", logout);
+     elements.taskForm.addEventListener("submit", submitTask);
+     elements.credentialInput.addEventListener("input", updateCredentialPreview);
+-    ["country", "payment-method", "checkout-proxy", "update-proxy", "proxy-source-url"].forEach(id => {
++    ["country", "payment-method", "checkout-proxy", "update-proxy", "proxy-source-url", "failure-retry-count"].forEach(id => {
+       const field = byId(id);
+       field.addEventListener("change", saveFormPreferences);
+       field.addEventListener("input", saveFormPreferences);
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 3e5b2c3..b62a11b 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -22,6 +22,7 @@ TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
+ STAGE_PROGRESS = {
+     "queued": 0,
+     "running": 5,
++    "retrying": 0,
+     "eligibility_check": 10,
+     "checkout": 15,
+     "checkout_update": 25,
+@@ -73,6 +74,7 @@ class TaskRecord:
+     account_email: str = ""
+     session_kind: str | None = None
+     retry_of: str | None = None
++    attempt: int = 0
+ 
+ 
+ class TaskManager:
+@@ -146,6 +148,9 @@ class TaskManager:
+         *,
+         checkout_proxy: str | None = None,
+         update_proxy: str | None = None,
++        retry_count: int | None = None,
++        checkout_proxy_attempts: tuple[str, ...] | None = None,
++        update_proxy_attempts: tuple[str, ...] | None = None,
+     ) -> dict[str, Any]:
+         with self._lock:
+             self._cleanup_locked()
+@@ -168,6 +173,31 @@ class TaskManager:
+                 if not proxy:
+                     raise TaskStateError("update proxy is required for retry")
+                 retry_config = replace(retry_config, update_proxy=proxy)
++            if retry_count is not None:
++                normalized_retry_count = int(retry_count)
++                if normalized_retry_count < 0 or normalized_retry_count > 10:
++                    raise TaskStateError("retry count must be between 0 and 10")
++                retry_config = replace(retry_config, retry_count=normalized_retry_count)
++            total_attempts = max(1, min(11, int(retry_config.retry_count) + 1))
++            checkout_attempts = self._fit_proxy_attempts(
++                retry_config.checkout_proxy,
++                checkout_proxy_attempts
++                if checkout_proxy_attempts is not None
++                else retry_config.checkout_proxy_attempts,
++                total_attempts,
++            )
++            update_attempts = self._fit_proxy_attempts(
++                retry_config.update_proxy,
++                update_proxy_attempts
++                if update_proxy_attempts is not None
++                else retry_config.update_proxy_attempts,
++                total_attempts,
++            )
++            retry_config = replace(
++                retry_config,
++                checkout_proxy_attempts=checkout_attempts,
++                update_proxy_attempts=update_attempts,
++            )
+             self._tasks.pop(task_id, None)
+             self._publish_locked(task_id, "task.deleted", {"status": record.status, "reason": "retry"})
+             return self._create_locked(retry_config, retry_of=task_id)
+@@ -187,6 +217,9 @@ class TaskManager:
+             "payment_method": record.config.payment_method,
+             "billing_country": record.config.country,
+             "progress": record.progress,
++            "attempt": 1,
++            "retry_count": max(0, min(10, int(record.config.retry_count))),
++            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
+         }
+         if retry_of:
+             created_data["retry_of"] = retry_of
+@@ -368,79 +401,181 @@ class TaskManager:
+         finally:
+             self._release_slot()
+ 
++    @staticmethod
++    def _fit_proxy_attempts(
++        primary: str,
++        candidates: tuple[str, ...],
++        total_attempts: int,
++    ) -> tuple[str, ...]:
++        values = [str(value).strip() for value in candidates if str(value).strip()]
++        primary = str(primary or "").strip()
++        if primary and (not values or values[0] != primary):
++            values.insert(0, primary)
++        if not values:
++            return ()
++        seed = tuple(values)
++        while len(values) < total_attempts:
++            values.append(seed[len(values) % len(seed)])
++        return tuple(values[:total_attempts])
++
++    @classmethod
++    def _config_for_attempt(cls, config: ExtractionConfig, attempt_index: int) -> ExtractionConfig:
++        total_attempts = max(1, min(11, int(config.retry_count) + 1))
++        checkout_attempts = cls._fit_proxy_attempts(
++            config.checkout_proxy, config.checkout_proxy_attempts, total_attempts
++        )
++        update_attempts = cls._fit_proxy_attempts(
++            config.update_proxy, config.update_proxy_attempts, total_attempts
++        )
++        checkout_proxy = checkout_attempts[attempt_index] if checkout_attempts else config.checkout_proxy
++        update_proxy = update_attempts[attempt_index] if update_attempts else config.update_proxy
++        return replace(
++            config,
++            checkout_proxy=checkout_proxy,
++            update_proxy=update_proxy,
++            checkout_proxy_attempts=checkout_attempts,
++            update_proxy_attempts=update_attempts,
++        )
++
+     def _run_with_slot(self, task_id: str) -> None:
+         task_log = log_context(component="task", task_id=task_id)
+         with self._lock:
+             record = self._tasks.get(task_id)
+             if record is None or record.status == "cancelled":
+                 return
+-            record.status = "running"
+-            record.stage = "running"
+-            record.progress = STAGE_PROGRESS[record.stage]
+-            record.started_at = utc_timestamp()
+-            self._publish_locked(
+-                task_id,
+-                "task.started",
+-                {"status": record.status, "progress": record.progress},
+-            )
+-            self._publish_locked(task_id, "task.log", {"message": "task started"})
+-            task_log.info("task started")
++            retry_plan = record.config
++            retry_count = max(0, min(10, int(retry_plan.retry_count)))
++            total_attempts = retry_count + 1
+ 
+-        try:
+-            result = self._extractor(
+-                record.config,
+-                cancel_event=record.cancel_event,
+-                stage_callback=lambda stage: self._stage(task_id, stage),
+-            )
++        for attempt_index in range(total_attempts):
+             with self._lock:
+                 record = self._tasks.get(task_id)
+-                if record is None:
++                if record is None or record.status == "cancelled":
+                     return
+                 if record.cancel_event.is_set() or record.status == "cancel_requested":
+                     self._finish_cancelled_locked(record)
+-                else:
+-                    record.status = "succeeded"
+-                    record.stage = "completed"
+-                    record.progress = STAGE_PROGRESS[record.stage]
+-                    record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
++                    return
++                record.config = self._config_for_attempt(retry_plan, attempt_index)
++                record.attempt = attempt_index + 1
++                record.status = "running"
++                record.stage = "running"
++                record.progress = STAGE_PROGRESS[record.stage]
++                record.started_at = record.started_at or utc_timestamp()
++                record.finished_at = None
++                record.result = None
++                record.error = None
++                record.network_error = False
++                record.session_kind = None
++                self._publish_locked(
++                    task_id,
++                    "task.started",
++                    {
++                        "status": record.status,
++                        "progress": record.progress,
++                        "attempt": record.attempt,
++                        "max_attempts": total_attempts,
++                    },
++                )
++                self._publish_locked(
++                    task_id,
++                    "task.log",
++                    {"message": f"full extraction attempt {record.attempt}/{total_attempts} started"},
++                )
++                task_log.info("full extraction attempt {}/{} started", record.attempt, total_attempts)
++
++            try:
++                result = self._extractor(
++                    record.config,
++                    cancel_event=record.cancel_event,
++                    stage_callback=lambda stage: self._stage(task_id, stage),
++                )
++            except ExtractionCancelled as exc:
++                with self._lock:
++                    record = self._tasks.get(task_id)
++                    if record is not None:
++                        self._finish_cancelled_locked(record, str(exc))
++                return
++            except Exception as exc:
++                with self._lock:
++                    record = self._tasks.get(task_id)
++                    if record is None:
++                        return
++                    if record.cancel_event.is_set() or record.status == "cancel_requested":
++                        self._finish_cancelled_locked(record, str(exc))
++                        return
++                    error = redact_text(exc, self._secrets(record.config))
++                    if attempt_index < retry_count:
++                        record.status = "running"
++                        record.stage = "retrying"
++                        record.progress = STAGE_PROGRESS[record.stage]
++                        record.error = None
++                        self._publish_locked(
++                            task_id,
++                            "task.retrying",
++                            {
++                                "status": record.status,
++                                "stage": record.stage,
++                                "progress": record.progress,
++                                "error": error,
++                                "attempt": record.attempt,
++                                "next_attempt": record.attempt + 1,
++                                "max_attempts": total_attempts,
++                                "ip_rotated": True,
++                            },
++                        )
++                        task_log.warning(
++                            "full extraction attempt {}/{} failed; restarting from the beginning with the next proxy IP: {}",
++                            record.attempt,
++                            total_attempts,
++                            error,
++                        )
++                        continue
++                    record.status = "failed"
++                    record.stage = "failed"
++                    record.error = error
++                    record.network_error = isinstance(exc, NetworkError)
+                     record.finished_at = utc_timestamp()
+                     self._publish_locked(
+                         task_id,
+-                        "task.succeeded",
++                        "task.failed",
+                         {
+                             "status": record.status,
+-                            "result": record.result,
+-                            "checkout_proxy": record.config.checkout_proxy,
++                            "error": record.error,
++                            "network_error": record.network_error,
+                             "progress": record.progress,
++                            "attempt": record.attempt,
++                            "max_attempts": total_attempts,
+                         },
+                     )
+-                    task_log.info("task succeeded")
+-        except ExtractionCancelled as exc:
+-            with self._lock:
+-                record = self._tasks.get(task_id)
+-                if record is not None:
+-                    self._finish_cancelled_locked(record, str(exc))
+-        except Exception as exc:
++                    task_log.error("task failed after {}/{} attempts: {}", record.attempt, total_attempts, record.error)
++                return
++
+             with self._lock:
+                 record = self._tasks.get(task_id)
+                 if record is None:
+                     return
+-                record.status = "failed"
+-                record.stage = "failed"
+-                record.error = redact_text(exc, self._secrets(record.config))
+-                record.network_error = isinstance(exc, NetworkError)
++                if record.cancel_event.is_set() or record.status == "cancel_requested":
++                    self._finish_cancelled_locked(record)
++                    return
++                record.status = "succeeded"
++                record.stage = "completed"
++                record.progress = STAGE_PROGRESS[record.stage]
++                record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+                 record.finished_at = utc_timestamp()
+                 self._publish_locked(
+                     task_id,
+-                    "task.failed",
++                    "task.succeeded",
+                     {
+                         "status": record.status,
+-                        "error": record.error,
+-                        "network_error": record.network_error,
++                        "result": record.result,
++                        "checkout_proxy": record.config.checkout_proxy,
+                         "progress": record.progress,
++                        "attempt": record.attempt,
++                        "max_attempts": total_attempts,
+                     },
+                 )
+-                task_log.error("task failed: {}", record.error)
++                task_log.info("task succeeded on full extraction attempt {}/{}", record.attempt, total_attempts)
++            return
+ 
+     def _stage(self, task_id: str, stage: str) -> None:
+         with self._lock:
+@@ -512,6 +647,9 @@ class TaskManager:
+             "account_email": record.account_email,
+             "payment_method": record.config.payment_method,
+             "billing_country": record.config.country,
++            "attempt": max(1, record.attempt),
++            "retry_count": max(0, min(10, int(record.config.retry_count))),
++            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
+         }
+         if record.session_kind:
+             snapshot["session_kind"] = record.session_kind
+@@ -548,6 +686,8 @@ class TaskManager:
+             config.checkout_proxy,
+             config.update_proxy,
+             config.stripe_hcaptcha_token,
++            *config.checkout_proxy_attempts,
++            *config.update_proxy_attempts,
+         )
+ 
+ 
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index ad16282..213c503 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -127,6 +127,11 @@
+                 <input id="rotate-update-proxy" type="checkbox" checked>
+                 <span>自动轮换 Update Proxy IP</span>
+               </label>
++              <label class="field">
++                <span>提链失败自动重试次数</span>
++                <input id="failure-retry-count" type="number" min="0" max="10" step="1" value="2" inputmode="numeric">
++                <small class="proxy-count">每次重试都会换一个代理 IP，并从资格检查开始完整重跑提链流程。</small>
++              </label>
+               <input id="oaics-only" type="checkbox" hidden disabled>
+             </div>
+ 
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+new file mode 100644
+index 0000000..7346bcf
+--- /dev/null
++++ b/tests/test_extraction_full_retry.py
+@@ -0,0 +1,214 @@
++from __future__ import annotations
++
++import queue
++import time
++
++import pytest
++
++from payment_link_extractor.errors import ConfigurationError, ExtractionCancelled
++from payment_link_extractor.models import ExtractionConfig
++from payment_link_extractor.web.routes import _config_from_payload
++from payment_link_extractor.web.tasks import TaskManager
++
++
++def _wait_for_terminal(manager: TaskManager, task_id: str) -> dict:
++    deadline = time.time() + 3
++    while time.time() < deadline:
++        snapshot = manager.get(task_id) or {}
++        if snapshot.get("status") in {"succeeded", "failed", "cancelled"}:
++            return snapshot
++        time.sleep(0.01)
++    raise AssertionError("task did not become terminal")
++
++
++def _events(subscriber: queue.Queue) -> list[dict]:
++    events = []
++    while not subscriber.empty():
++        events.append(subscriber.get_nowait())
++    return events
++
++
++def test_failed_attempt_restarts_full_flow_with_next_proxy_until_success() -> None:
++    calls: list[tuple[str, str, list[str]]] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        stages: list[str] = []
++        stage_callback("eligibility_check")
++        stages.append("eligibility_check")
++        stage_callback("checkout")
++        stages.append("checkout")
++        calls.append((config.checkout_proxy, config.update_proxy, stages))
++        if len(calls) < 3:
++            raise RuntimeError(f"attempt {len(calls)} failed")
++        return {"ok": True, "billing_country": config.country}
++
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://checkout-ip-1.example:8080",
++        update_proxy="http://update-ip-1.example:8080",
++        retry_count=2,
++        checkout_proxy_attempts=(
++            "http://checkout-ip-1.example:8080",
++            "http://checkout-ip-2.example:8080",
++            "http://checkout-ip-3.example:8080",
++        ),
++        update_proxy_attempts=(
++            "http://update-ip-1.example:8080",
++            "http://update-ip-2.example:8080",
++            "http://update-ip-3.example:8080",
++        ),
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    _, subscriber = manager.subscribe()
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++        events = _events(subscriber)
++
++        assert snapshot["status"] == "succeeded"
++        assert snapshot["attempt"] == 3
++        assert snapshot["max_attempts"] == 3
++        assert snapshot["checkout_proxy"] == "http://checkout-ip-3.example:8080"
++        assert [call[0] for call in calls] == [
++            "http://checkout-ip-1.example:8080",
++            "http://checkout-ip-2.example:8080",
++            "http://checkout-ip-3.example:8080",
++        ]
++        assert [call[1] for call in calls] == [
++            "http://update-ip-1.example:8080",
++            "http://update-ip-2.example:8080",
++            "http://update-ip-3.example:8080",
++        ]
++        assert all(call[2] == ["eligibility_check", "checkout"] for call in calls)
++        retry_events = [event for event in events if event["type"] == "task.retrying"]
++        assert [event["data"]["next_attempt"] for event in retry_events] == [2, 3]
++        assert all(event["data"]["ip_rotated"] is True for event in retry_events)
++    finally:
++        manager.unsubscribe(subscriber)
++        manager.close()
++
++
++def test_retry_exhaustion_reports_last_full_attempt() -> None:
++    calls: list[str] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        calls.append(config.checkout_proxy)
++        stage_callback("checkout")
++        raise RuntimeError("still failed")
++
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://checkout-ip-1.example:8080",
++        update_proxy="",
++        apply_checkout_update=False,
++        retry_count=1,
++        checkout_proxy_attempts=(
++            "http://checkout-ip-1.example:8080",
++            "http://checkout-ip-2.example:8080",
++        ),
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++
++        assert snapshot["status"] == "failed"
++        assert snapshot["attempt"] == 2
++        assert snapshot["max_attempts"] == 2
++        assert calls == [
++            "http://checkout-ip-1.example:8080",
++            "http://checkout-ip-2.example:8080",
++        ]
++        assert snapshot["error"] == "still failed"
++    finally:
++        manager.close()
++
++
++def test_user_cancellation_does_not_start_an_automatic_retry() -> None:
++    calls: list[str] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        calls.append(config.checkout_proxy)
++        raise ExtractionCancelled("cancelled by fixture")
++
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://checkout-ip-1.example:8080",
++        update_proxy="",
++        apply_checkout_update=False,
++        retry_count=2,
++        checkout_proxy_attempts=(
++            "http://checkout-ip-1.example:8080",
++            "http://checkout-ip-2.example:8080",
++            "http://checkout-ip-3.example:8080",
++        ),
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++
++        assert snapshot["status"] == "cancelled"
++        assert snapshot["attempt"] == 1
++        assert calls == ["http://checkout-ip-1.example:8080"]
++    finally:
++        manager.close()
++
++
++def test_route_config_accepts_manual_retry_count_and_proxy_attempt_plan() -> None:
++    config = _config_from_payload(
++        {
++            "access_token": "fixture-token",
++            "checkout_proxy": "http://checkout-ip-1.example:8080",
++            "update_proxy": "http://update-ip-1.example:8080",
++            "retry_count": 2,
++            "checkout_proxy_attempts": [
++                "http://checkout-ip-1.example:8080",
++                "http://checkout-ip-2.example:8080",
++                "http://checkout-ip-3.example:8080",
++            ],
++            "update_proxy_attempts": [
++                "http://update-ip-1.example:8080",
++                "http://update-ip-2.example:8080",
++                "http://update-ip-3.example:8080",
++            ],
++            "country": "GB",
++            "payment_method": "paypal",
++        }
++    )
++
++    assert config.retry_count == 2
++    assert config.checkout_proxy_attempts[-1] == "http://checkout-ip-3.example:8080"
++    assert config.update_proxy_attempts[-1] == "http://update-ip-3.example:8080"
++
++
++@pytest.mark.parametrize("value", (-1, 11, True, "bad"))
++def test_route_config_rejects_invalid_retry_count(value) -> None:
++    with pytest.raises(ConfigurationError, match="retry_count"):
++        _config_from_payload(
++            {
++                "access_token": "fixture-token",
++                "checkout_proxy": "http://checkout.example:8080",
++                "update_proxy": "http://update.example:8080",
++                "retry_count": value,
++            }
++        )
++
++
++def test_retry_ui_builds_a_fresh_proxy_plan_for_every_full_attempt() -> None:
++    from pathlib import Path
++
++    root = Path(__file__).resolve().parents[1]
++    html = (root / "payment_link_extractor" / "web" / "templates" / "index.html").read_text(
++        encoding="utf-8"
++    )
++    source = (root / "payment_link_extractor" / "web" / "static" / "app.js").read_text(
++        encoding="utf-8"
++    )
++
++    assert 'id="failure-retry-count"' in html
++    assert "每次重试都会换一个代理 IP，并从资格检查开始完整重跑提链流程。" in html
++    assert "function buildProxyAttempts(value, kind, rotateInitial, retryCount)" in source
++    assert "const mustRotate = rotateInitial || index > 0;" in source
++    assert "payload.checkout_proxy_attempts = attempts;" in source
++    assert 'event.type === "task.retrying"' in source

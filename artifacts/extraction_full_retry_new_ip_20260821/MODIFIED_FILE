@@ -1,0 +1,44 @@
+BRANCH_FIELD_RESULT=main / extraction failure full-flow retry and proxy-IP rotation / retry_count 0-10 controls extra attempts; every failure advances prebuilt checkout/update proxy plans and restarts extraction at eligibility_check
+BASE_COMMIT=2f4bd5d5a46f3967c5b62a1c64d13ea967e9dba6
+PAYMENT_CORE_CHANGED=false
+
+payment_link_extractor/models.py
+ORIGINAL_SHA256=D8D4B7A07A51B60FFC156D6701B93DD951AF931C1D170347A22049F52B8A8FB9
+ORIGINAL_GIT_BLOB=869dfedd2d2083194ffe3fb5af1b6e9c7df514b0
+MODIFIED_SHA256=1B7D74F1AE610C69BCF904207A374A57060BC53FADF713DBA7A4E47CD984EF7B
+CHANGED_FIELD=ExtractionConfig retry_count and checkout/update proxy attempt plans
+
+payment_link_extractor/web/tasks.py
+ORIGINAL_SHA256=9FCDC1A695A2AF062E9251F894B8446801C9DEC331B45CAD7960165611D24A2C
+ORIGINAL_GIT_BLOB=3e5b2c38f1983d735e37a83d853a409ace35021d
+MODIFIED_SHA256=7FABC29C76F09AFE5E5546E0D55C44B1FF55289BD856AB652AF825BA18F632F8
+CHANGED_FIELD=bounded automatic retry loop; fresh attempt config; task.retrying events; full extractor restart; cancellation exclusion
+
+payment_link_extractor/web/routes.py
+ORIGINAL_SHA256=181ED4E4DE5F05CECC3F825D2C3044C68B040799AC5CA78F8CF32C870D2EF5CC
+ORIGINAL_GIT_BLOB=9bb90e7ac8b87dd04a243b253017988a7cfcefd5
+MODIFIED_SHA256=BBEB6E2997D2887E715C9818BAA71A3E3B7A0E9A318F69E1AC819D105BBADD4B
+CHANGED_FIELD=retry_count 0-10 validation and checkout/update proxy-attempt array parsing for create/manual retry routes
+
+payment_link_extractor/web/static/app.js
+ORIGINAL_SHA256=5BDDC1E1AB11786336176744936B20FC68F9A9F4CDF7E7FA7426AB27F69ADA0B
+ORIGINAL_GIT_BLOB=7de9371ea478f3deafc0333270ca056b00414ab4
+MODIFIED_SHA256=016C3C97596033A7D06C6A792C2F5006AD119FE81DF5391973201C9EBC6BA06E
+CHANGED_FIELD=manual retry setting persistence; per-attempt proxy/session plan generation; retrying UI state; manual/bulk retry reuse
+
+payment_link_extractor/web/templates/index.html
+ORIGINAL_SHA256=C783FCC73189AE2A4733257824562722E7A0A12815561BB19DE862424FB9F802
+ORIGINAL_GIT_BLOB=ad16282d3add975e204ce275a5c33679a60b1220
+MODIFIED_SHA256=2D8FCFCFB9D0CF47808A26BF16AADB68A5ECC786DBABD5DA6672E6B77C2A723F
+CHANGED_FIELD=manual extraction-failure retry-count field with full-flow/new-IP semantics
+
+tests/test_extraction_full_retry.py
+PROVENANCE=NEW_REGRESSION_TEST
+ORIGINAL_SHA256=<absent>
+ORIGINAL_GIT_BLOB=<absent>
+MODIFIED_SHA256=737AF7091FB77A0399BA29E92AC7B01F3105D89A1D442E0AAD3B66BF9F68C97B
+CHANGED_FIELD=success-after-two-failures, retry exhaustion, cancellation exclusion, route validation, and UI proxy-plan contracts
+
+RETRY_SEMANTICS=retry_count=N means N additional complete extraction runs and N+1 maximum total attempts. Each retry calls the extractor again from eligibility_check/checkout with a newly selected or session-rotated checkout/update proxy. ExtractionCancelled remains terminal and does not consume automatic retries.
+PAYMENT_CORE_SCOPE=paypal_agreement_protocol/paypal/**
+PAYMENT_CORE_WORKTREE_DIFF=<empty>

@@ -303,6 +303,7 @@
       apply_checkout_update: byId("apply-update").checked,
       rotate_checkout_proxy: byId("rotate-checkout-proxy").checked,
       rotate_update_proxy: byId("rotate-update-proxy").checked,
+      retry_count: failureRetryCount(),
       oaics_only: byId("oaics-only").checked,
     };
     try {
@@ -448,6 +449,9 @@
       if (typeof preferences.checkout_proxy === "string") byId("checkout-proxy").value = preferences.checkout_proxy;
       if (typeof preferences.update_proxy === "string") byId("update-proxy").value = preferences.update_proxy;
       if (byId("proxy-source-url") && typeof preferences.proxy_source_url === "string") byId("proxy-source-url").value = preferences.proxy_source_url;
+      if (Number.isInteger(Number(preferences.retry_count))) {
+        byId("failure-retry-count").value = String(Math.max(0, Math.min(10, Number(preferences.retry_count))));
+      }
       const checkboxPreferences = [
         ["apply_checkout_update", "apply-update"],
         ["rotate_checkout_proxy", "rotate-checkout-proxy"],
@@ -494,6 +498,7 @@
   function formOverrides() {
     const result = {
       apply_checkout_update: byId("apply-update").checked,
+      retry_count: failureRetryCount(),
       oaics_only: byId("oaics-only").checked,
     };
     const values = [
@@ -508,6 +513,28 @@
     return result;
   }
 
+  function failureRetryCount() {
+    const field = byId("failure-retry-count");
+    const parsed = Number.parseInt(field?.value || "0", 10);
+    const normalized = Number.isFinite(parsed) ? Math.max(0, Math.min(10, parsed)) : 0;
+    if (field) field.value = String(normalized);
+    return normalized;
+  }
+
+  function buildProxyAttempts(value, kind, rotateInitial, retryCount) {
+    const attempts = [];
+    for (let index = 0; index <= retryCount; index += 1) {
+      const selected = selectProxyFromPool(value, kind);
+      if (!selected) break;
+      const mustRotate = rotateInitial || index > 0;
+      const proxy = mustRotate
+        ? (kind === "update" ? rotateUpdateProxy(selected) : rotateCheckoutProxy(selected))
+        : selected;
+      attempts.push(proxy);
+    }
+    return attempts;
+  }
+
   function buildTaskPayload(
     credential,
     overrides = formOverrides(),
@@ -515,13 +542,17 @@
     rotateUpdate = byId("rotate-update-proxy").checked,
   ) {
     const payload = { ...parseCredentialInput(credential), ...overrides };
+    const retryCount = failureRetryCount();
+    payload.retry_count = retryCount;
     if (payload.checkout_proxy) {
-      payload.checkout_proxy = selectProxyFromPool(payload.checkout_proxy, "checkout");
-      if (rotateCheckout) payload.checkout_proxy = rotateCheckoutProxy(payload.checkout_proxy);
+      const attempts = buildProxyAttempts(payload.checkout_proxy, "checkout", rotateCheckout, retryCount);
+      payload.checkout_proxy = attempts[0] || "";
+      payload.checkout_proxy_attempts = attempts;
     }
     if (payload.update_proxy) {
-      payload.update_proxy = selectProxyFromPool(payload.update_proxy, "update");
-      if (rotateUpdate) payload.update_proxy = rotateUpdateProxy(payload.update_proxy);
+      const attempts = buildProxyAttempts(payload.update_proxy, "update", rotateUpdate, retryCount);
+      payload.update_proxy = attempts[0] || "";
+      payload.update_proxy_attempts = attempts;
     }
     return payload;
   }
@@ -857,6 +888,18 @@
       task.payment_method = data.payment_method || task.payment_method || "";
       task.billing_country = data.billing_country || task.billing_country || "";
       task.retry_of = data.retry_of || task.retry_of || "";
+      task.attempt = data.attempt || task.attempt || 1;
+      task.max_attempts = data.max_attempts || task.max_attempts || 1;
+    } else if (event.type === "task.retrying") {
+      task.status = "running";
+      task.stage = "retrying";
+      task.progress = clampProgress(data.progress ?? 0);
+      task.attempt = data.next_attempt || task.attempt || 1;
+      task.max_attempts = data.max_attempts || task.max_attempts || 1;
+      task.session_kind = "";
+      task.result = null;
+      task.error = "";
+      task.message = `第 ${task.attempt}/${task.max_attempts} 次完整提链：已更换代理 IP`;
     } else if (event.type === "task.checkout_detected") {
       task.session_kind = data.session_kind || task.session_kind || "";
       task.progress = clampProgress(data.progress ?? task.progress);
@@ -927,6 +970,7 @@
   function stageLabel(stage) {
     const labels = {
       queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", checkout: "创建 Checkout",
+      retrying: "更换代理 IP 后完整重试",
       checkout_update: "更新 Checkout", stripe_init: "初始化支付", elements_session: "准备支付方式",
       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
       completed: "任务完成", cancelled: "任务已取消", failed: "任务失败",
@@ -1010,18 +1054,23 @@
     if (rotateUpdateIp && byId("apply-update").checked && !updateProxyInput) {
       throw new Error("请先填写新的 Update Proxy");
     }
+    const retryCount = failureRetryCount();
     const originalProxy = rotateCheckoutIp
-      ? selectProxyFromPool(checkoutProxyInput, "checkout")
+      ? checkoutProxyInput
       : (taskCheckoutProxies.get(taskId) || checkoutProxyInput);
     const originalUpdateProxy = rotateUpdateIp
-      ? selectProxyFromPool(updateProxyInput, "update")
+      ? updateProxyInput
       : (taskUpdateProxies.get(taskId) || updateProxyInput);
-    const payload = {};
+    const payload = { retry_count: retryCount };
     if (originalProxy) {
-      payload.checkout_proxy = rotateCheckoutIp ? rotateCheckoutProxy(originalProxy) : originalProxy;
+      const attempts = buildProxyAttempts(originalProxy, "checkout", rotateCheckoutIp, retryCount);
+      payload.checkout_proxy = attempts[0] || "";
+      payload.checkout_proxy_attempts = attempts;
     }
     if (originalUpdateProxy) {
-      payload.update_proxy = rotateUpdateIp ? rotateUpdateProxy(originalUpdateProxy) : originalUpdateProxy;
+      const attempts = buildProxyAttempts(originalUpdateProxy, "update", rotateUpdateIp, retryCount);
+      payload.update_proxy = attempts[0] || "";
+      payload.update_proxy_attempts = attempts;
     }
     const response = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
       method: "POST",
@@ -1694,7 +1743,7 @@
     elements.logoutButton.addEventListener("click", logout);
     elements.taskForm.addEventListener("submit", submitTask);
     elements.credentialInput.addEventListener("input", updateCredentialPreview);
-    ["country", "payment-method", "checkout-proxy", "update-proxy", "proxy-source-url"].forEach(id => {
+    ["country", "payment-method", "checkout-proxy", "update-proxy", "proxy-source-url", "failure-retry-count"].forEach(id => {
       const field = byId(id);
       field.addEventListener("change", saveFormPreferences);
       field.addEventListener("input", saveFormPreferences);

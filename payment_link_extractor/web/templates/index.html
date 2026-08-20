@@ -127,6 +127,11 @@
                 <input id="rotate-update-proxy" type="checkbox" checked>
                 <span>自动轮换 Update Proxy IP</span>
               </label>
+              <label class="field">
+                <span>提链失败自动重试次数</span>
+                <input id="failure-retry-count" type="number" min="0" max="10" step="1" value="2" inputmode="numeric">
+                <small class="proxy-count">每次重试都会换一个代理 IP，并从资格检查开始完整重跑提链流程。</small>
+              </label>
               <input id="oaics-only" type="checkbox" hidden disabled>
             </div>
 

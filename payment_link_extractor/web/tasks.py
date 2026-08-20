@@ -22,6 +22,7 @@ TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 STAGE_PROGRESS = {
     "queued": 0,
     "running": 5,
+    "retrying": 0,
     "eligibility_check": 10,
     "checkout": 15,
     "checkout_update": 25,
@@ -73,6 +74,7 @@ class TaskRecord:
     account_email: str = ""
     session_kind: str | None = None
     retry_of: str | None = None
+    attempt: int = 0
 
 
 class TaskManager:
@@ -146,6 +148,9 @@ class TaskManager:
         *,
         checkout_proxy: str | None = None,
         update_proxy: str | None = None,
+        retry_count: int | None = None,
+        checkout_proxy_attempts: tuple[str, ...] | None = None,
+        update_proxy_attempts: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._cleanup_locked()
@@ -168,6 +173,31 @@ class TaskManager:
                 if not proxy:
                     raise TaskStateError("update proxy is required for retry")
                 retry_config = replace(retry_config, update_proxy=proxy)
+            if retry_count is not None:
+                normalized_retry_count = int(retry_count)
+                if normalized_retry_count < 0 or normalized_retry_count > 10:
+                    raise TaskStateError("retry count must be between 0 and 10")
+                retry_config = replace(retry_config, retry_count=normalized_retry_count)
+            total_attempts = max(1, min(11, int(retry_config.retry_count) + 1))
+            checkout_attempts = self._fit_proxy_attempts(
+                retry_config.checkout_proxy,
+                checkout_proxy_attempts
+                if checkout_proxy_attempts is not None
+                else retry_config.checkout_proxy_attempts,
+                total_attempts,
+            )
+            update_attempts = self._fit_proxy_attempts(
+                retry_config.update_proxy,
+                update_proxy_attempts
+                if update_proxy_attempts is not None
+                else retry_config.update_proxy_attempts,
+                total_attempts,
+            )
+            retry_config = replace(
+                retry_config,
+                checkout_proxy_attempts=checkout_attempts,
+                update_proxy_attempts=update_attempts,
+            )
             self._tasks.pop(task_id, None)
             self._publish_locked(task_id, "task.deleted", {"status": record.status, "reason": "retry"})
             return self._create_locked(retry_config, retry_of=task_id)
@@ -187,6 +217,9 @@ class TaskManager:
             "payment_method": record.config.payment_method,
             "billing_country": record.config.country,
             "progress": record.progress,
+            "attempt": 1,
+            "retry_count": max(0, min(10, int(record.config.retry_count))),
+            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
         }
         if retry_of:
             created_data["retry_of"] = retry_of
@@ -368,79 +401,181 @@ class TaskManager:
         finally:
             self._release_slot()
 
+    @staticmethod
+    def _fit_proxy_attempts(
+        primary: str,
+        candidates: tuple[str, ...],
+        total_attempts: int,
+    ) -> tuple[str, ...]:
+        values = [str(value).strip() for value in candidates if str(value).strip()]
+        primary = str(primary or "").strip()
+        if primary and (not values or values[0] != primary):
+            values.insert(0, primary)
+        if not values:
+            return ()
+        seed = tuple(values)
+        while len(values) < total_attempts:
+            values.append(seed[len(values) % len(seed)])
+        return tuple(values[:total_attempts])
+
+    @classmethod
+    def _config_for_attempt(cls, config: ExtractionConfig, attempt_index: int) -> ExtractionConfig:
+        total_attempts = max(1, min(11, int(config.retry_count) + 1))
+        checkout_attempts = cls._fit_proxy_attempts(
+            config.checkout_proxy, config.checkout_proxy_attempts, total_attempts
+        )
+        update_attempts = cls._fit_proxy_attempts(
+            config.update_proxy, config.update_proxy_attempts, total_attempts
+        )
+        checkout_proxy = checkout_attempts[attempt_index] if checkout_attempts else config.checkout_proxy
+        update_proxy = update_attempts[attempt_index] if update_attempts else config.update_proxy
+        return replace(
+            config,
+            checkout_proxy=checkout_proxy,
+            update_proxy=update_proxy,
+            checkout_proxy_attempts=checkout_attempts,
+            update_proxy_attempts=update_attempts,
+        )
+
     def _run_with_slot(self, task_id: str) -> None:
         task_log = log_context(component="task", task_id=task_id)
         with self._lock:
             record = self._tasks.get(task_id)
             if record is None or record.status == "cancelled":
                 return
-            record.status = "running"
-            record.stage = "running"
-            record.progress = STAGE_PROGRESS[record.stage]
-            record.started_at = utc_timestamp()
-            self._publish_locked(
-                task_id,
-                "task.started",
-                {"status": record.status, "progress": record.progress},
-            )
-            self._publish_locked(task_id, "task.log", {"message": "task started"})
-            task_log.info("task started")
+            retry_plan = record.config
+            retry_count = max(0, min(10, int(retry_plan.retry_count)))
+            total_attempts = retry_count + 1
 
-        try:
-            result = self._extractor(
-                record.config,
-                cancel_event=record.cancel_event,
-                stage_callback=lambda stage: self._stage(task_id, stage),
-            )
+        for attempt_index in range(total_attempts):
+            with self._lock:
+                record = self._tasks.get(task_id)
+                if record is None or record.status == "cancelled":
+                    return
+                if record.cancel_event.is_set() or record.status == "cancel_requested":
+                    self._finish_cancelled_locked(record)
+                    return
+                record.config = self._config_for_attempt(retry_plan, attempt_index)
+                record.attempt = attempt_index + 1
+                record.status = "running"
+                record.stage = "running"
+                record.progress = STAGE_PROGRESS[record.stage]
+                record.started_at = record.started_at or utc_timestamp()
+                record.finished_at = None
+                record.result = None
+                record.error = None
+                record.network_error = False
+                record.session_kind = None
+                self._publish_locked(
+                    task_id,
+                    "task.started",
+                    {
+                        "status": record.status,
+                        "progress": record.progress,
+                        "attempt": record.attempt,
+                        "max_attempts": total_attempts,
+                    },
+                )
+                self._publish_locked(
+                    task_id,
+                    "task.log",
+                    {"message": f"full extraction attempt {record.attempt}/{total_attempts} started"},
+                )
+                task_log.info("full extraction attempt {}/{} started", record.attempt, total_attempts)
+
+            try:
+                result = self._extractor(
+                    record.config,
+                    cancel_event=record.cancel_event,
+                    stage_callback=lambda stage: self._stage(task_id, stage),
+                )
+            except ExtractionCancelled as exc:
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is not None:
+                        self._finish_cancelled_locked(record, str(exc))
+                return
+            except Exception as exc:
+                with self._lock:
+                    record = self._tasks.get(task_id)
+                    if record is None:
+                        return
+                    if record.cancel_event.is_set() or record.status == "cancel_requested":
+                        self._finish_cancelled_locked(record, str(exc))
+                        return
+                    error = redact_text(exc, self._secrets(record.config))
+                    if attempt_index < retry_count:
+                        record.status = "running"
+                        record.stage = "retrying"
+                        record.progress = STAGE_PROGRESS[record.stage]
+                        record.error = None
+                        self._publish_locked(
+                            task_id,
+                            "task.retrying",
+                            {
+                                "status": record.status,
+                                "stage": record.stage,
+                                "progress": record.progress,
+                                "error": error,
+                                "attempt": record.attempt,
+                                "next_attempt": record.attempt + 1,
+                                "max_attempts": total_attempts,
+                                "ip_rotated": True,
+                            },
+                        )
+                        task_log.warning(
+                            "full extraction attempt {}/{} failed; restarting from the beginning with the next proxy IP: {}",
+                            record.attempt,
+                            total_attempts,
+                            error,
+                        )
+                        continue
+                    record.status = "failed"
+                    record.stage = "failed"
+                    record.error = error
+                    record.network_error = isinstance(exc, NetworkError)
+                    record.finished_at = utc_timestamp()
+                    self._publish_locked(
+                        task_id,
+                        "task.failed",
+                        {
+                            "status": record.status,
+                            "error": record.error,
+                            "network_error": record.network_error,
+                            "progress": record.progress,
+                            "attempt": record.attempt,
+                            "max_attempts": total_attempts,
+                        },
+                    )
+                    task_log.error("task failed after {}/{} attempts: {}", record.attempt, total_attempts, record.error)
+                return
+
             with self._lock:
                 record = self._tasks.get(task_id)
                 if record is None:
                     return
                 if record.cancel_event.is_set() or record.status == "cancel_requested":
                     self._finish_cancelled_locked(record)
-                else:
-                    record.status = "succeeded"
-                    record.stage = "completed"
-                    record.progress = STAGE_PROGRESS[record.stage]
-                    record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
-                    record.finished_at = utc_timestamp()
-                    self._publish_locked(
-                        task_id,
-                        "task.succeeded",
-                        {
-                            "status": record.status,
-                            "result": record.result,
-                            "checkout_proxy": record.config.checkout_proxy,
-                            "progress": record.progress,
-                        },
-                    )
-                    task_log.info("task succeeded")
-        except ExtractionCancelled as exc:
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is not None:
-                    self._finish_cancelled_locked(record, str(exc))
-        except Exception as exc:
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is None:
                     return
-                record.status = "failed"
-                record.stage = "failed"
-                record.error = redact_text(exc, self._secrets(record.config))
-                record.network_error = isinstance(exc, NetworkError)
+                record.status = "succeeded"
+                record.stage = "completed"
+                record.progress = STAGE_PROGRESS[record.stage]
+                record.result = result.to_dict() if hasattr(result, "to_dict") else dict(result)
                 record.finished_at = utc_timestamp()
                 self._publish_locked(
                     task_id,
-                    "task.failed",
+                    "task.succeeded",
                     {
                         "status": record.status,
-                        "error": record.error,
-                        "network_error": record.network_error,
+                        "result": record.result,
+                        "checkout_proxy": record.config.checkout_proxy,
                         "progress": record.progress,
+                        "attempt": record.attempt,
+                        "max_attempts": total_attempts,
                     },
                 )
-                task_log.error("task failed: {}", record.error)
+                task_log.info("task succeeded on full extraction attempt {}/{}", record.attempt, total_attempts)
+            return
 
     def _stage(self, task_id: str, stage: str) -> None:
         with self._lock:
@@ -512,6 +647,9 @@ class TaskManager:
             "account_email": record.account_email,
             "payment_method": record.config.payment_method,
             "billing_country": record.config.country,
+            "attempt": max(1, record.attempt),
+            "retry_count": max(0, min(10, int(record.config.retry_count))),
+            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
         }
         if record.session_kind:
             snapshot["session_kind"] = record.session_kind
@@ -548,6 +686,8 @@ class TaskManager:
             config.checkout_proxy,
             config.update_proxy,
             config.stripe_hcaptcha_token,
+            *config.checkout_proxy_attempts,
+            *config.update_proxy_attempts,
         )
 
 

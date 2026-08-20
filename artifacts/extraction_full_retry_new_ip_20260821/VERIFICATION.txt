@@ -1,0 +1,74 @@
+BRANCH_FIELD_RESULT=main / extraction failure full-flow retry and proxy-IP rotation / retry_count 0-10 controls extra attempts; every failure advances prebuilt checkout/update proxy plans and restarts extraction at eligibility_check
+BASE_COMMIT=2f4bd5d5a46f3967c5b62a1c64d13ea967e9dba6
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/models.py;payment_link_extractor/web/tasks.py;payment_link_extractor/web/routes.py;payment_link_extractor/web/static/app.js;payment_link_extractor/web/templates/index.html;tests/test_extraction_full_retry.py
+DIFF_FILE_SHA256=75900EF417F98819E5621A9A473DA576770901D8945EB33735BF128DBEA89372
+
+IMPLEMENTATION_RESULT
+RETRY_COUNT_RANGE=0..10
+TOTAL_ATTEMPTS=retry_count+1
+RETRY_TRIGGER=any extraction Exception after a failed complete attempt
+NO_RETRY_TRIGGER=ExtractionCancelled or explicit task cancellation
+RETRY_ENTRY_STAGE=eligibility_check when checkout update is enabled; otherwise checkout
+PROXY_CHANGE=the browser prebuilds checkout_proxy_attempts/update_proxy_attempts; every automatic retry advances to the next selected pool entry or a newly generated proxy session
+TASK_CONTINUITY=the same task id and worker slot remain active until success, exhaustion, or cancellation
+MANUAL_RETRY=the terminal-task retry action also reads the same retry-count field and creates a new full-flow proxy plan
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status 2f4bd5d5a46f3967c5b62a1c64d13ea967e9dba6 -- paypal_agreement_protocol/paypal ; git diff --cached --name-status -- paypal_agreement_protocol/paypal
+INPUT=payment protocol core at base commit versus modified working tree and index
+LITERAL_OUTPUT_BEGIN
+HISTORY_TO_WORKTREE_DIFF=<empty>
+STAGED_DIFF=<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=No protocol payment core file changed. The implementation is confined to the payment-link extractor task/config/UI layers and regression tests.
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\extraction_full_retry_new_ip_20260821\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\extraction_full_retry_new_ip_20260821\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\extraction_full_retry_new_ip_20260821\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\extraction_full_retry_new_ip_20260821\ROLLBACK.sh
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 2f4bd5d5a46f3967c5b62a1c64d13ea967e9dba6 before automatic full-flow extraction retry and proxy-attempt plans
+LITERAL_OUTPUT_BEGIN
+.....................................................................    [100%]
+69 passed in 0.54s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed while a failed extraction became terminal immediately; only a later manual retry could create another task.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with the six source/test paths changed by DIFF_FILE
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 92%]
+......                                                                   [100%]
+78 passed in 0.60s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=All tests pass. The new regression proves two failed full flows use proxy IP plans 1 and 2, the third complete flow uses plan 3 and succeeds; exhaustion stops at the configured bound, cancellation never retries, invalid counts are rejected, and the UI sends fresh proxy plans.
+
+ROLLBACK
+COMMAND=git worktree add --detach <COPY> 2f4bd5d5a46f3967c5b62a1c64d13ea967e9dba6 ; git -C <COPY> apply --whitespace=nowarn DIFF_FILE ; .\.venv\Scripts\python.exe -m pytest -q ; "C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <COPY> ; .\.venv\Scripts\python.exe -m pytest -q ; git -C <COPY> status --short ; git worktree remove --force <COPY>
+INPUT=detached base-commit copy with DIFF_FILE applied, then ROLLBACK.sh executed against that copy
+LITERAL_OUTPUT_BEGIN
+WORKTREE_ADD_EXIT=0
+ROLLBACK_PREPARE_APPLY_EXIT=0
+........................................................................ [ 92%]
+......                                                                   [100%]
+78 passed in 0.70s
+ROLLBACK_PRECHECK_MODIFIED_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+.....................................................................    [100%]
+69 passed in 0.59s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=ROLLBACK.sh removes the retry regression and restores the original model, routes, task runner, and UI on a detached copy; the restored 69-test suite passes and the copy is clean. The primary working tree remains modified.
+RESTORED_BEHAVIOR_STATUS=Only the rollback copy returns to immediate terminal failure with no automatic IP rotation. The primary working tree keeps manual retry_count, next-proxy selection, and a complete extractor restart for every failed attempt.

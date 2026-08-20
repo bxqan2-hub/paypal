@@ -49,6 +49,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
+                "retry_count": _retry_count_value(os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2")),
                 "billing_profiles": billing_profiles,
             }
         )
@@ -155,10 +156,31 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
         if update_proxy is not None and not isinstance(update_proxy, str):
             return _error("update_proxy must be a string", 400)
         try:
+            retry_count = (
+                _retry_count_value(payload.get("retry_count"))
+                if "retry_count" in payload
+                else None
+            )
+            checkout_proxy_attempts = (
+                _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts")
+                if "checkout_proxy_attempts" in payload
+                else None
+            )
+            update_proxy_attempts = (
+                _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts")
+                if "update_proxy_attempts" in payload
+                else None
+            )
+        except ConfigurationError as exc:
+            return _error(str(exc), 400)
+        try:
             snapshot = manager.retry(
                 task_id,
                 checkout_proxy=checkout_proxy,
                 update_proxy=update_proxy,
+                retry_count=retry_count,
+                checkout_proxy_attempts=checkout_proxy_attempts,
+                update_proxy_attempts=update_proxy_attempts,
             )
         except TaskNotFoundError:
             return _error("task not found", 404)
@@ -217,6 +239,9 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
+    retry_count = _retry_count_value(
+        payload.get("retry_count", os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2"))
+    )
     # Accept both OAICS (oaics_*) and Stripe Checkout (cs_*) PayPal flows.
     # Old browser preferences could keep oaics_only=true and discard most
     # otherwise usable accounts before provider confirmation.
@@ -232,6 +257,17 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     if country not in SUPPORTED_COUNTRIES:
         country_config(country)
     normalize_payment_method(payment_method)
+    total_attempts = retry_count + 1
+    checkout_proxy_attempts = _fit_proxy_attempt_values(
+        checkout_proxy,
+        _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts"),
+        total_attempts,
+    )
+    update_proxy_attempts = _fit_proxy_attempt_values(
+        update_proxy,
+        _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts"),
+        total_attempts,
+    )
     return ExtractionConfig(
         access_token=str(access_token).strip(),
         checkout_proxy=str(checkout_proxy).strip(),
@@ -242,7 +278,52 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         apply_checkout_update=apply_update,
         verbose=False,
         oaics_only=oaics_only,
+        retry_count=retry_count,
+        checkout_proxy_attempts=checkout_proxy_attempts,
+        update_proxy_attempts=update_proxy_attempts,
     )
+
+
+def _retry_count_value(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ConfigurationError("retry_count must be an integer between 0 and 10")
+    try:
+        retry_count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("retry_count must be an integer between 0 and 10") from exc
+    if retry_count < 0 or retry_count > 10:
+        raise ConfigurationError("retry_count must be between 0 and 10")
+    return retry_count
+
+
+def _proxy_attempt_values(value: Any, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigurationError(f"{field} must be an array of proxy strings")
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigurationError(f"{field} must contain only non-empty proxy strings")
+        values.append(item.strip())
+    return tuple(values)
+
+
+def _fit_proxy_attempt_values(
+    primary: str,
+    candidates: tuple[str, ...],
+    total_attempts: int,
+) -> tuple[str, ...]:
+    primary = str(primary or "").strip()
+    values = list(candidates)
+    if primary and (not values or values[0] != primary):
+        values.insert(0, primary)
+    if not values:
+        return ()
+    seed = tuple(values)
+    while len(values) < total_attempts:
+        values.append(seed[len(values) % len(seed)])
+    return tuple(values[:total_attempts])
 
 
 def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -> Any:

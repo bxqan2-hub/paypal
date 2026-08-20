@@ -15,6 +15,9 @@ class ExtractionConfig:
     apply_checkout_update: bool = True
     verbose: bool = True
     oaics_only: bool = False
+    retry_count: int = 0
+    checkout_proxy_attempts: tuple[str, ...] = ()
+    update_proxy_attempts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
