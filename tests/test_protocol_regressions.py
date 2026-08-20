@@ -75,6 +75,33 @@ class ProtocolRetryTests(unittest.TestCase):
         self.assertEqual(job.wait_for_retry_phone(), "+447700900124")
         self.assertFalse(job.retry_phone_required)
 
+    def test_submit_input_atomically_leaves_awaiting_otp(self) -> None:
+        job = self.make_job()
+        job.status = "awaiting_otp"
+        job.awaiting_prompt = "enter code"
+
+        job.submit_input("123456")
+
+        self.assertEqual(job.status, "queued")
+        self.assertEqual(job.awaiting_prompt, "")
+        self.assertEqual(job._input_queue, ["123456"])
+        with self.assertRaisesRegex(ValueError, "not waiting"):
+            job.submit_input("654321")
+
+    def test_internal_retry_can_reuse_the_same_provider_phone(self) -> None:
+        job = self.make_job()
+        job.prepare_retry(RuntimeError("clean session retry"))
+
+        job.reuse_retry_phone(job.phone)
+        reused = job.wait_for_retry_phone()
+
+        self.assertEqual(reused, "+447700900123")
+        self.assertFalse(job.retry_phone_required)
+        self.assertEqual(job.status, "queued")
+        self.assertTrue(any(
+            event["type"] == "protocol.retry.phone_reused" for event in job.events
+        ))
+
     def test_sms_watcher_rotates_immediately_when_protocol_retry_starts(self) -> None:
         class FakeClient:
             poll_interval = 0.01
@@ -389,6 +416,347 @@ class ProtocolRetryTests(unittest.TestCase):
         self.assertEqual(job.retry_count, 0)
         self.assertTrue(any("状态轮询已恢复" in message for _, message in job.logs))
 
+    def test_empty_status_payload_keeps_current_number_until_code_arrives(self) -> None:
+        class FakeClient:
+            poll_interval = 0.02
+
+            def __init__(self) -> None:
+                self.status_calls = 0
+
+            def get_status(self, _activation_id: str):
+                self.status_calls += 1
+                if self.status_calls == 1:
+                    return {"status": "", "code": ""}
+                return {"status": "STATUS_OK", "code": "112233"}
+
+            def finish(self, *_args, **_kwargs) -> None:
+                return None
+
+        class FakeJob:
+            id = "empty-status-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-empty", "phone": "+447700900141"}
+        job = FakeJob()
+        client = FakeClient()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0.01),
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=AssertionError("empty status must not rotate the phone"),
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(client.status_calls, 2)
+        self.assertEqual(job.submitted, ["112233"])
+        self.assertTrue(any("状态响应暂时为空" in message for _, message in job.logs))
+
+    def test_protocol_retry_reuses_coded_activation_after_transient_rearm_failure(self) -> None:
+        class FakeClient:
+            poll_interval = 0.001
+
+            def __init__(self) -> None:
+                self.statuses = iter([
+                    {
+                        "status": "STATUS_OK",
+                        "code": "123456",
+                        "data": {"id": "message-1", "code": "123456"},
+                    },
+                    {"status": "STATUS_WAIT_RESEND", "code": ""},
+                    {
+                        "status": "STATUS_OK",
+                        "code": "123456",
+                        "data": {"id": "message-2", "code": "123456"},
+                    },
+                ])
+                self.rearm_calls = 0
+                self.finished: list[tuple[str, int]] = []
+
+            def get_status(self, _activation_id: str):
+                return next(self.statuses)
+
+            def request_additional_sms(self, _activation_id: str) -> None:
+                self.rearm_calls += 1
+                if self.rearm_calls == 1:
+                    raise protocol_bridge.HeroSMSError("temporary rearm outage")
+
+            def finish(self, activation_id: str, status: int = 6) -> None:
+                self.finished.append((activation_id, status))
+
+        class FakeJob:
+            id = "reuse-coded-activation-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+                self.events: list[tuple[str, dict]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, event_type: str, data: dict) -> None:
+                self.events.append((event_type, data))
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                if len(self.submitted) == 1:
+                    self.retry_count = 1
+                    self.status = "awaiting_otp"
+                elif len(self.submitted) == 3:
+                    self.status = "completed"
+
+            def reuse_retry_phone(self, value: str) -> None:
+                self.submitted.append(value)
+                self.status = "awaiting_otp"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-reuse", "phone": "+447700900170"}
+        client = FakeClient()
+        job = FakeJob()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=AssertionError("coded activation must be reused"),
+                ),
+                patch.object(
+                    protocol_bridge,
+                    "_cancel_or_defer_sms_activation",
+                    side_effect=AssertionError("coded activation must not be cancelled"),
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(client.rearm_calls, 2)
+        self.assertEqual(job.submitted, [
+            "123456", "+447700900170", "123456",
+        ])
+        self.assertEqual(client.finished, [("activation-reuse", 6)])
+        self.assertTrue(any(
+            event == "herosms.number.reuse_retry_wait" for event, _ in job.events
+        ))
+        self.assertTrue(any(
+            event == "herosms.number.reused" for event, _ in job.events
+        ))
+        self.assertTrue(any("保留当前手机号且不换号" in message for _, message in job.logs))
+
+    def test_timeout_boundary_reconciles_late_code_before_replacement(self) -> None:
+        class FakeClient:
+            poll_interval = 0.001
+
+            def __init__(self) -> None:
+                self.status_calls = 0
+                self.finished: list[tuple[str, int]] = []
+
+            def get_status(self, _activation_id: str):
+                self.status_calls += 1
+                return {"status": "STATUS_OK", "code": "654321"}
+
+            def finish(self, activation_id: str, status: int = 6) -> None:
+                self.finished.append((activation_id, status))
+
+        class FakeJob:
+            id = "deadline-reconcile-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+
+            def add_log(self, *_args) -> None:
+                return None
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        initial = {"activation_id": "activation-late-code", "phone": "+447700900171"}
+        client = FakeClient()
+        job = FakeJob()
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0),
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    side_effect=AssertionError("late code must prevent replacement"),
+                ),
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(client.status_calls, 1)
+        self.assertEqual(job.submitted, ["654321"])
+        self.assertEqual(client.finished, [("activation-late-code", 6)])
+
+    def test_inflight_old_code_cannot_become_retry_phone_or_double_rotate(self) -> None:
+        class FakeJob:
+            id = "inflight-retry-race-job"
+            status = "awaiting_otp"
+            retry_count = 0
+            max_retries = 2
+            country = "GB"
+
+            def __init__(self) -> None:
+                self.submitted: list[str] = []
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, level: str, message: str) -> None:
+                self.logs.append((level, message))
+
+            def emit_event(self, *_args) -> None:
+                return None
+
+            def set_sms_activation(self, *_args) -> None:
+                return None
+
+            def consume_sms_send_failure(self) -> str:
+                return ""
+
+            def submit_input(self, value: str) -> None:
+                self.submitted.append(value)
+                if value == "654321":
+                    self.status = "completed"
+
+            def cancel(self) -> None:
+                self.status = "cancelled"
+
+        class FakeClient:
+            poll_interval = 0.001
+
+            def __init__(self, job: FakeJob) -> None:
+                self.job = job
+                self.finished: list[tuple[str, int]] = []
+
+            def get_status(self, activation_id: str):
+                if activation_id == "activation-race-old":
+                    self.job.retry_count = 1
+                    return {"status": "STATUS_OK", "code": "12345678"}
+                return {"status": "STATUS_OK", "code": "654321"}
+
+            def finish(self, activation_id: str, status: int = 6) -> None:
+                self.finished.append((activation_id, status))
+
+        initial = {"activation_id": "activation-race-old", "phone": "+447700900172"}
+        replacement = {"activation_id": "activation-race-new", "phone": "+447700900173"}
+        job = FakeJob()
+        client = FakeClient(job)
+        with protocol_bridge._SMS_RESERVATIONS_LOCK:
+            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+        try:
+            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
+            with (
+                patch.object(protocol_bridge, "_sms_client", return_value=client),
+                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
+                patch.object(
+                    protocol_bridge,
+                    "_acquire_unique_sms_number",
+                    return_value=replacement,
+                ) as acquire,
+                patch.object(
+                    protocol_bridge,
+                    "_cancel_or_defer_sms_activation",
+                    return_value={"deferred": True, "scheduled_in_seconds": 120},
+                ) as cancellation,
+            ):
+                protocol_bridge._watch_sms_job(job.id, initial)
+        finally:
+            with protocol_bridge._SMS_RESERVATIONS_LOCK:
+                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
+                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
+
+        self.assertEqual(acquire.call_count, 1)
+        cancellation.assert_called_once_with(client, "activation-race-old")
+        self.assertEqual(job.submitted, ["+447700900173", "654321"])
+        self.assertNotIn("12345678", job.submitted)
+        self.assertEqual(client.finished, [("activation-race-new", 6)])
+
     def test_three_effective_timeouts_keep_watcher_alive_for_protocol_retry(self) -> None:
         class FakeClient:
             poll_interval = 0.001
@@ -582,6 +950,88 @@ class ProtocolRetryTests(unittest.TestCase):
 
 
 class HeroSMSNoNumbersRegressionTests(unittest.TestCase):
+    def test_v2_structured_code_is_used_without_legacy_request(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        with patch.object(
+            client,
+            "_request",
+            return_value={
+                "verificationType": "sms",
+                "data": {"id": "message-1", "code": "123456"},
+            },
+        ) as request_call:
+            status = client.get_status("activation-v2")
+
+        self.assertEqual(status["code"], "123456")
+        self.assertEqual(status["poll_source"], "getStatusV2")
+        request_call.assert_called_once_with("getStatusV2", id="activation-v2")
+
+    def test_v2_sms_text_fallback_extracts_embedded_code(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        with patch.object(
+            client,
+            "_request",
+            return_value={
+                "verificationType": "sms",
+                "data": {"id": "message-text", "text": "Your code is 778899"},
+            },
+        ):
+            status = client.get_status("activation-v2-text")
+
+        self.assertEqual(status["code"], "778899")
+        self.assertEqual(status["poll_source"], "getStatusV2")
+
+    def test_v2_failure_falls_back_to_legacy_status_code(self) -> None:
+        client = herosms_module.HeroSMSClient()
+
+        def request(action: str, **_kwargs):
+            if action == "getStatusV2":
+                raise herosms_module.HeroSMSError("temporary V2 outage")
+            return "STATUS_OK:654321"
+
+        with patch.object(client, "_request", side_effect=request) as request_call:
+            status = client.get_status("activation-fallback")
+
+        self.assertEqual(status["status"], "STATUS_OK")
+        self.assertEqual(status["code"], "654321")
+        self.assertEqual(status["poll_source"], "getStatus")
+        self.assertTrue(status["poll_fallback"])
+        self.assertEqual(
+            [call.args[0] for call in request_call.call_args_list],
+            ["getStatusV2", "getStatus"],
+        )
+
+    def test_empty_v2_payload_falls_back_to_legacy_wait_status(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[{"verificationType": "sms", "data": None}, "STATUS_WAIT_CODE"],
+        ):
+            status = client.get_status("activation-empty-v2")
+
+        self.assertEqual(status["status"], "STATUS_WAIT_CODE")
+        self.assertEqual(status["poll_source"], "getStatus")
+
+    def test_provider_error_strings_are_not_treated_as_waiting_statuses(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        with patch.object(client, "_request", side_effect=["ERROR_SQL", "ERROR_SQL"]):
+            with self.assertRaisesRegex(herosms_module.HeroSMSError, "ERROR_SQL"):
+                client.get_status("activation-provider-error")
+
+    def test_provider_error_objects_are_not_treated_as_empty_statuses(self) -> None:
+        client = herosms_module.HeroSMSClient()
+        with patch.object(
+            client,
+            "_request",
+            side_effect=[
+                {"title": "SERVER_ERROR", "details": "temporary"},
+                {"title": "SERVER_ERROR", "details": "temporary"},
+            ],
+        ):
+            with self.assertRaisesRegex(herosms_module.HeroSMSError, "SERVER_ERROR"):
+                client.get_status("activation-provider-object-error")
+
     def test_no_numbers_404_is_classified_as_retryable_inventory_error(self) -> None:
         client = herosms_module.HeroSMSClient()
         client.api_key = "fixture-key"
@@ -687,6 +1137,8 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertNotIn("if (!terminal(job)) state.jobLogTimer", protocol_js)
         self.assertIn("replaceRetryableTerminalNumber", protocol_js)
         self.assertIn("if (isCompletedJob(existingRows[index]?.job)) continue;", protocol_js)
+        self.assertIn("result?.terminal === true", protocol_js)
+        self.assertNotIn("if (!result || result.active === false)", protocol_js)
         self.assertIn(">获取新号</button>", protocol_js)
         self.assertIn('id="push-selected-paypal"', extractor_html)
         self.assertIn("function pushPaypalTasks", extractor_js)
@@ -787,6 +1239,44 @@ class SmsReservationRegressionTests(unittest.TestCase):
 
         self.assertEqual(client.finished, [])
         self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-1"))
+
+    def test_status_route_keeps_number_on_poll_error_and_releases_only_terminal(self) -> None:
+        class PollErrorClient:
+            def get_status(self, _activation_id: str):
+                raise protocol_bridge.HeroSMSError("temporary polling outage")
+
+        class TerminalClient:
+            def get_status(self, _activation_id: str):
+                raise protocol_bridge.HeroSMSActivationUnavailableError(
+                    "activation expired"
+                )
+
+        activation = {"activation_id": "activation-status", "phone": "+447700900144"}
+        self.assertTrue(protocol_bridge._reserve_new_sms_activation(activation))
+        app = Flask("herosms-status-route-test")
+        protocol_bridge.register_paypal_protocol(app)
+
+        with patch.object(protocol_bridge, "_sms_client", return_value=PollErrorClient()):
+            response = app.test_client().post(
+                "/paypal-pay/api/sms/status",
+                json={"activation_ids": ["activation-status"]},
+            )
+        temporary = response.get_json()["activations"][0]
+        self.assertTrue(temporary["active"])
+        self.assertFalse(temporary["terminal"])
+        self.assertTrue(temporary["retryable"])
+        self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-status"))
+
+        with patch.object(protocol_bridge, "_sms_client", return_value=TerminalClient()):
+            response = app.test_client().post(
+                "/paypal-pay/api/sms/status",
+                json={"activation_ids": ["activation-status"]},
+            )
+        terminal = response.get_json()["activations"][0]
+        self.assertFalse(terminal["active"])
+        self.assertTrue(terminal["terminal"])
+        self.assertFalse(terminal["retryable"])
+        self.assertFalse(protocol_bridge._sms_activation_is_reserved("activation-status"))
 
 
 class SmsDeferredCancellationRegressionTests(unittest.TestCase):

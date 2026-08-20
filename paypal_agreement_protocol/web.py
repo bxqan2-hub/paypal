@@ -957,6 +957,7 @@ class WebJob:
     max_retries: int = 2
     retry_phone_required: bool = False
     retry_previous_phone: str = ""
+    retry_phone_reuse_allowed: bool = False
     manual_funding: bool = False
     agreement_only: bool = False
     exclude_public_metrics: bool = False
@@ -1072,6 +1073,7 @@ class WebJob:
             reason = redact_text(str(exc) or type(exc).__name__)
             self.retry_previous_phone = self.phone
             self.retry_phone_required = True
+            self.retry_phone_reuse_allowed = False
             self.status = "awaiting_otp"
             self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：正在更换新手机号"
             self.result = None
@@ -1121,23 +1123,40 @@ class WebJob:
                 raise RuntimeError("Automatic retry cancelled while waiting for a new phone")
             digits = "".join(char for char in value if char.isdigit())
             previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
-            if not 8 <= len(digits) <= 20 or digits == previous_digits:
+            reused_phone = bool(
+                self.retry_phone_reuse_allowed
+                and digits
+                and digits == previous_digits
+            )
+            self.retry_phone_reuse_allowed = False
+            if not 8 <= len(digits) <= 20 or (digits == previous_digits and not reused_phone):
                 raise ValueError("Automatic retry requires a valid new phone number")
             self.phone = f"+{digits}"
             self.retry_phone_required = False
             self.retry_previous_phone = ""
             self.status = "queued"
-            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
+            self.stage = (
+                f"自动重试 {self.retry_count}/{self.max_retries}：原手机号已重新启用"
+                if reused_phone
+                else f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
+            )
             self.awaiting_prompt = ""
             self.updated_at = now_ts()
             self._append_log_locked(
                 "INFO",
-                f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}",
+                (
+                    f"第 {self.retry_count}/{self.max_retries} 次自动重试复用已收码手机号 {mask_phone(self.phone)}"
+                    if reused_phone
+                    else f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}"
+                ),
             )
-            self._emit_event_locked("protocol.retry.phone_changed", {
+            self._emit_event_locked(
+                "protocol.retry.phone_reused" if reused_phone else "protocol.retry.phone_changed",
+                {
                 "retry_count": self.retry_count,
                 "max_retries": self.max_retries,
                 "phone": mask_phone(self.phone),
+                "reused": reused_phone,
             })
             self._condition.notify_all()
             return self.phone
@@ -1431,7 +1450,7 @@ class WebJob:
             self.updated_at = now_ts()
             self._condition.notify_all()
 
-    def submit_input(self, value: str) -> None:
+    def submit_input(self, value: str, *, allow_retry_phone_reuse: bool = False) -> None:
         value = (value or "").strip()
         if not value:
             raise ValueError("输入不能为空")
@@ -1443,19 +1462,33 @@ class WebJob:
                 previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
                 if not 8 <= len(digits) <= 20:
                     raise ValueError("自动重试必须提交新的有效手机号，不能提交验证码")
-                if digits == previous_digits:
+                if digits == previous_digits and not allow_retry_phone_reuse:
                     raise ValueError("自动重试不能继续使用旧手机号")
+                self.retry_phone_reuse_allowed = bool(
+                    allow_retry_phone_reuse and digits == previous_digits
+                )
                 value = f"+{digits}"
             self._input_queue.append(value)
+            # Leave the externally writable state atomically.  Without this,
+            # the HeroSMS watcher can poll and submit the same activation again
+            # before wait_for_input() consumes the queued value, then mistake a
+            # provider terminal response for a reason to buy another number.
+            self.status = "queued"
             self.stage = "已提交验证码/手机号，等待程序处理"
+            self.awaiting_prompt = ""
             self.updated_at = now_ts()
             self._condition.notify_all()
+
+    def reuse_retry_phone(self, phone: str) -> None:
+        """Queue the same provider-backed phone for an internal clean retry."""
+        self.submit_input(phone, allow_retry_phone_reuse=True)
 
     def complete(self, result: dict[str, Any]) -> None:
         if self._cancel_event.is_set():
             self.mark_cancelled()
             return
         with self._condition:
+            self.retry_phone_reuse_allowed = False
             result_obj = result if isinstance(result, dict) else {
                 "status": "error",
                 "error_code": "UNEXPECTED_RESPONSE_TYPE",
@@ -1509,6 +1542,7 @@ class WebJob:
             self.mark_cancelled()
             return
         with self._condition:
+            self.retry_phone_reuse_allowed = False
             error_text = str(exc)
             error_code = str(getattr(exc, "error_code", "") or "")
             failure_step = self.last_protocol_step or self.stage or "protocol execution"

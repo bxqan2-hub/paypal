@@ -21,6 +21,7 @@ from typing import Any
 from flask import Response, jsonify, request
 
 from paypal_agreement_protocol.herosms import (
+    HeroSMSActivationUnavailableError,
     HeroSMSClient,
     HeroSMSError,
     HeroSMSNoNumbersError,
@@ -379,7 +380,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
     submitted = False
     current_closed = False
     registered_activation_id = ""
-    last_submitted_code = ""
+    last_submitted_delivery_key = ""
+    pre_rearm_delivery_key = ""
+    awaiting_rearm_transition = False
     observed_retry_count = 0
     last_status_name = ""
     status_poll_failures = 0
@@ -411,6 +414,22 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 if item.get("phone"):
                     job.phone = str(item["phone"])
                 job.updated_at = time.time()
+
+    def delivery_key(status: dict[str, Any], code: str) -> str:
+        """Identify a specific V2 SMS so equal codes can still be distinct."""
+        data = status.get("data")
+        if isinstance(data, dict):
+            message_id = str(
+                data.get("id") or data.get("messageId") or data.get("message_id") or ""
+            ).strip()
+            if message_id:
+                return f"id:{message_id}"
+            message_date = str(
+                data.get("date") or data.get("dateTime") or data.get("timestamp") or ""
+            ).strip()
+            if message_date:
+                return f"date:{message_date}:{code}"
+        return f"code:{code}"
 
     try:
         while True:
@@ -446,15 +465,94 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                 add_log(
                     job,
                     "WARNING",
-                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：立即取消旧手机号并获取新手机号",
+                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}："
+                    "优先复用已收码手机号，仅在激活不可用时换号",
                 )
+                reuse_retry_phone = getattr(job, "reuse_retry_phone", None)
+                if submitted and callable(reuse_retry_phone):
+                    rearm_failures = 0
+                    activation_unavailable = False
+                    while True:
+                        job = _protocol.get_job(job_id)
+                        if job is None or job.status in {"completed", "failed", "cancelled"}:
+                            return
+                        try:
+                            request_additional = getattr(client, "request_additional_sms", None)
+                            if callable(request_additional):
+                                request_additional(activation_id)
+                            else:
+                                client.set_status(activation_id, 3)
+                            break
+                        except HeroSMSActivationUnavailableError:
+                            activation_unavailable = True
+                            add_log(
+                                job,
+                                "WARNING",
+                                "HeroSMS 已确认当前激活不可继续收取下一条短信，才会关闭旧号并换号",
+                            )
+                            break
+                        except HeroSMSError as exc:
+                            rearm_failures += 1
+                            if rearm_failures == 1 or rearm_failures % 6 == 0:
+                                add_log(
+                                    job,
+                                    "WARNING",
+                                    "HeroSMS 复用原手机号的状态请求暂时失败，保留当前手机号且不换号；"
+                                    f"后台继续重试：{exc}",
+                                )
+                            emit_event(job, "herosms.number.reuse_retry_wait", {
+                                "activation_id": activation_id,
+                                "retry_count": retry_count,
+                                "request_failures": rearm_failures,
+                                "retry_in_seconds": client.poll_interval,
+                            })
+                            retry_deadline = time.monotonic() + client.poll_interval
+                            while time.monotonic() < retry_deadline:
+                                job = _protocol.get_job(job_id)
+                                if job is None or job.status in {"completed", "failed", "cancelled"}:
+                                    return
+                                time.sleep(min(0.5, retry_deadline - time.monotonic()))
+                    if not activation_unavailable:
+                        try:
+                            reuse_retry_phone(str(current.get("phone") or ""))
+                        except ValueError:
+                            # The job may have become terminal or moved forward
+                            # while HeroSMS was being re-armed.  Re-read it rather
+                            # than allocating a competing number.
+                            job = _protocol.get_job(job_id)
+                            if job is None or job.status in {"completed", "failed", "cancelled"}:
+                                return
+                            continue
+                        submitted = False
+                        current_closed = False
+                        last_status_name = ""
+                        status_poll_failures = 0
+                        pre_rearm_delivery_key = last_submitted_delivery_key
+                        awaiting_rearm_transition = True
+                        add_log(
+                            job,
+                            "INFO",
+                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}："
+                            "复用已收到验证码的 HeroSMS 手机号，不再购买新号；已等待下一条短信",
+                        )
+                        emit_event(job, "herosms.number.reused", {
+                            "activation_id": activation_id,
+                            "attempt": attempt,
+                            "retry_count": retry_count,
+                            "reason": "protocol_retry_after_code",
+                        })
+                        continue
 
             timed_out = True
             immediate_send_failure = False
             rotation_reason = "protocol_retry" if retry_rotation else "timeout"
             if not retry_rotation:
                 deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
-                while time.monotonic() < deadline:
+                while True:
+                    # Always reconcile once at/after the deadline.  A code can
+                    # arrive during the final poll interval; rotating without
+                    # this last read discards a delivered SMS.
+                    final_reconcile_poll = time.monotonic() >= deadline
                     job = _protocol.get_job(job_id)
                     if job is None or job.status in {"completed", "failed", "cancelled"}:
                         return
@@ -476,6 +574,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                     poll_started = time.monotonic()
                     try:
                         status = client.get_status(activation_id)
+                    except HeroSMSActivationUnavailableError:
+                        rotation_reason = "provider_terminal"
+                        add_log(
+                            job,
+                            "WARNING",
+                            "HeroSMS 已明确确认当前激活不可用，完成最终复核后才准备换号",
+                        )
+                        break
                     except HeroSMSError as exc:
                         status_poll_failures += 1
                         if status_poll_failures == 1 or status_poll_failures % 6 == 0:
@@ -493,11 +599,69 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                         # start a clean protocol retry before code polling works.
                         deadline += max(0.0, time.monotonic() - poll_started)
                         continue
+                    code = str(status.get("code") or "").strip()
+                    status_name = str(status.get("status") or "").strip().upper()
+                    if not code and not status_name:
+                        status_poll_failures += 1
+                        if status_poll_failures == 1 or status_poll_failures % 6 == 0:
+                            add_log(
+                                job,
+                                "WARNING",
+                                "HeroSMS 状态响应暂时为空，保留当前手机号且不换号；"
+                                "空响应时间不计入验证码等待超时",
+                            )
+                        time.sleep(client.poll_interval)
+                        deadline += max(0.0, time.monotonic() - poll_started)
+                        continue
                     if status_poll_failures:
                         add_log(job, "INFO", "HeroSMS 状态轮询已恢复，继续等待验证码")
                         status_poll_failures = 0
-                    code = str(status.get("code") or "").strip()
-                    status_name = str(status.get("status") or "").strip().upper()
+                    # A manual submission or protocol retry can win the race
+                    # while the provider request is in flight.  Never feed that
+                    # stale code into the retry-phone gate (an 8-digit OTP can
+                    # otherwise look like a phone) and never close the old
+                    # activation before the retry branch can reuse it.
+                    latest_job = _protocol.get_job(job_id)
+                    if latest_job is None or latest_job.status in {"completed", "failed", "cancelled"}:
+                        return
+                    latest_retry_count = max(
+                        0, int(getattr(latest_job, "retry_count", 0) or 0)
+                    )
+                    if (
+                        latest_job.status != "awaiting_otp"
+                        or latest_retry_count > observed_retry_count
+                    ):
+                        timed_out = False
+                        break
+                    job = latest_job
+                    current_delivery_key = delivery_key(status, code) if code else ""
+                    if awaiting_rearm_transition:
+                        pending_after_rearm = (
+                            not code
+                            and status_name in {
+                                "STATUS_WAIT_CODE", "STATUS_WAIT_RETRY", "STATUS_WAIT_RESEND",
+                            }
+                        )
+                        new_delivery_after_rearm = bool(
+                            code and current_delivery_key != pre_rearm_delivery_key
+                        )
+                        if pending_after_rearm:
+                            awaiting_rearm_transition = False
+                            pre_rearm_delivery_key = ""
+                            last_submitted_delivery_key = ""
+                        elif new_delivery_after_rearm:
+                            awaiting_rearm_transition = False
+                            pre_rearm_delivery_key = ""
+                        elif code:
+                            # V2 can briefly replay the previous SMS immediately
+                            # after setStatus(3).  Ignore that exact message until
+                            # the provider reports a waiting transition or a new
+                            # message identity; never feed the stale OTP into the
+                            # fresh PayPal session.
+                            if final_reconcile_poll:
+                                break
+                            time.sleep(client.poll_interval)
+                            continue
                     if status_name and status_name != last_status_name:
                         last_status_name = status_name
                         emit_event(job, "herosms.status", {
@@ -505,13 +669,17 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                             "status": status_name,
                             "attempt": attempt,
                         })
-                    if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
+                    if (
+                        code
+                        and code.lower() not in {"none", "null"}
+                        and current_delivery_key != last_submitted_delivery_key
+                    ):
                         try:
                             job.submit_input(code)
                         except ValueError:
                             timed_out = False
                             break
-                        last_submitted_code = code
+                        last_submitted_delivery_key = current_delivery_key
                         add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
                         submitted = True
                         emit_event(job, "herosms.code.received", {
@@ -525,6 +693,8 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
                         rotation_reason = "provider_terminal"
                         add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
                         break
+                    if final_reconcile_poll:
+                        break
                     time.sleep(client.poll_interval)
 
             if not timed_out:
@@ -535,6 +705,12 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             job = _protocol.get_job(job_id)
             if job is None or job.status in {"completed", "failed", "cancelled"}:
                 break
+            latest_retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
+            if latest_retry_count > observed_retry_count:
+                retry_count = latest_retry_count
+                observed_retry_count = latest_retry_count
+                retry_rotation = True
+                rotation_reason = "protocol_retry"
             timeout_consumed = (
                 not retry_rotation
                 and not immediate_send_failure
@@ -579,10 +755,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             })
             current_closed = True
             if retry_rotation:
-                # The per-phone resend budget belongs to one protocol attempt.
-                # A fresh protocol retry must always start with a fresh number
-                # instead of inheriting an exhausted 3-number budget and
-                # feeding "q" into wait_for_retry_phone().
+                # A protocol retry with no delivered code (or a provider-
+                # confirmed unavailable activation) starts a fresh per-phone
+                # timeout budget.  Delivered-code activations are reused above.
                 attempt = 1
             if timeout_consumed and attempt >= SMS_ROTATION_MAX_ATTEMPTS:
                 retry_before = max(0, int(getattr(job, "retry_count", 0) or 0))
@@ -679,7 +854,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
             current = dict(replacement)
             attempt = next_attempt
             last_status_name = ""
-            last_submitted_code = ""
+            last_submitted_delivery_key = ""
+            pre_rearm_delivery_key = ""
+            awaiting_rearm_transition = False
             status_poll_failures = 0
             submitted = False
             current_closed = False
@@ -802,13 +979,32 @@ def register_paypal_protocol(app: Any) -> None:
                         "status": status_name,
                         "code": str(status.get("code") or "").strip(),
                         "active": status_name not in terminal_statuses,
+                        "terminal": status_name in terminal_statuses,
+                        "retryable": False,
+                    })
+                except HeroSMSActivationUnavailableError as exc:
+                    _release_sms_reservation(activation_id)
+                    results.append({
+                        "activation_id": activation_id,
+                        "status": "UNAVAILABLE",
+                        "code": "",
+                        "active": False,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": str(exc),
                     })
                 except HeroSMSError as exc:
                     results.append({
                         "activation_id": activation_id,
                         "status": "UNKNOWN",
                         "code": "",
-                        "active": False,
+                        # A transport/provider polling error says nothing about
+                        # the activation lifecycle.  Keep the number bound and
+                        # let the next refresh reconcile it instead of clearing
+                        # it from the UI and encouraging another purchase.
+                        "active": True,
+                        "terminal": False,
+                        "retryable": True,
                         "error": str(exc),
                     })
             return jsonify({"ok": True, "activations": results})

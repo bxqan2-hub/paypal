@@ -811,14 +811,17 @@ async function refreshSmsNumbers() {
     for (const item of tracked) {
       const activationId = String(item.activation.activation_id);
       const result = resultById.get(activationId);
-      if (!result || result.active === false) {
+      // Only a provider-confirmed terminal state may clear a purchased number.
+      // Missing rows and retryable polling errors preserve the activation so a
+      // transient HeroSMS outage cannot make the UI open a replacement number.
+      if (result?.terminal === true || (result?.active === false && result?.retryable !== true)) {
         clearPhoneAtIndex(item.index, item.entry);
         state.smsActivations.delete(item.entry.token);
         removed += 1;
         continue;
       }
-      item.activation.status = result.status || item.activation.status || '';
-      item.activation.code = result.code || item.activation.code || '';
+      item.activation.status = result?.status || item.activation.status || '';
+      item.activation.code = result?.code || item.activation.code || '';
       active += 1;
     }
     syncPhonePoolFromActivations();

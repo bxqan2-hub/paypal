@@ -41,6 +41,10 @@ class HeroSMSEarlyCancelError(HeroSMSError):
     """Raised when HeroSMS has not reached its two-minute cancel window."""
 
 
+class HeroSMSActivationUnavailableError(HeroSMSError):
+    """Raised only when HeroSMS confirms that an activation is no longer usable."""
+
+
 _FALLBACK_COUNTRY_IDS = {
     "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
@@ -99,6 +103,12 @@ class HeroSMSClient:
             ).strip().upper()
             if exc.response.status_code == 404 and provider_code == "NO_NUMBERS":
                 raise HeroSMSNoNumbersError() from exc
+            if provider_code in {
+                "NOT_FOUND", "ACTIVATION_NOT_ACTIVE", "ACTION_NOT_AVAILABLE",
+            }:
+                raise HeroSMSActivationUnavailableError(
+                    "HeroSMS activation is no longer available"
+                ) from exc
             body = exc.response.text.strip().replace("\n", " ")[:300]
             detail = f"HTTP {exc.response.status_code}"
             if body:
@@ -213,19 +223,45 @@ class HeroSMSClient:
         }
 
     def get_status(self, activation_id: str) -> dict[str, Any]:
-        payload = self._request("getStatusV2", id=str(activation_id))
-        if isinstance(payload, str):
-            parts = payload.split(":", 1)
-            return {"status": parts[0], "code": parts[1] if len(parts) == 2 else "", "raw": payload}
-        if isinstance(payload, dict):
-            result = dict(payload)
-            result.setdefault("status", result.get("state") or result.get("statusCode") or "")
-            code = _find_sms_code(result)
-            result.setdefault("code", code)
-            if not result.get("code"):
-                result["code"] = code
+        """Read an activation, falling back to the legacy status endpoint.
+
+        HeroSMS exposes both endpoints.  ``getStatusV2`` occasionally returns
+        an empty payload or suffers an endpoint-specific error while the
+        compatible ``getStatus`` endpoint already has ``STATUS_OK:<code>``.
+        Treating that as a real no-code timeout wastes a number, so a usable V2
+        result is preferred and every unavailable V2 result is reconciled with
+        the legacy endpoint before the watcher sees a polling failure.
+        """
+        v2_error: HeroSMSError | None = None
+        try:
+            result = _parse_status_payload(
+                self._request("getStatusV2", id=str(activation_id))
+            )
+            _raise_for_status_payload_error(result)
+        except HeroSMSError as exc:
+            v2_error = exc
+            result = {"status": "", "code": ""}
+        if _status_payload_is_usable(result):
+            result["poll_source"] = "getStatusV2"
             return result
-        return {"status": "", "code": ""}
+
+        try:
+            legacy = _parse_status_payload(
+                self._request("getStatus", id=str(activation_id))
+            )
+            _raise_for_status_payload_error(legacy)
+        except HeroSMSActivationUnavailableError:
+            raise
+        except HeroSMSError:
+            if v2_error is not None:
+                raise v2_error
+            raise
+        if not _status_payload_is_usable(legacy):
+            legacy["status"] = ""
+            legacy["code"] = ""
+        legacy["poll_source"] = "getStatus"
+        legacy["poll_fallback"] = True
+        return legacy
 
     def finish(self, activation_id: str, status: int = 6) -> None:
         try:
@@ -247,7 +283,20 @@ class HeroSMSClient:
             raise HeroSMSEarlyCancelError(
                 "HeroSMS activation cannot be cancelled before the two-minute window"
             )
+        if response_code in {
+            "NO_ACTIVATION", "NOT_FOUND", "ACTIVATION_NOT_ACTIVE",
+            "ACTION_NOT_AVAILABLE", "BAD_STATUS",
+        }:
+            raise HeroSMSActivationUnavailableError(
+                "HeroSMS activation is no longer available"
+            )
+        if response_code in {"ERROR_SQL", "SERVER_ERROR"}:
+            raise HeroSMSError("HeroSMS status update failed temporarily")
         return payload
+
+    def request_additional_sms(self, activation_id: str) -> Any:
+        """Keep the purchased number and arm it for the next SMS message."""
+        return self.set_status(activation_id, 3)
 
     def wait_for_code(self, activation_id: str) -> str:
         deadline = time.monotonic() + self.timeout
@@ -261,6 +310,55 @@ class HeroSMSClient:
                 break
             time.sleep(self.poll_interval)
         raise HeroSMSError("HeroSMS SMS wait timed out")
+
+
+def _parse_status_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, str):
+        parts = payload.split(":", 1)
+        return {
+            "status": parts[0].strip(),
+            "code": parts[1].strip() if len(parts) == 2 else "",
+            "raw": payload,
+        }
+    if isinstance(payload, dict):
+        result = dict(payload)
+        result.setdefault("status", result.get("state") or result.get("statusCode") or "")
+        code = _find_sms_code(result)
+        if not result.get("code"):
+            result["code"] = code
+        return result
+    return {"status": "", "code": ""}
+
+
+def _status_payload_is_usable(result: dict[str, Any]) -> bool:
+    code = str(result.get("code") or "").strip()
+    status = str(result.get("status") or "").strip().upper()
+    return bool(
+        code
+        or status.startswith("STATUS_")
+        or status in {"6", "8"}
+    )
+
+
+def _raise_for_status_payload_error(result: dict[str, Any]) -> None:
+    status = str(
+        result.get("status")
+        or result.get("title")
+        or result.get("error")
+        or result.get("statusCode")
+        or ""
+    ).strip().upper()
+    if status in {
+        "NO_ACTIVATION", "NOT_FOUND", "ACTIVATION_NOT_ACTIVE",
+        "ACTION_NOT_AVAILABLE", "BAD_STATUS",
+    }:
+        raise HeroSMSActivationUnavailableError(
+            "HeroSMS activation is no longer available"
+        )
+    if status.startswith(("BAD_", "ERROR_")) or status in {
+        "NO_BALANCE", "NO_NUMBERS", "SERVER_ERROR",
+    }:
+        raise HeroSMSError(f"HeroSMS status endpoint returned {status}")
 
 
 def _optional_float(value: str) -> float | None:
@@ -349,7 +447,8 @@ def _find_sms_code(payload: Any) -> str:
                     return found
         for key in (
             "sms", "call", "data", "message", "messages", "activation",
-            "activations", "result", "results", "items",
+            "activations", "result", "results", "items", "text", "smsText",
+            "sms_text",
         ):
             value = payload.get(key)
             if value in (None, ""):
@@ -369,7 +468,11 @@ def _find_sms_code(payload: Any) -> str:
         return ""
     if ":" in text:
         text = text.rsplit(":", 1)[-1].strip()
-    return text if re.fullmatch(r"\d{4,12}", text) else ""
+    exact = re.fullmatch(r"\d{4,12}", text)
+    if exact:
+        return exact.group(0)
+    embedded = re.search(r"(?<!\d)(\d{4,12})(?!\d)", text)
+    return embedded.group(1) if embedded else ""
 
 
 def _normalise_phone(phone: str) -> str:

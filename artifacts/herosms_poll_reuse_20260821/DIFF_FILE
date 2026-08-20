@@ -1,0 +1,1189 @@
+diff --git a/payment_link_extractor/web/paypal_protocol.py b/payment_link_extractor/web/paypal_protocol.py
+index 9b2fac4..6bdb1f1 100644
+--- a/payment_link_extractor/web/paypal_protocol.py
++++ b/payment_link_extractor/web/paypal_protocol.py
+@@ -21,6 +21,7 @@ from typing import Any
+ from flask import Response, jsonify, request
+ 
+ from paypal_agreement_protocol.herosms import (
++    HeroSMSActivationUnavailableError,
+     HeroSMSClient,
+     HeroSMSError,
+     HeroSMSNoNumbersError,
+@@ -379,7 +380,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+     submitted = False
+     current_closed = False
+     registered_activation_id = ""
+-    last_submitted_code = ""
++    last_submitted_delivery_key = ""
++    pre_rearm_delivery_key = ""
++    awaiting_rearm_transition = False
+     observed_retry_count = 0
+     last_status_name = ""
+     status_poll_failures = 0
+@@ -412,6 +415,22 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                     job.phone = str(item["phone"])
+                 job.updated_at = time.time()
+ 
++    def delivery_key(status: dict[str, Any], code: str) -> str:
++        """Identify a specific V2 SMS so equal codes can still be distinct."""
++        data = status.get("data")
++        if isinstance(data, dict):
++            message_id = str(
++                data.get("id") or data.get("messageId") or data.get("message_id") or ""
++            ).strip()
++            if message_id:
++                return f"id:{message_id}"
++            message_date = str(
++                data.get("date") or data.get("dateTime") or data.get("timestamp") or ""
++            ).strip()
++            if message_date:
++                return f"date:{message_date}:{code}"
++        return f"code:{code}"
++
+     try:
+         while True:
+             job = _protocol.get_job(job_id)
+@@ -446,15 +465,94 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                 add_log(
+                     job,
+                     "WARNING",
+-                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}：立即取消旧手机号并获取新手机号",
++                    f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}："
++                    "优先复用已收码手机号，仅在激活不可用时换号",
+                 )
++                reuse_retry_phone = getattr(job, "reuse_retry_phone", None)
++                if submitted and callable(reuse_retry_phone):
++                    rearm_failures = 0
++                    activation_unavailable = False
++                    while True:
++                        job = _protocol.get_job(job_id)
++                        if job is None or job.status in {"completed", "failed", "cancelled"}:
++                            return
++                        try:
++                            request_additional = getattr(client, "request_additional_sms", None)
++                            if callable(request_additional):
++                                request_additional(activation_id)
++                            else:
++                                client.set_status(activation_id, 3)
++                            break
++                        except HeroSMSActivationUnavailableError:
++                            activation_unavailable = True
++                            add_log(
++                                job,
++                                "WARNING",
++                                "HeroSMS 已确认当前激活不可继续收取下一条短信，才会关闭旧号并换号",
++                            )
++                            break
++                        except HeroSMSError as exc:
++                            rearm_failures += 1
++                            if rearm_failures == 1 or rearm_failures % 6 == 0:
++                                add_log(
++                                    job,
++                                    "WARNING",
++                                    "HeroSMS 复用原手机号的状态请求暂时失败，保留当前手机号且不换号；"
++                                    f"后台继续重试：{exc}",
++                                )
++                            emit_event(job, "herosms.number.reuse_retry_wait", {
++                                "activation_id": activation_id,
++                                "retry_count": retry_count,
++                                "request_failures": rearm_failures,
++                                "retry_in_seconds": client.poll_interval,
++                            })
++                            retry_deadline = time.monotonic() + client.poll_interval
++                            while time.monotonic() < retry_deadline:
++                                job = _protocol.get_job(job_id)
++                                if job is None or job.status in {"completed", "failed", "cancelled"}:
++                                    return
++                                time.sleep(min(0.5, retry_deadline - time.monotonic()))
++                    if not activation_unavailable:
++                        try:
++                            reuse_retry_phone(str(current.get("phone") or ""))
++                        except ValueError:
++                            # The job may have become terminal or moved forward
++                            # while HeroSMS was being re-armed.  Re-read it rather
++                            # than allocating a competing number.
++                            job = _protocol.get_job(job_id)
++                            if job is None or job.status in {"completed", "failed", "cancelled"}:
++                                return
++                            continue
++                        submitted = False
++                        current_closed = False
++                        last_status_name = ""
++                        status_poll_failures = 0
++                        pre_rearm_delivery_key = last_submitted_delivery_key
++                        awaiting_rearm_transition = True
++                        add_log(
++                            job,
++                            "INFO",
++                            f"自动重试 {retry_count}/{getattr(job, 'max_retries', 2)}："
++                            "复用已收到验证码的 HeroSMS 手机号，不再购买新号；已等待下一条短信",
++                        )
++                        emit_event(job, "herosms.number.reused", {
++                            "activation_id": activation_id,
++                            "attempt": attempt,
++                            "retry_count": retry_count,
++                            "reason": "protocol_retry_after_code",
++                        })
++                        continue
+ 
+             timed_out = True
+             immediate_send_failure = False
+             rotation_reason = "protocol_retry" if retry_rotation else "timeout"
+             if not retry_rotation:
+                 deadline = time.monotonic() + SMS_ROTATION_WAIT_SECONDS
+-                while time.monotonic() < deadline:
++                while True:
++                    # Always reconcile once at/after the deadline.  A code can
++                    # arrive during the final poll interval; rotating without
++                    # this last read discards a delivered SMS.
++                    final_reconcile_poll = time.monotonic() >= deadline
+                     job = _protocol.get_job(job_id)
+                     if job is None or job.status in {"completed", "failed", "cancelled"}:
+                         return
+@@ -476,6 +574,14 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                     poll_started = time.monotonic()
+                     try:
+                         status = client.get_status(activation_id)
++                    except HeroSMSActivationUnavailableError:
++                        rotation_reason = "provider_terminal"
++                        add_log(
++                            job,
++                            "WARNING",
++                            "HeroSMS 已明确确认当前激活不可用，完成最终复核后才准备换号",
++                        )
++                        break
+                     except HeroSMSError as exc:
+                         status_poll_failures += 1
+                         if status_poll_failures == 1 or status_poll_failures % 6 == 0:
+@@ -493,11 +599,69 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                         # start a clean protocol retry before code polling works.
+                         deadline += max(0.0, time.monotonic() - poll_started)
+                         continue
++                    code = str(status.get("code") or "").strip()
++                    status_name = str(status.get("status") or "").strip().upper()
++                    if not code and not status_name:
++                        status_poll_failures += 1
++                        if status_poll_failures == 1 or status_poll_failures % 6 == 0:
++                            add_log(
++                                job,
++                                "WARNING",
++                                "HeroSMS 状态响应暂时为空，保留当前手机号且不换号；"
++                                "空响应时间不计入验证码等待超时",
++                            )
++                        time.sleep(client.poll_interval)
++                        deadline += max(0.0, time.monotonic() - poll_started)
++                        continue
+                     if status_poll_failures:
+                         add_log(job, "INFO", "HeroSMS 状态轮询已恢复，继续等待验证码")
+                         status_poll_failures = 0
+-                    code = str(status.get("code") or "").strip()
+-                    status_name = str(status.get("status") or "").strip().upper()
++                    # A manual submission or protocol retry can win the race
++                    # while the provider request is in flight.  Never feed that
++                    # stale code into the retry-phone gate (an 8-digit OTP can
++                    # otherwise look like a phone) and never close the old
++                    # activation before the retry branch can reuse it.
++                    latest_job = _protocol.get_job(job_id)
++                    if latest_job is None or latest_job.status in {"completed", "failed", "cancelled"}:
++                        return
++                    latest_retry_count = max(
++                        0, int(getattr(latest_job, "retry_count", 0) or 0)
++                    )
++                    if (
++                        latest_job.status != "awaiting_otp"
++                        or latest_retry_count > observed_retry_count
++                    ):
++                        timed_out = False
++                        break
++                    job = latest_job
++                    current_delivery_key = delivery_key(status, code) if code else ""
++                    if awaiting_rearm_transition:
++                        pending_after_rearm = (
++                            not code
++                            and status_name in {
++                                "STATUS_WAIT_CODE", "STATUS_WAIT_RETRY", "STATUS_WAIT_RESEND",
++                            }
++                        )
++                        new_delivery_after_rearm = bool(
++                            code and current_delivery_key != pre_rearm_delivery_key
++                        )
++                        if pending_after_rearm:
++                            awaiting_rearm_transition = False
++                            pre_rearm_delivery_key = ""
++                            last_submitted_delivery_key = ""
++                        elif new_delivery_after_rearm:
++                            awaiting_rearm_transition = False
++                            pre_rearm_delivery_key = ""
++                        elif code:
++                            # V2 can briefly replay the previous SMS immediately
++                            # after setStatus(3).  Ignore that exact message until
++                            # the provider reports a waiting transition or a new
++                            # message identity; never feed the stale OTP into the
++                            # fresh PayPal session.
++                            if final_reconcile_poll:
++                                break
++                            time.sleep(client.poll_interval)
++                            continue
+                     if status_name and status_name != last_status_name:
+                         last_status_name = status_name
+                         emit_event(job, "herosms.status", {
+@@ -505,13 +669,17 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                             "status": status_name,
+                             "attempt": attempt,
+                         })
+-                    if code and code.lower() not in {"none", "null"} and code != last_submitted_code:
++                    if (
++                        code
++                        and code.lower() not in {"none", "null"}
++                        and current_delivery_key != last_submitted_delivery_key
++                    ):
+                         try:
+                             job.submit_input(code)
+                         except ValueError:
+                             timed_out = False
+                             break
+-                        last_submitted_code = code
++                        last_submitted_delivery_key = current_delivery_key
+                         add_log(job, "SUCCESS", f"手机号轮询第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次收到验证码，已自动提交")
+                         submitted = True
+                         emit_event(job, "herosms.code.received", {
+@@ -525,6 +693,8 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+                         rotation_reason = "provider_terminal"
+                         add_log(job, "WARNING", f"HeroSMS 手机号第 {attempt}/{SMS_ROTATION_MAX_ATTEMPTS} 次已结束但没有验证码，准备换号")
+                         break
++                    if final_reconcile_poll:
++                        break
+                     time.sleep(client.poll_interval)
+ 
+             if not timed_out:
+@@ -535,6 +705,12 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             job = _protocol.get_job(job_id)
+             if job is None or job.status in {"completed", "failed", "cancelled"}:
+                 break
++            latest_retry_count = max(0, int(getattr(job, "retry_count", 0) or 0))
++            if latest_retry_count > observed_retry_count:
++                retry_count = latest_retry_count
++                observed_retry_count = latest_retry_count
++                retry_rotation = True
++                rotation_reason = "protocol_retry"
+             timeout_consumed = (
+                 not retry_rotation
+                 and not immediate_send_failure
+@@ -579,10 +755,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             })
+             current_closed = True
+             if retry_rotation:
+-                # The per-phone resend budget belongs to one protocol attempt.
+-                # A fresh protocol retry must always start with a fresh number
+-                # instead of inheriting an exhausted 3-number budget and
+-                # feeding "q" into wait_for_retry_phone().
++                # A protocol retry with no delivered code (or a provider-
++                # confirmed unavailable activation) starts a fresh per-phone
++                # timeout budget.  Delivered-code activations are reused above.
+                 attempt = 1
+             if timeout_consumed and attempt >= SMS_ROTATION_MAX_ATTEMPTS:
+                 retry_before = max(0, int(getattr(job, "retry_count", 0) or 0))
+@@ -679,7 +854,9 @@ def _watch_sms_job(job_id: str, activation: dict[str, Any]) -> None:
+             current = dict(replacement)
+             attempt = next_attempt
+             last_status_name = ""
+-            last_submitted_code = ""
++            last_submitted_delivery_key = ""
++            pre_rearm_delivery_key = ""
++            awaiting_rearm_transition = False
+             status_poll_failures = 0
+             submitted = False
+             current_closed = False
+@@ -802,13 +979,32 @@ def register_paypal_protocol(app: Any) -> None:
+                         "status": status_name,
+                         "code": str(status.get("code") or "").strip(),
+                         "active": status_name not in terminal_statuses,
++                        "terminal": status_name in terminal_statuses,
++                        "retryable": False,
++                    })
++                except HeroSMSActivationUnavailableError as exc:
++                    _release_sms_reservation(activation_id)
++                    results.append({
++                        "activation_id": activation_id,
++                        "status": "UNAVAILABLE",
++                        "code": "",
++                        "active": False,
++                        "terminal": True,
++                        "retryable": False,
++                        "error": str(exc),
+                     })
+                 except HeroSMSError as exc:
+                     results.append({
+                         "activation_id": activation_id,
+                         "status": "UNKNOWN",
+                         "code": "",
+-                        "active": False,
++                        # A transport/provider polling error says nothing about
++                        # the activation lifecycle.  Keep the number bound and
++                        # let the next refresh reconcile it instead of clearing
++                        # it from the UI and encouraging another purchase.
++                        "active": True,
++                        "terminal": False,
++                        "retryable": True,
+                         "error": str(exc),
+                     })
+             return jsonify({"ok": True, "activations": results})
+diff --git a/paypal_agreement_protocol/herosms.py b/paypal_agreement_protocol/herosms.py
+index f69c8d0..fb76276 100644
+--- a/paypal_agreement_protocol/herosms.py
++++ b/paypal_agreement_protocol/herosms.py
+@@ -41,6 +41,10 @@ class HeroSMSEarlyCancelError(HeroSMSError):
+     """Raised when HeroSMS has not reached its two-minute cancel window."""
+ 
+ 
++class HeroSMSActivationUnavailableError(HeroSMSError):
++    """Raised only when HeroSMS confirms that an activation is no longer usable."""
++
++
+ _FALLBACK_COUNTRY_IDS = {
+     "BR": 73, "GB": 16, "US": 187, "JP": 114, "TH": 52, "ID": 6,
+     "PH": 4, "TW": 201, "MX": 54, "AE": 182, "AU": 175, "CA": 36,
+@@ -99,6 +103,12 @@ class HeroSMSClient:
+             ).strip().upper()
+             if exc.response.status_code == 404 and provider_code == "NO_NUMBERS":
+                 raise HeroSMSNoNumbersError() from exc
++            if provider_code in {
++                "NOT_FOUND", "ACTIVATION_NOT_ACTIVE", "ACTION_NOT_AVAILABLE",
++            }:
++                raise HeroSMSActivationUnavailableError(
++                    "HeroSMS activation is no longer available"
++                ) from exc
+             body = exc.response.text.strip().replace("\n", " ")[:300]
+             detail = f"HTTP {exc.response.status_code}"
+             if body:
+@@ -213,19 +223,45 @@ class HeroSMSClient:
+         }
+ 
+     def get_status(self, activation_id: str) -> dict[str, Any]:
+-        payload = self._request("getStatusV2", id=str(activation_id))
+-        if isinstance(payload, str):
+-            parts = payload.split(":", 1)
+-            return {"status": parts[0], "code": parts[1] if len(parts) == 2 else "", "raw": payload}
+-        if isinstance(payload, dict):
+-            result = dict(payload)
+-            result.setdefault("status", result.get("state") or result.get("statusCode") or "")
+-            code = _find_sms_code(result)
+-            result.setdefault("code", code)
+-            if not result.get("code"):
+-                result["code"] = code
++        """Read an activation, falling back to the legacy status endpoint.
++
++        HeroSMS exposes both endpoints.  ``getStatusV2`` occasionally returns
++        an empty payload or suffers an endpoint-specific error while the
++        compatible ``getStatus`` endpoint already has ``STATUS_OK:<code>``.
++        Treating that as a real no-code timeout wastes a number, so a usable V2
++        result is preferred and every unavailable V2 result is reconciled with
++        the legacy endpoint before the watcher sees a polling failure.
++        """
++        v2_error: HeroSMSError | None = None
++        try:
++            result = _parse_status_payload(
++                self._request("getStatusV2", id=str(activation_id))
++            )
++            _raise_for_status_payload_error(result)
++        except HeroSMSError as exc:
++            v2_error = exc
++            result = {"status": "", "code": ""}
++        if _status_payload_is_usable(result):
++            result["poll_source"] = "getStatusV2"
+             return result
+-        return {"status": "", "code": ""}
++
++        try:
++            legacy = _parse_status_payload(
++                self._request("getStatus", id=str(activation_id))
++            )
++            _raise_for_status_payload_error(legacy)
++        except HeroSMSActivationUnavailableError:
++            raise
++        except HeroSMSError:
++            if v2_error is not None:
++                raise v2_error
++            raise
++        if not _status_payload_is_usable(legacy):
++            legacy["status"] = ""
++            legacy["code"] = ""
++        legacy["poll_source"] = "getStatus"
++        legacy["poll_fallback"] = True
++        return legacy
+ 
+     def finish(self, activation_id: str, status: int = 6) -> None:
+         try:
+@@ -247,8 +283,21 @@ class HeroSMSClient:
+             raise HeroSMSEarlyCancelError(
+                 "HeroSMS activation cannot be cancelled before the two-minute window"
+             )
++        if response_code in {
++            "NO_ACTIVATION", "NOT_FOUND", "ACTIVATION_NOT_ACTIVE",
++            "ACTION_NOT_AVAILABLE", "BAD_STATUS",
++        }:
++            raise HeroSMSActivationUnavailableError(
++                "HeroSMS activation is no longer available"
++            )
++        if response_code in {"ERROR_SQL", "SERVER_ERROR"}:
++            raise HeroSMSError("HeroSMS status update failed temporarily")
+         return payload
+ 
++    def request_additional_sms(self, activation_id: str) -> Any:
++        """Keep the purchased number and arm it for the next SMS message."""
++        return self.set_status(activation_id, 3)
++
+     def wait_for_code(self, activation_id: str) -> str:
+         deadline = time.monotonic() + self.timeout
+         while time.monotonic() < deadline:
+@@ -263,6 +312,55 @@ class HeroSMSClient:
+         raise HeroSMSError("HeroSMS SMS wait timed out")
+ 
+ 
++def _parse_status_payload(payload: Any) -> dict[str, Any]:
++    if isinstance(payload, str):
++        parts = payload.split(":", 1)
++        return {
++            "status": parts[0].strip(),
++            "code": parts[1].strip() if len(parts) == 2 else "",
++            "raw": payload,
++        }
++    if isinstance(payload, dict):
++        result = dict(payload)
++        result.setdefault("status", result.get("state") or result.get("statusCode") or "")
++        code = _find_sms_code(result)
++        if not result.get("code"):
++            result["code"] = code
++        return result
++    return {"status": "", "code": ""}
++
++
++def _status_payload_is_usable(result: dict[str, Any]) -> bool:
++    code = str(result.get("code") or "").strip()
++    status = str(result.get("status") or "").strip().upper()
++    return bool(
++        code
++        or status.startswith("STATUS_")
++        or status in {"6", "8"}
++    )
++
++
++def _raise_for_status_payload_error(result: dict[str, Any]) -> None:
++    status = str(
++        result.get("status")
++        or result.get("title")
++        or result.get("error")
++        or result.get("statusCode")
++        or ""
++    ).strip().upper()
++    if status in {
++        "NO_ACTIVATION", "NOT_FOUND", "ACTIVATION_NOT_ACTIVE",
++        "ACTION_NOT_AVAILABLE", "BAD_STATUS",
++    }:
++        raise HeroSMSActivationUnavailableError(
++            "HeroSMS activation is no longer available"
++        )
++    if status.startswith(("BAD_", "ERROR_")) or status in {
++        "NO_BALANCE", "NO_NUMBERS", "SERVER_ERROR",
++    }:
++        raise HeroSMSError(f"HeroSMS status endpoint returned {status}")
++
++
+ def _optional_float(value: str) -> float | None:
+     try:
+         return float(value) if str(value).strip() else None
+@@ -349,7 +447,8 @@ def _find_sms_code(payload: Any) -> str:
+                     return found
+         for key in (
+             "sms", "call", "data", "message", "messages", "activation",
+-            "activations", "result", "results", "items",
++            "activations", "result", "results", "items", "text", "smsText",
++            "sms_text",
+         ):
+             value = payload.get(key)
+             if value in (None, ""):
+@@ -369,7 +468,11 @@ def _find_sms_code(payload: Any) -> str:
+         return ""
+     if ":" in text:
+         text = text.rsplit(":", 1)[-1].strip()
+-    return text if re.fullmatch(r"\d{4,12}", text) else ""
++    exact = re.fullmatch(r"\d{4,12}", text)
++    if exact:
++        return exact.group(0)
++    embedded = re.search(r"(?<!\d)(\d{4,12})(?!\d)", text)
++    return embedded.group(1) if embedded else ""
+ 
+ 
+ def _normalise_phone(phone: str) -> str:
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index ed4b642..67c860a 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -957,6 +957,7 @@ class WebJob:
+     max_retries: int = 2
+     retry_phone_required: bool = False
+     retry_previous_phone: str = ""
++    retry_phone_reuse_allowed: bool = False
+     manual_funding: bool = False
+     agreement_only: bool = False
+     exclude_public_metrics: bool = False
+@@ -1072,6 +1073,7 @@ class WebJob:
+             reason = redact_text(str(exc) or type(exc).__name__)
+             self.retry_previous_phone = self.phone
+             self.retry_phone_required = True
++            self.retry_phone_reuse_allowed = False
+             self.status = "awaiting_otp"
+             self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：正在更换新手机号"
+             self.result = None
+@@ -1121,23 +1123,40 @@ class WebJob:
+                 raise RuntimeError("Automatic retry cancelled while waiting for a new phone")
+             digits = "".join(char for char in value if char.isdigit())
+             previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
+-            if not 8 <= len(digits) <= 20 or digits == previous_digits:
++            reused_phone = bool(
++                self.retry_phone_reuse_allowed
++                and digits
++                and digits == previous_digits
++            )
++            self.retry_phone_reuse_allowed = False
++            if not 8 <= len(digits) <= 20 or (digits == previous_digits and not reused_phone):
+                 raise ValueError("Automatic retry requires a valid new phone number")
+             self.phone = f"+{digits}"
+             self.retry_phone_required = False
+             self.retry_previous_phone = ""
+             self.status = "queued"
+-            self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
++            self.stage = (
++                f"自动重试 {self.retry_count}/{self.max_retries}：原手机号已重新启用"
++                if reused_phone
++                else f"自动重试 {self.retry_count}/{self.max_retries}：新手机号已就绪"
++            )
+             self.awaiting_prompt = ""
+             self.updated_at = now_ts()
+             self._append_log_locked(
+                 "INFO",
+-                f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}",
++                (
++                    f"第 {self.retry_count}/{self.max_retries} 次自动重试复用已收码手机号 {mask_phone(self.phone)}"
++                    if reused_phone
++                    else f"第 {self.retry_count}/{self.max_retries} 次自动重试已切换到新手机号 {mask_phone(self.phone)}"
++                ),
+             )
+-            self._emit_event_locked("protocol.retry.phone_changed", {
++            self._emit_event_locked(
++                "protocol.retry.phone_reused" if reused_phone else "protocol.retry.phone_changed",
++                {
+                 "retry_count": self.retry_count,
+                 "max_retries": self.max_retries,
+                 "phone": mask_phone(self.phone),
++                "reused": reused_phone,
+             })
+             self._condition.notify_all()
+             return self.phone
+@@ -1431,7 +1450,7 @@ class WebJob:
+             self.updated_at = now_ts()
+             self._condition.notify_all()
+ 
+-    def submit_input(self, value: str) -> None:
++    def submit_input(self, value: str, *, allow_retry_phone_reuse: bool = False) -> None:
+         value = (value or "").strip()
+         if not value:
+             raise ValueError("输入不能为空")
+@@ -1443,19 +1462,33 @@ class WebJob:
+                 previous_digits = "".join(char for char in self.retry_previous_phone if char.isdigit())
+                 if not 8 <= len(digits) <= 20:
+                     raise ValueError("自动重试必须提交新的有效手机号，不能提交验证码")
+-                if digits == previous_digits:
++                if digits == previous_digits and not allow_retry_phone_reuse:
+                     raise ValueError("自动重试不能继续使用旧手机号")
++                self.retry_phone_reuse_allowed = bool(
++                    allow_retry_phone_reuse and digits == previous_digits
++                )
+                 value = f"+{digits}"
+             self._input_queue.append(value)
++            # Leave the externally writable state atomically.  Without this,
++            # the HeroSMS watcher can poll and submit the same activation again
++            # before wait_for_input() consumes the queued value, then mistake a
++            # provider terminal response for a reason to buy another number.
++            self.status = "queued"
+             self.stage = "已提交验证码/手机号，等待程序处理"
++            self.awaiting_prompt = ""
+             self.updated_at = now_ts()
+             self._condition.notify_all()
+ 
++    def reuse_retry_phone(self, phone: str) -> None:
++        """Queue the same provider-backed phone for an internal clean retry."""
++        self.submit_input(phone, allow_retry_phone_reuse=True)
++
+     def complete(self, result: dict[str, Any]) -> None:
+         if self._cancel_event.is_set():
+             self.mark_cancelled()
+             return
+         with self._condition:
++            self.retry_phone_reuse_allowed = False
+             result_obj = result if isinstance(result, dict) else {
+                 "status": "error",
+                 "error_code": "UNEXPECTED_RESPONSE_TYPE",
+@@ -1509,6 +1542,7 @@ class WebJob:
+             self.mark_cancelled()
+             return
+         with self._condition:
++            self.retry_phone_reuse_allowed = False
+             error_text = str(exc)
+             error_code = str(getattr(exc, "error_code", "") or "")
+             failure_step = self.last_protocol_step or self.stage or "protocol execution"
+diff --git a/paypal_agreement_protocol/web_static/app.js b/paypal_agreement_protocol/web_static/app.js
+index 23139ef..6076c01 100644
+--- a/paypal_agreement_protocol/web_static/app.js
++++ b/paypal_agreement_protocol/web_static/app.js
+@@ -811,14 +811,17 @@ async function refreshSmsNumbers() {
+     for (const item of tracked) {
+       const activationId = String(item.activation.activation_id);
+       const result = resultById.get(activationId);
+-      if (!result || result.active === false) {
++      // Only a provider-confirmed terminal state may clear a purchased number.
++      // Missing rows and retryable polling errors preserve the activation so a
++      // transient HeroSMS outage cannot make the UI open a replacement number.
++      if (result?.terminal === true || (result?.active === false && result?.retryable !== true)) {
+         clearPhoneAtIndex(item.index, item.entry);
+         state.smsActivations.delete(item.entry.token);
+         removed += 1;
+         continue;
+       }
+-      item.activation.status = result.status || item.activation.status || '';
+-      item.activation.code = result.code || item.activation.code || '';
++      item.activation.status = result?.status || item.activation.status || '';
++      item.activation.code = result?.code || item.activation.code || '';
+       active += 1;
+     }
+     syncPhonePoolFromActivations();
+diff --git a/tests/test_protocol_regressions.py b/tests/test_protocol_regressions.py
+index ffa305a..8627592 100644
+--- a/tests/test_protocol_regressions.py
++++ b/tests/test_protocol_regressions.py
+@@ -75,6 +75,33 @@ class ProtocolRetryTests(unittest.TestCase):
+         self.assertEqual(job.wait_for_retry_phone(), "+447700900124")
+         self.assertFalse(job.retry_phone_required)
+ 
++    def test_submit_input_atomically_leaves_awaiting_otp(self) -> None:
++        job = self.make_job()
++        job.status = "awaiting_otp"
++        job.awaiting_prompt = "enter code"
++
++        job.submit_input("123456")
++
++        self.assertEqual(job.status, "queued")
++        self.assertEqual(job.awaiting_prompt, "")
++        self.assertEqual(job._input_queue, ["123456"])
++        with self.assertRaisesRegex(ValueError, "not waiting"):
++            job.submit_input("654321")
++
++    def test_internal_retry_can_reuse_the_same_provider_phone(self) -> None:
++        job = self.make_job()
++        job.prepare_retry(RuntimeError("clean session retry"))
++
++        job.reuse_retry_phone(job.phone)
++        reused = job.wait_for_retry_phone()
++
++        self.assertEqual(reused, "+447700900123")
++        self.assertFalse(job.retry_phone_required)
++        self.assertEqual(job.status, "queued")
++        self.assertTrue(any(
++            event["type"] == "protocol.retry.phone_reused" for event in job.events
++        ))
++
+     def test_sms_watcher_rotates_immediately_when_protocol_retry_starts(self) -> None:
+         class FakeClient:
+             poll_interval = 0.01
+@@ -389,6 +416,347 @@ class ProtocolRetryTests(unittest.TestCase):
+         self.assertEqual(job.retry_count, 0)
+         self.assertTrue(any("状态轮询已恢复" in message for _, message in job.logs))
+ 
++    def test_empty_status_payload_keeps_current_number_until_code_arrives(self) -> None:
++        class FakeClient:
++            poll_interval = 0.02
++
++            def __init__(self) -> None:
++                self.status_calls = 0
++
++            def get_status(self, _activation_id: str):
++                self.status_calls += 1
++                if self.status_calls == 1:
++                    return {"status": "", "code": ""}
++                return {"status": "STATUS_OK", "code": "112233"}
++
++            def finish(self, *_args, **_kwargs) -> None:
++                return None
++
++        class FakeJob:
++            id = "empty-status-job"
++            status = "awaiting_otp"
++            retry_count = 0
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.submitted: list[str] = []
++                self.logs: list[tuple[str, str]] = []
++
++            def add_log(self, level: str, message: str) -> None:
++                self.logs.append((level, message))
++
++            def emit_event(self, *_args) -> None:
++                return None
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def consume_sms_send_failure(self) -> str:
++                return ""
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                self.status = "completed"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        initial = {"activation_id": "activation-empty", "phone": "+447700900141"}
++        job = FakeJob()
++        client = FakeClient()
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0.01),
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(
++                    protocol_bridge,
++                    "_acquire_unique_sms_number",
++                    side_effect=AssertionError("empty status must not rotate the phone"),
++                ),
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(client.status_calls, 2)
++        self.assertEqual(job.submitted, ["112233"])
++        self.assertTrue(any("状态响应暂时为空" in message for _, message in job.logs))
++
++    def test_protocol_retry_reuses_coded_activation_after_transient_rearm_failure(self) -> None:
++        class FakeClient:
++            poll_interval = 0.001
++
++            def __init__(self) -> None:
++                self.statuses = iter([
++                    {
++                        "status": "STATUS_OK",
++                        "code": "123456",
++                        "data": {"id": "message-1", "code": "123456"},
++                    },
++                    {"status": "STATUS_WAIT_RESEND", "code": ""},
++                    {
++                        "status": "STATUS_OK",
++                        "code": "123456",
++                        "data": {"id": "message-2", "code": "123456"},
++                    },
++                ])
++                self.rearm_calls = 0
++                self.finished: list[tuple[str, int]] = []
++
++            def get_status(self, _activation_id: str):
++                return next(self.statuses)
++
++            def request_additional_sms(self, _activation_id: str) -> None:
++                self.rearm_calls += 1
++                if self.rearm_calls == 1:
++                    raise protocol_bridge.HeroSMSError("temporary rearm outage")
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++        class FakeJob:
++            id = "reuse-coded-activation-job"
++            status = "awaiting_otp"
++            retry_count = 0
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.submitted: list[str] = []
++                self.logs: list[tuple[str, str]] = []
++                self.events: list[tuple[str, dict]] = []
++
++            def add_log(self, level: str, message: str) -> None:
++                self.logs.append((level, message))
++
++            def emit_event(self, event_type: str, data: dict) -> None:
++                self.events.append((event_type, data))
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def consume_sms_send_failure(self) -> str:
++                return ""
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                if len(self.submitted) == 1:
++                    self.retry_count = 1
++                    self.status = "awaiting_otp"
++                elif len(self.submitted) == 3:
++                    self.status = "completed"
++
++            def reuse_retry_phone(self, value: str) -> None:
++                self.submitted.append(value)
++                self.status = "awaiting_otp"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        initial = {"activation_id": "activation-reuse", "phone": "+447700900170"}
++        client = FakeClient()
++        job = FakeJob()
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(
++                    protocol_bridge,
++                    "_acquire_unique_sms_number",
++                    side_effect=AssertionError("coded activation must be reused"),
++                ),
++                patch.object(
++                    protocol_bridge,
++                    "_cancel_or_defer_sms_activation",
++                    side_effect=AssertionError("coded activation must not be cancelled"),
++                ),
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(client.rearm_calls, 2)
++        self.assertEqual(job.submitted, [
++            "123456", "+447700900170", "123456",
++        ])
++        self.assertEqual(client.finished, [("activation-reuse", 6)])
++        self.assertTrue(any(
++            event == "herosms.number.reuse_retry_wait" for event, _ in job.events
++        ))
++        self.assertTrue(any(
++            event == "herosms.number.reused" for event, _ in job.events
++        ))
++        self.assertTrue(any("保留当前手机号且不换号" in message for _, message in job.logs))
++
++    def test_timeout_boundary_reconciles_late_code_before_replacement(self) -> None:
++        class FakeClient:
++            poll_interval = 0.001
++
++            def __init__(self) -> None:
++                self.status_calls = 0
++                self.finished: list[tuple[str, int]] = []
++
++            def get_status(self, _activation_id: str):
++                self.status_calls += 1
++                return {"status": "STATUS_OK", "code": "654321"}
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++        class FakeJob:
++            id = "deadline-reconcile-job"
++            status = "awaiting_otp"
++            retry_count = 0
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.submitted: list[str] = []
++
++            def add_log(self, *_args) -> None:
++                return None
++
++            def emit_event(self, *_args) -> None:
++                return None
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def consume_sms_send_failure(self) -> str:
++                return ""
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                self.status = "completed"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        initial = {"activation_id": "activation-late-code", "phone": "+447700900171"}
++        client = FakeClient()
++        job = FakeJob()
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "SMS_ROTATION_WAIT_SECONDS", 0),
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(
++                    protocol_bridge,
++                    "_acquire_unique_sms_number",
++                    side_effect=AssertionError("late code must prevent replacement"),
++                ),
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(client.status_calls, 1)
++        self.assertEqual(job.submitted, ["654321"])
++        self.assertEqual(client.finished, [("activation-late-code", 6)])
++
++    def test_inflight_old_code_cannot_become_retry_phone_or_double_rotate(self) -> None:
++        class FakeJob:
++            id = "inflight-retry-race-job"
++            status = "awaiting_otp"
++            retry_count = 0
++            max_retries = 2
++            country = "GB"
++
++            def __init__(self) -> None:
++                self.submitted: list[str] = []
++                self.logs: list[tuple[str, str]] = []
++
++            def add_log(self, level: str, message: str) -> None:
++                self.logs.append((level, message))
++
++            def emit_event(self, *_args) -> None:
++                return None
++
++            def set_sms_activation(self, *_args) -> None:
++                return None
++
++            def consume_sms_send_failure(self) -> str:
++                return ""
++
++            def submit_input(self, value: str) -> None:
++                self.submitted.append(value)
++                if value == "654321":
++                    self.status = "completed"
++
++            def cancel(self) -> None:
++                self.status = "cancelled"
++
++        class FakeClient:
++            poll_interval = 0.001
++
++            def __init__(self, job: FakeJob) -> None:
++                self.job = job
++                self.finished: list[tuple[str, int]] = []
++
++            def get_status(self, activation_id: str):
++                if activation_id == "activation-race-old":
++                    self.job.retry_count = 1
++                    return {"status": "STATUS_OK", "code": "12345678"}
++                return {"status": "STATUS_OK", "code": "654321"}
++
++            def finish(self, activation_id: str, status: int = 6) -> None:
++                self.finished.append((activation_id, status))
++
++        initial = {"activation_id": "activation-race-old", "phone": "+447700900172"}
++        replacement = {"activation_id": "activation-race-new", "phone": "+447700900173"}
++        job = FakeJob()
++        client = FakeClient(job)
++        with protocol_bridge._SMS_RESERVATIONS_LOCK:
++            protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++            protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++        try:
++            self.assertTrue(protocol_bridge._reserve_new_sms_activation(initial))
++            with (
++                patch.object(protocol_bridge, "_sms_client", return_value=client),
++                patch.object(protocol_bridge._protocol, "get_job", return_value=job),
++                patch.object(
++                    protocol_bridge,
++                    "_acquire_unique_sms_number",
++                    return_value=replacement,
++                ) as acquire,
++                patch.object(
++                    protocol_bridge,
++                    "_cancel_or_defer_sms_activation",
++                    return_value={"deferred": True, "scheduled_in_seconds": 120},
++                ) as cancellation,
++            ):
++                protocol_bridge._watch_sms_job(job.id, initial)
++        finally:
++            with protocol_bridge._SMS_RESERVATIONS_LOCK:
++                protocol_bridge._SMS_RESERVATIONS_BY_PHONE.clear()
++                protocol_bridge._SMS_RESERVATIONS_BY_ACTIVATION.clear()
++
++        self.assertEqual(acquire.call_count, 1)
++        cancellation.assert_called_once_with(client, "activation-race-old")
++        self.assertEqual(job.submitted, ["+447700900173", "654321"])
++        self.assertNotIn("12345678", job.submitted)
++        self.assertEqual(client.finished, [("activation-race-new", 6)])
++
+     def test_three_effective_timeouts_keep_watcher_alive_for_protocol_retry(self) -> None:
+         class FakeClient:
+             poll_interval = 0.001
+@@ -582,6 +950,88 @@ class ProtocolRetryTests(unittest.TestCase):
+ 
+ 
+ class HeroSMSNoNumbersRegressionTests(unittest.TestCase):
++    def test_v2_structured_code_is_used_without_legacy_request(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        with patch.object(
++            client,
++            "_request",
++            return_value={
++                "verificationType": "sms",
++                "data": {"id": "message-1", "code": "123456"},
++            },
++        ) as request_call:
++            status = client.get_status("activation-v2")
++
++        self.assertEqual(status["code"], "123456")
++        self.assertEqual(status["poll_source"], "getStatusV2")
++        request_call.assert_called_once_with("getStatusV2", id="activation-v2")
++
++    def test_v2_sms_text_fallback_extracts_embedded_code(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        with patch.object(
++            client,
++            "_request",
++            return_value={
++                "verificationType": "sms",
++                "data": {"id": "message-text", "text": "Your code is 778899"},
++            },
++        ):
++            status = client.get_status("activation-v2-text")
++
++        self.assertEqual(status["code"], "778899")
++        self.assertEqual(status["poll_source"], "getStatusV2")
++
++    def test_v2_failure_falls_back_to_legacy_status_code(self) -> None:
++        client = herosms_module.HeroSMSClient()
++
++        def request(action: str, **_kwargs):
++            if action == "getStatusV2":
++                raise herosms_module.HeroSMSError("temporary V2 outage")
++            return "STATUS_OK:654321"
++
++        with patch.object(client, "_request", side_effect=request) as request_call:
++            status = client.get_status("activation-fallback")
++
++        self.assertEqual(status["status"], "STATUS_OK")
++        self.assertEqual(status["code"], "654321")
++        self.assertEqual(status["poll_source"], "getStatus")
++        self.assertTrue(status["poll_fallback"])
++        self.assertEqual(
++            [call.args[0] for call in request_call.call_args_list],
++            ["getStatusV2", "getStatus"],
++        )
++
++    def test_empty_v2_payload_falls_back_to_legacy_wait_status(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        with patch.object(
++            client,
++            "_request",
++            side_effect=[{"verificationType": "sms", "data": None}, "STATUS_WAIT_CODE"],
++        ):
++            status = client.get_status("activation-empty-v2")
++
++        self.assertEqual(status["status"], "STATUS_WAIT_CODE")
++        self.assertEqual(status["poll_source"], "getStatus")
++
++    def test_provider_error_strings_are_not_treated_as_waiting_statuses(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        with patch.object(client, "_request", side_effect=["ERROR_SQL", "ERROR_SQL"]):
++            with self.assertRaisesRegex(herosms_module.HeroSMSError, "ERROR_SQL"):
++                client.get_status("activation-provider-error")
++
++    def test_provider_error_objects_are_not_treated_as_empty_statuses(self) -> None:
++        client = herosms_module.HeroSMSClient()
++        with patch.object(
++            client,
++            "_request",
++            side_effect=[
++                {"title": "SERVER_ERROR", "details": "temporary"},
++                {"title": "SERVER_ERROR", "details": "temporary"},
++            ],
++        ):
++            with self.assertRaisesRegex(herosms_module.HeroSMSError, "SERVER_ERROR"):
++                client.get_status("activation-provider-object-error")
++
+     def test_no_numbers_404_is_classified_as_retryable_inventory_error(self) -> None:
+         client = herosms_module.HeroSMSClient()
+         client.api_key = "fixture-key"
+@@ -687,6 +1137,8 @@ class FrontendRegressionTests(unittest.TestCase):
+         self.assertNotIn("if (!terminal(job)) state.jobLogTimer", protocol_js)
+         self.assertIn("replaceRetryableTerminalNumber", protocol_js)
+         self.assertIn("if (isCompletedJob(existingRows[index]?.job)) continue;", protocol_js)
++        self.assertIn("result?.terminal === true", protocol_js)
++        self.assertNotIn("if (!result || result.active === false)", protocol_js)
+         self.assertIn(">获取新号</button>", protocol_js)
+         self.assertIn('id="push-selected-paypal"', extractor_html)
+         self.assertIn("function pushPaypalTasks", extractor_js)
+@@ -788,6 +1240,44 @@ class SmsReservationRegressionTests(unittest.TestCase):
+         self.assertEqual(client.finished, [])
+         self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-1"))
+ 
++    def test_status_route_keeps_number_on_poll_error_and_releases_only_terminal(self) -> None:
++        class PollErrorClient:
++            def get_status(self, _activation_id: str):
++                raise protocol_bridge.HeroSMSError("temporary polling outage")
++
++        class TerminalClient:
++            def get_status(self, _activation_id: str):
++                raise protocol_bridge.HeroSMSActivationUnavailableError(
++                    "activation expired"
++                )
++
++        activation = {"activation_id": "activation-status", "phone": "+447700900144"}
++        self.assertTrue(protocol_bridge._reserve_new_sms_activation(activation))
++        app = Flask("herosms-status-route-test")
++        protocol_bridge.register_paypal_protocol(app)
++
++        with patch.object(protocol_bridge, "_sms_client", return_value=PollErrorClient()):
++            response = app.test_client().post(
++                "/paypal-pay/api/sms/status",
++                json={"activation_ids": ["activation-status"]},
++            )
++        temporary = response.get_json()["activations"][0]
++        self.assertTrue(temporary["active"])
++        self.assertFalse(temporary["terminal"])
++        self.assertTrue(temporary["retryable"])
++        self.assertTrue(protocol_bridge._sms_activation_is_reserved("activation-status"))
++
++        with patch.object(protocol_bridge, "_sms_client", return_value=TerminalClient()):
++            response = app.test_client().post(
++                "/paypal-pay/api/sms/status",
++                json={"activation_ids": ["activation-status"]},
++            )
++        terminal = response.get_json()["activations"][0]
++        self.assertFalse(terminal["active"])
++        self.assertTrue(terminal["terminal"])
++        self.assertFalse(terminal["retryable"])
++        self.assertFalse(protocol_bridge._sms_activation_is_reserved("activation-status"))
++
+ 
+ class SmsDeferredCancellationRegressionTests(unittest.TestCase):
+     def setUp(self) -> None:

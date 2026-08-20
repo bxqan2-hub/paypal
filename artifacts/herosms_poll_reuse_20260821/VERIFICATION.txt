@@ -1,0 +1,82 @@
+BRANCH_FIELD_RESULT=main / HeroSMS 已收码号码复用与轮询最终复核 / 已收码后协议重试复用同一 activation；V2 故障回退 getStatus，空响应/暂时错误保号，只有明确终态才换号
+
+OBJECT
+WORKSPACE=C:\Users\Administrator\Desktop\提链
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+BASE_COMMIT=5b2976dcc776a9435408e0ef63846e4c4d9c24f0
+SOURCE_DIFF_SCOPE=payment_link_extractor/web/paypal_protocol.py; paypal_agreement_protocol/herosms.py; paypal_agreement_protocol/web.py; paypal_agreement_protocol/web_static/app.js; tests/test_protocol_regressions.py
+PAYMENT_CORE_CHANGED=false
+
+LOG_DIAGNOSIS
+INPUT=data/payment-link.log and a read-only HeroSMS history reconciliation for the successful 2026-08-21 03:44:58-03:50:16 run.
+RESULT=This run did not lose three received SMS codes in HeroSMS polling. PHONE_A received a code and PayPal confirmed it at 03:46:16; a later PAYPAL_GRAPHQL_AUTH_CHALLENGE initiated protocol retry. PHONE_B had no SMS and PayPal initiate returned an auth challenge. PHONE_C received a code and PayPal confirmed it at 03:48:01; a later IDENTITY_ELEVATION_PAYER_RESTRICTED/PAYER_ACCOUNT_RESTRICTED initiated protocol retry. PHONE_D received a code and PayPal confirmed it at 03:49:14; the flow completed at 03:50:16.
+HISTORY_RESULT=PHONE_A status=6 sms_present=true; PHONE_B status=8 sms_present=false; PHONE_C status=6 sms_present=true; PHONE_D status=6 sms_present=true.
+ROOT_CAUSE=The watcher treated a clean whole-protocol retry after an already-confirmed OTP as a reason to close that coded activation and acquire a new phone. Separate races could also double-poll after submit, confuse an in-flight 8-digit old OTP with a retry phone, rotate at the timeout boundary without a final status read, and clear the UI activation on a temporary status error.
+
+CHANGED_BEHAVIOR
+1=After an OTP was received, a clean protocol retry uses HeroSMS setStatus(3) and queues the same phone internally; a replacement is acquired only when HeroSMS explicitly confirms that the activation is unavailable.
+2=getStatusV2 is reconciled with legacy getStatus on endpoint failure or unusable/empty payload; text/smsText OTP extraction is supported.
+3=Temporary polling errors and empty status payloads pause the timeout budget and retain the activation; a final reconcile poll occurs at the timeout boundary.
+4=OTP submission atomically leaves awaiting_otp, and every in-flight result rechecks status/retry generation before submitting or rotating.
+5=/api/sms/status and the browser keep the tracked number on retryable/missing status and clear it only on a confirmed terminal state.
+6=New SMS delivery identity prevents stale pre-rearm OTP replay while allowing a later distinct message that happens to contain the same code.
+RESTORED_BEHAVIOR_STATUS=Rollback restored the original 78-test behavior, produced a clean detached worktree, and left the primary working copy modified.
+
+ARTIFACT_PATHS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\ROLLBACK.sh
+
+BASELINE
+CWD=C:\Users\Administrator\AppData\Local\Temp\herosms-verify-123a4e2d29954f76b9973596490207af
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+INPUT=Detached original BASE_COMMIT 5b2976dcc776a9435408e0ef63846e4c4d9c24f0 before DIFF_FILE was applied.
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 92%]
+......                                                                   [100%]
+78 passed in 0.65s
+BASELINE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+MODIFIED
+CWD=C:\Users\Administrator\AppData\Local\Temp\herosms-verify-123a4e2d29954f76b9973596490207af
+COMMAND=git apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\DIFF_FILE" ; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+INPUT=Detached original BASE_COMMIT plus the exact DIFF_FILE artifact.
+LITERAL_OUTPUT_BEGIN
+MODIFIED_APPLY_EXIT=0
+........................................................................ [ 79%]
+...................                                                      [100%]
+91 passed in 0.69s
+MODIFIED_COPY_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+MAIN_MODIFIED
+CWD=C:\Users\Administrator\Desktop\提链
+COMMAND=.\.venv\Scripts\python.exe -m py_compile payment_link_extractor\web\paypal_protocol.py paypal_agreement_protocol\herosms.py paypal_agreement_protocol\web.py tests\test_protocol_regressions.py ; .\.venv\Scripts\python.exe -m pytest -q
+INPUT=Primary working copy left with the targeted source changes.
+LITERAL_OUTPUT_BEGIN
+PY_COMPILE_EXIT=0
+........................................................................ [ 79%]
+...................                                                      [100%]
+91 passed in 0.60s
+PYTEST_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+ROLLBACK
+CWD=C:\Users\Administrator\AppData\Local\Temp\herosms-verify-123a4e2d29954f76b9973596490207af
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\herosms_poll_reuse_20260821\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\herosms-verify-123a4e2d29954f76b9973596490207af" ; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q ; git status --porcelain
+INPUT=The detached copy after DIFF_FILE was applied and its 91 modified tests passed.
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+........................................................................ [ 92%]
+......                                                                   [100%]
+78 passed in 0.61s
+ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=DIFF_FILE reversed successfully; original behavior/status was restored in the verification copy; the verification worktree was removed with WORKTREE_REMOVE_EXIT=0; the primary MODIFIED_FILE state remains changed.
