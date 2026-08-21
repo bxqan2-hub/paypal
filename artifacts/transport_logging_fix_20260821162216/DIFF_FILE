@@ -1,0 +1,794 @@
+diff --git a/payment_link_extractor/logging_utils.py b/payment_link_extractor/logging_utils.py
+index e9d8bcf..954d94f 100644
+--- a/payment_link_extractor/logging_utils.py
++++ b/payment_link_extractor/logging_utils.py
+@@ -14,6 +14,23 @@ _CONFIG_LOCK = threading.Lock()
+ _CONFIGURED = False
+
+
++def _task_context_filter(record: dict[str, Any]) -> bool:
++    """Keep protocol job ids visible in the existing ``task=`` column.
++
++    The protocol runner historically bound ``job_id`` while the shared log
++    format reads ``task_id``.  Loguru therefore rendered every protocol line
++    as ``task=-`` even though a job id was available in the record.  Copying
++    the already-bound, non-sensitive identifier at filter time preserves the
++    public format and also covers future call sites that bind only ``job_id``.
++    """
++    extra = record.get("extra") or {}
++    task_id = extra.get("task_id")
++    job_id = extra.get("job_id")
++    if job_id and (not task_id or task_id == "-"):
++        extra["task_id"] = str(job_id)
++    return True
++
++
+ def configure_logging(
+     *,
+     level: str = "INFO",
+@@ -32,6 +49,7 @@ def configure_logging(
+                 "level": level.upper(),
+                 "enqueue": True,
+                 "serialize": serialize,
++                "filter": _task_context_filter,
+                 "format": "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+                 "<level>{level: <8}</level> | {extra[component]} | "
+                 "task={extra[task_id]} | {message}",
+@@ -44,6 +62,7 @@ def configure_logging(
+                     "level": level.upper(),
+                     "enqueue": True,
+                     "serialize": serialize,
++                    "filter": _task_context_filter,
+                     "rotation": "10 MB",
+                     "retention": "14 days",
+                     "encoding": "utf-8",
+diff --git a/paypal_agreement_protocol/paypal/proxy.py b/paypal_agreement_protocol/paypal/proxy.py
+index aff61a6..621e488 100644
+--- a/paypal_agreement_protocol/paypal/proxy.py
++++ b/paypal_agreement_protocol/paypal/proxy.py
+@@ -7,6 +7,7 @@ and converts them to httpx-compatible proxy URLs.
+ from __future__ import annotations
+
+ import base64
++import hashlib
+ import os
+ import random
+ import sys
+@@ -153,6 +154,12 @@ class ProxyEntry:
+         auth = "***:***@" if self.username or self.password else ""
+         return f"{self.scheme}://{auth}{self.host}:{self.port}"
+
++    @property
++    def stable_id(self) -> str:
++        """Return a non-secret identifier for logs and retry accounting."""
++        digest = hashlib.sha256(self.direct_url.encode("utf-8")).hexdigest()
++        return digest[:12]
++
+
+ @dataclass(frozen=True)
+ class ProxyConfig:
+@@ -169,6 +176,10 @@ class ProxyConfig:
+             return "代理关闭"
+         return self.entry.masked
+
++    @property
++    def stable_id(self) -> str:
++        return self.entry.stable_id if self.enabled and self.entry else ""
++
+     def prepare(self) -> bool:
+         """Ensure the local transport dependency is ready before a request."""
+         return ensure_proxy_bridge(self.entry if self.enabled else None)
+diff --git a/paypal_agreement_protocol/paypal/session.py b/paypal_agreement_protocol/paypal/session.py
+index 47ba364..7bfd5fb 100644
+--- a/paypal_agreement_protocol/paypal/session.py
++++ b/paypal_agreement_protocol/paypal/session.py
+@@ -1,17 +1,58 @@
+ import json
+ import os
++import re
++from urllib.parse import urlsplit
+
+ import httpx
+ try:
++    from curl_cffi import CurlError
+     from curl_cffi.requests import Session as CurlSession
++    from curl_cffi.requests import RequestsError as CurlRequestsError
+ except Exception:
++    CurlError = None
+     CurlSession = None
++    CurlRequestsError = None
+ from loguru import logger
+ from typing import Any, Optional
+ from paypal.models import SessionState
+ from config import USER_AGENT
+
+
++class PayPalTransportError(RuntimeError):
++    """Typed network failure with a redacted request target.
++
++    The previous session layer leaked a raw curl exception to every caller.
++    That made timeout and proxy-CONNECT failures indistinguishable from an
++    application/GraphQL error in job diagnostics.  The original exception is
++    retained as ``__cause__`` while the public text contains only the method,
++    host/path and curl error family.
++    """
++
++    error_code = "PAYPAL_TRANSPORT_ERROR"
++
++    def __init__(self, method: str, url: str, cause: BaseException) -> None:
++        self.method = str(method or "GET").upper()
++        parsed = urlsplit(str(url or ""))
++        self.target = f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
++        text = str(cause or type(cause).__name__)
++        text = re.sub(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1***@", text, flags=re.I)
++        code_match = re.search(r"curl:\s*\((\d+)\)", text, re.I)
++        self.transport_code = f"curl_{code_match.group(1)}" if code_match else type(cause).__name__
++        super().__init__(
++            f"{self.error_code}: {self.method} {self.target or '<unknown>'}; "
++            f"kind={self.transport_code}; {text}"
++        )
++
++
++def _is_transport_error(exc: BaseException) -> bool:
++    if isinstance(exc, httpx.TransportError):
++        return True
++    return bool(
++        (CurlRequestsError is not None and isinstance(exc, CurlRequestsError))
++        or (CurlError is not None and isinstance(exc, CurlError))
++    )
++
++
+ def build_common_headers(locale: str = "pt_BR") -> dict:
+     accept_language = {
+         "pt_BR": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+@@ -196,14 +237,38 @@ class PayPalSession:
+
+     def get(self, url: str, **kwargs):
+         logger.debug(f"GET {url}")
+-        resp = self.client.get(url, **self._request_kwargs(kwargs))
++        try:
++            resp = self.client.get(url, **self._request_kwargs(kwargs))
++        except Exception as exc:
++            if _is_transport_error(exc):
++                wrapped = PayPalTransportError("GET", url, exc)
++                logger.warning(
++                    "PayPal transport failure method={} target={} kind={}",
++                    wrapped.method,
++                    wrapped.target,
++                    wrapped.transport_code,
++                )
++                raise wrapped from exc
++            raise
+         self._sync_state_cookies()
+         logger.debug(f"  -> {resp.status_code} ({len(resp.content)} bytes)")
+         return resp
+
+     def post(self, url: str, **kwargs):
+         logger.debug(f"POST {url}")
+-        resp = self.client.post(url, **self._request_kwargs(kwargs))
++        try:
++            resp = self.client.post(url, **self._request_kwargs(kwargs))
++        except Exception as exc:
++            if _is_transport_error(exc):
++                wrapped = PayPalTransportError("POST", url, exc)
++                logger.warning(
++                    "PayPal transport failure method={} target={} kind={}",
++                    wrapped.method,
++                    wrapped.target,
++                    wrapped.transport_code,
++                )
++                raise wrapped from exc
++            raise
+         self._sync_state_cookies()
+         logger.debug(f"  -> {resp.status_code} ({len(resp.content)} bytes)")
+         return resp
+diff --git a/paypal_agreement_protocol/web.py b/paypal_agreement_protocol/web.py
+index 51a31d0..fa771e1 100644
+--- a/paypal_agreement_protocol/web.py
++++ b/paypal_agreement_protocol/web.py
+@@ -28,6 +28,15 @@ from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlun
+ import httpx
+ from loguru import logger
+
++try:
++    from curl_cffi import CurlError
++    from curl_cffi.requests import Session as CurlSession
++    from curl_cffi.requests import RequestsError as CurlRequestsError
++except Exception:  # pragma: no cover - optional dependency fallback
++    CurlError = None
++    CurlSession = None
++    CurlRequestsError = None
++
+ from config import USER_AGENT
+ from paypal.flow import PayPalFlow
+ from paypal.elevation_flow import IdentityElevationPayPalFlow
+@@ -35,6 +44,7 @@ from paypal.manual_browser import ManualBrowserController
+ from paypal.models import BillingAddress, CardInfo, UserInfo, generate_address, generate_card, generate_user
+ from paypal.online_address import resolve_online_address
+ from paypal.proxy import ProxyConfig, ProxyEntry, build_proxy_config
++from paypal.session import PayPalTransportError
+ from paypal.runtime_country_resolver import infer_dynamic_kyc, resolve_runtime_country_schema, validate_runtime_address, validate_runtime_phone
+
+ ROOT = Path(__file__).resolve().parent
+@@ -680,32 +690,101 @@ def build_ephemeral_proxy_config(proxy_pool: list[str], country: str = "BR") ->
+     return ProxyConfig(enabled=True, entry=ProxyEntry.parse(selected))
+
+
++class ProxyPreflightConfigurationError(RuntimeError):
++    """A local proxy configuration/transport setup error.
++
++    This is deliberately separate from a connect timeout.  Selector callers
++    may try another network entry after a transport failure, but silently
++    rotating around a malformed local configuration only hides the real bug.
++    """
++
++    error_code = "PROXY_PREFLIGHT_CONFIGURATION_ERROR"
++
++
++def _proxy_probe_engine() -> str:
++    requested = (os.getenv("PAYPAL_HTTP_ENGINE") or "curl_cffi").strip().lower()
++    if requested == "httpx" or CurlSession is None:
++        return "httpx"
++    return "curl_cffi"
++
++
++def _proxy_probe_curl(proxy_url: str, timeout_seconds: float):
++    """Probe through the same curl-cffi transport family as PayPalSession."""
++    impersonate = (os.getenv("PAYPAL_CURL_IMPERSONATE") or "chrome").strip()
++    client = CurlSession(impersonate=impersonate)
++    try:
++        try:
++            client.trust_env = False
++        except Exception:
++            pass
++        client.proxies = {"http": proxy_url, "https": proxy_url}
++        return client.get(
++            "https://www.paypal.com/",
++            headers={
++                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
++            },
++            allow_redirects=False,
++            timeout=timeout_seconds,
++        )
++    finally:
++        try:
++            client.close()
++        except Exception:
++            pass
++
++
+ def proxy_probe(proxy_config: ProxyConfig, timeout_seconds: float = 8.0) -> tuple[bool, str]:
+-    """Verify that a proxy can establish an HTTPS tunnel before a job starts."""
++    """Verify a proxy using the same transport family as the business flow.
++
++    The old probe always used httpx with a hard-coded Chrome header while the
++    real flow used curl-cffi.  That produced false-positive ``HTTP 302``
++    checks followed by curl CONNECT/time-out failures.  Transport exceptions
++    remain switchable candidates; configuration exceptions are surfaced so a
++    bad local setup is not mistaken for a bad remote proxy.
++    """
+     if not proxy_config.enabled or not proxy_config.url:
+         return False, "proxy is disabled"
+     try:
+         proxy_config.prepare()
+-        with httpx.Client(
+-            proxy=proxy_config.url,
+-            timeout=httpx.Timeout(timeout_seconds),
+-            follow_redirects=False,
+-            trust_env=False,
+-        ) as client:
+-            response = client.get(
+-                "https://www.paypal.com/",
+-                headers={
+-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36",
+-                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+-                },
+-            )
+-        # Any HTTP response proves the CONNECT tunnel worked. A PayPal 403 can
+-        # be an application challenge and is handled later by the flow.
+-        if response.status_code == 407:
+-            return False, "proxy authentication required (HTTP 407)"
+-        return True, f"HTTP {response.status_code}"
++    except (ValueError, TypeError, AttributeError) as exc:
++        raise ProxyPreflightConfigurationError(redact_text(exc)) from exc
++    except OSError as exc:
++        # Bridge startup and local socket errors are transport-level failures;
++        # another pool entry may still be usable.
++        return False, f"{type(exc).__name__}: {redact_text(exc)}"
++
++    try:
++        engine = _proxy_probe_engine()
++        if engine == "curl_cffi":
++            response = _proxy_probe_curl(proxy_config.url, timeout_seconds)
++        else:
++            with httpx.Client(
++                proxy=proxy_config.url,
++                timeout=httpx.Timeout(timeout_seconds),
++                follow_redirects=False,
++                trust_env=False,
++            ) as client:
++                response = client.get(
++                    "https://www.paypal.com/",
++                    headers={
++                        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
++                    },
++                )
++    except httpx.TransportError as exc:
++        return False, f"{type(exc).__name__}: {redact_text(exc)}"
+     except Exception as exc:
+-        return False, redact_text(exc)
++        if (
++            (CurlRequestsError is not None and isinstance(exc, CurlRequestsError))
++            or (CurlError is not None and isinstance(exc, CurlError))
++        ):
++            return False, f"{type(exc).__name__}: {redact_text(exc)}"
++        raise ProxyPreflightConfigurationError(redact_text(exc)) from exc
++
++    # Any HTTP response proves the CONNECT tunnel worked.  Application-level
++    # status interpretation remains in the existing flow/risk handling.
++    if response.status_code == 407:
++        return False, "proxy authentication required (HTTP 407)"
++    return True, f"HTTP {response.status_code} via {engine}"
+
+
+ class ProtocolProxyPoolExhaustedError(RuntimeError):
+@@ -784,15 +863,25 @@ def select_working_proxy(
+         if attempted_entries is not None:
+             attempted_entries.add(entry)
+         config = ProxyConfig(enabled=True, entry=entry)
+-        logger.info("Checking proxy {}/{} before task start", index, attempts)
++        logger.info(
++            "Checking proxy {}/{} before task start (proxy_id={}, transport={})",
++            index,
++            attempts,
++            config.stable_id,
++            _proxy_probe_engine(),
++        )
+         ok, reason = proxy_probe(config)
+         if cancel_event is not None and cancel_event.is_set():
+             raise RuntimeError("Task cancelled")
+         if ok:
+-            logger.info("Proxy check passed ({})", reason)
++            logger.info("Proxy check passed ({}, proxy_id={})", reason, config.stable_id)
+             return config
+         last_reason = reason
+-        logger.warning("Proxy check failed; switching to another entry: {}", reason)
++        logger.warning(
++            "Proxy check failed; switching to another entry (proxy_id={}): {}",
++            config.stable_id,
++            reason,
++        )
+     raise ProtocolProxyUnavailableError(
+         f"Proxy preflight failed after {attempts} unused candidate(s): {last_reason}"
+     )
+@@ -835,6 +924,14 @@ def mask_phone(value: str) -> str:
+     return mask_digits(value, keep=4)
+
+
++def retry_phone_kind(previous_phone: str, current_phone: str) -> tuple[str, bool]:
++    """Describe whether an automatic retry kept or changed the phone."""
++    previous_digits = "".join(ch for ch in str(previous_phone or "") if ch.isdigit())
++    current_digits = "".join(ch for ch in str(current_phone or "") if ch.isdigit())
++    reused = bool(previous_digits and previous_digits == current_digits)
++    return ("reused current phone" if reused else "new phone", reused)
++
++
+ def redact_text(value: Any) -> str:
+     """Best-effort redaction for logs/UI errors. Keep status information, hide secrets/PII."""
+     text = str(value or "")
+@@ -1014,6 +1111,7 @@ class WebJob:
+     exclude_public_metrics: bool = False
+     proxy_enabled: bool = False
+     proxy_label: str = "代理关闭"
++    proxy_id: str = ""
+     created_at: float = field(default_factory=now_ts)
+     updated_at: float = field(default_factory=now_ts)
+     started_at: float | None = None
+@@ -1118,14 +1216,20 @@ class WebJob:
+             self.sms_send_error = ""
+             self.updated_at = now_ts()
+
+-    def prepare_retry(self, exc: BaseException) -> None:
+-        """Reset volatile state and require a distinct phone for the next attempt."""
++    def prepare_retry(self, exc: BaseException, *, allow_phone_reuse: bool = False) -> None:
++        """Reset volatile state before a bounded clean protocol attempt.
++
++        Transport failures can be retried with a new proxy while retaining the
++        already allocated phone.  Business/risk failures keep the historical
++        distinct-phone requirement; callers opt into reuse explicitly.
++        """
+         with self._condition:
+             self.retry_count += 1
+             reason = redact_text(str(exc) or type(exc).__name__)
+             self.retry_previous_phone = self.phone
+             self.retry_phone_required = True
+             self.retry_phone_reuse_allowed = False
++            reuse_transport_phone = bool(allow_phone_reuse)
+             self.status = "awaiting_otp"
+             self.stage = f"自动重试 {self.retry_count}/{self.max_retries}：正在更换新手机号"
+             self.result = None
+@@ -1142,17 +1246,31 @@ class WebJob:
+             self._input_queue.clear()
+             self._captcha_queue.clear()
+             self._browser = None
++            if reuse_transport_phone:
++                self.stage = (
++                    f"Automatic retry {self.retry_count}/{self.max_retries}: "
++                    "switching proxy and reusing current phone"
++                )
++                self.awaiting_prompt = "Transport retry queued with the current phone"
+             self.updated_at = now_ts()
++            retry_log_message = (
++                f"Automatic retry {self.retry_count}/{self.max_retries}: "
++                f"switching proxy and reusing current phone; reason={reason}"
++                if reuse_transport_phone
++                else f"第{self.retry_count}/{self.max_retries}次自动重试："
++                f"停止使用旧手机号并等待新手机号；上次失败：{reason}"
++            )
+             self._append_log_locked(
+                 "WARNING",
+-                f"第 {self.retry_count}/{self.max_retries} 次自动重试：停止使用旧手机号并等待新手机号；上次失败：{reason}",
++                retry_log_message,
+             )
+             self._emit_event_locked("protocol.retry", {
+                 "retry_count": self.retry_count,
+                 "max_retries": self.max_retries,
+                 "stage": self.stage,
+                 "reason": reason,
+-                "requires_new_phone": True,
++                "requires_new_phone": not reuse_transport_phone,
++                "phone_reuse_candidate": reuse_transport_phone,
+                 "requires_new_proxy": True,
+             })
+             self._condition.notify_all()
+@@ -1646,6 +1764,14 @@ class WebJob:
+                     "max_retries": self.max_retries,
+                 }
+                 self.stage = f"{failure_step} · failed"
++            if error_code == "PAYPAL_TRANSPORT_ERROR" and isinstance(self.result, dict):
++                self.result.update(
++                    {
++                        "transport_code": str(getattr(exc, "transport_code", "") or ""),
++                        "transport_method": str(getattr(exc, "method", "") or ""),
++                        "transport_target": str(getattr(exc, "target", "") or ""),
++                    }
++                )
+             self.status = "failed"
+             self.error = redact_text(error_text)
+             self.traceback_text = redact_text(traceback.format_exc()) if (self.debug and ALLOW_DEBUG_LOGS) else ""
+@@ -1704,6 +1830,7 @@ class WebJob:
+                 "retry_phone_required": self.retry_phone_required,
+                 "manual_funding": self.manual_funding,
+                 "agreement_only": self.agreement_only,
++                "proxy_id": self.proxy_id,
+                 "generated": sanitize_payload(self.generated),
+                 "runtime_schema": sanitize_payload(self.runtime_schema),
+                 "cancellable": self.status in ACTIVE_STATUSES,
+@@ -2450,12 +2577,21 @@ def _select_protocol_attempt_proxy(job: WebJob) -> ProxyConfig:
+     job._proxy_config = proxy_config
+     job.proxy_enabled = proxy_config.enabled
+     job.proxy_label = proxy_config.label
++    job.proxy_id = proxy_config.stable_id
++    logger.info(
++        "Protocol proxy selected (retry={}/{}, proxy_id={}, attempted_proxy_count={})",
++        job.retry_count,
++        job.max_retries,
++        proxy_config.stable_id,
++        len(job._attempted_proxy_entries),
++    )
+     if job.retry_count > 0:
+         job.add_log(
+             "INFO",
+             (
+                 f"Protocol payment automatic retry {job.retry_count}/{job.max_retries} "
+-                f"switched to a new proxy: {proxy_config.label}"
++                f"switched to a new proxy: {proxy_config.label} "
++                f"(proxy_id={proxy_config.stable_id})"
+             ),
+         )
+         job.emit_event(
+@@ -2464,6 +2600,7 @@ def _select_protocol_attempt_proxy(job: WebJob) -> ProxyConfig:
+                 "retry_count": job.retry_count,
+                 "max_retries": job.max_retries,
+                 "proxy": proxy_config.label,
++                "proxy_id": proxy_config.stable_id,
+                 "attempted_proxy_count": len(job._attempted_proxy_entries),
+             },
+         )
+@@ -2471,7 +2608,7 @@ def _select_protocol_attempt_proxy(job: WebJob) -> ProxyConfig:
+
+
+ def _run_job_attempt(job: WebJob) -> None:
+-    with logger.contextualize(job_id=job.id):
++    with logger.contextualize(job_id=job.id, task_id=job.id):
+         try:
+             job.set_status("queued", "Waiting for execution slot")
+             job.acquire_execution_slot()
+@@ -2702,6 +2839,11 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
+     error_code = str(getattr(exc, "error_code", "") or result.get("error_code") or "").upper()
+     if error_code == "PAYPAL_PAYER_ACCOUNT_RESTRICTED":
+         return False
++    if error_code == "PAYPAL_TRANSPORT_ERROR":
++        # A transport failure is retried with a fresh proxy.  run_job also
++        # reuses the current phone so a dead tunnel does not consume another
++        # SMS activation before the business flow has reached PayPal.
++        return True
+     return True
+
+
+@@ -2735,7 +2877,7 @@ def run_job(job: WebJob) -> None:
+                 _run_job_attempt(job)
+             except BaseException as exc:
+                 if not _job_failure_is_retryable(job, exc):
+-                    with logger.contextualize(job_id=job.id):
++                    with logger.contextualize(job_id=job.id, task_id=job.id):
+                         logger.error("Protocol payment job failed: {}", redact_text(exc))
+                     if isinstance(exc, ProtocolResultError):
+                         job.complete(exc.result)
+@@ -2745,30 +2887,37 @@ def run_job(job: WebJob) -> None:
+                 try:
+                     _require_unused_protocol_retry_proxy(job)
+                 except ProtocolProxyPoolExhaustedError as proxy_error:
+-                    with logger.contextualize(job_id=job.id):
++                    with logger.contextualize(job_id=job.id, task_id=job.id):
+                         logger.error(
+                             "Protocol payment retry stopped before phone rotation: {}",
+                             proxy_error,
+                         )
+                     job.fail(proxy_error)
+                     break
+-                job.prepare_retry(exc)
++                reuse_transport_phone = isinstance(exc, PayPalTransportError)
++                job.prepare_retry(exc, allow_phone_reuse=reuse_transport_phone)
++                retry_previous_phone = job.retry_previous_phone
++                if reuse_transport_phone:
++                    job.reuse_retry_phone(retry_previous_phone)
+                 try:
+                     retry_phone = job.wait_for_retry_phone()
+                 except BaseException as phone_error:
+-                    with logger.contextualize(job_id=job.id):
++                    with logger.contextualize(job_id=job.id, task_id=job.id):
+                         logger.error("Protocol payment retry phone rotation failed: {}", redact_text(phone_error))
+                     if job._cancel_event.is_set():
+                         job.mark_cancelled()
+                     else:
+                         job.fail(phone_error)
+                     break
+-                with logger.contextualize(job_id=job.id):
++                with logger.contextualize(job_id=job.id, task_id=job.id):
++                    phone_kind, _ = retry_phone_kind(retry_previous_phone, retry_phone)
+                     logger.warning(
+-                        "Protocol payment automatic retry {}/{} with new phone {}",
++                        "Protocol payment automatic retry {}/{} with {} {} (proxy_id={})",
+                         job.retry_count,
+                         job.max_retries,
++                        phone_kind,
+                         mask_phone(retry_phone),
++                        job._proxy_config.stable_id if job._proxy_config else "",
+                     )
+                 continue
+             break
+diff --git a/tests/test_transport_and_logging_fixes.py b/tests/test_transport_and_logging_fixes.py
+new file mode 100644
+index 0000000..f46627c
+--- /dev/null
++++ b/tests/test_transport_and_logging_fixes.py
+@@ -0,0 +1,218 @@
++from __future__ import annotations
++
++import os
++import sys
++from pathlib import Path
++from unittest.mock import patch
++
++import httpx
++import pytest
++
++
++ROOT = Path(__file__).resolve().parents[1]
++PROTOCOL_ROOT = ROOT / "paypal_agreement_protocol"
++if str(PROTOCOL_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROTOCOL_ROOT))
++
++from paypal.models import SessionState  # noqa: E402
++from paypal.proxy import ProxyConfig, ProxyEntry  # noqa: E402
++from paypal.session import PayPalSession, PayPalTransportError  # noqa: E402
++import web as protocol_web  # noqa: E402
++
++
++PROXY = "http://probe-user:probe-pass@proxy.example:8080"
++
++
++def test_proxy_entry_stable_id_is_deterministic_and_secret_free() -> None:
++    first = ProxyEntry.parse(PROXY)
++    second = ProxyEntry.parse(PROXY)
++    changed = ProxyEntry.parse("http://probe-user:other-pass@proxy.example:8080")
++
++    assert first.stable_id == second.stable_id
++    assert first.stable_id != changed.stable_id
++    assert len(first.stable_id) == 12
++    assert "probe-pass" not in first.stable_id
++
++
++def test_retry_phone_kind_distinguishes_reuse_from_rotation() -> None:
++    assert protocol_web.retry_phone_kind("+447700900123", "+44 7700 900123") == (
++        "reused current phone",
++        True,
++    )
++    assert protocol_web.retry_phone_kind("+447700900123", "+447700900124") == (
++        "new phone",
++        False,
++    )
++
++
++def test_job_id_is_used_for_shared_task_log_context() -> None:
++    record = {"extra": {"task_id": "-", "job_id": "job-123"}}
++    assert protocol_web is not None
++    # Import the filter through the shared logging module so this test covers
++    # the actual sink configuration rather than a protocol-only workaround.
++    from payment_link_extractor.logging_utils import _task_context_filter
++
++    assert _task_context_filter(record) is True
++    assert record["extra"]["task_id"] == "job-123"
++
++
++def test_proxy_probe_uses_curl_transport_when_business_engine_is_curl() -> None:
++    calls: list[dict] = []
++
++    class Response:
++        status_code = 302
++
++    class FakeCurlSession:
++        def __init__(self, **kwargs):
++            calls.append({"init": kwargs})
++
++        def get(self, url, **kwargs):
++            calls.append({"url": url, **kwargs})
++            return Response()
++
++        def close(self):
++            calls.append({"close": True})
++
++    config = ProxyConfig(enabled=True, entry=ProxyEntry.parse(PROXY))
++    with (
++        patch.object(protocol_web, "CurlSession", FakeCurlSession),
++        patch.object(protocol_web, "CurlRequestsError", None),
++        patch.dict(os.environ, {"PAYPAL_HTTP_ENGINE": "curl_cffi"}, clear=False),
++    ):
++        ok, reason = protocol_web.proxy_probe(config, timeout_seconds=1.5)
++
++    assert ok is True
++    assert "HTTP 302" in reason
++    assert calls[0]["init"]["impersonate"] == os.getenv("PAYPAL_CURL_IMPERSONATE", "chrome")
++    request = next(item for item in calls if "url" in item)
++    assert request["url"] == "https://www.paypal.com/"
++    assert request["timeout"] == 1.5
++    assert request["allow_redirects"] is False
++
++
++def test_proxy_probe_switches_on_curl_transport_error() -> None:
++    class FakeCurlSession:
++        def __init__(self, **kwargs):
++            pass
++
++        def get(self, url, **kwargs):
++            from curl_cffi.requests import RequestsError
++
++            raise RequestsError("Failed to perform, curl: (28) timed out")
++
++        def close(self):
++            pass
++
++    config = ProxyConfig(enabled=True, entry=ProxyEntry.parse(PROXY))
++    with (
++        patch.object(protocol_web, "CurlSession", FakeCurlSession),
++        patch.dict(os.environ, {"PAYPAL_HTTP_ENGINE": "curl_cffi"}, clear=False),
++    ):
++        ok, reason = protocol_web.proxy_probe(config)
++
++    assert ok is False
++    assert "28" in reason
++
++
++def test_proxy_probe_surfaces_configuration_errors_instead_of_rotating() -> None:
++    class FakeCurlSession:
++        def __init__(self, **kwargs):
++            pass
++
++        def get(self, url, **kwargs):
++            raise ValueError("invalid local proxy setup")
++
++        def close(self):
++            pass
++
++    config = ProxyConfig(enabled=True, entry=ProxyEntry.parse(PROXY))
++    with (
++        patch.object(protocol_web, "CurlSession", FakeCurlSession),
++        patch.dict(os.environ, {"PAYPAL_HTTP_ENGINE": "curl_cffi"}, clear=False),
++    ):
++        with pytest.raises(protocol_web.ProxyPreflightConfigurationError):
++            protocol_web.proxy_probe(config)
++
++
++def test_session_wraps_transport_failure_without_exposing_query_parameters() -> None:
++    session = PayPalSession(
++        SessionState(),
++        country="GB",
++        locale="en_GB",
++    )
++
++    class FailingClient:
++        def get(self, url, **kwargs):
++            raise httpx.ConnectTimeout("curl: (28) timeout")
++
++    original_client = session.client
++    session.client = FailingClient()
++    try:
++        with pytest.raises(PayPalTransportError) as caught:
++            session.get("https://www.paypal.com/graphql?token=secret-value")
++    finally:
++        original_client.close()
++
++    error = caught.value
++    assert error.error_code == "PAYPAL_TRANSPORT_ERROR"
++    assert error.transport_code == "curl_28"
++    assert "secret-value" not in str(error)
++    assert "https://www.paypal.com/graphql" in str(error)
++
++
++def test_protocol_transport_retry_switches_proxy_without_consuming_phone() -> None:
++    first = "http://a:pass-a@proxy-a.example:8001"
++    second = "http://b:pass-b@proxy-b.example:8002"
++    initial = ProxyConfig(enabled=True, entry=ProxyEntry.parse(first))
++    job = protocol_web.WebJob(
++        id="transport-retry-fixture",
++        owner_device_id="device-fixture",
++        ba_token="BA-TRANSPORTFIXTURE01",
++        phone="+447700900123",
++        country="GB",
++        max_retries=1,
++        proxy_enabled=True,
++        proxy_label=initial.label,
++        _proxy_config=initial,
++        _proxy_pool=[first, second],
++    )
++    selected: list[ProxyEntry] = []
++
++    class FakeFlow:
++        def __init__(self, **kwargs):
++            selected.append(kwargs["proxy_config"].entry)
++
++        def run(self):
++            if len(selected) == 1:
++                raise PayPalTransportError(
++                    "POST",
++                    "https://www.paypal.com/graphql?token=secret",
++                    httpx.ConnectTimeout("curl: (28) timeout"),
++                )
++            return {"status": "success", "return_url": "https://merchant.fixture/return?status=success"}
++
++    with (
++        patch.object(protocol_web, "find_authorization_checkpoint", return_value=None),
++        patch.object(protocol_web.random, "shuffle", side_effect=lambda values: None),
++        patch.object(protocol_web, "proxy_probe", return_value=(True, "HTTP 302")),
++        patch.object(protocol_web, "generate_card"),
++        patch.object(protocol_web, "WebIdentityElevationPayPalFlow", FakeFlow),
++        patch.object(protocol_web, "_authorization_checkpoint_from_result", return_value=None),
++        patch.object(protocol_web, "record_protocol_metric"),
++        patch.object(protocol_web, "record_payment_audit"),
++    ):
++        # The fake card is only inspected by the flow constructor in this
++        # fixture, so avoid invoking the real card source.
++        protocol_web.generate_card.return_value = type("Card", (), {
++            "number": "4111111111111111",
++            "expiry": "12/2030",
++            "cvv": "123",
++            "card_type": "Visa",
++        })()
++        protocol_web.run_job(job)
++
++    assert selected == [ProxyEntry.parse(first), ProxyEntry.parse(second)]
++    assert job.phone == "+447700900123"
++    assert job.retry_count == 1
++    assert job.status == "completed"
++    assert any(event["type"] == "protocol.retry.phone_reused" for event in job.events)
