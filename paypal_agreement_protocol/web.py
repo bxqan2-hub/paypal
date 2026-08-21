@@ -708,33 +708,82 @@ def proxy_probe(proxy_config: ProxyConfig, timeout_seconds: float = 8.0) -> tupl
         return False, redact_text(exc)
 
 
+class ProtocolProxyPoolExhaustedError(RuntimeError):
+    """The protocol retry has no proxy entry that was not used before."""
+
+    error_code = "PROTOCOL_PROXY_POOL_EXHAUSTED"
+
+
+class ProtocolProxyUnavailableError(RuntimeError):
+    """No unused proxy passed the preflight for this protocol attempt."""
+
+    error_code = "PROTOCOL_PROXY_UNAVAILABLE"
+
+
+def _unused_proxy_entries(
+    proxy_pool: list[str],
+    country: str,
+    excluded: set[ProxyEntry],
+) -> list[ProxyEntry]:
+    country_candidates = _country_proxy_candidates(proxy_pool, country)
+    entries: list[ProxyEntry] = []
+    seen_entries: set[ProxyEntry] = set()
+    for raw in country_candidates or proxy_pool:
+        entry = ProxyEntry.parse(raw)
+        if entry in excluded or entry in seen_entries:
+            continue
+        seen_entries.add(entry)
+        entries.append(entry)
+    return entries
+
+
 def select_working_proxy(
     proxy_pool: list[str],
     preferred: ProxyConfig | None = None,
     country: str = "BR",
     cancel_event: threading.Event | None = None,
+    exclude_entries: set[ProxyEntry] | None = None,
+    attempted_entries: set[ProxyEntry] | None = None,
 ) -> ProxyConfig:
+    excluded = set(exclude_entries or ())
     if not proxy_pool:
-        return preferred or build_proxy_config(enabled=None)
+        config = preferred or build_proxy_config(enabled=None)
+        if config.entry is not None and config.entry in excluded:
+            raise ProtocolProxyPoolExhaustedError(
+                "No unused proxy remains for this protocol-payment retry"
+            )
+        if attempted_entries is not None and config.entry is not None:
+            attempted_entries.add(config.entry)
+        return config
 
     country_candidates = _country_proxy_candidates(proxy_pool, country)
-    candidates = list(country_candidates or proxy_pool)
+    if excluded:
+        candidates = _unused_proxy_entries(proxy_pool, country, excluded)
+    else:
+        # Preserve the original first-attempt ordering and duplicate semantics.
+        candidates = [ProxyEntry.parse(raw) for raw in country_candidates or proxy_pool]
+    if not candidates:
+        raise ProtocolProxyPoolExhaustedError(
+            "No unused proxy remains for this protocol-payment retry"
+        )
     random.shuffle(candidates)
     if preferred and preferred.entry:
-        preferred_raw = next(
-            (item for item in candidates if ProxyEntry.parse(item) == preferred.entry),
+        preferred_candidate = next(
+            (item for item in candidates if item == preferred.entry),
             None,
         )
-        if preferred_raw:
-            candidates.remove(preferred_raw)
-            candidates.insert(0, preferred_raw)
+        if preferred_candidate:
+            candidates.remove(preferred_candidate)
+            candidates.insert(0, preferred_candidate)
 
     attempts = min(len(candidates), PROXY_PROBE_LIMIT)
     last_reason = "no candidates"
-    for index, raw in enumerate(candidates[:attempts], start=1):
+    for index, entry in enumerate(candidates[:attempts], start=1):
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Task cancelled")
-        config = ProxyConfig(enabled=True, entry=ProxyEntry.parse(raw))
+        if attempted_entries is not None:
+            attempted_entries.add(entry)
+        config = ProxyConfig(enabled=True, entry=entry)
         logger.info("Checking proxy {}/{} before task start", index, attempts)
         ok, reason = proxy_probe(config)
         if cancel_event is not None and cancel_event.is_set():
@@ -744,7 +793,9 @@ def select_working_proxy(
             return config
         last_reason = reason
         logger.warning("Proxy check failed; switching to another entry: {}", reason)
-    raise RuntimeError(f"代理池检测失败：已尝试 {attempts} 条线路；最后错误：{last_reason}")
+    raise ProtocolProxyUnavailableError(
+        f"Proxy preflight failed after {attempts} unused candidate(s): {last_reason}"
+    )
 
 
 def mask_middle(value: str, left: int = 6, right: int = 4) -> str:
@@ -984,6 +1035,7 @@ class WebJob:
     _captcha_queue: list[str] = field(default_factory=list, repr=False)
     _proxy_config: ProxyConfig | None = field(default=None, repr=False)
     _proxy_pool: list[str] = field(default_factory=list, repr=False)
+    _attempted_proxy_entries: set[ProxyEntry] = field(default_factory=set, repr=False)
     _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _flow: Any = field(default=None, repr=False)
     _browser: ManualBrowserController | None = field(default=None, repr=False)
@@ -1101,6 +1153,7 @@ class WebJob:
                 "stage": self.stage,
                 "reason": reason,
                 "requires_new_phone": True,
+                "requires_new_proxy": True,
             })
             self._condition.notify_all()
 
@@ -2376,6 +2429,47 @@ class ProtocolResultError(RuntimeError):
         )
 
 
+def _select_protocol_attempt_proxy(job: WebJob) -> ProxyConfig:
+    """Select and reserve one proxy that this protocol job has not used."""
+
+    attempted_before = set(job._attempted_proxy_entries)
+    proxy_config = select_working_proxy(
+        job._proxy_pool,
+        job._proxy_config,
+        country=job.country,
+        cancel_event=job._cancel_event,
+        exclude_entries=attempted_before,
+        attempted_entries=job._attempted_proxy_entries,
+    )
+    if proxy_config.entry is not None:
+        if proxy_config.entry in attempted_before:
+            raise ProtocolProxyPoolExhaustedError(
+                "Protocol retry selected a proxy that this job already used"
+            )
+        job._attempted_proxy_entries.add(proxy_config.entry)
+    job._proxy_config = proxy_config
+    job.proxy_enabled = proxy_config.enabled
+    job.proxy_label = proxy_config.label
+    if job.retry_count > 0:
+        job.add_log(
+            "INFO",
+            (
+                f"Protocol payment automatic retry {job.retry_count}/{job.max_retries} "
+                f"switched to a new proxy: {proxy_config.label}"
+            ),
+        )
+        job.emit_event(
+            "protocol.retry.proxy_changed",
+            {
+                "retry_count": job.retry_count,
+                "max_retries": job.max_retries,
+                "proxy": proxy_config.label,
+                "attempted_proxy_count": len(job._attempted_proxy_entries),
+            },
+        )
+    return proxy_config
+
+
 def _run_job_attempt(job: WebJob) -> None:
     with logger.contextualize(job_id=job.id):
         try:
@@ -2386,19 +2480,13 @@ def _run_job_attempt(job: WebJob) -> None:
                 job.started_at = now_ts()
             job.set_status("running", "Preparing protocol payment profile")
             checkpoint = find_authorization_checkpoint(job.ba_token)
-            if checkpoint:
+            if checkpoint and job.retry_count == 0:
                 # A resumed ordinary BA needs no PayPal network round-trip.
                 # Keep the selected proxy metadata available for a Grok
                 # downstream completion, but do not probe it pre-emptively.
                 proxy_config = job._proxy_config
             else:
-                proxy_config = select_working_proxy(
-                    job._proxy_pool,
-                    job._proxy_config,
-                    country=job.country,
-                    cancel_event=job._cancel_event,
-                )
-                job._proxy_config = proxy_config
+                proxy_config = _select_protocol_attempt_proxy(job)
                 job.check_cancelled()
             if checkpoint:
                 result = dict(checkpoint)
@@ -2604,6 +2692,8 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
     """Retry a clean protocol attempt unless the BA is already consumed."""
     if job._cancel_event.is_set() or job.retry_count >= job.max_retries:
         return False
+    if isinstance(exc, (ProtocolProxyPoolExhaustedError, ProtocolProxyUnavailableError)):
+        return False
     result = getattr(exc, "result", None)
     if not isinstance(result, dict):
         result = job.result if isinstance(job.result, dict) else {}
@@ -2615,8 +2705,30 @@ def _job_failure_is_retryable(job: WebJob, exc: BaseException) -> bool:
     return True
 
 
+def _require_unused_protocol_retry_proxy(job: WebJob) -> None:
+    """Fail before phone rotation when the next retry cannot use a new proxy."""
+
+    if job._proxy_pool:
+        if _unused_proxy_entries(job._proxy_pool, job.country, job._attempted_proxy_entries):
+            return
+        raise ProtocolProxyPoolExhaustedError(
+            "No unused proxy remains for this protocol-payment retry"
+        )
+    if not job.proxy_enabled and job._proxy_config is None:
+        return
+    if (
+        job._proxy_config is not None
+        and job._proxy_config.entry is not None
+        and job._proxy_config.entry not in job._attempted_proxy_entries
+    ):
+        return
+    raise ProtocolProxyPoolExhaustedError(
+        "No unused proxy remains for this protocol-payment retry"
+    )
+
+
 def run_job(job: WebJob) -> None:
-    """Run bounded clean-session retries, rotating the phone before each retry."""
+    """Run bounded clean-session retries with a new phone and proxy each time."""
     try:
         while True:
             try:
@@ -2629,6 +2741,16 @@ def run_job(job: WebJob) -> None:
                         job.complete(exc.result)
                     else:
                         job.fail(exc)
+                    break
+                try:
+                    _require_unused_protocol_retry_proxy(job)
+                except ProtocolProxyPoolExhaustedError as proxy_error:
+                    with logger.contextualize(job_id=job.id):
+                        logger.error(
+                            "Protocol payment retry stopped before phone rotation: {}",
+                            proxy_error,
+                        )
+                    job.fail(proxy_error)
                     break
                 job.prepare_retry(exc)
                 try:
@@ -2658,6 +2780,7 @@ def run_job(job: WebJob) -> None:
         job._flow = None
         job._proxy_config = None
         job._proxy_pool = []
+        job._attempted_proxy_entries.clear()
         job.release_execution_slot()
 
 
