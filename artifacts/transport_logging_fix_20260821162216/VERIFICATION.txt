@@ -2,15 +2,15 @@ CHANGE_BRANCH_FIELD: main / non-risk protocol transport handling, proxy prefligh
 ORIGINAL_HEAD: f1ffcd529fe54fdd710a9db4bc291a5aaddd809d (fix: rotate proxy on protocol payment retry)
 CHANGED_RESULT: PayPal transport failures are typed and redacted; preflight uses the business transport family; each protocol retry selects an unused proxy; transport-only retries reuse the already allocated phone; shared logs carry the WebJob id; retry messages distinguish reused versus new phones. PayPal risk/OAS/auth-challenge behavior is unchanged.
 
-MODIFIED_FILE: C:\Users\Administrator\Desktop\鎻愰摼\payment_link_extractor\logging_utils.py
-MODIFIED_FILE: C:\Users\Administrator\Desktop\鎻愰摼\paypal_agreement_protocol\paypal\proxy.py
-MODIFIED_FILE: C:\Users\Administrator\Desktop\鎻愰摼\paypal_agreement_protocol\paypal\session.py
-MODIFIED_FILE: C:\Users\Administrator\Desktop\鎻愰摼\paypal_agreement_protocol\web.py
-MODIFIED_FILE: C:\Users\Administrator\Desktop\鎻愰摼\tests\test_transport_and_logging_fixes.py
-DIFF_FILE: C:\Users\Administrator\Desktop\鎻愰摼\artifacts\transport_logging_fix_20260821162216\DIFF_FILE
-VERIFICATION_FILE: C:\Users\Administrator\Desktop\鎻愰摼\artifacts\transport_logging_fix_20260821162216\VERIFICATION.txt
-ROLLBACK_FILE: C:\Users\Administrator\Desktop\鎻愰摼\artifacts\transport_logging_fix_20260821162216\ROLLBACK.sh
-MODIFIED_SNAPSHOT_DIR: C:\Users\Administrator\Desktop\鎻愰摼\artifacts\transport_logging_fix_20260821162216\MODIFIED_FILE
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\logging_utils.py
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\paypal_agreement_protocol\paypal\proxy.py
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\paypal_agreement_protocol\paypal\session.py
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\paypal_agreement_protocol\web.py
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\tests\test_transport_and_logging_fixes.py
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\transport_logging_fix_20260821162216\DIFF_FILE
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\transport_logging_fix_20260821162216\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\transport_logging_fix_20260821162216\ROLLBACK.sh
+MODIFIED_SNAPSHOT_DIR: C:\Users\Administrator\Desktop\提链\artifacts\transport_logging_fix_20260821162216\MODIFIED_FILE
 
 ORIGINAL_HASHES:
 payment_link_extractor/logging_utils.py=e9d8bcff649b09b4f806d75236f076e3c6c4bf2b
@@ -27,7 +27,7 @@ DIFF_FILE_SHA256=bf3f27abd4f354a0f418ea5f83979df52b7b43266aae8ad9f34d02bb0db16a6
 ROLLBACK_FILE_SHA256=a43303742b1477f54d98f0edb948c57c8cc47ed55cb556b3ff91212926035e4b
 
 BASELINE:
-COMMAND: C:\Users\Administrator\Desktop\鎻愰摼\.venv\Scripts\python.exe -m pytest -q (run from detached worktree at f1ffcd529fe54fdd710a9db4bc291a5aaddd809d)
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (run from detached worktree at f1ffcd529fe54fdd710a9db4bc291a5aaddd809d)
 INPUT: clean detached worktree at ORIGINAL_HEAD
 LITERAL_OUTPUT:
 ........................................................................ [ 74%]
@@ -37,7 +37,7 @@ RESULT: baseline suite passed
 EXIT_STATUS: 0
 
 MODIFIED:
-COMMAND: C:\Users\Administrator\Desktop\鎻愰摼\.venv\Scripts\python.exe -m pytest -q (run from detached worktree after applying DIFF_FILE)
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (run from detached worktree after applying DIFF_FILE)
 INPUT: DIFF_FILE applied to ORIGINAL_HEAD
 LITERAL_OUTPUT:
 ........................................................................ [ 68%]
@@ -45,29 +45,31 @@ LITERAL_OUTPUT:
 105 passed in 0.66s
 RESULT: modified suite passed
 EXIT_STATUS: 0
-COMMAND: C:\Users\Administrator\Desktop\鎻愰摼\.venv\Scripts\python.exe -m pytest -q tests/test_transport_and_logging_fixes.py
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_transport_and_logging_fixes.py
 INPUT: focused transport/logging regression suite
-LITERAL_OUTPUT: 8 passed in 0.12s
+LITERAL_OUTPUT:
+........                                                                 [100%]
+8 passed in 0.12s
 RESULT: focused regression suite passed
 EXIT_STATUS: 0
-COMMAND: C:\Users\Administrator\Desktop\鎻愰摼\.venv\Scripts\python.exe -m py_compile payment_link_extractor/logging_utils.py paypal_agreement_protocol/paypal/proxy.py paypal_agreement_protocol/paypal/session.py paypal_agreement_protocol/web.py tests/test_transport_and_logging_fixes.py
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m py_compile payment_link_extractor/logging_utils.py paypal_agreement_protocol/paypal/proxy.py paypal_agreement_protocol/paypal/session.py paypal_agreement_protocol/web.py tests/test_transport_and_logging_fixes.py
 INPUT: changed Python files
 LITERAL_OUTPUT: (empty)
 RESULT: bytecode compilation passed
 EXIT_STATUS: 0
 COMMAND: git diff --check
 INPUT: current source diff
-LITERAL_OUTPUT: line-ending notices only; no whitespace errors
+LITERAL_OUTPUT: (empty; line-ending notices were informational stderr only)
 RESULT: whitespace check passed
 EXIT_STATUS: 0
 
 ROLLBACK:
-COMMAND: C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\鎻愰摼\artifacts\transport_logging_fix_20260821162216\ROLLBACK.sh <temporary detached worktree>
+COMMAND: C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\提链\artifacts\transport_logging_fix_20260821162216\ROLLBACK.sh <temporary detached worktree>
 INPUT: modified detached worktree with DIFF_FILE applied
 LITERAL_OUTPUT: (empty)
 RESULT: reverse patch applied
 EXIT_STATUS: 0
-COMMAND: C:\Users\Administrator\Desktop\鎻愰摼\.venv\Scripts\python.exe -m pytest -q (run from the rolled-back detached worktree)
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (run from the rolled-back detached worktree)
 INPUT: reverse-applied DIFF_FILE; clean source state restored
 LITERAL_OUTPUT:
 ........................................................................ [ 74%]
