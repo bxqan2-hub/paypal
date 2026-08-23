@@ -17,6 +17,7 @@ from ..config import (
     normalize_payment_method,
 )
 from ..errors import ConfigurationError
+from ..auth import extract_access_token
 from ..models import ExtractionConfig
 from .proxy_probe import ProxyProbeError, probe_proxy
 from .tasks import TaskManager, TaskNotFoundError, TaskStateError
@@ -339,11 +340,7 @@ def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -
 
 
 def _credential_value(payload: dict[str, Any]) -> str:
-    for key in ("access_token", "accessToken", "token"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    return extract_access_token(payload)
 
 
 def _env_bool(name: str, default: bool) -> bool:

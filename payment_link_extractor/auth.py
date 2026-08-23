@@ -2,40 +2,93 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import Any
 
 
-def normalize_access_token(raw: str) -> str:
-    token = str(raw or "").strip()
-    if token.startswith("{") or token.startswith("["):
+_TOKEN_KEY_NAMES = {"accesstoken", "access_token", "token", "at"}
+_KEYED_TOKEN_RE = re.compile(
+    r"(?:^|[{,;\s])['\"]?(?:access[_-]?token|accesstoken|token|at)['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=\-]{8,})",
+    re.IGNORECASE,
+)
+_SESSION_METADATA_RE = re.compile(r"['\"]\s*,\s*['\"]rumViewTags['\"]\s*:", re.IGNORECASE)
+
+
+def _normalize_key(key: Any) -> str:
+    return str(key or "").replace("-", "_").lower()
+
+
+def _clean_token_text(value: Any) -> str:
+    token = str(value or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    # Markdown/JSON viewers may escape URL-safe characters when copying.
+    token = re.sub(r"\\([A-Za-z0-9._~+/-])", r"\1", token)
+    return re.sub(r"\s+", "", token)
+
+
+def _embedded_access_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    keyed = _KEYED_TOKEN_RE.search(text)
+    if keyed:
+        return _clean_token_text(keyed.group(1))
+    marker = _SESSION_METADATA_RE.search(text)
+    if marker and marker.start() > 0:
+        candidate = text[: marker.start()].strip(" \t\r\n'\"{}")
+        return _clean_token_text(candidate)
+    return ""
+
+
+def _find_token(value: Any) -> str:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if _normalize_key(key) in _TOKEN_KEY_NAMES:
+                found = (
+                    (_embedded_access_token(nested) or _clean_token_text(nested))
+                    if isinstance(nested, str)
+                    else _find_token(nested)
+                )
+                if found:
+                    return found
+        for nested in value.values():
+            found = _find_token(nested)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_token(nested)
+            if found:
+                return found
+    return ""
+
+
+def extract_access_token(raw: Any) -> str:
+    """Extract an access token from a token, JSON envelope, or session export."""
+    if isinstance(raw, (dict, list)):
+        return _find_token(raw)
+    text = str(raw or "").strip()
+    if text.startswith("{") or text.startswith("["):
         try:
-            value = json.loads(token)
+            parsed = json.loads(text)
         except json.JSONDecodeError:
-            return token
+            parsed = None
+        if parsed is not None:
+            found = _find_token(parsed)
+            if found:
+                return found
+            if isinstance(parsed, str):
+                return _clean_token_text(parsed)
+    return _embedded_access_token(text) or _clean_token_text(text)
 
-        def find(item: Any) -> str:
-            if isinstance(item, dict):
-                for key in ("accessToken", "access_token", "token"):
-                    found = str(item.get(key) or "").strip()
-                    if found:
-                        return found
-                for nested in item.values():
-                    found = find(nested)
-                    if found:
-                        return found
-            elif isinstance(item, list):
-                for nested in item:
-                    found = find(nested)
-                    if found:
-                        return found
-            return ""
 
-        return find(value) or token
-    return token
+def normalize_access_token(raw: str) -> str:
+    return extract_access_token(raw)
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any]:
-    parts = str(token or "").split(".")
+    parts = normalize_access_token(token).split(".")
     if len(parts) < 2:
         return {}
     try:

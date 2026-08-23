@@ -166,6 +166,10 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
     assert 'elements.viewToggle.addEventListener("click"' in source
     assert "请至少粘贴一条账号 Token 或 JSON" in source
     assert "elements.logoutButton.hidden = !password;" in source
+    assert "const ACCESS_TOKEN_KEY_NAMES = new Set" in source
+    assert "rumViewTags" in source
+    assert "const accountKey = accountEmail" in source
+    assert "token:${inspection.accessToken}" in source
     for attribute in {
         "data-details",
         "data-cancel",
