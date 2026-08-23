@@ -869,7 +869,13 @@ class BrowserSentinelProvider:
             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
             ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
         )
-        self._eval(expression, timeout=30)
+        status = self._eval(expression, timeout=30)
+        try:
+            status_code = int(status)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Sentinel ping returned no HTTP status") from exc
+        if not 200 <= status_code < 300:
+            raise RuntimeError(f"Sentinel ping failed HTTP {status_code}")
 
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         with self._lock:

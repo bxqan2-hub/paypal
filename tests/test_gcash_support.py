@@ -73,6 +73,11 @@ def test_session_token_can_be_read_from_cookie_header() -> None:
     assert extract_session_token({"cookies": f"oai-did=x; __Secure-next-auth.session-token={session}"}) == session
 
 
+def test_session_token_can_be_read_from_cookie_export_array() -> None:
+    session = "JWE.array.part.one.two"
+    assert extract_session_token({"cookies": [{"name": "__Secure-next-auth.session-token", "value": session}]}) == session
+
+
 def test_gcash_embedded_promo_skips_legacy_update_requirement() -> None:
     config = ExtractionConfig(
         access_token="token",

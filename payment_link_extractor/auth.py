@@ -123,6 +123,10 @@ def _find_session_token(value: Any) -> str:
                 found = _clean_session_token(nested)
                 if found:
                     return found
+        if _normalize_key(value.get("name")) in _SESSION_TOKEN_KEY_NAMES:
+            found = _clean_session_token(value.get("value"))
+            if found:
+                return found
         for nested in value.values():
             found = _find_session_token(nested)
             if found:
