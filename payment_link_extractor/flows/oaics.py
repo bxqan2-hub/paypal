@@ -21,6 +21,7 @@ from ..config import (
     processor_entity_for_country,
 )
 from ..errors import ProtocolError
+from ..logging_utils import emit_log
 from ..models import CheckoutData, ExtractionConfig, StripeContext
 from ..providers import provider_redirect_config
 from ..risk_params import time_on_page_ms
@@ -474,7 +475,10 @@ def fetch_custom_checkout_data_state(
         log,
         headers={
             "Accept": "*/*",
-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout_id}",
+            # The browser keeps the promo landing page as the referrer while
+            # hydrating the route loader; checkout/taxes/confirm switch to the
+            # session URL afterwards.
+            "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
         },
         timeout=DEFAULT_TIMEOUT,
     )
@@ -552,7 +556,17 @@ def confirm_custom_checkout_method(
             "checkout_session_id": checkout["cs_id"],
             "selected_payment_method_type": custom_payment_method_id,
         },
-        headers=_openai_checkout_headers(chatgpt, path, checkout, sentinel=True),
+        headers={
+            **_openai_checkout_headers(chatgpt, path, checkout),
+            **openai_sentinel_headers(
+                chatgpt,
+                flow="checkout_session_approval",
+                referer=f"https://chatgpt.com/checkout/"
+                f"{processor_entity_for_country(str(checkout.get('billing_country') or 'PH'), str(checkout.get('processor_entity') or ''))}/"
+                f"{checkout['cs_id']}",
+                log=log,
+            ),
+        },
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
@@ -672,6 +686,26 @@ def extract_oaics_gcash_provider(
     if not custom_method_id:
         raise ProtocolError(409, "GCash custom payment method is not available in the PH Checkout")
 
+    # The browser initializes Stripe Elements even though GCash itself is a
+    # custom payment method.  That initialization refreshes the OAICS session
+    # state and is followed by more than one taxes calculation in every recent
+    # successful capture.  Keep it opportunistic for older deployments and
+    # lightweight test doubles that do not expose a Stripe transport.
+    elements_ctx: StripeContext | None = None
+    elements_enabled = bool(
+        stripe is not None
+        and callable(getattr(stripe, "request", None))
+        and str(checkout.get("customer_session_client_secret") or "").strip()
+    )
+    if elements_enabled:
+        init_payload = openai_checkout_init_payload(checkout)
+        elements_ctx = stripe_context(init_payload, checkout)
+        try:
+            openai_elements_session(stripe, config, checkout, init_payload, elements_ctx, log)
+        except Exception as exc:
+            emit_log(log, f"GCash Elements bootstrap skipped: {type(exc).__name__}")
+            elements_ctx = None
+
     if stage_callback:
         stage_callback("taxes")
     taxes_payload = openai_checkout_taxes(config, chatgpt, checkout, billing, log)
@@ -686,6 +720,39 @@ def extract_oaics_gcash_provider(
         custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
     if not custom_method_id:
         raise ProtocolError(409, "GCash custom payment method disappeared after tax refresh")
+
+    # Reuse the Elements session before a second taxes refresh, matching the
+    # route observed in m.gcash.com4.har and m.gcash.com5.har.  A deployment
+    # that rejects the optional refresh still retains the first valid state.
+    if elements_ctx is not None:
+        try:
+            refreshed_init = openai_checkout_init_payload(checkout)
+            openai_elements_session(
+                stripe,
+                config,
+                checkout,
+                refreshed_init,
+                elements_ctx,
+                log,
+                reuse_session=True,
+            )
+        except Exception as exc:
+            emit_log(log, f"GCash Elements refresh skipped: {type(exc).__name__}")
+    try:
+        if stage_callback:
+            stage_callback("taxes_refresh")
+        second_taxes = openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+        state = second_taxes
+        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+    except ProtocolError as exc:
+        # Older OAICS deployments accepted one tax request; retain that
+        # compatibility while preferring the browser's two-refresh contract.
+        emit_log(log, f"GCash second taxes refresh skipped: {exc.status_code}")
+    if not custom_method_id:
+        state = fetch_custom_checkout_state(chatgpt, checkout, log)
+        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+    if not custom_method_id:
+        raise ProtocolError(409, "GCash custom payment method disappeared after second tax refresh")
 
     if stage_callback:
         stage_callback("payment_confirmation")

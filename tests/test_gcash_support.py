@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from payment_link_extractor.application import _normalize_config
+from payment_link_extractor.application import (
+    _normalize_config,
+    _should_apply_checkout_update,
+    extract_payment_link,
+)
 from payment_link_extractor.auth import account_id
 from payment_link_extractor.checkout import create_checkout
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
@@ -40,6 +44,31 @@ def test_gcash_forces_ph_country_in_route_and_worker_config() -> None:
     normalized = _normalize_config(route_config)
     assert normalized.country == "PH"
     assert billing_for_country(normalized.country).country == "PH"
+
+
+def test_gcash_embedded_promo_skips_legacy_update_requirement() -> None:
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="US",
+        payment_method="gcash",
+        apply_checkout_update=True,
+    )
+    normalized = _normalize_config(config)
+    assert normalized.country == "PH"
+    assert _should_apply_checkout_update(normalized) is False
+    route_config = _config_from_payload(
+        {
+            "access_token": "token",
+            "checkout_proxy": "http://proxy.example:8080",
+            "update_proxy": "",
+            "country": "US",
+            "payment_method": "gcash",
+            "apply_checkout_update": True,
+        }
+    )
+    assert route_config.country == "PH"
 
 
 def test_defaults_expose_paypal_and_gcash_payment_choices() -> None:
@@ -148,12 +177,39 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
     assert result["payment_method_id"] == "cpmt_gcash"
     assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls] == [
         "/payments/checkout/taxes",
+        "/payments/checkout/taxes",
         "/payments/checkout/confirm",
         "/payments/checkout/custom_payment_method/start",
     ]
     taxes = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/taxes"))
     assert taxes[2]["json"]["tax_id"] is None
     assert taxes[2]["json"]["billing_address"]["line2"] == ""
+
+
+def test_application_gcash_does_not_call_legacy_coupon_or_update() -> None:
+    chatgpt = _ChatGPTRouteData()
+
+    class Factory:
+        def chatgpt(self, config: ExtractionConfig, proxy: str) -> _ChatGPT:
+            return chatgpt
+
+        def stripe(self, config: ExtractionConfig) -> SimpleNamespace:
+            return SimpleNamespace()
+
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="US",
+        payment_method="gcash",
+        apply_checkout_update=True,
+    )
+    result = extract_payment_link(config, transport_factory=Factory())
+    assert result.payment_method == "gcash"
+    paths = [call[1].split("chatgpt.com", 1)[-1] for call in chatgpt.calls]
+    assert "/backend-api/promo_campaign/check_coupon" not in " ".join(paths)
+    assert "/backend-api/payments/checkout/update" not in paths
+    assert chatgpt.calls[0][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
 
 
 def test_gcash_route_data_hydrates_method_before_tax_refresh() -> None:
@@ -183,7 +239,9 @@ def test_gcash_route_data_hydrates_method_before_tax_refresh() -> None:
     )
     assert result["payment_method_id"] == "cpmt_gcash"
     assert "/checkout/openai_ie/oaics_fixture.data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in chatgpt.calls[0][1]
+    assert chatgpt.calls[0][2]["headers"]["Referer"] == "https://chatgpt.com/?promo_campaign=plus-1-month-free"
     assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
+        "/payments/checkout/taxes",
         "/payments/checkout/taxes",
         "/payments/checkout/confirm",
         "/payments/checkout/custom_payment_method/start",
@@ -260,6 +318,7 @@ def test_gcash_legacy_state_read_is_fallback_only() -> None:
     assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
         "/payments/checkout/openai_ie/oaics_legacy",
         "/payments/checkout/taxes",
+        "/payments/checkout/taxes",
         "/payments/checkout/confirm",
         "/payments/checkout/custom_payment_method/start",
     ]
@@ -303,6 +362,79 @@ def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
     assert session.headers["x-oai-is-client-observation"] == "v1.r.p.observation-fixture"
     assert session.openai_sentinel_token == "sentinel-fixture"
     assert session.openai_sentinel_so_token == "so-fixture"
+
+
+def test_transport_matches_current_gcash_locale_and_rotates_observation(monkeypatch) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+            self.calls: list[dict[str, object]] = []
+
+        def request(self, method: str, url: str, **kwargs: object) -> _Response:
+            self.calls.append(kwargs)
+            return _Response(200, {"ok": True})
+
+    session = Session()
+    monkeypatch.setattr(transport, "new_session", lambda: session)
+    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "off")
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="PH",
+        payment_method="gcash",
+        apply_checkout_update=False,
+    )
+    built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
+    assert built is session
+    assert session.headers["oai-language"] == "en-US"
+    assert "Chrome/151" in session.headers["User-Agent"]
+    transport.stage_http_request(
+        session,
+        "fixture checkout",
+        "POST",
+        "https://chatgpt.com/backend-api/payments/checkout",
+        None,
+        headers={},
+    )
+    first = session.calls[-1]["headers"]["x-oai-is-client-observation"]
+    assert session.calls[-1]["headers"]["oai-telemetry"] == "[1,null]"
+    transport.stage_http_request(
+        session,
+        "fixture taxes",
+        "POST",
+        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+        None,
+        headers={},
+    )
+    second = session.calls[-1]["headers"]["x-oai-is-client-observation"]
+    assert first != second
+    assert "oai-telemetry" not in session.calls[-1]["headers"]
+
+
+def test_sentinel_headers_prefer_fresh_provider_flow() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+            self.calls.append((flow, referer))
+            return {
+                "OpenAI-Sentinel-Token": "fresh-token",
+                "oai-web-deployment-attestation": "fresh-attestation",
+            }
+
+    provider = Provider()
+    session = SimpleNamespace(openai_sentinel_provider=provider)
+    headers = transport.openai_sentinel_headers(
+        session,
+        flow="checkout_session_approval",
+        referer="https://chatgpt.com/checkout/fixture",
+    )
+    assert headers["OpenAI-Sentinel-Token"] == "fresh-token"
+    assert headers["oai-web-deployment-attestation"] == "fresh-attestation"
+    assert provider.calls == [("checkout_session_approval", "https://chatgpt.com/checkout/fixture")]
 
 
 def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
@@ -357,10 +489,14 @@ def test_gcash_initial_checkout_matches_har_sentinel_contract() -> None:
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {"country": "PH", "currency": "PHP"},
-        "cancel_url": "https://chatgpt.com/",
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
         "checkout_ui_mode": "custom",
-        "check_card_proxy": True,
     }
+    assert call[2]["headers"]["Referer"] == "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+    assert len(json.dumps(call[2]["json"], separators=(",", ":"))) == 245
     assert call[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
     assert call[2]["headers"]["OpenAI-Sentinel-SO-Token"] == "so-fixture"
 

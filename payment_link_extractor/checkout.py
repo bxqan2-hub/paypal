@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .config import DEFAULT_TIMEOUT, processor_entity_for_country
+from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
 from .errors import ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
@@ -127,22 +127,51 @@ def create_checkout(
     log: Any | None,
 ) -> CheckoutData:
     path = "/backend-api/payments/checkout"
-    body = {
-        "entry_point": "all_plans_pricing_modal",
-        "plan_name": "chatgptplusplan",
-        "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
-        "cancel_url": "https://chatgpt.com/",
-        "checkout_ui_mode": "custom",
-        "check_card_proxy": True,
-    }
+    payment_method = normalize_payment_method(config.payment_method)
+    if payment_method == "gcash":
+        # The browser's PH custom-checkout request carries the campaign in the
+        # initial payload.  Sending the legacy cancel_url/check_card_proxy
+        # shape creates a different session contract and leads to a later
+        # confirm status=blocked response.
+        body = {
+            "entry_point": "all_plans_pricing_modal",
+            "plan_name": "chatgptplusplan",
+            "billing_details": {
+                "country": config.country.upper(),
+                "currency": config_currency(config),
+            },
+            "promo_campaign": {
+                "promo_campaign_id": "plus-1-month-free",
+                "is_coupon_from_query_param": False,
+            },
+            "checkout_ui_mode": "custom",
+        }
+        referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+    else:
+        body = {
+            "entry_point": "all_plans_pricing_modal",
+            "plan_name": "chatgptplusplan",
+            "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
+            "cancel_url": "https://chatgpt.com/",
+            "checkout_ui_mode": "custom",
+            "check_card_proxy": True,
+        }
+        referer = "https://chatgpt.com/"
     headers = {
-        "Referer": "https://chatgpt.com/",
+        "Referer": referer,
         "x-openai-target-path": path,
         "x-openai-target-route": path,
     }
     # The browser can attach a fresh Sentinel token on the initial checkout
     # request.  Keep it optional so older deployments remain compatible.
-    headers.update(openai_sentinel_headers(chatgpt))
+    headers.update(
+        openai_sentinel_headers(
+            chatgpt,
+            flow="chatgpt_checkout" if payment_method == "gcash" else "",
+            referer=referer,
+            log=log,
+        )
+    )
     response = stage_http_request(
         chatgpt,
         "ChatGPT checkout",

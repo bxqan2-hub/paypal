@@ -1,0 +1,129 @@
+BRANCH_FIELD_RESULT=main / GCash OAICS promo checkout, account-aligned browser Sentinel, and browser-state refresh
+CHANGED_FIELDS=checkout_body+promo_referer;skip_legacy_coupon_check_and_checkout_update;route_data_promo_referer;two_taxes_refreshes;optional_Stripe_Elements_reuse;Chrome151+oai-language_en-US;rotating_observation+telemetry;live_SentinelSDK+bootstrap_attestation;browser_account_header+single_proxy_normalization
+BASE_COMMIT=f60a61ff2c9e09c63230ed7f07cf91cadf71c10b
+INPUT_HAR_1=C:\Users\Administrator\Downloads\m.gcash.com4.har
+INPUT_HAR_1_SHA256=67baf527107e784043f31a3ea49998057e7ae93baa46faf0d7aa76c167c19ddf
+INPUT_HAR_2=C:\Users\Administrator\Downloads\m.gcash.com5.har
+INPUT_HAR_2_SHA256=b5269fb42259983426739641941d554b8c57de1dca6ebf507a98cd71e660e36c
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\ROLLBACK.sh
+
+SOURCE_HASHES_AFTER_MODIFICATION
+.env.example sha256=a78c47cdf57f9169712bbb81a44e50b2ffeb5af07f7133b5527f57027098f7af
+payment_link_extractor/application.py sha256=a2cc1d630b662c4bc2b23d431f107f666ea54f41f8d6701357a773cee88ccc4a
+payment_link_extractor/checkout.py sha256=953da62ae923163878d802657b9945ba8d47518a6ec74b947c532b7571ba1234
+payment_link_extractor/config.py sha256=92abae265711df72a465c33a3908b7f2e87270a4b913ccb91767033ba3f6784a
+payment_link_extractor/flows/oaics.py sha256=f6e81ff03635a1c8195ae6c9c287dee075db4fbae23e46bb147a81adc3d99143
+payment_link_extractor/transport.py sha256=735ece5809677ed9018dcd8ab4e2646324151185c31d3273aa0210463059f24a
+payment_link_extractor/web/routes.py sha256=9641d1e93a8fe8d7e32a1179948b8e857fa01289fd4171bb18c49cda62c409af
+tests/test_gcash_support.py sha256=e8911a66930c8652608087738dc65cf5c212b44cb1f3912fbf9af46614c71a7c
+
+BASELINE
+COMMAND=Push-Location "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2"; & "C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe" -m pytest -q; Pop-Location
+INPUT=detached Git worktree at BASE_COMMIT before DIFF_FILE.patch
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 0.77s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=baseline source and tests pass
+
+MODIFIED
+COMMAND=git -C "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2" apply --whitespace=nowarn "C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\DIFF_FILE.patch"; Push-Location "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2"; & "C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe" -m pytest -q; Pop-Location
+INPUT=BASE_COMMIT plus DIFF_FILE.patch
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed in 0.72s
+LITERAL_OUTPUT_END
+APPLY_EXIT_STATUS=0
+TEST_EXIT_STATUS=0
+RESULT=GCash promo contract, two-tax refresh, account-aligned browser headers, transport rotation, and Sentinel provider fixtures pass
+
+TARGETED_MODIFIED_TEST
+COMMAND=Push-Location "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2"; & "C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe" -m pytest -q tests/test_gcash_support.py; Pop-Location
+INPUT=modified worktree
+LITERAL_OUTPUT_BEGIN
+.................                                                        [100%]
+17 passed in 0.24s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+DIFF_CHECK
+COMMAND=git -C "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2" diff --check
+INPUT=modified worktree before rollback
+LITERAL_OUTPUT_BEGIN
+<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2"
+INPUT=modified detached worktree after 122-test run
+LITERAL_OUTPUT_BEGIN
+<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=DIFF_FILE.patch reverse-applied
+
+ROLLBACK_TEST
+COMMAND=Push-Location "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2"; & "C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe" -m pytest -q; Pop-Location
+INPUT=rollback-restored worktree
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 0.72s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESTORED_BEHAVIOR=baseline test count and behavior restored
+RESTORED_STATUS_COMMAND=git -C "C:\Users\Administrator\AppData\Local\Temp\gcash-sentinel-promo-fix-20260824-worktree2" status --short
+RESTORED_STATUS_LITERAL_OUTPUT=<empty>
+RESTORED_STATUS_EXIT=0
+
+BROWSER_SENTINEL_SMOKE
+COMMAND=OPLL_GCASH_SENTINEL_BROWSER=auto .venv\Scripts\python.exe -c "BrowserSentinelProvider.headers('chatgpt_checkout')"
+INPUT=live agent-browser native provider with a synthetic device id and no account token; token value intentionally not recorded
+LITERAL_OUTPUT=provider=agent-browser; token_present=True; token_len=3723; flow=chatgpt_checkout; cookie_synced=True
+EXIT_STATUS=0
+RESULT=SDK token generated in the same device/browser context; authenticated runs additionally parse webDeploymentAttestation and chatgpt-account-id from the bootstrap navigation
+
+HAR_CONTRACT_CHECK
+COMMAND=.venv\Scripts\python.exe -c "parse m.gcash.com4.har and m.gcash.com5.har request metadata"
+INPUT=the two supplied HAR files
+LITERAL_OUTPUT_BEGIN
+m.gcash.com4.har: checkout_len=245; referer=https://chatgpt.com/?promo_campaign=plus-1-month-free; language=en-US; taxes_200=2; confirm_len=127; confirm_status=200
+m.gcash.com5.har: checkout_len=245; referer=https://chatgpt.com/?promo_campaign=plus-1-month-free; language=en-US; taxes_200=3; confirm_len=127; confirm_status=200
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+FAILURE_LOG_CHECK
+COMMAND=.venv\Scripts\python.exe -c "scan data/payment-link.log for the two failed task ids"
+INPUT=data/payment-link.log
+LITERAL_OUTPUT_BEGIN
+45265aa712ec41aabc57f54484f0e0de task failed after 7/7 attempts: GCash payment-method confirm rejected: status=blocked
+8ac006c6d4ff451fb9dd167f99aab2c9 task failed after 4/4 attempts: GCash payment-method confirm rejected: status=blocked
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+
+PRE_COMMIT_WORKTREE
+COMMAND=git status --short --branch
+INPUT=current repository before commit; pre-existing local card-hash file retained separately
+LITERAL_OUTPUT_BEGIN
+## main...origin/main
+ M .env.example
+ M payment_link_extractor/application.py
+ M payment_link_extractor/checkout.py
+ M payment_link_extractor/config.py
+ M payment_link_extractor/flows/oaics.py
+ M payment_link_extractor/transport.py
+ M payment_link_extractor/web/routes.py
+ M paypal_agreement_protocol/data/used_local_card_hashes.txt
+ M tests/test_gcash_support.py
+?? artifacts/gcash-sentinel-promo-fix-20260824/
+LITERAL_OUTPUT_END
+EXIT_STATUS=0

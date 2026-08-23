@@ -28,9 +28,17 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         raise ConfigurationError("AT is required")
     if not str(config.checkout_proxy or "").strip():
         raise ConfigurationError("checkout proxy is required")
-    if config.apply_checkout_update and not str(config.update_proxy or "").strip():
-        raise ConfigurationError("update proxy is required")
     payment_method = normalize_payment_method(config.payment_method)
+    # GCash's current browser flow embeds the promo in the initial checkout
+    # request and never calls the legacy coupon-check/checkout-update pair.
+    # Do not reject a valid GCash task merely because that unused proxy field
+    # is empty.
+    if (
+        config.apply_checkout_update
+        and payment_method != "gcash"
+        and not str(config.update_proxy or "").strip()
+    ):
+        raise ConfigurationError("update proxy is required")
     country = country_for_payment_method(payment_method, config.country)
     country, *_ = country_config(country)
     return replace(
@@ -42,6 +50,11 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         country=country,
         payment_method=payment_method,
     )
+
+
+def _should_apply_checkout_update(config: ExtractionConfig) -> bool:
+    """Return whether the legacy promo update flow applies to this method."""
+    return bool(config.apply_checkout_update and config.payment_method != "gcash")
 
 
 def extract_payment_link(
@@ -58,13 +71,14 @@ def extract_payment_link(
             stage_callback(stage)
 
     config = _normalize_config(config)
+    apply_checkout_update = _should_apply_checkout_update(config)
     log = stage_logger(config.verbose)
     billing = billing_for_country(config.country).to_dict()
     factory = transport_factory or DefaultTransportFactory()
     chatgpt = factory.chatgpt(config, config.checkout_proxy)
     stripe = None
     try:
-        if config.apply_checkout_update:
+        if apply_checkout_update:
             checkpoint("eligibility_check")
             check_coupon_eligibility(config, chatgpt, log)
         checkpoint("checkout")
@@ -73,7 +87,7 @@ def extract_payment_link(
         if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
             raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
         require_country_currency(checkout, config)
-        if config.apply_checkout_update:
+        if apply_checkout_update:
             checkpoint("checkout_update")
             update_checkout(config, chatgpt, checkout, log)
             require_country_currency(checkout, config)

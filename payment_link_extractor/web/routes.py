@@ -258,9 +258,9 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("AT is required")
     if not str(checkout_proxy or "").strip():
         raise ConfigurationError("checkout proxy is required")
-    if apply_update and not str(update_proxy or "").strip():
-        raise ConfigurationError("update proxy is required")
     payment_method = normalize_payment_method(payment_method)
+    if apply_update and payment_method != "gcash" and not str(update_proxy or "").strip():
+        raise ConfigurationError("update proxy is required")
     country = country_for_payment_method(payment_method, country)
     if country not in SUPPORTED_COUNTRIES:
         country_config(country)
