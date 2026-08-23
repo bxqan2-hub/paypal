@@ -7,7 +7,7 @@ DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-
 VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\VERIFICATION.txt
 ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\ROLLBACK.sh
 
-BASELINE_COMMAND=.\.venv\Scripts\python.exe -m pytest -q; git show HEAD:payment_link_extractor/web/static/app.js | node --check -
+BASELINE_COMMAND=.\.venv\Scripts\python.exe -m pytest -q; git show 740004e758bb70e66ffa323a07b0c66c70735137:payment_link_extractor/web/static/app.js | node --check -
 BASELINE_INPUT=HEAD 740004e758bb70e66ffa323a07b0c66c70735137 before AT-import changes
 BASELINE_LITERAL_OUTPUT=........................................................................ [ 58%]; .................................................... [100%]; 124 passed in 0.68s; BASELINE_NODE_FROM_HEAD_EXIT=0
 BASELINE_EXIT_STATUS=0
@@ -17,12 +17,14 @@ MODIFIED_INPUT=working tree after AT-import recognition changes, with sanitized 
 MODIFIED_LITERAL_OUTPUT=........................................................................ [ 57%]; ..................................................... [100%]; 125 passed in 0.67s; PYTEST_EXIT=0; NODE_EXIT=0; COMPILE_EXIT=0; DIFF_EXIT=0; DIFF_REVERSE_CHECK_EXIT=0; AT_IMPORT_RECOGNIZED valid=true length=52
 MODIFIED_EXIT_STATUS=0
 
-ROLLBACK_COMMAND=Copy MODIFIED_FILE to a temporary second copy; & 'C:\Program Files\Git\bin\bash.exe' ROLLBACK.sh (Get-Location).Path <temporary-copy>; compare temporary-copy SHA-256 with `git show HEAD:payment_link_extractor/web/static/app.js | sha256sum`
-ROLLBACK_INPUT=temporary rollback copy of MODIFIED_FILE; source_path=payment_link_extractor/web/static/app.js; primary MODIFIED_FILE retained
-ROLLBACK_LITERAL_OUTPUT=ROLLBACK_APPLIED: <temporary-copy> restored from HEAD; ROLLBACK_COPY_BEFORE_SHA256=a922e4b9e41f7dec371df6f90aca5bdcd05d72cd3391a54569d3132f3963f0de; ROLLBACK_COPY_AFTER_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_EXPECTED_HEAD_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_RESTORED_BASELINE=1; MODIFIED_FILE_LEFT_CHANGED=1
+ROLLBACK_COMMAND=Copy MODIFIED_FILE to a temporary second copy; & 'C:\Program Files\Git\bin\bash.exe' ROLLBACK.sh (Get-Location).Path <temporary-copy>; compare temporary-copy SHA-256 with `git show 740004e758bb70e66ffa323a07b0c66c70735137:payment_link_extractor/web/static/app.js | sha256sum`
+ROLLBACK_INPUT=temporary rollback copy of MODIFIED_FILE; source_path=payment_link_extractor/web/static/app.js; baseline_commit=740004e758bb70e66ffa323a07b0c66c70735137; primary MODIFIED_FILE retained
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_APPLIED: <temporary-copy> restored from 740004e758bb70e66ffa323a07b0c66c70735137; ROLLBACK_COPY_BEFORE_SHA256=0d738f96963b4250cf031a8f7bb3af0f767817f72c7498fdab455254fc575b86; ROLLBACK_COPY_AFTER_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_EXPECTED_BASELINE_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_RESTORED_BASELINE=1; MODIFIED_FILE_LEFT_CHANGED=1; ROLLBACK_TEST_TEMP_CLEANED=1
 ROLLBACK_EXIT_STATUS=0
 
 RESTORED_BEHAVIOR=rollback copy matched the HEAD baseline app.js hash and restored pre-change source behavior; working tree source and MODIFIED_FILE remained changed.
+
+
 
 
 
