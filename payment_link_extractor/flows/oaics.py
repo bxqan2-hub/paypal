@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import time
 from typing import Callable
 from typing import Any
@@ -35,6 +37,9 @@ from ..stripe_common import (
     stripe_key,
 )
 from ..transport import openai_sentinel_headers, response_json, stage_http_request
+
+
+CHECKOUT_DATA_ROUTE_QUERY = "_routes=routes%2Fcheckout.%24entity.%24checkoutId"
 
 
 def openai_checkout_init_payload(checkout: CheckoutData) -> dict[str, Any]:
@@ -390,11 +395,125 @@ def _openai_checkout_headers(
     return headers
 
 
+def _script_json_candidates(source: str) -> list[dict[str, Any]]:
+    """Extract object payloads from the route-data script returned by ChatGPT.
+
+    The browser HAR exports the ``.data`` response as ``text/x-script`` on
+    some deployments, while other deployments return ordinary JSON.  Keeping
+    this parser permissive lets the GCash flow consume both shapes without
+    coupling it to a framework-specific loader wrapper.
+    """
+    text = str(source or "").strip()
+    if not text:
+        return []
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        if isinstance(value, dict):
+            marker = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+            if marker not in seen:
+                seen.add(marker)
+                candidates.append(value)
+            for nested in value.values():
+                add(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                add(nested)
+
+    try:
+        add(json.loads(text))
+    except Exception:
+        pass
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except (TypeError, ValueError):
+            continue
+        add(value)
+    # Remix/React route loaders sometimes embed the JSON as an escaped string
+    # inside a script push call (for example ``[1, "{\\"checkout_session\\"...")``).
+    for match in re.finditer(r'"((?:\\.|[^"\\])*)"', text):
+        try:
+            decoded = json.loads('"' + match.group(1) + '"')
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decoded, str) and any(key in decoded for key in ("custom_payment_methods", "checkout_session", "checkout_state")):
+            for nested in _script_json_candidates(decoded):
+                add(nested)
+    return candidates
+
+
+def fetch_custom_checkout_data_state(
+    chatgpt: Any,
+    checkout: CheckoutData,
+    log: Any | None,
+) -> dict[str, Any]:
+    """Hydrate OAICS state from the browser's current ``.data`` route.
+
+    Full GCash HARs request this route immediately after checkout creation.
+    An empty mapping signals that a deployment did not expose the route so the
+    caller can use the legacy backend endpoint as a compatibility fallback.
+    """
+    processor = processor_entity_for_country(
+        str(checkout.get("billing_country") or "PH"),
+        str(checkout.get("processor_entity") or ""),
+    )
+    checkout_id = str(checkout.get("cs_id") or "").strip()
+    if not checkout_id:
+        return {}
+    path = f"/checkout/{processor}/{checkout_id}.data"
+    response = stage_http_request(
+        chatgpt,
+        "ChatGPT GCash checkout route data",
+        "GET",
+        "https://chatgpt.com" + path + "?" + CHECKOUT_DATA_ROUTE_QUERY,
+        log,
+        headers={
+            "Accept": "*/*",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout_id}",
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    if response.status_code in {404, 405, 410} or response.status_code >= 500:
+        return {}
+    if response.status_code >= 400:
+        return {}
+    payload: dict[str, Any] | None = None
+    try:
+        payload = response_json(response, "GCash checkout route data")
+    except ProtocolError:
+        for candidate in _script_json_candidates(getattr(response, "text", "")):
+            if _custom_payment_methods(candidate) or first_value_by_key(candidate, "checkout_session") is not None:
+                payload = candidate
+                break
+        if payload is None:
+            candidates = _script_json_candidates(getattr(response, "text", ""))
+            payload = candidates[0] if candidates else None
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    if not (
+        _custom_payment_methods(payload)
+        or first_value_by_key(payload, "checkout_session") is not None
+        or first_value_by_key(payload, "checkout_state") is not None
+        or first_value_by_key(payload, "payment_method_types") is not None
+    ):
+        return {}
+    merge_checkout_payload(checkout, payload)
+    return payload
+
+
 def fetch_custom_checkout_state(
     chatgpt: Any,
     checkout: CheckoutData,
     log: Any | None,
 ) -> dict[str, Any]:
+    route_payload = fetch_custom_checkout_data_state(chatgpt, checkout, log)
+    if route_payload:
+        return route_payload
     processor = processor_entity_for_country(
         str(checkout.get("billing_country") or "PH"),
         str(checkout.get("processor_entity") or ""),

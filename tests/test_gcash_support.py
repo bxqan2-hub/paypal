@@ -13,6 +13,7 @@ from payment_link_extractor.flows.oaics import (
     _custom_action_url,
     continue_custom_checkout_method,
     extract_oaics_provider,
+    fetch_custom_checkout_data_state,
 )
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor import transport
@@ -97,6 +98,26 @@ class _ChatGPTWithSentinel(_ChatGPT):
         }
 
 
+class _ChatGPTRouteData(_ChatGPT):
+    def request(self, method: str, url: str, **kwargs: object) -> _Response:
+        if ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url:
+            self.calls.append((method, url, kwargs))
+            return _Response(
+                200,
+                {"loaderData": {"checkout_session": {"custom_payment_methods": [{"id": "cpmt_gcash", "name": "GCash"}]}}},
+            )
+        return super().request(method, url, **kwargs)
+
+
+class _ScriptResponse(_Response):
+    def __init__(self, status_code: int, text: str) -> None:
+        super().__init__(status_code, {})
+        self.text = text
+
+    def json(self) -> dict[str, object]:
+        raise ValueError("text/x-script fixture")
+
+
 def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
     chatgpt = _ChatGPT()
     checkout = {
@@ -135,9 +156,61 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
     assert taxes[2]["json"]["billing_address"]["line2"] == ""
 
 
+def test_gcash_route_data_hydrates_method_before_tax_refresh() -> None:
+    chatgpt = _ChatGPTRouteData()
+    checkout = {
+        "cs_id": "oaics_fixture",
+        "session_kind": "openai_custom_checkout",
+        "billing_country": "PH",
+        "currency": "PHP",
+        "processor_entity": "openai_ie",
+    }
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="PH",
+        payment_method="gcash",
+        apply_checkout_update=False,
+    )
+    result = extract_oaics_provider(
+        config,
+        chatgpt,
+        SimpleNamespace(),
+        checkout,
+        billing_for_country("PH").to_dict(),
+        None,
+    )
+    assert result["payment_method_id"] == "cpmt_gcash"
+    assert "/checkout/openai_ie/oaics_fixture.data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in chatgpt.calls[0][1]
+    assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
+        "/payments/checkout/taxes",
+        "/payments/checkout/confirm",
+        "/payments/checkout/custom_payment_method/start",
+    ]
+
+
+def test_gcash_route_data_parser_accepts_script_embedded_json() -> None:
+    class ScriptTransport:
+        def request(self, method: str, url: str, **kwargs: object) -> _ScriptResponse:
+            assert method == "GET"
+            assert ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url
+            return _ScriptResponse(
+                200,
+                'self.__next_f.push([1,"{\\"checkout_session\\":{\\"custom_payment_methods\\":[{\\"id\\":\\"cpmt_gcash\\"}]}}"] )',
+            )
+
+    checkout = {"cs_id": "oaics_script", "billing_country": "PH", "processor_entity": "openai_ie"}
+    payload = fetch_custom_checkout_data_state(ScriptTransport(), checkout, None)
+    assert payload["checkout_session"]["custom_payment_methods"][0]["id"] == "cpmt_gcash"
+    assert checkout["custom_payment_methods"][0]["id"] == "cpmt_gcash"
+
+
 class _ChatGPTLegacyOnly(_ChatGPT):
     def request(self, method: str, url: str, **kwargs: object) -> _Response:
         self.calls.append((method, url, kwargs))
+        if ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url:
+            return _Response(404, {})
         if url.endswith("/payments/checkout/taxes"):
             return _Response(200, {"checkout_session": {"currency": "PHP"}})
         if "/payments/checkout/openai_ie/oaics_legacy" in url:
@@ -181,7 +254,10 @@ def test_gcash_legacy_state_read_is_fallback_only() -> None:
         None,
     )
     assert result["gcash_url"].endswith("/legacy")
-    assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls] == [
+    assert chatgpt.calls[0][1].endswith(
+        "/checkout/openai_ie/oaics_legacy.data?_routes=routes%2Fcheckout.%24entity.%24checkoutId"
+    )
+    assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
         "/payments/checkout/openai_ie/oaics_legacy",
         "/payments/checkout/taxes",
         "/payments/checkout/confirm",
