@@ -1,5 +1,5 @@
 CHANGED_BRANCH=main
-CHANGED_FIELD=access-token import recognition, opaque AT validation, and batch-import identity fallback
+CHANGED_FIELD=access-token import recognition, opaque AT validation, JWT extraction, and batch-import identity fallback
 HEAD_BEFORE_CHANGE=740004e758bb70e66ffa323a07b0c66c70735137
 
 MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\MODIFIED_FILE
@@ -14,7 +14,7 @@ BASELINE_EXIT_STATUS=0
 
 MODIFIED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q; node --check payment_link_extractor/web/static/app.js; .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor; git diff --check; git apply --reverse --check artifacts/at-import-recognition-20260824/DIFF_FILE.patch; node VM probe for escaped opaque AT plus rumViewTags envelope
 MODIFIED_INPUT=working tree after AT-import recognition changes, with sanitized opaque fixture OpaqueATFixture_...
-MODIFIED_LITERAL_OUTPUT=........................................................................ [ 57%]; ..................................................... [100%]; 125 passed in 0.67s; PYTEST_EXIT=0; NODE_EXIT=0; COMPILE_EXIT=0; DIFF_EXIT=0; DIFF_REVERSE_CHECK_EXIT=0; AT_IMPORT_RECOGNIZED valid=true length=52
+MODIFIED_LITERAL_OUTPUT=........................................................................ [ 57%]; ..................................................... [100%]; 126 passed in 0.66s; PYTEST_EXIT=0; NODE_EXIT=0; COMPILE_EXIT=0; DIFF_EXIT=0; DIFF_REVERSE_CHECK_EXIT=0; AT_IMPORT_RECOGNIZED valid=true length=52; JWT_IMPORT_RECOGNIZED valid=true account=fixture@example.com
 MODIFIED_EXIT_STATUS=0
 
 ROLLBACK_COMMAND=Copy MODIFIED_FILE to a temporary second copy; & 'C:\Program Files\Git\bin\bash.exe' ROLLBACK.sh (Get-Location).Path <temporary-copy>; compare temporary-copy SHA-256 with `git show 740004e758bb70e66ffa323a07b0c66c70735137:payment_link_extractor/web/static/app.js | sha256sum`
@@ -23,6 +23,7 @@ ROLLBACK_LITERAL_OUTPUT=ROLLBACK_APPLIED: <temporary-copy> restored from 740004e
 ROLLBACK_EXIT_STATUS=0
 
 RESTORED_BEHAVIOR=rollback copy matched the HEAD baseline app.js hash and restored pre-change source behavior; working tree source and MODIFIED_FILE remained changed.
+
 
 
 

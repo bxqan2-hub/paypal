@@ -11,7 +11,11 @@ _KEYED_TOKEN_RE = re.compile(
     r"(?:^|[{,;\s])['\"]?(?:access[_-]?token|accesstoken|token|at)['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=\-]{8,})",
     re.IGNORECASE,
 )
-_SESSION_METADATA_RE = re.compile(r"['\"]\s*,\s*['\"]rumViewTags['\"]\s*:", re.IGNORECASE)
+_JWT_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_SESSION_METADATA_RE = re.compile(
+    r"['\"]\s*,\s*['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s*:",
+    re.IGNORECASE,
+)
 
 
 def _normalize_key(key: Any) -> str:
@@ -34,6 +38,9 @@ def _embedded_access_token(value: Any) -> str:
     keyed = _KEYED_TOKEN_RE.search(text)
     if keyed:
         return _clean_token_text(keyed.group(1))
+    jwt = _JWT_RE.search(_clean_token_text(text))
+    if jwt:
+        return jwt.group(0)
     marker = _SESSION_METADATA_RE.search(text)
     if marker and marker.start() > 0:
         candidate = text[: marker.start()].strip(" \t\r\n'\"{}")

@@ -202,9 +202,12 @@
     );
     if (keyed) return normalizeTokenText(keyed[1]);
 
+    const jwt = normalizeTokenText(text).match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+    if (jwt) return jwt[0];
+
     // Some session exports are pasted starting at the access-token value and
-    // ending with the next metadata field, e.g. `TOKEN","rumViewTags":...`.
-    const metadata = text.search(/['"]\s*,\s*['"]rumViewTags['"]\s*:/i);
+    // ending with the next metadata field, e.g. `TOKEN","authProvider":...`.
+    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
     if (metadata > 0) {
       const candidate = text.slice(0, metadata).replace(/^[\s'"{]+|[\s'"}]+$/g, "");
       return normalizeTokenText(candidate);

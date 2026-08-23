@@ -10,7 +10,7 @@ from payment_link_extractor.application import (
     _should_apply_checkout_update,
     extract_payment_link,
 )
-from payment_link_extractor.auth import account_id, extract_access_token, normalize_access_token
+from payment_link_extractor.auth import account_email, account_id, extract_access_token, normalize_access_token
 from payment_link_extractor.checkout import create_checkout
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
 from payment_link_extractor.flows.oaics import (
@@ -339,6 +339,15 @@ def test_import_recognizes_opaque_at_and_session_export_metadata() -> None:
     assert extract_access_token(escaped_session_export) == opaque
     assert normalize_access_token({"AT": opaque}) == opaque
     assert _credential_value({"credential": {"accessToken": opaque}}) == opaque
+
+
+def test_import_extracts_jwt_before_trailing_session_metadata() -> None:
+    payload = base64.urlsafe_b64encode(json.dumps({"email": "fixture@example.com"}).encode()).decode().rstrip("=")
+    jwt = f"header.{payload}.signature_fixture"
+    session_export = f'{jwt.replace("_", "\\_")}","authProvider":"openai'
+
+    assert extract_access_token(session_export) == jwt
+    assert account_email(session_export) == "fixture@example.com"
 
 
 def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:

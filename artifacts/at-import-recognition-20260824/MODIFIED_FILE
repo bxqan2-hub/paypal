@@ -1,10 +1,10 @@
 MODIFIED_FILE
 changed_branch: main
-changed_field: access-token import recognition and batch-import duplicate identity fallback
+changed_field: access-token import recognition, opaque AT validation, JWT extraction, and batch-import identity fallback
 result:
 - Import now accepts opaque AT values as well as JWTs instead of requiring three dot-separated JWT parts.
 - Access-token keys are found case-insensitively through nested JSON, including AT/accessToken/access_token/token.
-- Session exports pasted with a trailing `,"rumViewTags":...` envelope and Markdown-escaped URL-safe characters are normalized before validation.
+- Session exports pasted with trailing metadata such as `,"rumViewTags":...` or `,"authProvider":...` and Markdown-escaped URL-safe characters are normalized before validation.
 - Batch import deduplicates opaque tokens by token identity when no JWT email claim is available.
 - The server uses the same extractor for nested credential payloads.
 
@@ -17,12 +17,12 @@ source_hashes_before_change:
 - tests/test_ui_button_contracts.py: 517589fd344c4239e0d44ed27654b1356767cd58
 
 source_hashes_after_change:
-- payment_link_extractor/auth.py: 96c0c974ec8df4485141e7146a768c5fa01ce5fc
+- payment_link_extractor/auth.py: 7d4c12a34e7a64bc767f8597cfe44b09be920a10
 - payment_link_extractor/web/routes.py: 43c6986d9150e5aeda0e160c8ce5702a7e24c108
-- payment_link_extractor/web/static/app.js: 6a280ae9466ed3a9b0637ec7cb09b664e006f0da
+- payment_link_extractor/web/static/app.js: 3d718f6d10c5cec4af2803c2eb479f7a7acb08a2
 - payment_link_extractor/web/templates/index.html: be9c3bd038b52fe2ac6f05fdf5e2028196ff75e7
-- tests/test_gcash_support.py: bdc586725ab6b04772df08e68407f90233138493
-- tests/test_ui_button_contracts.py: 65629444abc16e8f0de7847731b1ff31f5c2bc71
+- tests/test_gcash_support.py: eaf02bab0024fd5703927aec89448f68e8b11615
+- tests/test_ui_button_contracts.py: e8a5bdab21e3699751114b90005a43964293c6d3
 
 artifacts:
 - MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\MODIFIED_FILE

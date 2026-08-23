@@ -1,8 +1,8 @@
 diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
-index 15f8529..96c0c97 100644
+index 15f8529..7d4c12a 100644
 --- a/payment_link_extractor/auth.py
 +++ b/payment_link_extractor/auth.py
-@@ -2,40 +2,93 @@ from __future__ import annotations
+@@ -2,40 +2,100 @@ from __future__ import annotations
  
  import base64
  import json
@@ -18,7 +18,11 @@ index 15f8529..96c0c97 100644
 +    r"(?:^|[{,;\s])['\"]?(?:access[_-]?token|accesstoken|token|at)['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=\-]{8,})",
 +    re.IGNORECASE,
 +)
-+_SESSION_METADATA_RE = re.compile(r"['\"]\s*,\s*['\"]rumViewTags['\"]\s*:", re.IGNORECASE)
++_JWT_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
++_SESSION_METADATA_RE = re.compile(
++    r"['\"]\s*,\s*['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s*:",
++    re.IGNORECASE,
++)
 +
 +
 +def _normalize_key(key: Any) -> str:
@@ -41,6 +45,9 @@ index 15f8529..96c0c97 100644
 +    keyed = _KEYED_TOKEN_RE.search(text)
 +    if keyed:
 +        return _clean_token_text(keyed.group(1))
++    jwt = _JWT_RE.search(_clean_token_text(text))
++    if jwt:
++        return jwt.group(0)
 +    marker = _SESSION_METADATA_RE.search(text)
 +    if marker and marker.start() > 0:
 +        candidate = text[: marker.start()].strip(" \t\r\n'\"{}")
@@ -148,10 +155,10 @@ index 2a58376..43c6986 100644
  
  def _env_bool(name: str, default: bool) -> bool:
 diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index 589a150..6a280ae 100644
+index 589a150..3d718f6 100644
 --- a/payment_link_extractor/web/static/app.js
 +++ b/payment_link_extractor/web/static/app.js
-@@ -180,8 +180,40 @@
+@@ -180,8 +180,43 @@
        .replaceAll("'", "&#039;");
    }
  
@@ -177,9 +184,12 @@ index 589a150..6a280ae 100644
 +    );
 +    if (keyed) return normalizeTokenText(keyed[1]);
 +
++    const jwt = normalizeTokenText(text).match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
++    if (jwt) return jwt[0];
++
 +    // Some session exports are pasted starting at the access-token value and
-+    // ending with the next metadata field, e.g. `TOKEN","rumViewTags":...`.
-+    const metadata = text.search(/['"]\s*,\s*['"]rumViewTags['"]\s*:/i);
++    // ending with the next metadata field, e.g. `TOKEN","authProvider":...`.
++    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
 +    if (metadata > 0) {
 +      const candidate = text.slice(0, metadata).replace(/^[\s'"{]+|[\s'"}]+$/g, "");
 +      return normalizeTokenText(candidate);
@@ -193,7 +203,7 @@ index 589a150..6a280ae 100644
      if (Array.isArray(value)) {
        for (const item of value) {
          const token = findAccessToken(item);
-@@ -190,8 +222,12 @@
+@@ -190,8 +225,12 @@
        return "";
      }
      if (!value || typeof value !== "object") return "";
@@ -208,7 +218,7 @@ index 589a150..6a280ae 100644
        if (token) return token;
      }
      for (const item of Object.values(value)) {
-@@ -228,14 +264,16 @@
+@@ -228,14 +267,16 @@
    }
  
    function validateAccessToken(token) {
@@ -230,7 +240,7 @@ index 589a150..6a280ae 100644
      return "";
    }
  
-@@ -243,12 +281,13 @@
+@@ -243,12 +284,13 @@
      const text = String(raw || "").trim();
      if (!text) return { valid: false, isJson: false, message: "请输入 Access Token 或 JSON" };
      if (!text.startsWith("{") && !text.startsWith("[")) {
@@ -247,7 +257,7 @@ index 589a150..6a280ae 100644
          message: validationMessage || "Access Token 校验通过",
        };
      }
-@@ -259,7 +298,7 @@
+@@ -259,7 +301,7 @@
        return { valid: false, isJson: true, message: "JSON 格式无效" };
      }
      if (typeof parsed === "string") {
@@ -256,7 +266,7 @@ index 589a150..6a280ae 100644
        const validationMessage = token ? validateAccessToken(token) : "JSON 中未找到 Access Token";
        return {
          valid: Boolean(token) && !validationMessage,
-@@ -825,7 +864,12 @@
+@@ -825,7 +867,12 @@
            return { ...entry, status: "invalid", message: inspection.message, accountEmail: "" };
          }
          const accountEmail = inspection.accountEmail || "";
@@ -283,7 +293,7 @@ index 04d0971..be9c3bd 100644
    </body>
  </html>
 diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
-index 4b345b0..bdc5867 100644
+index 4b345b0..eaf02ba 100644
 --- a/tests/test_gcash_support.py
 +++ b/tests/test_gcash_support.py
 @@ -10,7 +10,7 @@ from payment_link_extractor.application import (
@@ -291,7 +301,7 @@ index 4b345b0..bdc5867 100644
      extract_payment_link,
  )
 -from payment_link_extractor.auth import account_id
-+from payment_link_extractor.auth import account_id, extract_access_token, normalize_access_token
++from payment_link_extractor.auth import account_email, account_id, extract_access_token, normalize_access_token
  from payment_link_extractor.checkout import create_checkout
  from payment_link_extractor.config import billing_for_country, country_for_payment_method
  from payment_link_extractor.flows.oaics import (
@@ -304,7 +314,7 @@ index 4b345b0..bdc5867 100644
  
  
  ROOT = Path(__file__).resolve().parents[1]
-@@ -330,6 +330,17 @@ def test_account_id_extracts_browser_auth_claim() -> None:
+@@ -330,6 +330,26 @@ def test_account_id_extracts_browser_auth_claim() -> None:
      assert account_id(f"header.{encoded}.signature") == "acct-fixture"
  
  
@@ -319,11 +329,20 @@ index 4b345b0..bdc5867 100644
 +    assert _credential_value({"credential": {"accessToken": opaque}}) == opaque
 +
 +
++def test_import_extracts_jwt_before_trailing_session_metadata() -> None:
++    payload = base64.urlsafe_b64encode(json.dumps({"email": "fixture@example.com"}).encode()).decode().rstrip("=")
++    jwt = f"header.{payload}.signature_fixture"
++    session_export = f'{jwt.replace("_", "\\_")}","authProvider":"openai'
++
++    assert extract_access_token(session_export) == jwt
++    assert account_email(session_export) == "fixture@example.com"
++
++
  def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
      class Session:
          def __init__(self) -> None:
 diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
-index 517589f..6562944 100644
+index 517589f..e8a5bda 100644
 --- a/tests/test_ui_button_contracts.py
 +++ b/tests/test_ui_button_contracts.py
 @@ -166,6 +166,10 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
@@ -331,7 +350,7 @@ index 517589f..6562944 100644
      assert "请至少粘贴一条账号 Token 或 JSON" in source
      assert "elements.logoutButton.hidden = !password;" in source
 +    assert "const ACCESS_TOKEN_KEY_NAMES = new Set" in source
-+    assert "rumViewTags" in source
++    assert "authProvider" in source
 +    assert "const accountKey = accountEmail" in source
 +    assert "token:${inspection.accessToken}" in source
      for attribute in {
