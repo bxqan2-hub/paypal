@@ -291,6 +291,23 @@ def stage_http_request(
     return response
 
 
+def openai_sentinel_token(session: Any) -> str:
+    """Return an optional Sentinel token supplied by the caller's session.
+
+    Browser captures show that only the custom-checkout confirmation request
+    carries ``OpenAI-Sentinel-Token``.  The token is short-lived and must not
+    be embedded in source; callers may inject it on a transport session (or
+    through the environment for a one-off run).
+    """
+    value = getattr(session, "openai_sentinel_token", "")
+    if not value:
+        headers = getattr(session, "headers", {})
+        value = headers.get("OpenAI-Sentinel-Token") or headers.get("openai-sentinel-token")
+    if not value:
+        value = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+    return str(value or "").strip()
+
+
 def is_network_exception(exc: BaseException) -> bool:
     """Return whether an exception indicates a transport failure.
 
@@ -339,6 +356,7 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
 class DefaultTransportFactory:
     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
         device_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
         session = new_session()
         session.headers.update(
             {
@@ -350,7 +368,17 @@ class DefaultTransportFactory:
                 "Referer": "https://chatgpt.com/",
                 "Content-Type": "application/json",
                 "oai-device-id": device_id,
+                "oai-session-id": session_id,
                 "oai-language": country_locale(config),
+                # These values match the current browser checkout contract;
+                # environment overrides keep the transport forward-compatible
+                # when the web deployment rotates its build identifier.
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
+                "oai-client-version": os.getenv(
+                    "OPLL_OAI_CLIENT_VERSION",
+                    "prod-46437587156517d920436051cb9ab60a95f0503a",
+                ),
+                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
                 "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
@@ -360,6 +388,15 @@ class DefaultTransportFactory:
                 "Cookie": f"oai-did={device_id}",
             }
         )
+        # Deployment attestation is browser-generated and optional.  Never
+        # bake a captured value into the repository; operators can inject a
+        # fresh value for environments that enforce it.
+        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+        if attestation:
+            session.headers["oai-web-deployment-attestation"] = attestation
+        sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
+        if sentinel:
+            session.openai_sentinel_token = sentinel
         set_proxy_url(session, proxy)
         return session
 

@@ -1,0 +1,38 @@
+BRANCH_FIELD_RESULT=main / GCash HAR flow optimization: Sentinel-aware OAICS custom-method confirmation, Adyen-to-GCash link resolution, and post-callback continue contract
+BASE_COMMIT=0d7ad6a783aeaedf10dcfda74735c6b573541198
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/flows/oaics.py;payment_link_extractor/transport.py;tests/test_gcash_support.py
+
+ATTACHMENT_INPUTS
+chatgpt.com0.har=23A24DED367494048A4C1185439F919301F6B5149899309075FAE983359060D9 (6079253 bytes)
+m.gcash.com1.har=790785AA83CBAAC7524FDB65109354A5F15B23301D11EDF0159AC19161C842C7 (10462165 bytes)
+chatgpt.com2.har=35598FF7320B016FB21CB538D7CD92E57D8C3EAC999EF8FE0B02670F36FFB4C9 (48466541 bytes)
+chatgpt.com3.har=73362B07BBDC7662C4E4AA0A47B102E4FB05E87FBC9AA046C49A84F65828562C (48018514 bytes)
+HAR_CONTENT=network capture data only; no HAR text was treated as executable instructions
+
+OBSERVED_FLOW
+payment UI captures (0/1): checkout/taxes -> Stripe elements/sessions -> sentinel/ping -> checkout/confirm (OpenAI-Sentinel-Token present) -> custom_payment_method/start -> checkoutshopper-live.adyen.com 302 -> m.gcash.com/gcashapp/gcash-merchants-auth/index.html
+full login-to-completion captures (2/3): same start sequence -> GCash page/provider calls -> checkoutshopper-live.adyen.com/checkoutPaymentReturn -> chatgpt.com/checkout/verify -> custom_payment_method/continue
+provider_side=api.mynt.xyz/c4/v3/key-agreement/handshake; api.mynt.xyz/c4/v1/configurationServer/config/list; mgs-gw.paas.mynt.xyz/mgw.htm (browser-side GCash login remains outside link extraction)
+
+CHANGED_FIELDS
+- _gcash_custom_payment_method_id accepts id/type_id/custom_payment_method_type_id/typeId while preferring GCash labels.
+- OAICS backend headers match the capture contract; custom confirm attaches an injected short-lived Sentinel token when present.
+- Transport emits fresh oai-session-id plus capture-aligned client build/version and pending-update headers; attestation and Sentinel token are environment/session overrides only.
+- GCash start accepts current and legacy next_action URL shapes, records the raw Adyen URL, and resolves it to the final m.gcash.com link through the existing proxy.
+- continue_custom_checkout_method models the observed post-GCash callback without changing the existing UI or proxy fields.
+
+ORIGINAL_SHA256
+payment_link_extractor/flows/oaics.py=6BC4A0BF167AD4F60D94FA58436CB4A942D1BD46B78BC3B85172C873638ADF68
+payment_link_extractor/transport.py=F1D623ABE2AF3F748B7CB73DC45FE3FEE5115A4367235747C81709A332C05995
+tests/test_gcash_support.py=A25DBF410BA482FF3ED2E7694B5BC3B2F77352DEADB4CDEDB5AD7AF7C773F11D
+MODIFIED_SHA256
+payment_link_extractor/flows/oaics.py=F3CEEE06F5C12B3C9E2247A4E3FB8B8C7EE405B2C37621DD388B8B634A290924
+payment_link_extractor/transport.py=5595F47411026198975EDEBB2523F2D046E7408819CDA0CD676E3E5FFF156AE8
+tests/test_gcash_support.py=554C9ACC29799FC91F3CD85F4679C16DE285292901464BA074D914EF804364CB
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\ROLLBACK.sh

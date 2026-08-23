@@ -1,0 +1,89 @@
+BRANCH_FIELD_RESULT=main / GCash HAR flow optimization: Sentinel-aware OAICS custom-method confirmation, Adyen-to-GCash link resolution, and post-callback continue contract
+BASE_COMMIT=0d7ad6a783aeaedf10dcfda74735c6b573541198
+PAYMENT_CORE_COMPARISON=git diff --name-status HEAD -- paypal_agreement_protocol/paypal
+PAYMENT_CORE_COMPARISON_RESULT=<empty>; proxy fields remain unchanged
+CHANGED_PATHS=payment_link_extractor/flows/oaics.py;payment_link_extractor/transport.py;tests/test_gcash_support.py
+
+ATTACHMENT_INSTRUCTION_DISTINCTION
+INPUT=the four HAR files are network-capture data, not instruction documents; only their observed request/response metadata was used
+HAR0_SHA256=23A24DED367494048A4C1185439F919301F6B5149899309075FAE983359060D9
+HAR1_SHA256=790785AA83CBAAC7524FDB65109354A5F15B23301D11EDF0159AC19161C842C7
+HAR2_SHA256=35598FF7320B016FB21CB538D7CD92E57D8C3EAC999EF8FE0B02670F36FFB4C9
+HAR3_SHA256=73362B07BBDC7662C4E4AA0A47B102E4FB05E87FBC9AA046C49A84F65828562C
+HAR_FINDING=all four captures show checkout/taxes, Stripe elements/sessions, sentinel/ping, confirm with OpenAI-Sentinel-Token, custom_payment_method/start, Adyen redirect, then m.gcash.com; captures 2/3 additionally show Adyen checkoutPaymentReturn, chatgpt.com/checkout/verify, and custom_payment_method/continue
+
+ORIGINAL_TO_MODIFIED
+payment_link_extractor/flows/oaics.py ORIGINAL_SHA256=6BC4A0BF167AD4F60D94FA58436CB4A942D1BD46B78BC3B85172C873638ADF68; MODIFIED_SHA256=F3CEEE06F5C12B3C9E2247A4E3FB8B8C7EE405B2C37621DD388B8B634A290924
+payment_link_extractor/transport.py ORIGINAL_SHA256=F1D623ABE2AF3F748B7CB73DC45FE3FEE5115A4367235747C81709A332C05995; MODIFIED_SHA256=5595F47411026198975EDEBB2523F2D046E7408819CDA0CD676E3E5FFF156AE8
+tests/test_gcash_support.py ORIGINAL_SHA256=A25DBF410BA482FF3ED2E7694B5BC3B2F77352DEADB4CDEDB5AD7AF7C773F11D; MODIFIED_SHA256=554C9ACC29799FC91F3CD85F4679C16DE285292901464BA074D914EF804364CB
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-optimization-20260823\ROLLBACK.sh
+MODIFIED_FILE_SHA256=489BF4ED6A75F488D3EAF3B99275B5ECC3A9A2D9CE0560184319FCBB6EB299F1
+DIFF_FILE_SHA256=86F95C37D746E7875AB5D47CA3C11F2D3B2B24901E22036A14303F60CFBE9A87
+ROLLBACK_SH_SHA256=D58CF4E48842427F819AEE638B90BA518CDA481A9EF3434D19F3F030A7A66597
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=BASE_COMMIT 0d7ad6a before the HAR optimization patch
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 0.66s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=the existing GCash selector/custom-method implementation passed before this update
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with CHANGED_PATHS and HAR optimization
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 64%]
+........................................                                 [100%]
+112 passed in 0.66s
+PYTEST_EXIT=0
+PYCOMPILE_EXIT=0
+NODE_CHECK_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=tests cover HAR sentinel header propagation, URL-shape compatibility, callback continuation, existing GCash request ordering, PH invariant, and UI contracts
+
+DIFF_CHECK
+COMMAND=git diff --check
+INPUT=working tree source diff
+LITERAL_OUTPUT_BEGIN
+<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=no whitespace errors
+
+ROLLBACK
+COMMAND=git worktree add --detach <COPY> HEAD; git -C <COPY> apply --whitespace=nowarn DIFF_FILE.patch; <VENV> -m pytest -q; bash ROLLBACK.sh <COPY>; <VENV> -m pytest -q; git -C <COPY> status --short; git worktree remove --force <COPY>
+INPUT=temporary Git worktree from BASE_COMMIT, DIFF_FILE.patch applied, then ROLLBACK.sh executed against that worktree
+LITERAL_OUTPUT_BEGIN
+Preparing worktree (detached HEAD 0d7ad6a)
+HEAD is now at 0d7ad6a feat: add GCash payment link mode
+........................................................................ [ 64%]
+........................................                                 [100%]
+112 passed in 0.85s
+COPY_MODIFIED_TEST_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 0.64s
+COPY_ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=rollback restored the 109-test BASELINE on the temporary worktree; the primary tree remains modified with the GCash HAR update
+RESTORED_BEHAVIOR_STATUS=temporary rollback copy has the pre-update 109-test behavior and clean status; primary tree retains the 112-test modified behavior
+
+PUSH_EXPECTATION
+REMOTE=origin/main
+USER_MODIFICATION_PRESERVED=paypal_agreement_protocol/data/used_local_card_hashes.txt remains unstaged and is excluded from the commit
+
+

@@ -1,0 +1,416 @@
+diff --git a/payment_link_extractor/flows/oaics.py b/payment_link_extractor/flows/oaics.py
+index abecd04..0e8739f 100644
+--- a/payment_link_extractor/flows/oaics.py
++++ b/payment_link_extractor/flows/oaics.py
+@@ -34,7 +34,7 @@ from ..stripe_common import (
+     stripe_deferred_intent_params,
+     stripe_key,
+ )
+-from ..transport import response_json, stage_http_request
++from ..transport import openai_sentinel_token, response_json, stage_http_request
+ 
+ 
+ def openai_checkout_init_payload(checkout: CheckoutData) -> dict[str, Any]:
+@@ -335,7 +335,13 @@ def _gcash_custom_payment_method_id(payload: Any) -> str:
+     candidates: list[str] = []
+     for item in methods:
+         if isinstance(item, dict):
+-            identifier = str(item.get("id") or "").strip()
++            identifier = str(
++                item.get("id")
++                or item.get("type_id")
++                or item.get("custom_payment_method_type_id")
++                or item.get("typeId")
++                or ""
++            ).strip()
+             label = " ".join(
+                 str(item.get(key) or "").strip().lower()
+                 for key in ("name", "display_name", "type", "payment_method_type")
+@@ -354,6 +360,36 @@ def _gcash_custom_payment_method_id(payload: Any) -> str:
+     return candidates[0] if candidates else ""
+ 
+ 
++def _openai_checkout_headers(
++    chatgpt: Any,
++    path: str,
++    checkout: CheckoutData,
++    *,
++    sentinel: bool = False,
++) -> dict[str, str]:
++    """Build the backend headers observed in the current browser HARs.
++
++    Session-wide identity headers (device/session/client build) are supplied
++    by ``DefaultTransportFactory``.  Sentinel is deliberately opt-in because
++    the browser only attaches its short-lived token to ``checkout/confirm``.
++    """
++    processor = processor_entity_for_country(
++        str(checkout.get("billing_country") or "PH"),
++        str(checkout.get("processor_entity") or ""),
++    )
++    headers = {
++        "Accept": "*/*",
++        "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
++        "x-openai-target-path": path,
++        "x-openai-target-route": path,
++    }
++    if sentinel:
++        token = openai_sentinel_token(chatgpt)
++        if token:
++            headers["OpenAI-Sentinel-Token"] = token
++    return headers
++
++
+ def fetch_custom_checkout_state(
+     chatgpt: Any,
+     checkout: CheckoutData,
+@@ -370,12 +406,7 @@ def fetch_custom_checkout_state(
+         "GET",
+         "https://chatgpt.com" + path,
+         log,
+-        headers={
+-            "Accept": "application/json",
+-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+-            "x-openai-target-path": path,
+-            "x-openai-target-route": path,
+-        },
++        headers=_openai_checkout_headers(chatgpt, path, checkout),
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+@@ -391,10 +422,6 @@ def confirm_custom_checkout_method(
+     custom_payment_method_id: str,
+     log: Any | None,
+ ) -> dict[str, Any]:
+-    processor = processor_entity_for_country(
+-        str(checkout.get("billing_country") or "PH"),
+-        str(checkout.get("processor_entity") or ""),
+-    )
+     path = "/backend-api/payments/checkout/confirm"
+     response = stage_http_request(
+         chatgpt,
+@@ -406,12 +433,7 @@ def confirm_custom_checkout_method(
+             "checkout_session_id": checkout["cs_id"],
+             "selected_payment_method_type": custom_payment_method_id,
+         },
+-        headers={
+-            "Accept": "application/json",
+-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+-            "x-openai-target-path": path,
+-            "x-openai-target-route": path,
+-        },
++        headers=_openai_checkout_headers(chatgpt, path, checkout, sentinel=True),
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+@@ -429,10 +451,6 @@ def start_custom_checkout_method(
+     custom_payment_method_id: str,
+     log: Any | None,
+ ) -> dict[str, Any]:
+-    processor = processor_entity_for_country(
+-        str(checkout.get("billing_country") or "PH"),
+-        str(checkout.get("processor_entity") or ""),
+-    )
+     path = "/backend-api/payments/checkout/custom_payment_method/start"
+     response = stage_http_request(
+         chatgpt,
+@@ -444,24 +462,74 @@ def start_custom_checkout_method(
+             "checkout_session_id": checkout["cs_id"],
+             "custom_payment_method_type_id": custom_payment_method_id,
+         },
+-        headers={
+-            "Accept": "application/json",
+-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+-            "x-openai-target-path": path,
+-            "x-openai-target-route": path,
+-        },
++        headers=_openai_checkout_headers(chatgpt, path, checkout),
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+         raise ProtocolError(response.status_code, f"GCash payment start failed: {response.text[:500]}")
+     payload = response_json(response, "GCash payment start")
+-    action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
+-    redirect = str(action.get("url") or "").strip()
++    redirect = _custom_action_url(payload)
+     if str(payload.get("status") or "").lower() != "requires_action" or not redirect:
+         raise ProtocolError(502, "GCash payment start did not return a redirect URL")
+     return payload
+ 
+ 
++def _custom_action_url(payload: Any) -> str:
++    """Extract the redirect URL across OAICS response shape revisions."""
++    if not isinstance(payload, dict):
++        return ""
++    action = payload.get("next_action")
++    candidates: list[Any] = []
++    if isinstance(action, dict):
++        candidates.extend(
++            action.get(key)
++            for key in ("url", "redirect_url", "redirectUrl", "checkout_url")
++        )
++        redirect_to_url = action.get("redirect_to_url")
++        if isinstance(redirect_to_url, dict):
++            candidates.append(redirect_to_url.get("url"))
++    candidates.extend(payload.get(key) for key in ("redirect_url", "redirectUrl", "url"))
++    for value in candidates:
++        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
++            return value.strip()
++    return ""
++
++
++def continue_custom_checkout_method(
++    chatgpt: Any,
++    checkout: CheckoutData,
++    callback_payload: dict[str, Any] | None,
++    log: Any | None,
++) -> dict[str, Any]:
++    """Complete the browser's post-GCash callback handshake when available.
++
++    The full HAR captures show this request only after GCash redirects back to
++    ``/checkout/verify``.  Link extraction normally stops at the provider URL,
++    but keeping the callback endpoint here makes the observed state machine
++    explicit for callers that already possess the callback fields.
++    """
++    path = "/backend-api/payments/checkout/custom_payment_method/continue"
++    body = dict(callback_payload or {})
++    body.setdefault("checkout_session_id", checkout["cs_id"])
++    response = stage_http_request(
++        chatgpt,
++        "ChatGPT GCash payment continue",
++        "POST",
++        "https://chatgpt.com" + path,
++        log,
++        json=body,
++        headers=_openai_checkout_headers(chatgpt, path, checkout),
++        timeout=DEFAULT_TIMEOUT,
++    )
++    if response.status_code >= 400:
++        raise ProtocolError(response.status_code, f"GCash payment continue failed: {response.text[:500]}")
++    payload = response_json(response, "GCash payment continue")
++    status = str(payload.get("status") or "").lower()
++    if status in {"failed", "error"} or payload.get("success") is False:
++        raise ProtocolError(409, f"GCash payment continue rejected: status={status or '?'}")
++    return payload
++
++
+ def extract_oaics_gcash_provider(
+     config: ExtractionConfig,
+     chatgpt: Any,
+@@ -469,6 +537,7 @@ def extract_oaics_gcash_provider(
+     billing: dict[str, str],
+     log: Any | None,
+     *,
++    stripe: Any | None = None,
+     stage_callback: Callable[[str], None] | None = None,
+ ) -> dict[str, str]:
+     """Run the OAICS custom-payment GCash path from the reference project."""
+@@ -497,15 +566,29 @@ def extract_oaics_gcash_provider(
+     confirmed = confirm_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
+     started = start_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
+     action = started.get("next_action") if isinstance(started.get("next_action"), dict) else {}
+-    url = str(action.get("url") or "").strip()
++    raw_url = _custom_action_url(started)
++    url = raw_url
++    if stripe is not None and raw_url:
++        provider_config = provider_redirect_config("gcash")
++        url = resolve_external_redirect(
++            stripe,
++            raw_url,
++            preferred_hosts=tuple(provider_config["preferred_hosts"]),
++            log=log,
++        ) or raw_url
+     if stage_callback:
+         stage_callback("redirect_resolution")
+     return {
+         "payment_method_id": custom_method_id,
+-        "stripe_redirect_url": "",
++        "stripe_redirect_url": raw_url,
+         "provider_url": url,
+         "gcash_url": url,
+-        "payment_method_type": str(action.get("paymentMethodType") or "gcash"),
++        "payment_method_type": str(
++            action.get("paymentMethodType")
++            or action.get("payment_method_type")
++            or action.get("type")
++            or "gcash"
++        ),
+         "confirm_return_url": str(confirmed.get("confirm_return_url") or ""),
+     }
+ 
+@@ -524,7 +607,7 @@ def extract_oaics_provider(
+     init_payload = openai_checkout_init_payload(checkout)
+     if payment_method == "gcash":
+         return extract_oaics_gcash_provider(
+-            config, chatgpt, checkout, billing, log, stage_callback=stage_callback
++            config, chatgpt, checkout, billing, log, stripe=stripe, stage_callback=stage_callback
+         )
+     ensure_payment_method_offered(init_payload, payment_method, "oaics checkout")
+     ctx = stripe_context(init_payload, checkout)
+diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
+index 3bc10f9..1b12a38 100644
+--- a/payment_link_extractor/transport.py
++++ b/payment_link_extractor/transport.py
+@@ -291,6 +291,23 @@ def stage_http_request(
+     return response
+ 
+ 
++def openai_sentinel_token(session: Any) -> str:
++    """Return an optional Sentinel token supplied by the caller's session.
++
++    Browser captures show that only the custom-checkout confirmation request
++    carries ``OpenAI-Sentinel-Token``.  The token is short-lived and must not
++    be embedded in source; callers may inject it on a transport session (or
++    through the environment for a one-off run).
++    """
++    value = getattr(session, "openai_sentinel_token", "")
++    if not value:
++        headers = getattr(session, "headers", {})
++        value = headers.get("OpenAI-Sentinel-Token") or headers.get("openai-sentinel-token")
++    if not value:
++        value = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
++    return str(value or "").strip()
++
++
+ def is_network_exception(exc: BaseException) -> bool:
+     """Return whether an exception indicates a transport failure.
+ 
+@@ -339,6 +356,7 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
+ class DefaultTransportFactory:
+     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
+         device_id = str(uuid.uuid4())
++        session_id = str(uuid.uuid4())
+         session = new_session()
+         session.headers.update(
+             {
+@@ -350,7 +368,17 @@ class DefaultTransportFactory:
+                 "Referer": "https://chatgpt.com/",
+                 "Content-Type": "application/json",
+                 "oai-device-id": device_id,
++                "oai-session-id": session_id,
+                 "oai-language": country_locale(config),
++                # These values match the current browser checkout contract;
++                # environment overrides keep the transport forward-compatible
++                # when the web deployment rotates its build identifier.
++                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
++                "oai-client-version": os.getenv(
++                    "OPLL_OAI_CLIENT_VERSION",
++                    "prod-46437587156517d920436051cb9ab60a95f0503a",
++                ),
++                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
+                 "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+                 "sec-ch-ua-mobile": "?0",
+                 "sec-ch-ua-platform": '"Windows"',
+@@ -360,6 +388,15 @@ class DefaultTransportFactory:
+                 "Cookie": f"oai-did={device_id}",
+             }
+         )
++        # Deployment attestation is browser-generated and optional.  Never
++        # bake a captured value into the repository; operators can inject a
++        # fresh value for environments that enforce it.
++        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
++        if attestation:
++            session.headers["oai-web-deployment-attestation"] = attestation
++        sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
++        if sentinel:
++            session.openai_sentinel_token = sentinel
+         set_proxy_url(session, proxy)
+         return session
+ 
+diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
+index bbec0fa..cfae27d 100644
+--- a/tests/test_gcash_support.py
++++ b/tests/test_gcash_support.py
+@@ -6,7 +6,11 @@ from types import SimpleNamespace
+ 
+ from payment_link_extractor.application import _normalize_config
+ from payment_link_extractor.config import billing_for_country, country_for_payment_method
+-from payment_link_extractor.flows.oaics import extract_oaics_provider
++from payment_link_extractor.flows.oaics import (
++    _custom_action_url,
++    continue_custom_checkout_method,
++    extract_oaics_provider,
++)
+ from payment_link_extractor.models import ExtractionConfig
+ from payment_link_extractor.web.app import create_app
+ from payment_link_extractor.web.routes import _config_from_payload
+@@ -72,6 +76,12 @@ class _ChatGPT:
+         raise AssertionError(f"unexpected request: {method} {url}")
+ 
+ 
++class _ChatGPTWithSentinel(_ChatGPT):
++    def __init__(self) -> None:
++        super().__init__()
++        self.headers = {"OpenAI-Sentinel-Token": "sentinel-fixture"}
++
++
+ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
+     chatgpt = _ChatGPT()
+     checkout = {
+@@ -108,6 +118,67 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
+     ]
+ 
+ 
++def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
++    chatgpt = _ChatGPTWithSentinel()
++    checkout = {
++        "cs_id": "oaics_fixture",
++        "billing_country": "PH",
++        "processor_entity": "openai_ie",
++    }
++    config = ExtractionConfig(
++        access_token="token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="",
++        country="PH",
++        payment_method="gcash",
++        apply_checkout_update=False,
++    )
++    # Reuse the public flow so the fake records the exact header contract.
++    result = extract_oaics_provider(
++        config,
++        chatgpt,
++        SimpleNamespace(),
++        {
++            **checkout,
++            "session_kind": "openai_custom_checkout",
++            "currency": "PHP",
++            "custom_payment_methods": [{"id": "cpmt_gcash", "name": "GCash"}],
++        },
++        billing_for_country("PH").to_dict(),
++        None,
++    )
++    assert result["gcash_url"].endswith("/fixture")
++    confirm = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/confirm"))
++    assert confirm[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
++
++
++def test_gcash_action_url_accepts_redirect_to_url_shape() -> None:
++    assert _custom_action_url({"next_action": {"redirect_to_url": {"url": "https://adyen.test/pay"}}}) == "https://adyen.test/pay"
++
++
++def test_gcash_continue_callback_adds_checkout_session_id() -> None:
++    chatgpt = _ChatGPT()
++    checkout = {"cs_id": "oaics_fixture", "billing_country": "PH", "processor_entity": "openai_ie"}
++    # The fake does not have a continue response in the old fixture, so add a
++    # narrow request-only transport that mirrors the captured JSON endpoint.
++    original = chatgpt.request
++
++    def request(method: str, url: str, **kwargs: object) -> _Response:
++        if url.endswith("/custom_payment_method/continue"):
++            assert kwargs["json"] == {"redirect_result": "fixture", "checkout_session_id": "oaics_fixture"}
++            return _Response(200, {"status": "succeeded"})
++        return original(method, url, **kwargs)
++
++    chatgpt.request = request  # type: ignore[method-assign]
++    payload = continue_custom_checkout_method(
++        chatgpt,
++        checkout,
++        {"redirect_result": "fixture"},
++        None,
++    )
++    assert payload["status"] == "succeeded"
++
++
+ def test_extractor_ui_contains_gcash_fixed_country_behavior() -> None:
+     html = (ROOT / "payment_link_extractor/web/templates/index.html").read_text(encoding="utf-8")
+     javascript = (ROOT / "payment_link_extractor/web/static/app.js").read_text(encoding="utf-8")

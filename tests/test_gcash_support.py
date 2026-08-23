@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 from payment_link_extractor.application import _normalize_config
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
-from payment_link_extractor.flows.oaics import extract_oaics_provider
+from payment_link_extractor.flows.oaics import (
+    _custom_action_url,
+    continue_custom_checkout_method,
+    extract_oaics_provider,
+)
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.routes import _config_from_payload
@@ -72,6 +76,12 @@ class _ChatGPT:
         raise AssertionError(f"unexpected request: {method} {url}")
 
 
+class _ChatGPTWithSentinel(_ChatGPT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.headers = {"OpenAI-Sentinel-Token": "sentinel-fixture"}
+
+
 def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
     chatgpt = _ChatGPT()
     checkout = {
@@ -106,6 +116,67 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
         "/payments/checkout/confirm",
         "/payments/checkout/custom_payment_method/start",
     ]
+
+
+def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
+    chatgpt = _ChatGPTWithSentinel()
+    checkout = {
+        "cs_id": "oaics_fixture",
+        "billing_country": "PH",
+        "processor_entity": "openai_ie",
+    }
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="PH",
+        payment_method="gcash",
+        apply_checkout_update=False,
+    )
+    # Reuse the public flow so the fake records the exact header contract.
+    result = extract_oaics_provider(
+        config,
+        chatgpt,
+        SimpleNamespace(),
+        {
+            **checkout,
+            "session_kind": "openai_custom_checkout",
+            "currency": "PHP",
+            "custom_payment_methods": [{"id": "cpmt_gcash", "name": "GCash"}],
+        },
+        billing_for_country("PH").to_dict(),
+        None,
+    )
+    assert result["gcash_url"].endswith("/fixture")
+    confirm = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/confirm"))
+    assert confirm[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
+
+
+def test_gcash_action_url_accepts_redirect_to_url_shape() -> None:
+    assert _custom_action_url({"next_action": {"redirect_to_url": {"url": "https://adyen.test/pay"}}}) == "https://adyen.test/pay"
+
+
+def test_gcash_continue_callback_adds_checkout_session_id() -> None:
+    chatgpt = _ChatGPT()
+    checkout = {"cs_id": "oaics_fixture", "billing_country": "PH", "processor_entity": "openai_ie"}
+    # The fake does not have a continue response in the old fixture, so add a
+    # narrow request-only transport that mirrors the captured JSON endpoint.
+    original = chatgpt.request
+
+    def request(method: str, url: str, **kwargs: object) -> _Response:
+        if url.endswith("/custom_payment_method/continue"):
+            assert kwargs["json"] == {"redirect_result": "fixture", "checkout_session_id": "oaics_fixture"}
+            return _Response(200, {"status": "succeeded"})
+        return original(method, url, **kwargs)
+
+    chatgpt.request = request  # type: ignore[method-assign]
+    payload = continue_custom_checkout_method(
+        chatgpt,
+        checkout,
+        {"redirect_result": "fixture"},
+        None,
+    )
+    assert payload["status"] == "succeeded"
 
 
 def test_extractor_ui_contains_gcash_fixed_country_behavior() -> None:
