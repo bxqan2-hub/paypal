@@ -22,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", help="path to a .env file")
     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")
     parser.add_argument(
+        "--session-token",
+        default=os.getenv("OPLL_SESSION_TOKEN", ""),
+        help="NextAuth sessionToken from the same account export; prefer OPLL_SESSION_TOKEN env",
+    )
+    parser.add_argument(
         "--checkout-proxy",
         default=os.getenv("OPLL_CHECKOUT_PROXY", ""),
         help="checkout + Stripe/provider proxy",
@@ -79,6 +84,7 @@ def main() -> int:
         result = extract_payment_link(
             ExtractionConfig(
                 access_token=token,
+                session_token=str(args.session_token or "").strip(),
                 checkout_proxy=args.checkout_proxy,
                 update_proxy=args.update_proxy,
                 stripe_hcaptcha_token=args.stripe_hcaptcha_token,
