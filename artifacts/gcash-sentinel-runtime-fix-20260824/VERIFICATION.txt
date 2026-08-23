@@ -1,0 +1,95 @@
+BRANCH_FIELD_RESULT=main / GCash Sentinel runtime and proxy lifecycle / checkout now uses the current versioned SDK, waits for bootstrap attestation, keeps GCash account headers off the initial create request, starts the local proxy bridge lazily, and reports proof/edge state instead of silently falling back
+BASE_COMMIT=917cd57ca5c279c97b662f705909ac3d8347f095
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+CHANGED_PATHS=.env.example;iprocket_chain_bridge.py;payment_link_extractor/checkout.py;payment_link_extractor/transport.py;tests/test_gcash_support.py
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-runtime-fix-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-runtime-fix-20260824\DIFF_FILE
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-runtime-fix-20260824\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-runtime-fix-20260824\ROLLBACK.sh
+
+ORIGINAL_SHA256
+.env.example=a06ca210442741afdfb5155d535912fbc9b924e5b40db23a88e5abf80697ee9e
+iprocket_chain_bridge.py=e83382b061f044945d4a02eded641b2417aa86bf3ccbfb88ef4526961b23a91d
+payment_link_extractor/checkout.py=953da62ae923163878d802657b9945ba8d47518a6ec74b947c532b7571ba1234
+payment_link_extractor/transport.py=386dd6ddb2001f6b7a0628ba52f464029c4a2bf050c50300e485acd23a9ba676
+tests/test_gcash_support.py=707b50fc7537ac084e8db9792dd5ddaecb595addccdf58532abdc7fb90ccb291
+
+MODIFIED_SHA256
+.env.example=6ebeb8245bfb5c7baec5287746e29f109a3d1a5ae43ace507438207c2e4c22eb
+iprocket_chain_bridge.py=ccec9efed569295e56889fc9fdc198e730b607c8ad35eb1bdb10da5c152c8e33
+payment_link_extractor/checkout.py=3984a3d37c8dea9329ff2003db7e2aca0c2ef666d75a75026e15024d5f4720ed
+payment_link_extractor/transport.py=a49e922677ffcf26bd97ee0a501e275851703852d48e2fdd32aff535453fc88b
+tests/test_gcash_support.py=48e990d46443fd1c7d51461bc2e2517b783bfb66fb81c97a5e75cc1745aeae30
+
+EVIDENCE_REVIEW
+HAR4_SHA256=67baf527107e784043f31a3ea49998057e7ae93baa46faf0d7aa76c167c19ddf
+HAR5_SHA256=b5269fb42259983426739641941d554b8c57de1dca6ebf507a98cd71e660e36c
+HAR4_CHECKOUT=HTTP 200; content-length header 245; deployment-attestation length 291; Sentinel token present; capture ordering is incomplete for the frame URL
+HAR5_CHECKOUT=HTTP 200; content-length header 245; deployment-attestation length 291; Sentinel token present; frame.html?sv=20260810913b
+HAR_EDGE=successful checkout responses use the Manila (MNL) edge
+LATEST_TASKS=c42fe0b8 had 4 checkout-create unusual-activity responses; 59142d94 had 3 such responses plus one BoringSSL connection close; neither logged a checkout session id
+TASK_ACCOUNT_MATCH=0; the live task snapshot is a masked repairman.com account, not either of the two zlhnb6.com identities represented by HAR4/HAR5
+PEER_LOG=the pasted successful flow reaches Sentinel, creates oaics_ sessions, and reaches PH checkout/update/provider stages
+
+BASELINE
+COMMAND=clean detached worktree at BASE_COMMIT; .\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD 917cd57 before the Sentinel runtime patch
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 57%]
+......................................................                   [100%]
+126 passed in 0.91s
+LITERAL_OUTPUT_END
+BASELINE_EXIT=0
+RESULT=the original suite passed before the runtime patch
+
+MODIFIED
+COMMAND=clean detached worktree with DIFF_FILE applied; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+INPUT=the five changed paths listed above with DIFF_FILE applied
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 54%]
+.............................................................            [100%]
+133 passed in 0.90s
+LITERAL_OUTPUT_END
+MODIFIED_EXIT=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT=(empty)
+COMPILE_EXIT=0
+COMMAND=git diff --check
+LITERAL_OUTPUT=(empty; line-ending notices are informational)
+DIFF_CHECK_EXIT=0
+RESULT=the modified suite passed, including dynamic loader/frame ordering, bootstrap metadata filtering, strict GCash fallback, account-header timing, bridge readiness, and checkout failure diagnostics
+
+RUNTIME_SMOKE
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c <BrowserSentinelProvider fixture startup with require-attestation=0>
+LITERAL_OUTPUT=START_OK True False 20260810913b
+EXIT_STATUS=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c <BrowserSentinelProvider fixture startup with default attestation requirement>
+LITERAL_OUTPUT=EXPECTED_START_ERROR RuntimeError Sentinel bootstrap attestation unavailable sdk_version=? attestation_present=False
+EXIT_STATUS=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c <lazy bridge readiness probe>
+LITERAL_OUTPUT=BRIDGE_READY=1
+EXIT_STATUS=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c <standalone bridge with blank subscription URL>
+LITERAL_OUTPUT=STANDALONE_BRIDGE_READY=1; STANDALONE_BRIDGE_EXIT=1 (terminated after readiness probe)
+EXIT_STATUS=0
+
+ROLLBACK
+COMMAND="C:\Program Files\Git\bin\bash.exe" C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-runtime-fix-20260824\ROLLBACK.sh <another detached copy>
+INPUT=detached BASE_COMMIT copy with DIFF_FILE applied
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+RESTORED_BEHAVIOR=unversioned Sentinel startup, optional fallback, original account-header timing, and original bridge entrypoint
+ROLLBACK_STATUS=restored
+ROLLBACK_SCRIPT_EXIT=0
+then C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+........................................................................ [ 57%]
+......................................................                   [100%]
+126 passed in 0.68s
+ROLLBACK_RESTORED_TEST_EXIT=0
+ROLLBACK_STATUS_OUTPUT=(empty)
+LITERAL_OUTPUT_END
+RESULT=ROLLBACK.sh reversed DIFF_FILE on another copy, restored the original test count and a clean Git status
+EXIT_STATUS=0
+RESTORED_BEHAVIOR_STATUS=the rollback copy returned to the original 126-test behavior; MODIFIED_FILE and the primary working tree remain on the changed branch

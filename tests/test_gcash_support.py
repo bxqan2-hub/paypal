@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from payment_link_extractor.application import (
     _normalize_config,
     _should_apply_checkout_update,
@@ -13,6 +15,7 @@ from payment_link_extractor.application import (
 from payment_link_extractor.auth import account_email, account_id, extract_access_token, normalize_access_token
 from payment_link_extractor.checkout import create_checkout
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
+from payment_link_extractor.errors import ProtocolError
 from payment_link_extractor.flows.oaics import (
     _custom_action_url,
     continue_custom_checkout_method,
@@ -88,6 +91,7 @@ class _Response:
         self.status_code = status_code
         self._payload = payload
         self.text = json.dumps(payload)
+        self.headers: dict[str, str] = {}
 
     def json(self) -> dict[str, object]:
         return self._payload
@@ -377,11 +381,21 @@ def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
     )
     built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
     assert built is session
-    assert session.headers["chatgpt-account-id"] == "acct-fixture"
+    assert "chatgpt-account-id" not in session.headers
+    assert "x-oai-is-pending-updates" not in session.headers
+    assert session.openai_account_id == "acct-fixture"
     assert session.headers["oai-client-build-number"] == "9723596"
     assert session.headers["x-oai-is-client-observation"] == "v1.r.p.observation-fixture"
     assert session.openai_sentinel_token == "sentinel-fixture"
     assert session.openai_sentinel_so_token == "so-fixture"
+    initial = session.refresh_openai_request_headers(
+        "POST", "https://chatgpt.com/backend-api/payments/checkout"
+    )
+    assert "chatgpt-account-id" not in initial
+    dynamic = session.refresh_openai_request_headers(
+        "POST", "https://chatgpt.com/backend-api/payments/checkout/taxes"
+    )
+    assert dynamic["chatgpt-account-id"] == "acct-fixture"
 
 
 def test_transport_matches_current_gcash_locale_and_rotates_observation(monkeypatch) -> None:
@@ -455,6 +469,131 @@ def test_sentinel_headers_prefer_fresh_provider_flow() -> None:
     assert headers["OpenAI-Sentinel-Token"] == "fresh-token"
     assert headers["oai-web-deployment-attestation"] == "fresh-attestation"
     assert provider.calls == [("checkout_session_approval", "https://chatgpt.com/checkout/fixture")]
+
+
+def test_sentinel_version_loader_and_frame_url_are_pinned() -> None:
+    loader = "export{a};const u='/sentinel/20260810913b/sdk.js';"
+    assert transport._sentinel_version_from_loader(loader) == "20260810913b"
+    assert transport._sentinel_frame_url("20260810913b").endswith(
+        "/backend-api/sentinel/frame.html?sv=20260810913b"
+    )
+    assert transport._sentinel_version_from_loader("no sdk here") == ""
+    assert transport._sentinel_frame_url("bad?sv=inject").endswith("/sentinel/frame.html")
+
+
+def test_browser_sentinel_captures_only_bootstrap_metadata() -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider._attestation = ""
+    provider._bootstrap_session_id = ""
+    expressions: list[str] = []
+
+    def fake_eval(expression: str, timeout: float = 75.0) -> object:
+        expressions.append(expression)
+        return {
+            "attestation": "fixture-attestation",
+            "locale": "en-US",
+            "sessionId": "fixture-bootstrap-session",
+        }
+
+    provider._eval = fake_eval
+    assert provider._capture_bootstrap(1.0) is True
+    assert provider._attestation == "fixture-attestation"
+    assert provider._bootstrap_session_id == "fixture-bootstrap-session"
+    assert "accessToken" not in expressions[0]
+
+
+def test_browser_sentinel_opens_authenticated_page_before_versioned_frame(monkeypatch) -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider.binary = "fixture-agent-browser"
+    provider.access_token = "fixture-token"
+    provider.device_id = "fixture-device"
+    provider.session_id = "fixture-session"
+    provider._started = False
+    provider._failed = False
+    provider._launch_args_used = False
+    provider._attestation = ""
+    events: list[object] = []
+    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "auto")
+
+    def fake_run(args: list[str], timeout: float = 75.0) -> object:
+        events.append(tuple(args))
+        return {}
+
+    def fake_capture(wait_seconds: float = 0.0) -> bool:
+        provider._attestation = "fixture-attestation"
+        events.append("bootstrap")
+        return True
+
+    provider._run = fake_run
+    provider._capture_bootstrap = fake_capture
+    provider._resolve_sentinel_version = lambda: "20260810913b"
+    provider._wait_for_sentinel_sdk = lambda wait_seconds=10.0: True
+    provider._sync_cookies = lambda: events.append("cookies")
+    provider._start()
+
+    auth_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and "--headers" in event
+        and "https://chatgpt.com/?promo_campaign=plus-1-month-free" in event
+    )
+    frame_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple) and any("frame.html?sv=20260810913b" in item for item in event)
+    )
+    assert auth_index < frame_index
+
+
+def test_browser_sentinel_resolves_version_from_live_loader_shape() -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider._sentinel_sdk_version = ""
+    provider._eval = lambda expression, timeout=75.0: (
+        '(()=>import("/sentinel/20260810913b/sdk.js"))()'
+    )
+    assert provider._resolve_sentinel_version() == "20260810913b"
+    assert provider._sentinel_sdk_version == "20260810913b"
+
+
+def test_strict_gcash_sentinel_does_not_silently_fall_back(monkeypatch) -> None:
+    class Provider:
+        def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+            raise RuntimeError("fixture browser startup failed")
+
+    monkeypatch.delenv("OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", raising=False)
+    session = SimpleNamespace(
+        openai_sentinel_provider=Provider(),
+        openai_sentinel_strict=True,
+    )
+    with pytest.raises(transport.ConfigurationError, match="GCash Sentinel bootstrap failed"):
+        transport.openai_sentinel_headers(session, flow="chatgpt_checkout")
+
+
+def test_local_vendor_bridge_is_started_and_verified(monkeypatch) -> None:
+    import iprocket_chain_bridge
+
+    calls: list[str] = []
+
+    class Probe:
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(
+        iprocket_chain_bridge,
+        "ensure_background_server",
+        lambda: calls.append("ensure") or True,
+    )
+    monkeypatch.setattr(
+        transport.socket,
+        "create_connection",
+        lambda address, timeout=0.25: calls.append(f"probe:{address[1]}") or Probe(),
+    )
+    transport._ensure_iprocket_bridge_listener(
+        "http://iprb_fixture:fixture@127.0.0.1:18796"
+    )
+    transport._ensure_iprocket_bridge_listener("http://proxy.example:8080")
+    assert calls == ["ensure", "probe:18796", "close"]
 
 
 def test_browser_sentinel_generates_token_before_ping() -> None:
@@ -565,6 +704,30 @@ def test_gcash_initial_checkout_matches_har_sentinel_contract() -> None:
     assert len(json.dumps(call[2]["json"], separators=(",", ":"))) == 245
     assert call[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
     assert call[2]["headers"]["OpenAI-Sentinel-SO-Token"] == "so-fixture"
+
+
+def test_gcash_checkout_failure_records_status_edge_and_proof_state() -> None:
+    class FailingChatGPT(_ChatGPTWithSentinel):
+        def request(self, method: str, url: str, **kwargs: object) -> _Response:
+            response = _Response(403, {"detail": "unusual activity"})
+            response.headers["cf-ray"] = "fixture-ray-MNL"
+            return response
+
+    config = ExtractionConfig(
+        access_token="token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="PH",
+        payment_method="gcash",
+        apply_checkout_update=False,
+    )
+    with pytest.raises(ProtocolError) as caught:
+        create_checkout(config, FailingChatGPT(), None)
+    message = str(caught.value)
+    assert "HTTP 403" in message
+    assert "edge=MNL" in message
+    assert "sentinel=yes" in message
+    assert "attestation=no" in message
 
 
 def test_gcash_action_url_accepts_redirect_to_url_shape() -> None:

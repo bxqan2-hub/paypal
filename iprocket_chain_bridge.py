@@ -242,6 +242,10 @@ def stop_background_server() -> None:
 
 
 if __name__ == "__main__":
-    load_credential(force=True)
+    # Do not preload the optional subscription credential here.  The web
+    # transport passes vendor credentials per CONNECT request, and a blank
+    # subscription URL previously made START.bat exit before opening the
+    # listener.  Subscription-based requests still load lazily in
+    # ``open_chain`` when no per-request credential is supplied.
     with Server((LISTEN_HOST, LISTEN_PORT), Handler) as server:
         server.serve_forever()

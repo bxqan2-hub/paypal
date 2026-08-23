@@ -183,7 +183,35 @@ def create_checkout(
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise ProtocolError(response.status_code, f"checkout create failed: {response.text[:500]}")
+        response_headers = getattr(response, "headers", {})
+        cf_ray = ""
+        if hasattr(response_headers, "get"):
+            cf_ray = str(response_headers.get("cf-ray") or response_headers.get("CF-Ray") or "")
+        edge = cf_ray.rsplit("-", 1)[-1].upper() if "-" in cf_ray else "?"
+        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+        sdk_version = str(getattr(provider, "_sentinel_sdk_version", "") or "?")
+        session_headers = getattr(chatgpt, "headers", {})
+        sentinel_present = "OpenAI-Sentinel-Token" in headers or (
+            hasattr(session_headers, "get")
+            and bool(
+                session_headers.get("OpenAI-Sentinel-Token")
+                or session_headers.get("openai-sentinel-token")
+            )
+        )
+        attestation_present = "oai-web-deployment-attestation" in headers or (
+            hasattr(session_headers, "get")
+            and bool(session_headers.get("oai-web-deployment-attestation"))
+        )
+        protection = (
+            f"sentinel={'yes' if sentinel_present else 'no'}, "
+            f"attestation={'yes' if attestation_present else 'no'}, "
+            f"sdk={sdk_version}, edge={edge}"
+        )
+        raise ProtocolError(
+            response.status_code,
+            f"checkout create failed (HTTP {response.status_code}; {protection}): "
+            f"{safe_log_text(response.text)}",
+        )
     payload = response_json(response, "checkout create")
     session_id = extract_checkout_session_id(payload)
     kind = checkout_session_kind(session_id)
