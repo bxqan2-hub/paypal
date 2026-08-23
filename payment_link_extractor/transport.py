@@ -61,6 +61,16 @@ _SENTINEL_VERSION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SENTINEL_LOADER_RE = re.compile(r"/sentinel/([A-Za-z0-9_-]+)/sdk\.js")
 
 
+def _agent_browser_error_detail(value: Any) -> str:
+    """Keep the useful CLI failure line while removing credential material."""
+    text = safe_log_text(value, 800)
+    text = re.sub(r"(?i)(authorization\s*[=:]\s*['\"]?)([^'\"\s,}]+)", r"\1***", text)
+    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
+    text = re.sub(r"(?i)(__secure-next-auth\.session-token\s*[=:]\s*)([^;\s]+)", r"\1***", text)
+    text = re.sub(r"(?i)(oai-at\s*[=:]\s*)([^;\s]+)", r"\1***", text)
+    return text.replace("\r", " ").replace("\n", " ").strip()
+
+
 def _sentinel_frame_url(version: str = "") -> str:
     """Build the version-pinned Sentinel frame URL from a validated version."""
     value = str(version or "").strip()
@@ -170,7 +180,7 @@ def _iprocket_protocol(port: int, scheme: str = "") -> str:
         return "socks5"
     if lowered in {"http", "https"}:
         return "http"
-    if port in {9595, 59999, 619999}:
+    if port in {9595, 59999, 61999}:
         return "socks5"
     if port in {5959, 61999}:
         return "http"
@@ -579,9 +589,11 @@ class BrowserSentinelProvider:
         user_agent: str,
         proxy: str,
         transport_session: Any,
+        session_token: str = "",
         log: Any | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
+        self.session_token = str(session_token or "").strip()
         self.device_id = str(device_id or "").strip()
         self.session_id = str(session_id or "").strip()
         self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
@@ -671,7 +683,9 @@ class BrowserSentinelProvider:
                 except OSError:
                     time.sleep(0.05)
         if status != 0:
-            raise RuntimeError(f"agent-browser exited with status {status}")
+            detail = _agent_browser_error_detail(text)
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"agent-browser exited with status {status}{suffix}")
         return _decode_agent_browser_output(text)
 
     def _eval(self, expression: str, timeout: float = 75.0) -> Any:
@@ -769,6 +783,21 @@ class BrowserSentinelProvider:
                     "https://chatgpt.com",
                 ]
             )
+            if getattr(self, "session_token", ""):
+                self._run(
+                    [
+                        "cookies",
+                        "set",
+                        "__Secure-next-auth.session-token",
+                        self.session_token,
+                        "--url",
+                        "https://chatgpt.com",
+                        "--httpOnly",
+                        "--secure",
+                        "--sameSite",
+                        "Lax",
+                    ]
+                )
             # Load the authenticated application shell before resolving the
             # Sentinel loader.  Successful browser captures load the current
             # versioned SDK/frame from this shell, not an unauthenticated,
@@ -974,7 +1003,9 @@ class DefaultTransportFactory:
             dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
             normalized_url = str(url or "").lower()
             is_initial_checkout = normalized_url.endswith("/backend-api/payments/checkout")
-            if payment_method == "gcash" and account and not is_initial_checkout:
+            is_checkout_api = "/backend-api/payments/checkout" in normalized_url
+            is_route_data = normalized_url.endswith(".data") or ".data?" in normalized_url
+            if payment_method == "gcash" and account and is_checkout_api and not is_initial_checkout and not is_route_data:
                 dynamic["chatgpt-account-id"] = account
             if method.upper() == "POST" and (
                 is_initial_checkout
@@ -1018,6 +1049,7 @@ class DefaultTransportFactory:
                 session.openai_sentinel_strict = True
                 session.openai_sentinel_provider = BrowserSentinelProvider(
                     access_token=config.access_token,
+                    session_token=config.session_token,
                     device_id=device_id,
                     session_id=session_id,
                     user_agent=user_agent,

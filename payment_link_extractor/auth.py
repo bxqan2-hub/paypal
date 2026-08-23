@@ -7,6 +7,12 @@ from typing import Any
 
 
 _TOKEN_KEY_NAMES = {"accesstoken", "access_token", "token", "at"}
+_SESSION_TOKEN_KEY_NAMES = {
+    "sessiontoken",
+    "session_token",
+    "__secure_next_auth_session_token",
+    "__secure_next_auth.session_token",
+}
 _KEYED_TOKEN_RE = re.compile(
     r"(?:^|[{,;\s])['\"]?(?:access[_-]?token|accesstoken|token|at)['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=\-]{8,})",
     re.IGNORECASE,
@@ -92,6 +98,58 @@ def extract_access_token(raw: Any) -> str:
 
 def normalize_access_token(raw: str) -> str:
     return extract_access_token(raw)
+
+
+def _clean_session_token(value: Any) -> str:
+    """Normalize a NextAuth session cookie without treating an AT as one."""
+    text = str(value or "").strip()
+    if text.lower().startswith("cookie:"):
+        text = text.split(":", 1)[1].strip()
+    # Accept a copied Cookie header or cookie jar line, but only select the
+    # named session cookie.  Never derive this value from an access token.
+    for part in re.split(r"[;\r\n]+", text):
+        name, separator, cookie_value = part.strip().partition("=")
+        if separator and _normalize_key(name) in _SESSION_TOKEN_KEY_NAMES:
+            text = cookie_value.strip()
+            break
+    text = text.strip().strip('"\'')
+    return re.sub(r"\s+", "", text)
+
+
+def _find_session_token(value: Any) -> str:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if _normalize_key(key) in _SESSION_TOKEN_KEY_NAMES:
+                found = _clean_session_token(nested)
+                if found:
+                    return found
+        for nested in value.values():
+            found = _find_session_token(nested)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_session_token(nested)
+            if found:
+                return found
+    elif isinstance(value, str):
+        found = _clean_session_token(value)
+        if found and "=" in value:
+            return found if "." in found else ""
+    return ""
+
+
+def extract_session_token(raw: Any) -> str:
+    """Extract the authenticated NextAuth JWE/session cookie from an export."""
+    value: Any = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError:
+                value = raw
+    return _find_session_token(value)
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any]:

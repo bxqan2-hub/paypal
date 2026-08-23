@@ -116,7 +116,7 @@ def open_chain(
         protocol, proxy_host, proxy_port, username, password = credential
     else:
         proxy_host, proxy_port, username, password = load_credential()
-        protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
+        protocol = "socks5" if proxy_port in {9595, 59999, 61999} else "http"
     upstream: socket.socket | None = None
     try:
         try:

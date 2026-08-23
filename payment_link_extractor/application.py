@@ -46,6 +46,7 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         access_token=token,
         checkout_proxy=str(config.checkout_proxy).strip(),
         update_proxy=str(config.update_proxy).strip(),
+        session_token=str(config.session_token or "").strip(),
         stripe_hcaptcha_token=str(config.stripe_hcaptcha_token or "").strip(),
         country=country,
         payment_method=payment_method,

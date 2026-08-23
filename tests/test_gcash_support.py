@@ -12,7 +12,13 @@ from payment_link_extractor.application import (
     _should_apply_checkout_update,
     extract_payment_link,
 )
-from payment_link_extractor.auth import account_email, account_id, extract_access_token, normalize_access_token
+from payment_link_extractor.auth import (
+    account_email,
+    account_id,
+    extract_access_token,
+    extract_session_token,
+    normalize_access_token,
+)
 from payment_link_extractor.checkout import create_checkout
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
 from payment_link_extractor.errors import ProtocolError
@@ -47,6 +53,24 @@ def test_gcash_forces_ph_country_in_route_and_worker_config() -> None:
     normalized = _normalize_config(route_config)
     assert normalized.country == "PH"
     assert billing_for_country(normalized.country).country == "PH"
+
+
+def test_session_token_is_preserved_from_account_export() -> None:
+    session = "JWE.fixture.part.one.two"
+    payload = {
+        "accessToken": "access-fixture",
+        "sessionToken": session,
+        "checkout_proxy": "http://proxy.example:8080",
+        "payment_method": "gcash",
+    }
+    assert extract_session_token(payload) == session
+    config = _config_from_payload(payload)
+    assert config.session_token == session
+
+
+def test_session_token_can_be_read_from_cookie_header() -> None:
+    session = "JWE.cookie.part.one.two"
+    assert extract_session_token({"cookies": f"oai-did=x; __Secure-next-auth.session-token={session}"}) == session
 
 
 def test_gcash_embedded_promo_skips_legacy_update_requirement() -> None:
@@ -512,6 +536,7 @@ def test_browser_sentinel_opens_authenticated_page_before_versioned_frame(monkey
     provider._failed = False
     provider._launch_args_used = False
     provider._attestation = ""
+    provider.session_token = "fixture-session-cookie"
     events: list[object] = []
     monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "auto")
 
@@ -544,6 +569,34 @@ def test_browser_sentinel_opens_authenticated_page_before_versioned_frame(monkey
         if isinstance(event, tuple) and any("frame.html?sv=20260810913b" in item for item in event)
     )
     assert auth_index < frame_index
+
+
+def test_browser_sentinel_sets_nextauth_cookie_before_bootstrap(monkeypatch) -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider.binary = "fixture-agent-browser"
+    provider.access_token = "fixture-token"
+    provider.session_token = "fixture-session-cookie"
+    provider.device_id = "fixture-device"
+    provider.session_id = "fixture-session"
+    provider._started = False
+    provider._failed = False
+    provider._launch_args_used = False
+    provider._attestation = ""
+    events: list[tuple[object, ...]] = []
+    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "auto")
+    provider._run = lambda args, timeout=75.0: events.append(tuple(args)) or {}
+    provider._capture_bootstrap = lambda wait_seconds=0.0: setattr(provider, "_attestation", "att") or True
+    provider._resolve_sentinel_version = lambda: "20260810913b"
+    provider._wait_for_sentinel_sdk = lambda wait_seconds=10.0: True
+    provider._sync_cookies = lambda: None
+    provider._start()
+    cookie_index = next(i for i, event in enumerate(events) if "__Secure-next-auth.session-token" in event)
+    promo_index = next(
+        i
+        for i, event in enumerate(events)
+        if any("promo_campaign=plus-1-month-free" in str(item) for item in event)
+    )
+    assert cookie_index < promo_index
 
 
 def test_browser_sentinel_resolves_version_from_live_loader_shape() -> None:
@@ -594,6 +647,10 @@ def test_local_vendor_bridge_is_started_and_verified(monkeypatch) -> None:
     )
     transport._ensure_iprocket_bridge_listener("http://proxy.example:8080")
     assert calls == ["ensure", "probe:18796", "close"]
+
+
+def test_iprocket_61999_uses_socks5_gateway_protocol() -> None:
+    assert transport._iprocket_protocol(61999) == "socks5"
 
 
 def test_browser_sentinel_generates_token_before_ping() -> None:
