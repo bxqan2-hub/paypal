@@ -8,7 +8,7 @@ from .config import DEFAULT_TIMEOUT, processor_entity_for_country
 from .errors import ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
-from .transport import response_json, set_proxy_url, stage_http_request
+from .transport import openai_sentinel_headers, response_json, set_proxy_url, stage_http_request
 
 CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
 PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
@@ -131,8 +131,18 @@ def create_checkout(
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
+        "cancel_url": "https://chatgpt.com/",
         "checkout_ui_mode": "custom",
+        "check_card_proxy": True,
     }
+    headers = {
+        "Referer": "https://chatgpt.com/",
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+    # The browser can attach a fresh Sentinel token on the initial checkout
+    # request.  Keep it optional so older deployments remain compatible.
+    headers.update(openai_sentinel_headers(chatgpt))
     response = stage_http_request(
         chatgpt,
         "ChatGPT checkout",
@@ -140,11 +150,7 @@ def create_checkout(
         "https://chatgpt.com" + path,
         log,
         json=body,
-        headers={
-            "Referer": "https://chatgpt.com/",
-            "x-openai-target-path": path,
-            "x-openai-target-route": path,
-        },
+        headers=headers,
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:

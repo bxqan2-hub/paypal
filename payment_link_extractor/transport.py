@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import base64
+import secrets
 import time
 import uuid
 from typing import Any, Protocol
@@ -13,6 +14,7 @@ try:
 except ImportError:  # pragma: no cover - installation issue handled at runtime
     requests = None  # type: ignore
 
+from .auth import account_id
 from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
 from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
@@ -48,7 +50,7 @@ class TransportFactory(Protocol):
 
 def new_session() -> Any:
     if CurlCffiSession is not None:
-        return CurlCffiSession(impersonate="firefox")
+        return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
     if requests is None:
         raise ConfigurationError("requests is required; install requirements.txt")
     return requests.Session()
@@ -294,10 +296,10 @@ def stage_http_request(
 def openai_sentinel_token(session: Any) -> str:
     """Return an optional Sentinel token supplied by the caller's session.
 
-    Browser captures show that only the custom-checkout confirmation request
-    carries ``OpenAI-Sentinel-Token``.  The token is short-lived and must not
-    be embedded in source; callers may inject it on a transport session (or
-    through the environment for a one-off run).
+    The browser sends the short-lived value on checkout creation and custom
+    checkout confirmation.  It must not be embedded in source; callers may
+    inject a fresh value on a transport session (or through the environment
+    for a one-off run).
     """
     value = getattr(session, "openai_sentinel_token", "")
     if not value:
@@ -306,6 +308,31 @@ def openai_sentinel_token(session: Any) -> str:
     if not value:
         value = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
     return str(value or "").strip()
+
+
+def openai_sentinel_so_token(session: Any) -> str:
+    """Return the optional Sentinel SO token captured on some browser runs."""
+    value = getattr(session, "openai_sentinel_so_token", "")
+    if not value:
+        headers = getattr(session, "headers", {})
+        value = headers.get("OpenAI-Sentinel-SO-Token") or headers.get(
+            "openai-sentinel-so-token"
+        )
+    if not value:
+        value = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+    return str(value or "").strip()
+
+
+def openai_sentinel_headers(session: Any) -> dict[str, str]:
+    """Build the non-secret-in-source Sentinel header pair for a request."""
+    headers: dict[str, str] = {}
+    token = openai_sentinel_token(session)
+    if token:
+        headers["OpenAI-Sentinel-Token"] = token
+    so_token = openai_sentinel_so_token(session)
+    if so_token:
+        headers["OpenAI-Sentinel-SO-Token"] = so_token
+    return headers
 
 
 def is_network_exception(exc: BaseException) -> bool:
@@ -378,7 +405,16 @@ class DefaultTransportFactory:
                     "OPLL_OAI_CLIENT_VERSION",
                     "prod-46437587156517d920436051cb9ab60a95f0503a",
                 ),
-                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
+                "x-oai-is-pending-updates": os.getenv(
+                    "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
+                ),
+                # The browser keeps one observation id for a request burst;
+                # callers may pin a captured value for diagnostics, while the
+                # default remains fresh for every transport session.
+                "x-oai-is-client-observation": os.getenv(
+                    "OPLL_OAI_IS_CLIENT_OBSERVATION",
+                    f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+                ),
                 "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
@@ -387,6 +423,17 @@ class DefaultTransportFactory:
                 "sec-fetch-site": "same-origin",
                 "Cookie": f"oai-did={device_id}",
             }
+        )
+        account = account_id(config.access_token)
+        if account:
+            session.headers["chatgpt-account-id"] = account
+        # Keep these values on the session for the GCash Sentinel adapter and
+        # for diagnostics without putting identifiers into request URLs/logs.
+        session.openai_device_id = device_id
+        session.openai_did = device_id
+        session.openai_proxy = proxy
+        session.openai_client_observation = session.headers.get(
+            "x-oai-is-client-observation", ""
         )
         # Deployment attestation is browser-generated and optional.  Never
         # bake a captured value into the repository; operators can inject a
@@ -397,6 +444,9 @@ class DefaultTransportFactory:
         sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
         if sentinel:
             session.openai_sentinel_token = sentinel
+        sentinel_so = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "").strip()
+        if sentinel_so:
+            session.openai_sentinel_so_token = sentinel_so
         set_proxy_url(session, proxy)
         return session
 

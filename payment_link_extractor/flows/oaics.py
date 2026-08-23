@@ -34,7 +34,7 @@ from ..stripe_common import (
     stripe_deferred_intent_params,
     stripe_key,
 )
-from ..transport import openai_sentinel_token, response_json, stage_http_request
+from ..transport import openai_sentinel_headers, response_json, stage_http_request
 
 
 def openai_checkout_init_payload(checkout: CheckoutData) -> dict[str, Any]:
@@ -132,8 +132,10 @@ def openai_checkout_taxes(
         "billing_name": billing["name"],
         "currency": config_currency(config).lower(),
         "processor_entity": processor,
+        "tax_id": None,
         "billing_address": {
             "line1": billing["line1"],
+            "line2": "",
             "city": billing["city"],
             "country": config.country.upper(),
             "postal_code": billing["postal_code"],
@@ -384,9 +386,7 @@ def _openai_checkout_headers(
         "x-openai-target-route": path,
     }
     if sentinel:
-        token = openai_sentinel_token(chatgpt)
-        if token:
-            headers["OpenAI-Sentinel-Token"] = token
+        headers.update(openai_sentinel_headers(chatgpt))
     return headers
 
 
@@ -555,9 +555,16 @@ def extract_oaics_gcash_provider(
 
     if stage_callback:
         stage_callback("taxes")
-    openai_checkout_taxes(config, chatgpt, checkout, billing, log)
-    state = fetch_custom_checkout_state(chatgpt, checkout, log)
+    taxes_payload = openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+    # The current browser uses the taxes response as the refreshed checkout
+    # state; it does not issue the legacy backend checkout GET.  Fall back to
+    # that endpoint only when a deployment omits custom_payment_methods from
+    # the taxes response and the original checkout state is also incomplete.
+    state = taxes_payload
     custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+    if not custom_method_id:
+        state = fetch_custom_checkout_state(chatgpt, checkout, log)
+        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
     if not custom_method_id:
         raise ProtocolError(409, "GCash custom payment method disappeared after tax refresh")
 

@@ -56,3 +56,19 @@ def account_email(access_token: str) -> str:
         if "@" in value:
             return value
     return ""
+
+
+def account_id(access_token: str) -> str:
+    """Extract the ChatGPT account UUID used by the browser API headers."""
+    payload = decode_jwt_payload(access_token)
+    auth = payload.get("https://api.openai.com/auth")
+    if isinstance(auth, dict):
+        for key in ("chatgpt_account_id", "account_id", "id"):
+            value = str(auth.get(key) or "").strip()
+            if value:
+                return value
+    for key in ("chatgpt_account_id", "account_id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""

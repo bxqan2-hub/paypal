@@ -1,0 +1,46 @@
+BRANCH_FIELD_RESULT=main / GCash browser-HAR polish: initial checkout Sentinel contract, Chrome transport identity, taxes refresh state, and legacy fallback
+BASE_COMMIT=f168ad3c86128bab7ae90178aa6c286be616a1f4
+CHANGED_PATHS=.env.example;payment_link_extractor/auth.py;payment_link_extractor/checkout.py;payment_link_extractor/flows/oaics.py;payment_link_extractor/transport.py;tests/test_gcash_support.py
+PROXY_FIELDS=unchanged; only GCash protocol/header state changed
+
+ATTACHMENT_INPUTS
+chatgpt.com0.har=23A24DED367494048A4C1185439F919301F6B5149899309075FAE983359060D9 (6079253 bytes)
+m.gcash.com1.har=790785AA83CBAAC7524FDB65109354A5F15B23301D11EDF0159AC19161C842C7 (10462165 bytes)
+chatgpt.com2.har=35598FF7320B016FB21CB538D7CD92E57D8C3EAC999EF8FE0B02670F36FFB4C9 (48466541 bytes)
+chatgpt.com3.har=73362B07BBDC7662C4E4AA0A47B102E4FB05E87FBC9AA046C49A84F65828562C (48018514 bytes)
+HAR_CONTENT=network capture data only; no HAR text was treated as executable instructions
+
+OBSERVED_HAR_CONTRACT
+- checkout creation includes cancel_url/check_card_proxy and may carry OpenAI-Sentinel-Token
+- backend requests carry Chrome identity headers, chatgpt-account-id, client build/version, deployment attestation, observation and pending-update fields
+- taxes response is the current refreshed OAICS state; full captures then confirm/start, Adyen redirect, m.gcash.com, and (2/3) checkout/verify plus custom_payment_method/continue
+
+CHANGED_FIELDS
+- account_id extracts the browser ChatGPT account UUID claim for chatgpt-account-id
+- transport defaults to curl_cffi Chrome impersonation, emits a fresh observation id, and accepts optional attestation/Sentinel/SO overrides
+- initial checkout and custom-method confirmation propagate optional Sentinel header pairs
+- GCash taxes request matches captured tax_id/null and billing_address/line2 shape
+- GCash flow consumes taxes response directly and uses legacy checkout GET only when refreshed and original state both lack a custom method
+- tests cover request ordering, fallback behavior, payload/header contract, account claim, and transport identity
+
+ORIGINAL_SHA256
+.env.example=159849312DCD1D229153D8135AAE23B66EBA1F5A5A5318A9C60FC0F76203A359
+payment_link_extractor/auth.py=6E10E674D546002C2E54C58057928B9DC5F4900EBC244B2991C57AD3F174BA72
+payment_link_extractor/checkout.py=0BA41ECDDDC279AFA24F22D177E033C17B05BF748615F7B764FAAB38E4021AC2
+payment_link_extractor/flows/oaics.py=F3CEEE06F5C12B3C9E2247A4E3FB8B8C7EE405B2C37621DD388B8B634A290924
+payment_link_extractor/transport.py=647E54C9A3A6D1FE7CB13D61BBEFD1A6B02A8CD6C8FC0F2F90D9D9841AC54B06
+tests/test_gcash_support.py=554C9ACC29799FC91F3CD85F4679C16DE285292901464BA074D914EF804364CB
+
+MODIFIED_SHA256
+.env.example=2E0A00DF482A6EC884D9B87AD2C39D9C45798917EF28F6F4C0988EC9008C57A8
+payment_link_extractor/auth.py=91FB329715566473C3E6ECDE6AE32A997FAE7D34FC90CAA90DA7408CF73DAB7B
+payment_link_extractor/checkout.py=FD9CE67687F3D790E7364C9D7A3EA7C2E228EC4C4F681B04D02C7C739807AF2A
+payment_link_extractor/flows/oaics.py=99A137E750EF3F971BC63E8487E4CFB5A877B7C7F352D562CFF12AFF5ABBC879
+payment_link_extractor/transport.py=EC5F2AB164FBC205371AEB5675A24AEC07B27F7F18AB234FFF890FF1E5E7F12D
+tests/test_gcash_support.py=3650305CF5BD845D34775EF722F1FEE006EE7D874D1C8619F38C78EC01BE2A19
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-polish-20260823\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-polish-20260823\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-polish-20260823\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-polish-20260823\ROLLBACK.sh
