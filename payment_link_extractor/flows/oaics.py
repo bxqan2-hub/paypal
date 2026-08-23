@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Callable
 from typing import Any
 
@@ -323,6 +324,192 @@ def openai_intent_confirm(
     return response_json(response, f"Stripe {label} confirm")
 
 
+def _custom_payment_methods(payload: Any) -> list[Any]:
+    value = first_value_by_key(payload, "custom_payment_methods")
+    return value if isinstance(value, list) else []
+
+
+def _gcash_custom_payment_method_id(payload: Any) -> str:
+    """Find the upstream OAICS custom-method id used by GCash."""
+    methods = _custom_payment_methods(payload)
+    candidates: list[str] = []
+    for item in methods:
+        if isinstance(item, dict):
+            identifier = str(item.get("id") or "").strip()
+            label = " ".join(
+                str(item.get(key) or "").strip().lower()
+                for key in ("name", "display_name", "type", "payment_method_type")
+            )
+        else:
+            identifier = str(item or "").strip()
+            label = identifier.lower()
+        if not identifier.startswith("cpmt_"):
+            continue
+        if "gcash" in label:
+            return identifier
+        candidates.append(identifier)
+    # PH OAICS currently publishes only GCash as a cpmt_* method.  Retaining
+    # the first id mirrors the upstream project while still preferring an
+    # explicitly labelled GCash entry when Stripe adds metadata.
+    return candidates[0] if candidates else ""
+
+
+def fetch_custom_checkout_state(
+    chatgpt: Any,
+    checkout: CheckoutData,
+    log: Any | None,
+) -> dict[str, Any]:
+    processor = processor_entity_for_country(
+        str(checkout.get("billing_country") or "PH"),
+        str(checkout.get("processor_entity") or ""),
+    )
+    path = f"/backend-api/payments/checkout/{processor}/{checkout['cs_id']}"
+    response = stage_http_request(
+        chatgpt,
+        "ChatGPT GCash custom checkout",
+        "GET",
+        "https://chatgpt.com" + path,
+        log,
+        headers={
+            "Accept": "application/json",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise ProtocolError(response.status_code, f"GCash custom checkout read failed: {response.text[:500]}")
+    payload = response_json(response, "GCash custom checkout")
+    merge_checkout_payload(checkout, payload)
+    return payload
+
+
+def confirm_custom_checkout_method(
+    chatgpt: Any,
+    checkout: CheckoutData,
+    custom_payment_method_id: str,
+    log: Any | None,
+) -> dict[str, Any]:
+    processor = processor_entity_for_country(
+        str(checkout.get("billing_country") or "PH"),
+        str(checkout.get("processor_entity") or ""),
+    )
+    path = "/backend-api/payments/checkout/confirm"
+    response = stage_http_request(
+        chatgpt,
+        "ChatGPT GCash payment-method confirm",
+        "POST",
+        "https://chatgpt.com" + path,
+        log,
+        json={
+            "checkout_session_id": checkout["cs_id"],
+            "selected_payment_method_type": custom_payment_method_id,
+        },
+        headers={
+            "Accept": "application/json",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise ProtocolError(response.status_code, f"GCash payment-method confirm failed: {response.text[:500]}")
+    payload = response_json(response, "GCash payment-method confirm")
+    status = str(payload.get("status") or "").lower()
+    if status != "success":
+        raise ProtocolError(409, f"GCash payment-method confirm rejected: status={status or '?'}")
+    return payload
+
+
+def start_custom_checkout_method(
+    chatgpt: Any,
+    checkout: CheckoutData,
+    custom_payment_method_id: str,
+    log: Any | None,
+) -> dict[str, Any]:
+    processor = processor_entity_for_country(
+        str(checkout.get("billing_country") or "PH"),
+        str(checkout.get("processor_entity") or ""),
+    )
+    path = "/backend-api/payments/checkout/custom_payment_method/start"
+    response = stage_http_request(
+        chatgpt,
+        "ChatGPT GCash payment start",
+        "POST",
+        "https://chatgpt.com" + path,
+        log,
+        json={
+            "checkout_session_id": checkout["cs_id"],
+            "custom_payment_method_type_id": custom_payment_method_id,
+        },
+        headers={
+            "Accept": "application/json",
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise ProtocolError(response.status_code, f"GCash payment start failed: {response.text[:500]}")
+    payload = response_json(response, "GCash payment start")
+    action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
+    redirect = str(action.get("url") or "").strip()
+    if str(payload.get("status") or "").lower() != "requires_action" or not redirect:
+        raise ProtocolError(502, "GCash payment start did not return a redirect URL")
+    return payload
+
+
+def extract_oaics_gcash_provider(
+    config: ExtractionConfig,
+    chatgpt: Any,
+    checkout: CheckoutData,
+    billing: dict[str, str],
+    log: Any | None,
+    *,
+    stage_callback: Callable[[str], None] | None = None,
+) -> dict[str, str]:
+    """Run the OAICS custom-payment GCash path from the reference project."""
+    state: dict[str, Any] = checkout
+    custom_method_id = _gcash_custom_payment_method_id(state)
+    for attempt in range(4):
+        if custom_method_id:
+            break
+        if attempt:
+            time.sleep(0.8 * attempt)
+        state = fetch_custom_checkout_state(chatgpt, checkout, log)
+        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+    if not custom_method_id:
+        raise ProtocolError(409, "GCash custom payment method is not available in the PH Checkout")
+
+    if stage_callback:
+        stage_callback("taxes")
+    openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+    state = fetch_custom_checkout_state(chatgpt, checkout, log)
+    custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+    if not custom_method_id:
+        raise ProtocolError(409, "GCash custom payment method disappeared after tax refresh")
+
+    if stage_callback:
+        stage_callback("payment_confirmation")
+    confirmed = confirm_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
+    started = start_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
+    action = started.get("next_action") if isinstance(started.get("next_action"), dict) else {}
+    url = str(action.get("url") or "").strip()
+    if stage_callback:
+        stage_callback("redirect_resolution")
+    return {
+        "payment_method_id": custom_method_id,
+        "stripe_redirect_url": "",
+        "provider_url": url,
+        "gcash_url": url,
+        "payment_method_type": str(action.get("paymentMethodType") or "gcash"),
+        "confirm_return_url": str(confirmed.get("confirm_return_url") or ""),
+    }
+
+
 def extract_oaics_provider(
     config: ExtractionConfig,
     chatgpt: Any,
@@ -335,6 +522,10 @@ def extract_oaics_provider(
 ) -> dict[str, str]:
     payment_method = normalize_payment_method(config.payment_method)
     init_payload = openai_checkout_init_payload(checkout)
+    if payment_method == "gcash":
+        return extract_oaics_gcash_provider(
+            config, chatgpt, checkout, billing, log, stage_callback=stage_callback
+        )
     ensure_payment_method_offered(init_payload, payment_method, "oaics checkout")
     ctx = stripe_context(init_payload, checkout)
     ctx["runtime_version"] = OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION

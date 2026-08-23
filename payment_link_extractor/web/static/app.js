@@ -36,6 +36,7 @@
   let checkoutProxyPoolCursor = 0;
   let updateProxyPoolCursor = 0;
   let billingProfiles = {};
+  let paypalCountryPreference = "";
 
   const elements = {};
 
@@ -294,9 +295,13 @@
   }
 
   function saveFormPreferences() {
+    const paymentMethod = byId("payment-method").value;
+    if (paymentMethod !== "gcash" && byId("country").value) {
+      paypalCountryPreference = byId("country").value;
+    }
     const preferences = {
-      country: byId("country").value,
-      payment_method: byId("payment-method").value,
+      country: paypalCountryPreference || byId("country").value,
+      payment_method: paymentMethod,
       checkout_proxy: normalizeProxyPoolText(byId("checkout-proxy").value),
       update_proxy: normalizeProxyPoolText(byId("update-proxy").value),
       proxy_source_url: byId("proxy-source-url") ? byId("proxy-source-url").value.trim() : "",
@@ -356,6 +361,26 @@
     preview.hidden = false;
   }
 
+  function syncPaymentMethodFields() {
+    const method = byId("payment-method").value;
+    const isGcash = method === "gcash";
+    const country = byId("country");
+    const countryField = byId("country-field");
+    const note = byId("gcash-country-note");
+    if (!isGcash && country.value && country.value !== "PH") {
+      paypalCountryPreference = country.value;
+    }
+    if (isGcash) {
+      if (country.value && country.value !== "PH") paypalCountryPreference = country.value;
+      country.value = "PH";
+    } else if (paypalCountryPreference && country.value === "PH") {
+      country.value = paypalCountryPreference;
+    }
+    if (countryField) countryField.hidden = isGcash;
+    if (note) note.hidden = !isGcash;
+    renderBillingPreview();
+  }
+
   function updateProxyCounts() {
     const checkoutCount = byId("checkout-proxy-count");
     const updateCount = byId("update-proxy-count");
@@ -388,7 +413,7 @@
       if (!byId("country").value && typeof defaults.country === "string") {
         byId("country").value = defaults.country;
       }
-      renderBillingPreview();
+      syncPaymentMethodFields();
       if (!byId("payment-method").value && typeof defaults.payment_method === "string") byId("payment-method").value = defaults.payment_method;
       let savedPoolId = "";
       try { savedPoolId = localStorage.getItem(SERVER_PROXY_POOL_KEY) || ""; } catch (error) { /* ignore */ }
@@ -444,7 +469,10 @@
       if (!raw) return;
       const preferences = JSON.parse(raw);
       if (!preferences || typeof preferences !== "object") return;
-      if (typeof preferences.country === "string") byId("country").value = preferences.country;
+      if (typeof preferences.country === "string") {
+        paypalCountryPreference = preferences.country;
+        byId("country").value = preferences.country;
+      }
       if (typeof preferences.payment_method === "string") byId("payment-method").value = preferences.payment_method;
       if (typeof preferences.checkout_proxy === "string") byId("checkout-proxy").value = preferences.checkout_proxy;
       if (typeof preferences.update_proxy === "string") byId("update-proxy").value = preferences.update_proxy;
@@ -465,6 +493,7 @@
       // Ignore malformed or unavailable browser storage and keep the defaults.
     }
     updateProxyCounts();
+    syncPaymentMethodFields();
   }
 
   function restoreTaskViewMode() {
@@ -496,14 +525,15 @@
   }
 
   function formOverrides() {
+    const paymentMethod = byId("payment-method").value;
     const result = {
       apply_checkout_update: byId("apply-update").checked,
       retry_count: failureRetryCount(),
       oaics_only: byId("oaics-only").checked,
     };
     const values = [
-      ["country", byId("country").value],
-      ["payment_method", byId("payment-method").value],
+      ["country", paymentMethod === "gcash" ? "PH" : byId("country").value],
+      ["payment_method", paymentMethod],
       ["checkout_proxy", byId("checkout-proxy").value.trim()],
       ["update_proxy", byId("update-proxy").value.trim()],
     ];
@@ -1743,12 +1773,19 @@
     elements.logoutButton.addEventListener("click", logout);
     elements.taskForm.addEventListener("submit", submitTask);
     elements.credentialInput.addEventListener("input", updateCredentialPreview);
-    ["country", "payment-method", "checkout-proxy", "update-proxy", "proxy-source-url", "failure-retry-count"].forEach(id => {
+    ["country", "checkout-proxy", "update-proxy", "proxy-source-url", "failure-retry-count"].forEach(id => {
       const field = byId(id);
       field.addEventListener("change", saveFormPreferences);
       field.addEventListener("input", saveFormPreferences);
     });
-    byId("country").addEventListener("change", () => renderBillingPreview());
+    byId("country").addEventListener("change", () => {
+      if (byId("payment-method").value !== "gcash") paypalCountryPreference = byId("country").value;
+      renderBillingPreview();
+    });
+    byId("payment-method").addEventListener("change", () => {
+      syncPaymentMethodFields();
+      saveFormPreferences();
+    });
     byId("refresh-proxy-source").addEventListener("click", refreshProxySource);
     ["apply-update", "rotate-checkout-proxy", "rotate-update-proxy", "oaics-only"].forEach(id => {
       byId(id).addEventListener("change", saveFormPreferences);
@@ -1842,7 +1879,7 @@
     elements.batchValidateButton = byId("batch-import-validate");
     elements.batchSubmitButton = byId("batch-import-submit");
     restoreFormPreferences();
-    renderBillingPreview();
+    syncPaymentMethodFields();
     restoreTaskViewMode();
     bindEvents();
     elements.copyTokenButton.addEventListener("click", copyAccessToken);

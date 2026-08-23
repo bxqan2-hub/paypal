@@ -9,6 +9,7 @@ from .checkout import check_coupon_eligibility, create_checkout, require_country
 from .config import (
     billing_for_country,
     country_config,
+    country_for_payment_method,
     currency_minor_scale,
     normalize_payment_method,
 )
@@ -29,8 +30,9 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         raise ConfigurationError("checkout proxy is required")
     if config.apply_checkout_update and not str(config.update_proxy or "").strip():
         raise ConfigurationError("update proxy is required")
-    country, *_ = country_config(config.country)
     payment_method = normalize_payment_method(config.payment_method)
+    country = country_for_payment_method(payment_method, config.country)
+    country, *_ = country_config(country)
     return replace(
         config,
         access_token=token,

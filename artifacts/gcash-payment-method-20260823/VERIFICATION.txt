@@ -1,0 +1,94 @@
+BRANCH_FIELD_RESULT=main / GCash payment-method selector and Philippines-fixed OAICS custom-payment flow
+BASE_COMMIT=d23ffc83f0a0ea9d306397008f80c447e3f1d64d
+REFERENCE_REPOSITORY=https://github.com/1537271403/pay153-checkout-link
+REFERENCE_HEAD=e8b36626162f09363f29b85af42de98cc8114c9b
+CHANGED_FIELD=payment_method=gcash selects the upstream OAICS cpmt_* custom method, submits PH/PHP taxes, confirms it, starts it, and returns next_action.url; the UI hides country selection and always submits country=PH while PayPal keeps its saved country
+PAYMENT_CORE_CHANGED=false
+CHANGED_PATHS=payment_link_extractor/config.py;payment_link_extractor/application.py;payment_link_extractor/flows/oaics.py;payment_link_extractor/web/routes.py;payment_link_extractor/web/static/app.js;payment_link_extractor/web/templates/index.html;tests/test_gcash_support.py
+DIFF_FILE_SHA256=15A12C28687E16518BB3D9467B899D40BC750D2ADB40017316FE93B2ED40E13A
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-payment-method-20260823\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-payment-method-20260823\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-payment-method-20260823\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-payment-method-20260823\ROLLBACK.sh
+
+REFERENCE
+COMMAND=git ls-remote https://github.com/1537271403/pay153-checkout-link.git HEAD
+INPUT=upstream GCash reference repository
+LITERAL_OUTPUT_BEGIN
+e8b36626162f09363f29b85af42de98cc8114c9b	HEAD
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The reference project declares GCash as PH/PHP and its OAICS path reads custom_payment_methods, posts checkout/taxes, confirms the cpmt_* method, then starts custom_payment_method and returns next_action.url. The implementation ports those GCash-specific steps into the existing extractor interface.
+
+PAYMENT_CORE_COMPARISON
+COMMAND=git diff --name-status HEAD -- paypal_agreement_protocol/paypal
+INPUT=payment protocol core at BASE_COMMIT versus the modified working tree
+LITERAL_OUTPUT_BEGIN
+<empty>
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=No PayPal agreement-protocol core file changed; proxy fields remain shared and unchanged.
+
+BASELINE
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=HEAD d23ffc83f0a0ea9d306397008f80c447e3f1d64d before GCash selector and custom-payment changes
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 68%]
+.................................                                        [100%]
+105 passed in 0.68s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The original suite passed before the GCash branch was added.
+
+MODIFIED
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+INPUT=working tree with the seven CHANGED_PATHS source/test paths
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 0.68s
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=All tests pass, including route normalization, PH invariant, OAICS GCash confirm/start request ordering, defaults metadata, and UI contracts.
+
+PYCOMPILE
+COMMAND=.\.venv\Scripts\python.exe -m py_compile payment_link_extractor/config.py payment_link_extractor/application.py payment_link_extractor/web/routes.py payment_link_extractor/flows/oaics.py
+INPUT=modified Python source
+LITERAL_OUTPUT_BEGIN
+PYCOMPILE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=Modified Python modules compile successfully.
+
+NODE_CHECK
+COMMAND=node --check payment_link_extractor/web/static/app.js
+INPUT=modified extractor browser script
+LITERAL_OUTPUT_BEGIN
+NODE_CHECK_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=Modified browser JavaScript parses successfully.
+
+ROLLBACK
+COMMAND=git worktree add --detach <COPY> d23ffc83f0a0ea9d306397008f80c447e3f1d64d ; git -C <COPY> apply --whitespace=nowarn DIFF_FILE.patch ; .\.venv\Scripts\python.exe -m pytest -q ; "C:\Program Files\Git\bin\bash.exe" ROLLBACK.sh <COPY> ; .\.venv\Scripts\python.exe -m pytest -q ; git -C <COPY> status --short ; git worktree remove --force <COPY>
+INPUT=detached BASE_COMMIT copy with DIFF_FILE.patch applied, then ROLLBACK.sh executed through Git Bash
+LITERAL_OUTPUT_BEGIN
+Preparing worktree (detached HEAD d23ffc8)
+HEAD is now at d23ffc8 docs: record exact verification commands
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 0.88s
+COPY_MODIFIED_TEST_EXIT=0
+ROLLBACK_APPLY_EXIT=0
+........................................................................ [ 68%]
+.................................                                        [100%]
+105 passed in 0.64s
+COPY_ROLLBACK_TEST_EXIT=0
+ROLLBACK_STATUS=CLEAN
+WORKTREE_REMOVE_EXIT=0
+LITERAL_OUTPUT_END
+EXIT_STATUS=0
+RESULT=The rollback copy restores the 105-test BASELINE behavior and clean status; the primary working tree remains changed with the GCash branch.
+RESTORED_BEHAVIOR_STATUS=Rollback copy has no GCash selector, PH-forcing normalization, or OAICS custom-method calls; primary working tree keeps those changes.\n

@@ -69,7 +69,7 @@
             </div>
 
             <div class="form-grid">
-              <label class="field">
+              <label id="country-field" class="field">
                 <span>国家</span>
                 <select id="country">
                   <option value="">使用 JSON / 环境变量</option>
@@ -101,7 +101,9 @@
                 <span>支付方式</span>
                 <select id="payment-method">
                   <option value="paypal" selected>PayPal</option>
+                  <option value="gcash">GCash（菲律宾）</option>
                 </select>
+                <small id="gcash-country-note" class="quiet" hidden>GCash 固定使用菲律宾 PH / PHP，无需选择国家。</small>
               </label>
               <label class="field">
                 <span>Checkout Proxy</span>
@@ -226,6 +228,6 @@
         </section>
       </div>
     </main>
-    <script src="{{ url_for('static', filename='app.js', v='20260818-protocol-bulk-push-1') }}" defer></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260823-gcash-1') }}" defer></script>
   </body>
 </html>

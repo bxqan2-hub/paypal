@@ -59,6 +59,14 @@ _BILLING_VALUES = {
 
 SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
 
+# GCash is only offered for the Philippines in the upstream checkout.  Keep
+# this mapping in the shared configuration layer so the web route, CLI and
+# worker all converge on the same country/currency pair even when an older
+# browser sends a stale country value.
+PAYMENT_METHOD_DEFAULT_COUNTRIES = {
+    "gcash": "PH",
+}
+
 
 def country_config(country: str) -> tuple[str, str, str, str]:
     code = str(country or "").upper()
@@ -99,6 +107,13 @@ def normalize_payment_method(value: str) -> str:
     if method not in {"paypal", "gopay", "gcash"}:
         raise ConfigurationError("payment_method must be one of paypal, gopay, gcash")
     return method
+
+
+def country_for_payment_method(payment_method: str, country: str) -> str:
+    """Return the country accepted by the selected payment method."""
+    method = normalize_payment_method(payment_method)
+    forced = PAYMENT_METHOD_DEFAULT_COUNTRIES.get(method)
+    return str(forced or country or "").upper()
 
 
 def processor_entity_for_country(country: str, existing: str = "") -> str:

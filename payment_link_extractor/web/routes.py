@@ -13,6 +13,7 @@ from ..config import (
     SUPPORTED_COUNTRIES,
     billing_dict_for_country,
     country_config,
+    country_for_payment_method,
     normalize_payment_method,
 )
 from ..errors import ConfigurationError
@@ -44,6 +45,11 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "country": os.getenv("OPLL_COUNTRY", "DE"),
                 "force_country": "",
                 "payment_method": "paypal",
+                "payment_methods": [
+                    {"value": "paypal", "label": "PayPal"},
+                    {"value": "gcash", "label": "GCash", "country": "PH", "currency": "PHP"},
+                ],
+                "payment_method_countries": {"gcash": "PH"},
                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
@@ -236,8 +242,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
     update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
     hcaptcha = _value(payload, "stripe_hcaptcha_token", "OPLL_STRIPE_HCAPTCHA_TOKEN")
-    country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
+    country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
     retry_count = _retry_count_value(
         payload.get("retry_count", os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2"))
@@ -254,9 +260,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("checkout proxy is required")
     if apply_update and not str(update_proxy or "").strip():
         raise ConfigurationError("update proxy is required")
+    payment_method = normalize_payment_method(payment_method)
+    country = country_for_payment_method(payment_method, country)
     if country not in SUPPORTED_COUNTRIES:
         country_config(country)
-    normalize_payment_method(payment_method)
     total_attempts = retry_count + 1
     checkout_proxy_attempts = _fit_proxy_attempt_values(
         checkout_proxy,
