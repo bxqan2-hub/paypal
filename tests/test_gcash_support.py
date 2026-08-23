@@ -437,6 +437,52 @@ def test_sentinel_headers_prefer_fresh_provider_flow() -> None:
     assert provider.calls == [("checkout_session_approval", "https://chatgpt.com/checkout/fixture")]
 
 
+def test_browser_sentinel_generates_token_before_ping() -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider._lock = transport.threading.RLock()
+    provider._failed = False
+    provider._started = True
+    provider._attestation = ""
+    provider._cookies = ""
+    provider.transport_session = SimpleNamespace(headers={})
+    events: list[str] = []
+
+    def fake_eval(expression: str, timeout: float = 75.0) -> object:
+        if "SentinelSDK.token" in expression:
+            events.append("token")
+            return {"flow": "checkout_session_approval", "id": "fixture-device"}
+        events.append("ping")
+        return 200
+
+    provider._eval = fake_eval
+    headers = provider.headers(
+        "checkout_session_approval",
+        referer="https://chatgpt.com/checkout/fixture",
+    )
+    assert events == ["token", "ping"]
+    assert json.loads(headers["OpenAI-Sentinel-Token"])["flow"] == "checkout_session_approval"
+
+
+def test_browser_sentinel_syncs_only_first_party_deduplicated_cookies() -> None:
+    provider = object.__new__(transport.BrowserSentinelProvider)
+    provider.device_id = "fixture-device"
+    provider.transport_session = SimpleNamespace(headers={})
+    provider._cookies = ""
+    provider._run = lambda args: {
+        "data": {
+            "cookies": [
+                {"name": "oai-did", "value": "stale-device", "domain": ".chatgpt.com"},
+                {"name": "cf_clearance", "value": "old", "domain": ".chatgpt.com"},
+                {"name": "cf_clearance", "value": "fresh", "domain": "chatgpt.com"},
+                {"name": "stripe_mid", "value": "foreign", "domain": ".stripe.com"},
+            ]
+        }
+    }
+    provider._sync_cookies()
+    assert provider._cookies == "oai-did=fixture-device; cf_clearance=fresh"
+    assert provider.transport_session.headers["Cookie"] == provider._cookies
+
+
 def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
     chatgpt = _ChatGPTWithSentinel()
     checkout = {

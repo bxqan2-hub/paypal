@@ -1,6 +1,7 @@
-BRANCH_FIELD_RESULT=main / GCash OAICS promo checkout + account-aligned live Sentinel browser headers
-CHANGED_FIELDS=checkout_body+promo_referer;skip_legacy_coupon_update;route_data_promo_referer;two_taxes_refreshes;Elements_reuse;Chrome151+en-US;rotating_observation+telemetry;dynamic_SentinelSDK+attestation;browser_account_header+single_proxy_normalization
+BRANCH_FIELD_RESULT=main / GCash OAICS promo checkout + account-aligned live Sentinel browser headers + proof-before-ping
+CHANGED_FIELDS=checkout_body+promo_referer;skip_legacy_coupon_update;route_data_promo_referer;two_taxes_refreshes;Elements_reuse;Chrome151+en-US;rotating_observation+telemetry;dynamic_SentinelSDK+attestation;browser_account_header+single_proxy_normalization;Sentinel_token_before_ping;deduplicated_chatgpt_cookies
 BASE_COMMIT=f60a61ff2c9e09c63230ed7f07cf91cadf71c10b
+PRIOR_PUSHED_COMMIT=61d425add2190666253576842815f7c5eea06b5e
 INPUT_HAR_SHA256=m.gcash.com4.har 67baf527107e784043f31a3ea49998057e7ae93baa46faf0d7aa76c167c19ddf
 INPUT_HAR_SHA256=m.gcash.com5.har b5269fb42259983426739641941d554b8c57de1dca6ebf507a98cd71e660e36c
 MODIFIED_SOURCE_HASHES=see VERIFICATION.txt
@@ -10,4 +11,4 @@ MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-pro
 DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\DIFF_FILE.patch
 VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\VERIFICATION.txt
 ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-sentinel-promo-fix-20260824\ROLLBACK.sh
-RESULT=source changed on the GCash promo/Sentinel branch; rollback artifact leaves a detached copy restored while this working tree remains modified
+RESULT=source remains changed on the GCash promo/Sentinel branch; rollback artifact restores a detached copy while this working tree remains modified

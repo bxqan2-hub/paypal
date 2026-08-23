@@ -632,14 +632,23 @@ class BrowserSentinelProvider:
                 cookies = [item for item in data["cookies"] if isinstance(item, dict)]
             elif isinstance(data, list):
                 cookies = [item for item in data if isinstance(item, dict)]
-        pairs = []
+        # Only send first-party ChatGPT cookies back through the API
+        # transport.  The browser context can also contain Stripe/analytics
+        # cookies, and duplicate Cookie names are ambiguous to HTTP servers.
+        first_party: dict[str, str] = {"oai-did": self.device_id}
         for cookie in cookies:
+            domain = str(cookie.get("domain") or "").strip().lower().lstrip(".")
+            if domain and domain != "chatgpt.com" and not domain.endswith(".chatgpt.com"):
+                continue
             name = str(cookie.get("name") or "").strip()
             val = str(cookie.get("value") or "")
             if name:
-                pairs.append(f"{name}={val}")
-        if pairs:
-            self._cookies = "; ".join(pairs)
+                first_party[name] = val
+        # Sentinel binds the proof to the oai-did supplied by the curl
+        # transport, so it wins even if an older browser cookie was restored.
+        first_party["oai-did"] = self.device_id
+        if first_party:
+            self._cookies = "; ".join(f"{name}={val}" for name, val in first_party.items())
             headers = getattr(self.transport_session, "headers", None)
             if headers is not None:
                 headers["Cookie"] = self._cookies
@@ -700,9 +709,9 @@ class BrowserSentinelProvider:
             raise
 
     def _ping(self, referer: str) -> None:
-        # The SDK itself uses a zero-length POST immediately before protected
-        # checkout calls.  Running it in the same browser context keeps the
-        # Cloudflare/Sentinel cookies on the matching proxy IP.
+        # The browser sends this zero-length POST after generating the proof
+        # and immediately before the protected checkout call.  Running it in
+        # the same context keeps Sentinel cookies on the matching proxy IP.
         expression = (
             "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
@@ -716,7 +725,6 @@ class BrowserSentinelProvider:
                 raise RuntimeError("Sentinel browser provider failed during startup")
             if not self._started:
                 self._start()
-            self._ping(referer)
             raw = self._eval(
                 "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
                 timeout=90,
@@ -729,6 +737,10 @@ class BrowserSentinelProvider:
                 token = ""
             if not token:
                 raise RuntimeError("SentinelSDK returned an empty token")
+            # Successful captures consistently show token generation (and its
+            # optional sentinel/req) before ping, followed by the protected
+            # checkout request carrying this token.
+            self._ping(referer)
             result = {"OpenAI-Sentinel-Token": token}
             if self._attestation:
                 result["oai-web-deployment-attestation"] = self._attestation
