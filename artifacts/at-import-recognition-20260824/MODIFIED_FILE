@@ -19,7 +19,7 @@ source_hashes_before_change:
 source_hashes_after_change:
 - payment_link_extractor/auth.py: 96c0c974ec8df4485141e7146a768c5fa01ce5fc
 - payment_link_extractor/web/routes.py: 43c6986d9150e5aeda0e160c8ce5702a7e24c108
-- payment_link_extractor/web/static/app.js: 50e7dbb3a7c28f833cd769cf56c846b11b9832bf
+- payment_link_extractor/web/static/app.js: 6a280ae9466ed3a9b0637ec7cb09b664e006f0da
 - payment_link_extractor/web/templates/index.html: be9c3bd038b52fe2ac6f05fdf5e2028196ff75e7
 - tests/test_gcash_support.py: bdc586725ab6b04772df08e68407f90233138493
 - tests/test_ui_button_contracts.py: 65629444abc16e8f0de7847731b1ff31f5c2bc71
@@ -29,4 +29,6 @@ artifacts:
 - DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\DIFF_FILE.patch
 - VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\VERIFICATION.txt
 - ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\at-import-recognition-20260824\ROLLBACK.sh
+
+
 

@@ -198,7 +198,7 @@
     const text = String(value || "").trim();
     if (!text) return "";
     const keyed = text.match(
-      /(?:^|[{,;\s])['"]?(?:access[_-]?token|accesstoken|token|at)['"]?\s*[:=]\s*['"]?([A-Za-z0-9._~+\/=\-]{20,})/i,
+      /(?:^|[{,;\s])['"]?(?:access[_-]?token|accesstoken|token|at)['"]?\s*[:=]\s*['"]?([A-Za-z0-9._~+\/=\-]{8,})/i,
     );
     if (keyed) return normalizeTokenText(keyed[1]);
 
@@ -265,7 +265,7 @@
 
   function validateAccessToken(token) {
     token = normalizeTokenText(token);
-    if (token.length < 20 || token.length > 16384 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(token)) {
+    if (token.length < 8 || token.length > 16384 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(token)) {
       return "Access Token 格式无效";
     }
     const parts = token.split(".");
