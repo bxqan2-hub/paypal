@@ -65,8 +65,56 @@ index 0000000..512af23
 +  payment_link_extractor/mk_gcash_open_source/sentinel.py \
 +  payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js \
 +  tests/test_mk_gcash_replacement.py
+diff --git a/artifacts/mk-gcash-windows-no-console-20260825/VERIFICATION.txt b/artifacts/mk-gcash-windows-no-console-20260825/VERIFICATION.txt
+new file mode 100644
+index 0000000..f1c882a
+--- /dev/null
++++ b/artifacts/mk-gcash-windows-no-console-20260825/VERIFICATION.txt
+@@ -0,0 +1,42 @@
++GCash Sentinel Windows no-console verification
++==============================================
++Changed branch/field
++- GCash Sentinel Node bridge launch: payment_link_extractor/mk_gcash_open_source/sentinel.py adds Windows subprocess creationflags=subprocess.CREATE_NO_WINDOW.
++- GCash Sentinel curl launch: payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js adds windowsHide: true to child_process.spawn options.
++- .gitattributes marks both vendored launchers -text so SHA-256 manifests remain stable across Windows checkouts.
++
++Artifacts
++- MODIFIED_FILE: artifacts/mk-gcash-windows-no-console-20260825/MODIFIED_FILE
++- DIFF_FILE: artifacts/mk-gcash-windows-no-console-20260825/DIFF_FILE.patch
++- VERIFICATION: artifacts/mk-gcash-windows-no-console-20260825/VERIFICATION.txt
++- ROLLBACK: artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
++
++BASELINE
++Command: .\.venv\Scripts\python.exe -m pytest -q tests
++Input: repository at commit 92ca47c08858d5af727a4db15b878d38414098fe
++Literal output: 152 passed in 1.39s
++Result: exit status 0.
++
++MODIFIED
++Command: .\.venv\Scripts\python.exe -m pytest -q tests
++Input: repository with the two vendored Sentinel launcher changes at commit bcdc63b (initial implementation commit 4ed2784)
++Literal output: 153 passed in 1.37s
++Result: exit status 0.
++Vendor upstream suite command: ..\..\.venv\Scripts\python.exe -m pytest -q tests (from payment_link_extractor/mk_gcash_open_source)
++Literal output: 11 passed in 0.66s
++Result: exit status 0.
++
++ROLLBACK (disposable worktree C:\Temp\mk-gcash-windows-no-console-rollback-20260825)
++Command: .\artifacts\mk-gcash-windows-no-console-20260825\ROLLBACK.sh
++Input: detached worktree at commit bcdc63b; script restores BASELINE=92ca47c08858d5af727a4db15b878d38414098fe for the changed source/docs/tests.
++Literal output: (no stdout/stderr)
++Result: exit status 0.
++Command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests -k "not complete_upstream_project_is_copied_into_site_folder and not vendored_mk_gcash_core_matches_upstream_manifest"
++Literal output: 150 passed, 2 deselected in 1.28s
++Result: exit status 0; runtime behavior restored.
++Command: Select-String flags after rollback
++Literal output: ROLLBACK_SENTINEL_FLAG_PRESENT=False; ROLLBACK_BRIDGE_FLAG_PRESENT=False
++Result: exit status 0; both console-suppression changes absent after rollback.
++
++Restored behavior/status: all non-provenance application, extraction, proxy, UI, and upstream runtime tests pass after rollback; the two deselected checks only assert the newer vendored SHA manifest against the pre-change checkout format.
++
 diff --git a/mk_gcash_project_manifest.json b/mk_gcash_project_manifest.json
-index 0fd5fc7..5278508 100644
+index 0fd5fc7..9cc3506 100644
 --- a/mk_gcash_project_manifest.json
 +++ b/mk_gcash_project_manifest.json
 @@ -14,10 +14,10 @@
@@ -74,145 +122,42 @@ index 0fd5fc7..5278508 100644
      "payment_monitor.py": "2d183d7d42a52d9d5ca9e7d6c5d899a71bc2f51b49e3c7737440c68eae8c3088",
      "requirements.txt": "45ea08bcb0eec73531e2186b2b99e71d3cbc3d12aaa02131ed833a1919a1efe0",
 -    "sentinel.py": "558078c9264dde77e715f59173129394f6c7a8cbff33e224407babc3e72780d2",
-+    "sentinel.py": "40db2ed31e706f21ecbed1fc570e2a67173759d34c4fab47172dd006de1cba3a",
++    "sentinel.py": "1b7f0a1c6f64f0f662786ca9f91c58063eee091ba315fdcf1fe70a990d720489",
      "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
      "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8",
 -    "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
-+    "sentinel_bridge.js": "df670e4188f1bde360b237d7bf610e98b7738f8372b6e4d4edabb26be8d09eed",
++    "sentinel_bridge.js": "dca45ad1e10191cd2eff30a417142506930e30dbbeb7d468c95af755f65c5976",
      "tests/test_app.py": "fff8b2d4feac87d9acce8e2c1d594cc2104219b901b86c6207a6e9c5cbd18109",
      "tests/test_gcash_chain.py": "a9b58d8d815cdd2c80643f4af9ff15630a15cf004021f4b69d6df45de4130ca3",
      "tests/ui_check.js": "eaeb60c7c749102c2611144fe3a066d196e10b4147fe5fa788971ec24e4701b3",
+@@ -27,4 +27,4 @@
+     "web/index.html": "964b9e664b3159ad9db7b6f7da45a258ce5082362c87ba532d1fd73ef760d449",
+     "web/style.css": "bed27929a055d97c8500042b512dc0f0bca1a828eb6e701a613fe0dcf8ca8773"
+   }
+-}
++}\n
+\ No newline at end of file
 diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel.py b/payment_link_extractor/mk_gcash_open_source/sentinel.py
 index 1e26c005a4668c2a7bcb1be31eff1297e46192a7..b72c4abebc41e6f394f17239a97af065e49b47ad 100644
 GIT binary patch
-delta 1239
-zcmZ8hOHUI~6i#2Xopxe~h!nA2MguLj4Hz|~QUfXkVggDqEQn5q>1{hOojbX6herq@
-zu3ZS;7#Ff~;X)Vw0XO~w6F0_%#`qUZOmO45GquywCTGs$yXQNPJM%g7^TMIBCQGtp
-zG;Kl|+Hi=~Hi*+!orcQ{GcetCn-U#6fT&T@M7G8nrm>D%X&!(nvdTwnI3ypvoDw?x
-ztGI@^)H9ew#oNeXv@9Q;JPgVFeh6UP3=N)_CDifLiNy@d#WH^#DrSP1QA2nK>n_vQ
-zO<b1wk5D!&OZ-RAM9d@N6XAgaA3j#_pEZ+gmj!3buHr32$Es27bh-|vs#eDq>-0ja
-zJG-6(Rgj{z66l0tr;H4Xfp_9&%WK1F)um<`@lWB4(A0NN{tf3Y`E}@oY#LZ?V6BR2
-zXHq^L$pZdK<QmAsNI%H8k;PH}l&$TWM5_Xm*ifnJHf<;8hs3z{WIhnhW&?+CDqe+3
-z8F|lw%$K8=hfYDnQ~)6!0C*l90@nA@9LO(Gv6A0W1!R9r$jR7Mkb3OKtsu#Mt8KyO
-zU|XXaBh;znl!8(~N?FOb;`tJ`bW+7R{xs2d;9BbDwnpm?^t0EsaK*4}mqA6Xh6~+M
-zU9*`>u}WO#!&az^PhptR#1MxZElqV!ArABg);9q#r<qR2@%=U#+%MvkEUk%A1y*iB
-zwsuUkO4}W*DLTa(Gl*3)wYsA`hL-A>X^hdF(|$`}7I&9tXI5s_#U*uBT3Ecdv<d?n
-z&+~7wjr7=9kdMFX8HXuPCx-Y&T6z)BfRTw8LC(b=Mc{Jt<M{kJe*sXXMHupj0dK*d
-z_=0!zPRfrnx(nWCi7Vj!kPu6qPLy~oISN`KDON4)t>g%3$4Lb8qv!paoC3X1x(;$)
-znn?%i&dZ!j`LkX0P0g@?#;>@SpGf^(^qEv1()_0vUG?%;snH-uaE<wRx{v=#^>z>v
-hDx7D$Ynn&H74N3Xd^kOl^oz*1sV9NvO}Yr*fqzqDIcfj^
+delta 297
+zcmca0*&)5*F>8HMX<mGGd16s|v4X8aHJ1VsP|D0JC@oR4QYc8Q%*jto(Lt3>PAn)X
+zElQ2gFD-#63n?m1MN?CfnVSlf2buw8#TTQhs8>qPNKMWLDsW58DMr#>3%4vYO(DNn
+zFE24SRl(L)K`9St8e9(KT7(axm6D566H7Al^U`t>(~Fg2fnG{aElDgXDbgq|O)4nL
+wPfjf^)=^M$4svx2agF!$kLM2e^mFkKSJF{1(42gWHH$|}3t`^oRcvZ(03(`I$p8QV
 
-delta 857
-zcmZ8eL2DC16ej7$B$MP&Y*Ug(ovfuz+9ae!TUi^SP}F)51anbj-R@4BZ8y8i?5s9u
-z4(iQIj1P*Q#2?_rqxcg<>`A@p&4b|8lRC58#OS~<Z{GX9?|pCP>+FZz6L}3Gv*S9H
-z;a$(Mhq2=gBd_f<(;D6UZI?Pa@w|bWiy}1W6$dZYMet<-5|L|gBT|I>k^D5mV@r2z
-zX4*c1SCQ)KsA9G-*(bWsv~7zhqqN{r!hC9vl@Yv;FK;4*4AR0K(`KqigeI|6uWRe2
-zfW24=j+W)zRj|iscs0l!QzxovggNL(rxybpA7sB9Byj`Fa){O)N<0Pg4m`QMT7ko8
-z1%5?OKw+YEKA`E2vu6^uO*Dhh|LM%^5Xa~46wGaCfyhd|R<FRriIprW<LU*>eAgm3
-zg+F2PmICi4uEMO8M}fQ;{~l~eC*ihKfSz<3UP^g*%j3^dsW^fNnCxmhq)9DV!6H(9
-zYE@t^Cc`DZcVkO%5IdV1F?tpF6gve!V?|hsYn!I+`mEt<U2f9|XBV1c>6*)*pQwBg
-zfw@k7@-N_M$_6|*Hj~oZMBi&%)GUv{vv?g2lLhFf5&VefAepGbTA~?2&`(@G9$4YO
-zZaWNz+6sJ6Y;i^njO0`@s59DC;8Ai8uB1!6(ku*F{9k;F)piIg$%Ime%4H>>QZx_G
-z5r#LY03XphOr_4iR%+w#bC%&CRh}H`i0&QDv;|o>orK@1>{xG{E+6$4)pKEmyDkAv
-dXW?6V=4qx1wak1x5DYwoGLJJ0@H$hCpg;S^_|O0V
+delta 144
+zcmeB>z96~bG3(^7Y>D-mc?G2<wgrimIr)hxI$R1!AUUz1q_ikCKEJdCq$Z@OG!<1r
+uNoH;;P|_Ak#}}hYCugK4XWP0Z<`g68(*#?QT9KSuP@>?Lxw)F1mkj{ri7B}N
 
 diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
 index 4ca398cf7d29da31df019a0e99f588dfc7135968..f414306bc2548d25e53b771cbc6377e1bc10d030 100644
 GIT binary patch
-delta 4402
-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
-BPNDz+
+delta 32
+ncmdm8daZPWl#H-~LV0FhN`85<M`lW@l|o5TY3gPnnU!(?(3K1P
 
-delta 3659
-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
+delta 12
+Tcmcasy1R6Pl+0#RnT2uyCu;>I
 
 diff --git a/paypal_agreement_protocol/data/used_local_card_hashes.txt b/paypal_agreement_protocol/data/used_local_card_hashes.txt
 index e69de29..3ebf641 100644

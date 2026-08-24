@@ -20,7 +20,7 @@ Result: exit status 0.
 MODIFIED
 Command: .\.venv\Scripts\python.exe -m pytest -q tests
 Input: repository with the two vendored Sentinel launcher changes at commit bcdc63b (initial implementation commit 4ed2784)
-Literal output: 153 passed in 1.28s
+Literal output: 153 passed in 1.37s
 Result: exit status 0.
 Vendor upstream suite command: ..\..\.venv\Scripts\python.exe -m pytest -q tests (from payment_link_extractor/mk_gcash_open_source)
 Literal output: 11 passed in 0.66s
@@ -39,3 +39,4 @@ Literal output: ROLLBACK_SENTINEL_FLAG_PRESENT=False; ROLLBACK_BRIDGE_FLAG_PRESE
 Result: exit status 0; both console-suppression changes absent after rollback.
 
 Restored behavior/status: all non-provenance application, extraction, proxy, UI, and upstream runtime tests pass after rollback; the two deselected checks only assert the newer vendored SHA manifest against the pre-change checkout format.
+
