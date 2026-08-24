@@ -72,3 +72,22 @@ CURRENT_AT_TEST_LITERAL_OUTPUT={"ok": false, "error": "checkout create failed: {
 CURRENT_AT_TEST_EXIT_STATUS=1
 CURRENT_AT_TEST_STAGE=checkout
 CURRENT_AT_RESTORED_BEHAVIOR_STATUS=Proxy connection completed and authentication was accepted far enough to return an unusual-activity response; no checkout session or GCash URL was created; source tree remains unchanged
+
+HAR_m.gcash.com111_SHA256=413FC910DEFA90E42084D35E31E87480EB1A637C501F59D8BFEB0EA995FD272B
+HAR_m.gcash.com111_ENTRIES=160
+HAR_m.gcash.com111_CONTRACT=taxes[43,51]=200;sentinel_ping[64]=200;confirm[65]=200;start[81]=200;sentinel_req[84]=200;adyen_redirect[90]=302;m.gcash_page[93]=200;key_agreement[111]=200;auth_consult[120]=200;short_dynamic[127]=200;query_result[133,138,143,148,153,158]=200
+HAR_m.gcash.com111_BUILD=9748354;HAR_m.gcash.com111_VERSION=prod-1e268a33279bcedafc2fe5526bfe230880444b77;HAR_m.gcash.com111_CONFIRM_SENTINEL_LENGTH=5866;HAR_m.gcash.com111_CHROME151_REQUESTS=157
+HAR_m.gcash.com111_EXPECTED_LINK=https://m.gcash/s/cKXt49H
+CURRENT_AT_EXTRACTION_INPUT=local conversation user-message token selected by account claim; Markdown-escaped underscores normalized; no token persisted
+CURRENT_AT_EXTRACTION_LITERAL_OUTPUT=normalized_length=1849;token_sha256_prefix=ae209f5b3ddea74b;RS256_SIGNATURE_VALID=1;COMMAND_EXIT=0
+CURRENT_AT_PROXY_TEST_COMMAND=OPLL_GCASH_SENTINEL_BROWSER=auto; .\.venv\Scripts\python.exe -; exact current supplied AT selected from user message; payment_method=gcash; country=PH; apply_checkout_update=false; each supplied 1024Proxy entry
+CURRENT_AT_PROXY_TEST_INPUT=five supplied PH-session proxies; current supplied account-target AT; current HAR client build/version defaults
+CURRENT_AT_PROXY_TEST_LITERAL_OUTPUT=eVDmRvDH=ProtocolError checkout create failed: Our systems have detected unusual activity; stage=checkout; jySC9e2p=same; RtPrT5KX=same; YrfeUT2R=same; u9vA4p8Z=same; COMMAND_EXIT=1
+CURRENT_AT_PROXY_TEST_EXIT_STATUS=1
+CURRENT_AT_PROXY_TEST_RESTORED_BEHAVIOR_STATUS=all five proxy transports completed; no checkout session or GCash URL was created; source remained runnable and working-tree card-hash change stayed unstaged
+CURRENT_HAR_BUILD_PATCH_TEST=modified pytest after adopting 9748354/prod-1e268... defaults; 122 passed in 0.77s; EXIT=0
+CURRENT_HAR_PATCH_ROLLBACK_COMMAND=git worktree add --detach C:\Temp\gcash-rollback-check-20260824 d661231c29d6685e8b322fd646901bfe7b33ef36; git apply DIFF_FILE.patch; C:\Program Files\Git\bin\bash.exe ROLLBACK.sh C:\Temp\gcash-rollback-check-20260824
+CURRENT_HAR_PATCH_ROLLBACK_INPUT=temporary baseline worktree at d661231c29d6685e8b322fd646901bfe7b33ef36; current HAR build/version patch applied then rolled back
+CURRENT_HAR_PATCH_ROLLBACK_LITERAL_OUTPUT=APPLY_EXIT=0; MODIFIED_TEST=122 passed in 0.89s; ROLLBACK_EXIT=0; BASELINE_AFTER_ROLLBACK=112 passed in 0.73s; RESTORED_STATUS=clean; WORKTREE_REMOVE_EXIT=0
+CURRENT_HAR_PATCH_ROLLBACK_EXIT_STATUS=0
+CURRENT_HAR_PATCH_RESTORED_BEHAVIOR_STATUS=rollback copy restored the 112-test baseline; primary working tree remains on modified 9748354/prod-1e268... branch

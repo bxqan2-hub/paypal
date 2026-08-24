@@ -35,3 +35,22 @@ GCASH_SHORT_DYNAMIC[328] status=200 operation=ap.mobilewallet.short.dynamic.link
 GCASH_QUERY_RESULT[334] status=200 operation=ap.mobilewallet.gka.query.result
 CHROME151_REQUESTS=332
 
+FILE=m.gcash.com111.har
+SHA256=413FC910DEFA90E42084D35E31E87480EB1A637C501F59D8BFEB0EA995FD272B
+ENTRIES=160
+TAXES[43] status=200
+TAXES[51] status=200
+SENTINEL_PING[64] status=200
+CONFIRM[65] status=200 sentinel_len=5866 telemetry=[1,794.1000000089407,77,22,15,2,0,797]
+START[81] status=200
+SENTINEL_REQ[84] status=200 encrypted_body=true
+ADYEN_REDIRECT[90] status=302 location_host=m.gcash.com
+GCASH_PAGE[93] status=200 host=m.gcash.com
+GCASH_HANDSHAKE[111] status=200 host=api.mynt.xyz path=/c4/v3/key-agreement/handshake
+GCASH_MAINTENANCE[118] status=200 host=api.mynt.xyz
+GCASH_AUTH_CONSULT[120] status=200 operation=ap.mobilewallet.gka.authorisation.stateless.consult success=true
+GCASH_SHORT_DYNAMIC[127] status=200 operation=ap.mobilewallet.short.dynamic.link short_url=https://m.gcash/s/cKXt49H success=true
+GCASH_QUERY_RESULT[133,138,143,148,153,158] status=200 operation=ap.mobilewallet.gka.query.result success=true
+OAI_CLIENT_BUILD_NUMBER=9748354
+OAI_CLIENT_VERSION=prod-1e268a33279bcedafc2fe5526bfe230880444b77
+CHROME151_REQUESTS=157

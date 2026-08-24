@@ -358,7 +358,8 @@ def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
     built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
     assert built is session
     assert session.headers["chatgpt-account-id"] == "acct-fixture"
-    assert session.headers["oai-client-build-number"] == "9723596"
+    assert session.headers["oai-client-build-number"] == "9748354"
+    assert session.headers["oai-client-version"] == "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
     assert session.headers["x-oai-is-client-observation"] == "v1.r.p.observation-fixture"
     assert session.openai_sentinel_token == "sentinel-fixture"
     assert session.openai_sentinel_so_token == "so-fixture"

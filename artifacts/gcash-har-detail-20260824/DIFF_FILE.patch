@@ -489,7 +489,7 @@ index 0e8739f..a0e8972 100644
          stage_callback("payment_confirmation")
      confirmed = confirm_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 1b12a38..ba4c0a4 100644
+index 1b12a38..1a1ade5 100644
 --- a/payment_link_extractor/transport.py
 +++ b/payment_link_extractor/transport.py
 @@ -2,8 +2,16 @@ from __future__ import annotations
@@ -644,7 +644,7 @@ index 1b12a38..ba4c0a4 100644
  def is_network_exception(exc: BaseException) -> bool:
      """Return whether an exception indicates a transport failure.
  
-@@ -353,14 +443,333 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
+@@ -353,14 +443,337 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
      return payload
  
  
@@ -876,10 +876,14 @@ index 1b12a38..ba4c0a4 100644
 +                "oai-device-id": self.device_id,
 +                "oai-session-id": self.session_id,
 +                "oai-language": "en-US",
-+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
++                # The current browser HAR (m.gcash.com111.har) uses the
++                # deployed checkout build below.  Keep both values overridable
++                # because the web client rotates them independently of the
++                # payment flow.
++                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
 +                "oai-client-version": os.getenv(
 +                    "OPLL_OAI_CLIENT_VERSION",
-+                    "prod-46437587156517d920436051cb9ab60a95f0503a",
++                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
 +                ),
 +            }
 +            account = account_id(self.access_token)
@@ -979,7 +983,7 @@ index 1b12a38..ba4c0a4 100644
                  "Accept": "*/*",
                  "Accept-Language": f"{country_locale(config)},en;q=0.9",
                  "Authorization": f"Bearer {config.access_token}",
-@@ -369,7 +778,9 @@ class DefaultTransportFactory:
+@@ -369,25 +782,81 @@ class DefaultTransportFactory:
                  "Content-Type": "application/json",
                  "oai-device-id": device_id,
                  "oai-session-id": session_id,
@@ -990,12 +994,13 @@ index 1b12a38..ba4c0a4 100644
                  # These values match the current browser checkout contract;
                  # environment overrides keep the transport forward-compatible
                  # when the web deployment rotates its build identifier.
-@@ -378,16 +789,70 @@ class DefaultTransportFactory:
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
++                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+                 "oai-client-version": os.getenv(
                      "OPLL_OAI_CLIENT_VERSION",
-                     "prod-46437587156517d920436051cb9ab60a95f0503a",
-                 ),
--                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
--                "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+-                    "prod-46437587156517d920436051cb9ab60a95f0503a",
++                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
++                ),
 +                "x-oai-is-pending-updates": os.getenv(
 +                    "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
 +                ),
@@ -1009,7 +1014,9 @@ index 1b12a38..ba4c0a4 100644
 +                "sec-ch-ua": os.getenv(
 +                    "OPLL_SEC_CH_UA",
 +                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-+                ),
+                 ),
+-                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
+-                "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
                  "sec-ch-ua-mobile": "?0",
 -                "sec-ch-ua-platform": '"Windows"',
 +                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
@@ -1064,7 +1071,7 @@ index 1b12a38..ba4c0a4 100644
          # Deployment attestation is browser-generated and optional.  Never
          # bake a captured value into the repository; operators can inject a
          # fresh value for environments that enforce it.
-@@ -397,14 +862,33 @@ class DefaultTransportFactory:
+@@ -397,14 +866,33 @@ class DefaultTransportFactory:
          sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
          if sentinel:
              session.openai_sentinel_token = sentinel
@@ -1117,7 +1124,7 @@ index 7823213..2a58376 100644
      if country not in SUPPORTED_COUNTRIES:
          country_config(country)
 diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
-index cfae27d..ae8cee6 100644
+index cfae27d..cd629f7 100644
 --- a/tests/test_gcash_support.py
 +++ b/tests/test_gcash_support.py
 @@ -1,17 +1,26 @@
@@ -1227,7 +1234,7 @@ index cfae27d..ae8cee6 100644
  
  
  def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
-@@ -112,12 +177,266 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
+@@ -112,12 +177,267 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
      assert result["payment_method_id"] == "cpmt_gcash"
      assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls] == [
          "/payments/checkout/taxes",
@@ -1413,7 +1420,8 @@ index cfae27d..ae8cee6 100644
 +    built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
 +    assert built is session
 +    assert session.headers["chatgpt-account-id"] == "acct-fixture"
-+    assert session.headers["oai-client-build-number"] == "9723596"
++    assert session.headers["oai-client-build-number"] == "9748354"
++    assert session.headers["oai-client-version"] == "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
 +    assert session.headers["x-oai-is-client-observation"] == "v1.r.p.observation-fixture"
 +    assert session.openai_sentinel_token == "sentinel-fixture"
 +    assert session.openai_sentinel_so_token == "so-fixture"
@@ -1495,7 +1503,7 @@ index cfae27d..ae8cee6 100644
  def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
      chatgpt = _ChatGPTWithSentinel()
      checkout = {
-@@ -150,6 +469,36 @@ def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
+@@ -150,6 +470,36 @@ def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
      assert result["gcash_url"].endswith("/fixture")
      confirm = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/confirm"))
      assert confirm[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"

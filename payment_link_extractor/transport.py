@@ -671,10 +671,14 @@ class BrowserSentinelProvider:
                 "oai-device-id": self.device_id,
                 "oai-session-id": self.session_id,
                 "oai-language": "en-US",
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
+                # The current browser HAR (m.gcash.com111.har) uses the
+                # deployed checkout build below.  Keep both values overridable
+                # because the web client rotates them independently of the
+                # payment flow.
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    "prod-46437587156517d920436051cb9ab60a95f0503a",
+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
             }
             account = account_id(self.access_token)
@@ -784,10 +788,10 @@ class DefaultTransportFactory:
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    "prod-46437587156517d920436051cb9ab60a95f0503a",
+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
