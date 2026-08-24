@@ -1,0 +1,2579 @@
+diff --git a/.env.example b/.env.example
+index eb2a6f3..785ad09 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,38 +1,10 @@
+ # OAI PayPal standalone - sanitized defaults
+ OPLL_WEB_PASSWORD=
+ OPLL_AT=
+-# Optional NextAuth sessionToken from the same account export; required when
+-# the GCash Sentinel browser must establish an authenticated web session.
+-OPLL_SESSION_TOKEN=
+ OPLL_CHECKOUT_PROXY=
+ OPLL_UPDATE_PROXY=
+ OPLL_STRIPE_HCAPTCHA_TOKEN=
+ 
+-# ChatGPT browser-checkout compatibility (all optional; never commit live values)
+-OPLL_HTTP_IMPERSONATE=chrome
+-OPLL_OAI_CLIENT_BUILD_NUMBER=
+-OPLL_OAI_CLIENT_VERSION=
+-OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION=
+-OPLL_OPENAI_SENTINEL_TOKEN=
+-OPLL_OPENAI_SENTINEL_SO_TOKEN=
+-OPLL_OAI_IS_CLIENT_OBSERVATION=
+-OPLL_X_OAI_IS_PENDING_UPDATES=
+-# GCash uses a live SentinelSDK browser context when agent-browser is installed.
+-# Set to off only for deployments that inject fresh headers themselves.
+-OPLL_GCASH_SENTINEL_BROWSER=auto
+-# Wait for the authenticated bootstrap attestation and current SDK frame.
+-OPLL_GCASH_SENTINEL_BOOTSTRAP_WAIT_SECONDS=15
+-OPLL_GCASH_SENTINEL_SDK_WAIT_SECONDS=10
+-OPLL_GCASH_SENTINEL_REQUIRE_ATTESTATION=1
+-# Keep disabled so a browser/bridge failure is reported before checkout rather
+-# than silently sending a GCash checkout without a fresh Sentinel proof.
+-OPLL_GCASH_SENTINEL_ALLOW_FALLBACK=0
+-OPLL_AGENT_BROWSER_BIN=
+-OPLL_USER_AGENT=
+-OPLL_OAI_LANGUAGE=en-US
+-OPLL_SEC_CH_UA=
+-OPLL_SEC_CH_UA_PLATFORM=
+-
+ # EUR billing
+ # Fallback used only when the workbench sends no billing country.
+ OPLL_COUNTRY=DE
+diff --git a/iprocket_chain_bridge.py b/iprocket_chain_bridge.py
+index bb22fd4..f4a54dc 100644
+--- a/iprocket_chain_bridge.py
++++ b/iprocket_chain_bridge.py
+@@ -116,7 +116,7 @@ def open_chain(
+         protocol, proxy_host, proxy_port, username, password = credential
+     else:
+         proxy_host, proxy_port, username, password = load_credential()
+-        protocol = "socks5" if proxy_port in {9595, 59999, 61999} else "http"
++        protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
+     upstream: socket.socket | None = None
+     try:
+         try:
+@@ -242,10 +242,6 @@ def stop_background_server() -> None:
+ 
+ 
+ if __name__ == "__main__":
+-    # Do not preload the optional subscription credential here.  The web
+-    # transport passes vendor credentials per CONNECT request, and a blank
+-    # subscription URL previously made START.bat exit before opening the
+-    # listener.  Subscription-based requests still load lazily in
+-    # ``open_chain`` when no per-request credential is supplied.
++    load_credential(force=True)
+     with Server((LISTEN_HOST, LISTEN_PORT), Handler) as server:
+         server.serve_forever()
+diff --git a/payment_link_extractor/application.py b/payment_link_extractor/application.py
+index 80b6d35..323d189 100644
+--- a/payment_link_extractor/application.py
++++ b/payment_link_extractor/application.py
+@@ -28,17 +28,9 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+         raise ConfigurationError("AT is required")
+     if not str(config.checkout_proxy or "").strip():
+         raise ConfigurationError("checkout proxy is required")
+-    payment_method = normalize_payment_method(config.payment_method)
+-    # GCash's current browser flow embeds the promo in the initial checkout
+-    # request and never calls the legacy coupon-check/checkout-update pair.
+-    # Do not reject a valid GCash task merely because that unused proxy field
+-    # is empty.
+-    if (
+-        config.apply_checkout_update
+-        and payment_method != "gcash"
+-        and not str(config.update_proxy or "").strip()
+-    ):
++    if config.apply_checkout_update and not str(config.update_proxy or "").strip():
+         raise ConfigurationError("update proxy is required")
++    payment_method = normalize_payment_method(config.payment_method)
+     country = country_for_payment_method(payment_method, config.country)
+     country, *_ = country_config(country)
+     return replace(
+@@ -46,18 +38,12 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+         access_token=token,
+         checkout_proxy=str(config.checkout_proxy).strip(),
+         update_proxy=str(config.update_proxy).strip(),
+-        session_token=str(config.session_token or "").strip(),
+         stripe_hcaptcha_token=str(config.stripe_hcaptcha_token or "").strip(),
+         country=country,
+         payment_method=payment_method,
+     )
+ 
+ 
+-def _should_apply_checkout_update(config: ExtractionConfig) -> bool:
+-    """Return whether the legacy promo update flow applies to this method."""
+-    return bool(config.apply_checkout_update and config.payment_method != "gcash")
+-
+-
+ def extract_payment_link(
+     config: ExtractionConfig,
+     *,
+@@ -72,14 +58,13 @@ def extract_payment_link(
+             stage_callback(stage)
+ 
+     config = _normalize_config(config)
+-    apply_checkout_update = _should_apply_checkout_update(config)
+     log = stage_logger(config.verbose)
+     billing = billing_for_country(config.country).to_dict()
+     factory = transport_factory or DefaultTransportFactory()
+     chatgpt = factory.chatgpt(config, config.checkout_proxy)
+     stripe = None
+     try:
+-        if apply_checkout_update:
++        if config.apply_checkout_update:
+             checkpoint("eligibility_check")
+             check_coupon_eligibility(config, chatgpt, log)
+         checkpoint("checkout")
+@@ -88,7 +73,7 @@ def extract_payment_link(
+         if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
+             raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
+         require_country_currency(checkout, config)
+-        if apply_checkout_update:
++        if config.apply_checkout_update:
+             checkpoint("checkout_update")
+             update_checkout(config, chatgpt, checkout, log)
+             require_country_currency(checkout, config)
+diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
+index 91936d2..46cbe53 100644
+--- a/payment_link_extractor/auth.py
++++ b/payment_link_extractor/auth.py
+@@ -2,162 +2,40 @@ from __future__ import annotations
+ 
+ import base64
+ import json
+-import re
+ from typing import Any
+ 
+ 
+-_TOKEN_KEY_NAMES = {"accesstoken", "access_token", "token", "at"}
+-_SESSION_TOKEN_KEY_NAMES = {
+-    "sessiontoken",
+-    "session_token",
+-    "__secure_next_auth_session_token",
+-    "__secure_next_auth.session_token",
+-}
+-_KEYED_TOKEN_RE = re.compile(
+-    r"(?:^|[{,;\s])['\"]?(?:access[_-]?token|accesstoken|token|at)['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=\-]{8,})",
+-    re.IGNORECASE,
+-)
+-_JWT_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+-_SESSION_METADATA_RE = re.compile(
+-    r"['\"]\s*,\s*['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s*:",
+-    re.IGNORECASE,
+-)
+-
+-
+-def _normalize_key(key: Any) -> str:
+-    return str(key or "").replace("-", "_").lower()
+-
+-
+-def _clean_token_text(value: Any) -> str:
+-    token = str(value or "").strip()
+-    if token.lower().startswith("bearer "):
+-        token = token[7:].strip()
+-    # Markdown/JSON viewers may escape URL-safe characters when copying.
+-    token = re.sub(r"\\([A-Za-z0-9._~+/-])", r"\1", token)
+-    return re.sub(r"\s+", "", token)
+-
+-
+-def _embedded_access_token(value: Any) -> str:
+-    text = str(value or "").strip()
+-    if not text:
+-        return ""
+-    keyed = _KEYED_TOKEN_RE.search(text)
+-    if keyed:
+-        return _clean_token_text(keyed.group(1))
+-    jwt = _JWT_RE.search(_clean_token_text(text))
+-    if jwt:
+-        return jwt.group(0)
+-    marker = _SESSION_METADATA_RE.search(text)
+-    if marker and marker.start() > 0:
+-        candidate = text[: marker.start()].strip(" \t\r\n'\"{}")
+-        return _clean_token_text(candidate)
+-    return ""
+-
+-
+-def _find_token(value: Any) -> str:
+-    if isinstance(value, dict):
+-        for key, nested in value.items():
+-            if _normalize_key(key) in _TOKEN_KEY_NAMES:
+-                found = (
+-                    (_embedded_access_token(nested) or _clean_token_text(nested))
+-                    if isinstance(nested, str)
+-                    else _find_token(nested)
+-                )
+-                if found:
+-                    return found
+-        for nested in value.values():
+-            found = _find_token(nested)
+-            if found:
+-                return found
+-    elif isinstance(value, list):
+-        for nested in value:
+-            found = _find_token(nested)
+-            if found:
+-                return found
+-    return ""
+-
+-
+-def extract_access_token(raw: Any) -> str:
+-    """Extract an access token from a token, JSON envelope, or session export."""
+-    if isinstance(raw, (dict, list)):
+-        return _find_token(raw)
+-    text = str(raw or "").strip()
+-    if text.startswith("{") or text.startswith("["):
++def normalize_access_token(raw: str) -> str:
++    token = str(raw or "").strip()
++    if token.startswith("{") or token.startswith("["):
+         try:
+-            parsed = json.loads(text)
++            value = json.loads(token)
+         except json.JSONDecodeError:
+-            parsed = None
+-        if parsed is not None:
+-            found = _find_token(parsed)
+-            if found:
+-                return found
+-            if isinstance(parsed, str):
+-                return _clean_token_text(parsed)
+-    return _embedded_access_token(text) or _clean_token_text(text)
+-
+-
+-def normalize_access_token(raw: str) -> str:
+-    return extract_access_token(raw)
+-
+-
+-def _clean_session_token(value: Any) -> str:
+-    """Normalize a NextAuth session cookie without treating an AT as one."""
+-    text = str(value or "").strip()
+-    if text.lower().startswith("cookie:"):
+-        text = text.split(":", 1)[1].strip()
+-    # Accept a copied Cookie header or cookie jar line, but only select the
+-    # named session cookie.  Never derive this value from an access token.
+-    for part in re.split(r"[;\r\n]+", text):
+-        name, separator, cookie_value = part.strip().partition("=")
+-        if separator and _normalize_key(name) in _SESSION_TOKEN_KEY_NAMES:
+-            text = cookie_value.strip()
+-            break
+-    text = text.strip().strip('"\'')
+-    return re.sub(r"\s+", "", text)
+-
+-
+-def _find_session_token(value: Any) -> str:
+-    if isinstance(value, dict):
+-        for key, nested in value.items():
+-            if _normalize_key(key) in _SESSION_TOKEN_KEY_NAMES:
+-                found = _clean_session_token(nested)
+-                if found:
+-                    return found
+-        if _normalize_key(value.get("name")) in _SESSION_TOKEN_KEY_NAMES:
+-            found = _clean_session_token(value.get("value"))
+-            if found:
+-                return found
+-        for nested in value.values():
+-            found = _find_session_token(nested)
+-            if found:
+-                return found
+-    elif isinstance(value, list):
+-        for nested in value:
+-            found = _find_session_token(nested)
+-            if found:
+-                return found
+-    elif isinstance(value, str):
+-        found = _clean_session_token(value)
+-        if found and "=" in value:
+-            return found if "." in found else ""
+-    return ""
+-
+-
+-def extract_session_token(raw: Any) -> str:
+-    """Extract the authenticated NextAuth JWE/session cookie from an export."""
+-    value: Any = raw
+-    if isinstance(raw, str):
+-        text = raw.strip()
+-        if text.startswith("{") or text.startswith("["):
+-            try:
+-                value = json.loads(text)
+-            except json.JSONDecodeError:
+-                value = raw
+-    return _find_session_token(value)
++            return token
++
++        def find(item: Any) -> str:
++            if isinstance(item, dict):
++                for key in ("accessToken", "access_token", "token"):
++                    found = str(item.get(key) or "").strip()
++                    if found:
++                        return found
++                for nested in item.values():
++                    found = find(nested)
++                    if found:
++                        return found
++            elif isinstance(item, list):
++                for nested in item:
++                    found = find(nested)
++                    if found:
++                        return found
++            return ""
++
++        return find(value) or token
++    return token
+ 
+ 
+ def decode_jwt_payload(token: str) -> dict[str, Any]:
+-    parts = normalize_access_token(token).split(".")
++    parts = str(token or "").split(".")
+     if len(parts) < 2:
+         return {}
+     try:
+@@ -178,19 +56,3 @@ def account_email(access_token: str) -> str:
+         if "@" in value:
+             return value
+     return ""
+-
+-
+-def account_id(access_token: str) -> str:
+-    """Extract the ChatGPT account UUID used by the browser API headers."""
+-    payload = decode_jwt_payload(access_token)
+-    auth = payload.get("https://api.openai.com/auth")
+-    if isinstance(auth, dict):
+-        for key in ("chatgpt_account_id", "account_id", "id"):
+-            value = str(auth.get(key) or "").strip()
+-            if value:
+-                return value
+-    for key in ("chatgpt_account_id", "account_id"):
+-        value = str(payload.get(key) or "").strip()
+-        if value:
+-            return value
+-    return ""
+diff --git a/payment_link_extractor/checkout.py b/payment_link_extractor/checkout.py
+index 980addb..54254a4 100644
+--- a/payment_link_extractor/checkout.py
++++ b/payment_link_extractor/checkout.py
+@@ -4,11 +4,11 @@ import json
+ import re
+ from typing import Any
+ 
+-from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
++from .config import DEFAULT_TIMEOUT, processor_entity_for_country
+ from .errors import ConfigurationError, ProtocolError
+ from .logging_utils import safe_log_text
+ from .models import CheckoutData, ExtractionConfig
+-from .transport import openai_sentinel_headers, response_json, set_proxy_url, stage_http_request
++from .transport import response_json, set_proxy_url, stage_http_request
+ 
+ CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
+ PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+@@ -127,51 +127,12 @@ def create_checkout(
+     log: Any | None,
+ ) -> CheckoutData:
+     path = "/backend-api/payments/checkout"
+-    payment_method = normalize_payment_method(config.payment_method)
+-    if payment_method == "gcash":
+-        # The browser's PH custom-checkout request carries the campaign in the
+-        # initial payload.  Sending the legacy cancel_url/check_card_proxy
+-        # shape creates a different session contract and leads to a later
+-        # confirm status=blocked response.
+-        body = {
+-            "entry_point": "all_plans_pricing_modal",
+-            "plan_name": "chatgptplusplan",
+-            "billing_details": {
+-                "country": config.country.upper(),
+-                "currency": config_currency(config),
+-            },
+-            "promo_campaign": {
+-                "promo_campaign_id": "plus-1-month-free",
+-                "is_coupon_from_query_param": False,
+-            },
+-            "checkout_ui_mode": "custom",
+-        }
+-        referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+-    else:
+-        body = {
+-            "entry_point": "all_plans_pricing_modal",
+-            "plan_name": "chatgptplusplan",
+-            "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
+-            "cancel_url": "https://chatgpt.com/",
+-            "checkout_ui_mode": "custom",
+-            "check_card_proxy": True,
+-        }
+-        referer = "https://chatgpt.com/"
+-    headers = {
+-        "Referer": referer,
+-        "x-openai-target-path": path,
+-        "x-openai-target-route": path,
++    body = {
++        "entry_point": "all_plans_pricing_modal",
++        "plan_name": "chatgptplusplan",
++        "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
++        "checkout_ui_mode": "custom",
+     }
+-    # The browser can attach a fresh Sentinel token on the initial checkout
+-    # request.  Keep it optional so older deployments remain compatible.
+-    headers.update(
+-        openai_sentinel_headers(
+-            chatgpt,
+-            flow="chatgpt_checkout" if payment_method == "gcash" else "",
+-            referer=referer,
+-            log=log,
+-        )
+-    )
+     response = stage_http_request(
+         chatgpt,
+         "ChatGPT checkout",
+@@ -179,39 +140,15 @@ def create_checkout(
+         "https://chatgpt.com" + path,
+         log,
+         json=body,
+-        headers=headers,
++        headers={
++            "Referer": "https://chatgpt.com/",
++            "x-openai-target-path": path,
++            "x-openai-target-route": path,
++        },
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+-        response_headers = getattr(response, "headers", {})
+-        cf_ray = ""
+-        if hasattr(response_headers, "get"):
+-            cf_ray = str(response_headers.get("cf-ray") or response_headers.get("CF-Ray") or "")
+-        edge = cf_ray.rsplit("-", 1)[-1].upper() if "-" in cf_ray else "?"
+-        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+-        sdk_version = str(getattr(provider, "_sentinel_sdk_version", "") or "?")
+-        session_headers = getattr(chatgpt, "headers", {})
+-        sentinel_present = "OpenAI-Sentinel-Token" in headers or (
+-            hasattr(session_headers, "get")
+-            and bool(
+-                session_headers.get("OpenAI-Sentinel-Token")
+-                or session_headers.get("openai-sentinel-token")
+-            )
+-        )
+-        attestation_present = "oai-web-deployment-attestation" in headers or (
+-            hasattr(session_headers, "get")
+-            and bool(session_headers.get("oai-web-deployment-attestation"))
+-        )
+-        protection = (
+-            f"sentinel={'yes' if sentinel_present else 'no'}, "
+-            f"attestation={'yes' if attestation_present else 'no'}, "
+-            f"sdk={sdk_version}, edge={edge}"
+-        )
+-        raise ProtocolError(
+-            response.status_code,
+-            f"checkout create failed (HTTP {response.status_code}; {protection}): "
+-            f"{safe_log_text(response.text)}",
+-        )
++        raise ProtocolError(response.status_code, f"checkout create failed: {response.text[:500]}")
+     payload = response_json(response, "checkout create")
+     session_id = extract_checkout_session_id(payload)
+     kind = checkout_session_kind(session_id)
+diff --git a/payment_link_extractor/cli.py b/payment_link_extractor/cli.py
+index a6cb6cc..eae19a9 100644
+--- a/payment_link_extractor/cli.py
++++ b/payment_link_extractor/cli.py
+@@ -21,11 +21,6 @@ def parse_args() -> argparse.Namespace:
+     )
+     parser.add_argument("--env-file", help="path to a .env file")
+     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")
+-    parser.add_argument(
+-        "--session-token",
+-        default=os.getenv("OPLL_SESSION_TOKEN", ""),
+-        help="NextAuth sessionToken from the same account export; prefer OPLL_SESSION_TOKEN env",
+-    )
+     parser.add_argument(
+         "--checkout-proxy",
+         default=os.getenv("OPLL_CHECKOUT_PROXY", ""),
+@@ -84,7 +79,6 @@ def main() -> int:
+         result = extract_payment_link(
+             ExtractionConfig(
+                 access_token=token,
+-                session_token=str(args.session_token or "").strip(),
+                 checkout_proxy=args.checkout_proxy,
+                 update_proxy=args.update_proxy,
+                 stripe_hcaptcha_token=args.stripe_hcaptcha_token,
+diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
+index a70a52b..c38fc51 100644
+--- a/payment_link_extractor/config.py
++++ b/payment_link_extractor/config.py
+@@ -10,7 +10,7 @@ DEFAULT_TIMEOUT = 30
+ PROVIDER_POLL_TIMEOUT_SECONDS = 5
+ DEFAULT_USER_AGENT = (
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
++    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+ )
+ DEFAULT_STRIPE_PK = (
+     "pk_live_51HOrSwC6h1nxGoI3lTAgRjYVrz4dU3fVOabyCcKR3pbEJguCVAlqCxdxCUvoRh1XWwRac"
+diff --git a/payment_link_extractor/flows/oaics.py b/payment_link_extractor/flows/oaics.py
+index a0e8972..0e8739f 100644
+--- a/payment_link_extractor/flows/oaics.py
++++ b/payment_link_extractor/flows/oaics.py
+@@ -1,7 +1,5 @@
+ from __future__ import annotations
+ 
+-import json
+-import re
+ import time
+ from typing import Callable
+ from typing import Any
+@@ -21,7 +19,6 @@ from ..config import (
+     processor_entity_for_country,
+ )
+ from ..errors import ProtocolError
+-from ..logging_utils import emit_log
+ from ..models import CheckoutData, ExtractionConfig, StripeContext
+ from ..providers import provider_redirect_config
+ from ..risk_params import time_on_page_ms
+@@ -37,10 +34,7 @@ from ..stripe_common import (
+     stripe_deferred_intent_params,
+     stripe_key,
+ )
+-from ..transport import openai_sentinel_headers, response_json, stage_http_request
+-
+-
+-CHECKOUT_DATA_ROUTE_QUERY = "_routes=routes%2Fcheckout.%24entity.%24checkoutId"
++from ..transport import openai_sentinel_token, response_json, stage_http_request
+ 
+ 
+ def openai_checkout_init_payload(checkout: CheckoutData) -> dict[str, Any]:
+@@ -138,10 +132,8 @@ def openai_checkout_taxes(
+         "billing_name": billing["name"],
+         "currency": config_currency(config).lower(),
+         "processor_entity": processor,
+-        "tax_id": None,
+         "billing_address": {
+             "line1": billing["line1"],
+-            "line2": "",
+             "city": billing["city"],
+             "country": config.country.upper(),
+             "postal_code": billing["postal_code"],
+@@ -392,132 +384,17 @@ def _openai_checkout_headers(
+         "x-openai-target-route": path,
+     }
+     if sentinel:
+-        headers.update(openai_sentinel_headers(chatgpt))
++        token = openai_sentinel_token(chatgpt)
++        if token:
++            headers["OpenAI-Sentinel-Token"] = token
+     return headers
+ 
+ 
+-def _script_json_candidates(source: str) -> list[dict[str, Any]]:
+-    """Extract object payloads from the route-data script returned by ChatGPT.
+-
+-    The browser HAR exports the ``.data`` response as ``text/x-script`` on
+-    some deployments, while other deployments return ordinary JSON.  Keeping
+-    this parser permissive lets the GCash flow consume both shapes without
+-    coupling it to a framework-specific loader wrapper.
+-    """
+-    text = str(source or "").strip()
+-    if not text:
+-        return []
+-    decoder = json.JSONDecoder()
+-    candidates: list[dict[str, Any]] = []
+-    seen: set[str] = set()
+-
+-    def add(value: Any) -> None:
+-        if isinstance(value, dict):
+-            marker = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+-            if marker not in seen:
+-                seen.add(marker)
+-                candidates.append(value)
+-            for nested in value.values():
+-                add(nested)
+-        elif isinstance(value, list):
+-            for nested in value:
+-                add(nested)
+-
+-    try:
+-        add(json.loads(text))
+-    except Exception:
+-        pass
+-    for index, char in enumerate(text):
+-        if char not in "[{":
+-            continue
+-        try:
+-            value, _ = decoder.raw_decode(text[index:])
+-        except (TypeError, ValueError):
+-            continue
+-        add(value)
+-    # Remix/React route loaders sometimes embed the JSON as an escaped string
+-    # inside a script push call (for example ``[1, "{\\"checkout_session\\"...")``).
+-    for match in re.finditer(r'"((?:\\.|[^"\\])*)"', text):
+-        try:
+-            decoded = json.loads('"' + match.group(1) + '"')
+-        except (TypeError, ValueError):
+-            continue
+-        if isinstance(decoded, str) and any(key in decoded for key in ("custom_payment_methods", "checkout_session", "checkout_state")):
+-            for nested in _script_json_candidates(decoded):
+-                add(nested)
+-    return candidates
+-
+-
+-def fetch_custom_checkout_data_state(
+-    chatgpt: Any,
+-    checkout: CheckoutData,
+-    log: Any | None,
+-) -> dict[str, Any]:
+-    """Hydrate OAICS state from the browser's current ``.data`` route.
+-
+-    Full GCash HARs request this route immediately after checkout creation.
+-    An empty mapping signals that a deployment did not expose the route so the
+-    caller can use the legacy backend endpoint as a compatibility fallback.
+-    """
+-    processor = processor_entity_for_country(
+-        str(checkout.get("billing_country") or "PH"),
+-        str(checkout.get("processor_entity") or ""),
+-    )
+-    checkout_id = str(checkout.get("cs_id") or "").strip()
+-    if not checkout_id:
+-        return {}
+-    path = f"/checkout/{processor}/{checkout_id}.data"
+-    response = stage_http_request(
+-        chatgpt,
+-        "ChatGPT GCash checkout route data",
+-        "GET",
+-        "https://chatgpt.com" + path + "?" + CHECKOUT_DATA_ROUTE_QUERY,
+-        log,
+-        headers={
+-            "Accept": "*/*",
+-            # The browser keeps the promo landing page as the referrer while
+-            # hydrating the route loader; checkout/taxes/confirm switch to the
+-            # session URL afterwards.
+-            "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+-        },
+-        timeout=DEFAULT_TIMEOUT,
+-    )
+-    if response.status_code in {404, 405, 410} or response.status_code >= 500:
+-        return {}
+-    if response.status_code >= 400:
+-        return {}
+-    payload: dict[str, Any] | None = None
+-    try:
+-        payload = response_json(response, "GCash checkout route data")
+-    except ProtocolError:
+-        for candidate in _script_json_candidates(getattr(response, "text", "")):
+-            if _custom_payment_methods(candidate) or first_value_by_key(candidate, "checkout_session") is not None:
+-                payload = candidate
+-                break
+-        if payload is None:
+-            candidates = _script_json_candidates(getattr(response, "text", ""))
+-            payload = candidates[0] if candidates else None
+-    if not isinstance(payload, dict) or not payload:
+-        return {}
+-    if not (
+-        _custom_payment_methods(payload)
+-        or first_value_by_key(payload, "checkout_session") is not None
+-        or first_value_by_key(payload, "checkout_state") is not None
+-        or first_value_by_key(payload, "payment_method_types") is not None
+-    ):
+-        return {}
+-    merge_checkout_payload(checkout, payload)
+-    return payload
+-
+-
+ def fetch_custom_checkout_state(
+     chatgpt: Any,
+     checkout: CheckoutData,
+     log: Any | None,
+ ) -> dict[str, Any]:
+-    route_payload = fetch_custom_checkout_data_state(chatgpt, checkout, log)
+-    if route_payload:
+-        return route_payload
+     processor = processor_entity_for_country(
+         str(checkout.get("billing_country") or "PH"),
+         str(checkout.get("processor_entity") or ""),
+@@ -556,17 +433,7 @@ def confirm_custom_checkout_method(
+             "checkout_session_id": checkout["cs_id"],
+             "selected_payment_method_type": custom_payment_method_id,
+         },
+-        headers={
+-            **_openai_checkout_headers(chatgpt, path, checkout),
+-            **openai_sentinel_headers(
+-                chatgpt,
+-                flow="checkout_session_approval",
+-                referer=f"https://chatgpt.com/checkout/"
+-                f"{processor_entity_for_country(str(checkout.get('billing_country') or 'PH'), str(checkout.get('processor_entity') or ''))}/"
+-                f"{checkout['cs_id']}",
+-                log=log,
+-            ),
+-        },
++        headers=_openai_checkout_headers(chatgpt, path, checkout, sentinel=True),
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+@@ -686,74 +553,14 @@ def extract_oaics_gcash_provider(
+     if not custom_method_id:
+         raise ProtocolError(409, "GCash custom payment method is not available in the PH Checkout")
+ 
+-    # The browser initializes Stripe Elements even though GCash itself is a
+-    # custom payment method.  That initialization refreshes the OAICS session
+-    # state and is followed by more than one taxes calculation in every recent
+-    # successful capture.  Keep it opportunistic for older deployments and
+-    # lightweight test doubles that do not expose a Stripe transport.
+-    elements_ctx: StripeContext | None = None
+-    elements_enabled = bool(
+-        stripe is not None
+-        and callable(getattr(stripe, "request", None))
+-        and str(checkout.get("customer_session_client_secret") or "").strip()
+-    )
+-    if elements_enabled:
+-        init_payload = openai_checkout_init_payload(checkout)
+-        elements_ctx = stripe_context(init_payload, checkout)
+-        try:
+-            openai_elements_session(stripe, config, checkout, init_payload, elements_ctx, log)
+-        except Exception as exc:
+-            emit_log(log, f"GCash Elements bootstrap skipped: {type(exc).__name__}")
+-            elements_ctx = None
+-
+     if stage_callback:
+         stage_callback("taxes")
+-    taxes_payload = openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+-    # The current browser uses the taxes response as the refreshed checkout
+-    # state; it does not issue the legacy backend checkout GET.  Fall back to
+-    # that endpoint only when a deployment omits custom_payment_methods from
+-    # the taxes response and the original checkout state is also incomplete.
+-    state = taxes_payload
++    openai_checkout_taxes(config, chatgpt, checkout, billing, log)
++    state = fetch_custom_checkout_state(chatgpt, checkout, log)
+     custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+-    if not custom_method_id:
+-        state = fetch_custom_checkout_state(chatgpt, checkout, log)
+-        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+     if not custom_method_id:
+         raise ProtocolError(409, "GCash custom payment method disappeared after tax refresh")
+ 
+-    # Reuse the Elements session before a second taxes refresh, matching the
+-    # route observed in m.gcash.com4.har and m.gcash.com5.har.  A deployment
+-    # that rejects the optional refresh still retains the first valid state.
+-    if elements_ctx is not None:
+-        try:
+-            refreshed_init = openai_checkout_init_payload(checkout)
+-            openai_elements_session(
+-                stripe,
+-                config,
+-                checkout,
+-                refreshed_init,
+-                elements_ctx,
+-                log,
+-                reuse_session=True,
+-            )
+-        except Exception as exc:
+-            emit_log(log, f"GCash Elements refresh skipped: {type(exc).__name__}")
+-    try:
+-        if stage_callback:
+-            stage_callback("taxes_refresh")
+-        second_taxes = openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+-        state = second_taxes
+-        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+-    except ProtocolError as exc:
+-        # Older OAICS deployments accepted one tax request; retain that
+-        # compatibility while preferring the browser's two-refresh contract.
+-        emit_log(log, f"GCash second taxes refresh skipped: {exc.status_code}")
+-    if not custom_method_id:
+-        state = fetch_custom_checkout_state(chatgpt, checkout, log)
+-        custom_method_id = _gcash_custom_payment_method_id(state) or _gcash_custom_payment_method_id(checkout)
+-    if not custom_method_id:
+-        raise ProtocolError(409, "GCash custom payment method disappeared after second tax refresh")
+-
+     if stage_callback:
+         stage_callback("payment_confirmation")
+     confirmed = confirm_custom_checkout_method(chatgpt, checkout, custom_method_id, log)
+diff --git a/payment_link_extractor/models.py b/payment_link_extractor/models.py
+index 7a332a6..1064ca9 100644
+--- a/payment_link_extractor/models.py
++++ b/payment_link_extractor/models.py
+@@ -18,7 +18,6 @@ class ExtractionConfig:
+     retry_count: int = 0
+     checkout_proxy_attempts: tuple[str, ...] = ()
+     update_proxy_attempts: tuple[str, ...] = ()
+-    session_token: str = ""
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
+index 34b86be..1b12a38 100644
+--- a/payment_link_extractor/transport.py
++++ b/payment_link_extractor/transport.py
+@@ -2,18 +2,8 @@ from __future__ import annotations
+ 
+ import os
+ import base64
+-import json
+-import re
+-import secrets
+-import shutil
+-import socket
+-import subprocess
+-import sys
+-import tempfile
+-import threading
+ import time
+ import uuid
+-from pathlib import Path
+ from typing import Any, Protocol
+ from urllib.parse import quote, unquote, urlsplit, urlunsplit
+ from urllib.request import Request, urlopen
+@@ -23,8 +13,7 @@ try:
+ except ImportError:  # pragma: no cover - installation issue handled at runtime
+     requests = None  # type: ignore
+ 
+-from .auth import account_id
+-from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
++from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
+ from .errors import ConfigurationError, NetworkError, ProtocolError
+ from .logging_utils import compact_url, emit_log, safe_log_text
+ from .models import ExtractionConfig
+@@ -57,105 +46,15 @@ class TransportFactory(Protocol):
+     def stripe(self, config: ExtractionConfig) -> Any: ...
+ 
+ 
+-_SENTINEL_VERSION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+-_SENTINEL_LOADER_RE = re.compile(r"/sentinel/([A-Za-z0-9_-]+)/sdk\.js")
+-
+-
+-def _agent_browser_error_detail(value: Any) -> str:
+-    """Keep the useful CLI failure line while removing credential material."""
+-    text = safe_log_text(value, 800)
+-    text = re.sub(r"(?i)(authorization\s*[=:]\s*['\"]?)([^'\"\s,}]+)", r"\1***", text)
+-    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
+-    text = re.sub(r"(?i)(__secure-next-auth\.session-token\s*[=:]\s*)([^;\s]+)", r"\1***", text)
+-    text = re.sub(r"(?i)(oai-at\s*[=:]\s*)([^;\s]+)", r"\1***", text)
+-    return text.replace("\r", " ").replace("\n", " ").strip()
+-
+-
+-def _sentinel_frame_url(version: str = "") -> str:
+-    """Build the version-pinned Sentinel frame URL from a validated version."""
+-    value = str(version or "").strip()
+-    if value and _SENTINEL_VERSION_RE.fullmatch(value):
+-        return f"https://chatgpt.com/backend-api/sentinel/frame.html?sv={value}"
+-    return "https://chatgpt.com/backend-api/sentinel/frame.html"
+-
+-
+-def _sentinel_version_from_loader(text: str) -> str:
+-    """Extract the current Sentinel SDK version from the loader response."""
+-    match = _SENTINEL_LOADER_RE.search(str(text or ""))
+-    if not match:
+-        return ""
+-    value = match.group(1).strip()
+-    return value if _SENTINEL_VERSION_RE.fullmatch(value) else ""
+-
+-
+-def _browser_proxy_url(proxy: str) -> str:
+-    """Translate curl's remote-DNS SOCKS spelling to Chromium's SOCKS5 URL.
+-
+-    curl accepts ``socks5h://`` while Chromium reports
+-    ``ERR_NO_SUPPORTED_PROXIES`` for that scheme.  Chromium's SOCKS5 proxy
+-    implementation already performs hostname resolution through the proxy,
+-    so only the scheme spelling must differ between the two transports.
+-    """
+-    text = str(proxy or "").strip()
+-    try:
+-        parsed = urlsplit(text)
+-    except Exception:
+-        return text
+-    if parsed.scheme.lower() != "socks5h":
+-        return text
+-    return urlunsplit(("socks5", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+-
+-
+-def _ensure_iprocket_bridge_listener(normalized_proxy: str) -> None:
+-    """Ensure a local dynamic-proxy bridge is listening before use.
+-
+-    Vendor proxy URLs are rewritten to credentials understood by the local
+-    bridge.  The web service may be started without ``START.bat`` (or the
+-    standalone bridge may have exited because no subscription URL was
+-    exported), so start the in-process listener lazily and verify readiness.
+-    External/non-local bridge endpoints are left untouched.
+-    """
+-    parsed = urlsplit(str(normalized_proxy or ""))
+-    host = (parsed.hostname or "").lower()
+-    username = unquote(parsed.username or "")
+-    if not username.startswith("iprb_"):
+-        return
+-    if host not in {"127.0.0.1", "localhost", "::1"}:
+-        return
+-    try:
+-        port = parsed.port or int(os.getenv("IPROCKET_BRIDGE_PORT", "18796"))
+-        from iprocket_chain_bridge import ensure_background_server
+-
+-        ensure_background_server()
+-        deadline = time.monotonic() + 2.0
+-        while time.monotonic() < deadline:
+-            try:
+-                probe = socket.create_connection((host, port), timeout=0.25)
+-                probe.close()
+-                return
+-            except OSError:
+-                time.sleep(0.05)
+-    except Exception as exc:
+-        raise ConfigurationError("IPRocket chain bridge unavailable") from exc
+-    raise ConfigurationError("IPRocket chain bridge unavailable")
+-
+-
+ def new_session() -> Any:
+     if CurlCffiSession is not None:
+-        return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
++        return CurlCffiSession(impersonate="firefox")
+     if requests is None:
+         raise ConfigurationError("requests is required; install requirements.txt")
+     return requests.Session()
+ 
+ 
+ def safe_close(session: Any) -> None:
+-    provider = getattr(session, "openai_sentinel_provider", None)
+-    close_provider = getattr(provider, "close", None)
+-    if callable(close_provider):
+-        try:
+-            close_provider()
+-        except Exception:
+-            pass
+     close = getattr(session, "close", None)
+     if callable(close):
+         try:
+@@ -198,7 +97,7 @@ def _iprocket_protocol(port: int, scheme: str = "") -> str:
+         return "socks5"
+     if lowered in {"http", "https"}:
+         return "http"
+-    if port in {9595, 59999, 61999}:
++    if port in {9595, 59999, 619999}:
+         return "socks5"
+     if port in {5959, 61999}:
+         return "http"
+@@ -364,7 +263,6 @@ def normalize_proxy_url(proxy: str) -> str:
+ 
+ def set_proxy_url(session: Any, proxy: str) -> None:
+     normalized = normalize_proxy_url(proxy)
+-    _ensure_iprocket_bridge_listener(normalized)
+     session.proxies = {"http": normalized, "https": normalized} if normalized else {}
+ 
+ 
+@@ -378,21 +276,6 @@ def stage_http_request(
+ ) -> Any:
+     started = time.perf_counter()
+     emit_log(log, f"{stage}: {method.upper()} {compact_url(url)}")
+-    # The browser rotates this short-lived observation value on each logical
+-    # request.  Keep it out of call sites so route/tax/confirm requests all
+-    # receive the same transport-level treatment while test doubles remain
+-    # unchanged.
+-    refresh_headers = getattr(session, "refresh_openai_request_headers", None)
+-    if callable(refresh_headers):
+-        try:
+-            dynamic = refresh_headers(method.upper(), url)
+-        except Exception:
+-            dynamic = {}
+-        if dynamic:
+-            request_headers = dict(kwargs.get("headers") or {})
+-            for key, value in dynamic.items():
+-                request_headers[key] = value
+-            kwargs["headers"] = request_headers
+     try:
+         response = session.request(method.upper(), url, **kwargs)
+     except Exception as exc:
+@@ -411,10 +294,10 @@ def stage_http_request(
+ def openai_sentinel_token(session: Any) -> str:
+     """Return an optional Sentinel token supplied by the caller's session.
+ 
+-    The browser sends the short-lived value on checkout creation and custom
+-    checkout confirmation.  It must not be embedded in source; callers may
+-    inject a fresh value on a transport session (or through the environment
+-    for a one-off run).
++    Browser captures show that only the custom-checkout confirmation request
++    carries ``OpenAI-Sentinel-Token``.  The token is short-lived and must not
++    be embedded in source; callers may inject it on a transport session (or
++    through the environment for a one-off run).
+     """
+     value = getattr(session, "openai_sentinel_token", "")
+     if not value:
+@@ -425,74 +308,6 @@ def openai_sentinel_token(session: Any) -> str:
+     return str(value or "").strip()
+ 
+ 
+-def openai_sentinel_so_token(session: Any) -> str:
+-    """Return the optional Sentinel SO token captured on some browser runs."""
+-    value = getattr(session, "openai_sentinel_so_token", "")
+-    if not value:
+-        headers = getattr(session, "headers", {})
+-        value = headers.get("OpenAI-Sentinel-SO-Token") or headers.get(
+-            "openai-sentinel-so-token"
+-        )
+-    if not value:
+-        value = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+-    return str(value or "").strip()
+-
+-
+-def openai_sentinel_headers(
+-    session: Any,
+-    *,
+-    flow: str = "",
+-    referer: str = "",
+-    log: Any | None = None,
+-) -> dict[str, str]:
+-    """Build fresh Sentinel/attestation headers for a browser checkout.
+-
+-    A live browser provider is preferred for the two protected checkout
+-    operations.  The environment/session fallback remains available for
+-    deployments that deliberately inject their own short-lived values and for
+-    older non-GCash flows.
+-    """
+-    headers: dict[str, str] = {}
+-    provider = getattr(session, "openai_sentinel_provider", None)
+-    if flow and provider is not None:
+-        try:
+-            generated = provider.headers(flow, referer=referer)
+-            if generated:
+-                headers.update(generated)
+-                # Preserve an explicitly injected fresh attestation/SO token
+-                # when the browser page is unauthenticated and cannot expose
+-                # its bootstrap field yet.
+-                if "oai-web-deployment-attestation" not in headers:
+-                    fallback_attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+-                    if fallback_attestation:
+-                        headers["oai-web-deployment-attestation"] = fallback_attestation
+-                if "OpenAI-Sentinel-SO-Token" not in headers:
+-                    fallback_so = openai_sentinel_so_token(session)
+-                    if fallback_so:
+-                        headers["OpenAI-Sentinel-SO-Token"] = fallback_so
+-                if "OpenAI-Sentinel-Token" in headers:
+-                    return headers
+-        except Exception as exc:
+-            emit_log(log, f"Sentinel browser provider unavailable: {safe_log_text(exc, 180)}")
+-            if bool(getattr(session, "openai_sentinel_strict", False)) and os.getenv(
+-                "OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", "0"
+-            ).strip().lower() not in {"1", "true", "yes", "on"}:
+-                raise ConfigurationError(
+-                    f"GCash Sentinel bootstrap failed: {safe_log_text(exc, 180)}"
+-                ) from exc
+-        if bool(getattr(session, "openai_sentinel_strict", False)) and os.getenv(
+-            "OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", "0"
+-        ).strip().lower() not in {"1", "true", "yes", "on"}:
+-            raise ConfigurationError("GCash Sentinel provider returned no proof token")
+-    token = openai_sentinel_token(session)
+-    if token:
+-        headers["OpenAI-Sentinel-Token"] = token
+-    so_token = openai_sentinel_so_token(session)
+-    if so_token:
+-        headers["OpenAI-Sentinel-SO-Token"] = so_token
+-    return headers
+-
+-
+ def is_network_exception(exc: BaseException) -> bool:
+     """Return whether an exception indicates a transport failure.
+ 
+@@ -538,427 +353,14 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
+     return payload
+ 
+ 
+-def _agent_browser_binary() -> str:
+-    """Locate the optional native agent-browser executable."""
+-    configured = os.getenv("OPLL_AGENT_BROWSER_BIN", "").strip()
+-    if configured and Path(configured).exists():
+-        return configured
+-    if sys.platform == "win32":
+-        candidates = (
+-            Path.home()
+-            / "AppData"
+-            / "Roaming"
+-            / "npm"
+-            / "node_modules"
+-            / "agent-browser"
+-            / "bin"
+-            / "agent-browser-win32-x64.exe",
+-            Path(sys.prefix)
+-            / "node_modules"
+-            / "agent-browser"
+-            / "bin"
+-            / "agent-browser-win32-x64.exe",
+-        )
+-    else:
+-        candidates = ()
+-    for candidate in candidates:
+-        if candidate.exists():
+-            return str(candidate)
+-    return shutil.which("agent-browser") or shutil.which("agent-browser.cmd") or ""
+-
+-
+-def _decode_agent_browser_output(text: str) -> Any:
+-    """Decode agent-browser's JSON output without logging its contents."""
+-    value = str(text or "").strip()
+-    if not value:
+-        return None
+-    try:
+-        return json.loads(value)
+-    except Exception:
+-        pass
+-    # Native builds can prepend a one-line status glyph when JSON mode is not
+-    # requested.  Decode the first complete JSON value in the remaining text.
+-    for start, char in enumerate(value):
+-        if char not in "[{\"":
+-            continue
+-        try:
+-            return json.JSONDecoder().raw_decode(value[start:])[0]
+-        except Exception:
+-            continue
+-    return value
+-
+-
+-class BrowserSentinelProvider:
+-    """Generate short-lived Sentinel headers in a real browser context.
+-
+-    The checkout API binds the Sentinel proof to the browser's device cookie,
+-    user-agent and fingerprint.  Replaying a HAR token therefore cannot work.
+-    This adapter keeps the browser helper optional: when it is not installed or
+-    a deployment cannot be opened, callers retain the explicit environment
+-    fallback used by older deployments.
+-    """
+-
+-    def __init__(
+-        self,
+-        *,
+-        access_token: str,
+-        device_id: str,
+-        session_id: str,
+-        user_agent: str,
+-        proxy: str,
+-        transport_session: Any,
+-        session_token: str = "",
+-        log: Any | None = None,
+-    ) -> None:
+-        self.access_token = str(access_token or "").strip()
+-        self.session_token = str(session_token or "").strip()
+-        self.device_id = str(device_id or "").strip()
+-        self.session_id = str(session_id or "").strip()
+-        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
+-        self.proxy = _browser_proxy_url(proxy)
+-        self.transport_session = transport_session
+-        self.log = log
+-        self.binary = _agent_browser_binary()
+-        self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
+-        self.session_name = "checkout_" + uuid.uuid4().hex[:12]
+-        self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
+-        self.locale_script = self.temp_dir / "locale.js"
+-        self.locale_script.write_text(
+-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
+-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
+-            encoding="utf-8",
+-        )
+-        self._lock = threading.RLock()
+-        self._started = False
+-        self._closed = False
+-        self._failed = False
+-        self._attestation = ""
+-        self._bootstrap_session_id = ""
+-        self._sentinel_sdk_version = ""
+-        self._cookies = ""
+-        self._launch_args_used = False
+-
+-    @property
+-    def enabled(self) -> bool:
+-        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
+-        return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
+-
+-    def _base_command(self) -> list[str]:
+-        if not self.binary:
+-            raise RuntimeError("agent-browser executable not found")
+-        command = [
+-            self.binary,
+-            "--namespace",
+-            self.namespace,
+-            "--session",
+-            self.session_name,
+-            "--user-agent",
+-            self.user_agent,
+-            "--init-script",
+-            str(self.locale_script),
+-        ]
+-        if self.proxy:
+-            command.extend(["--proxy", self.proxy])
+-        if not self._launch_args_used:
+-            command.extend(["--args", "--disable-blink-features=AutomationControlled"])
+-        return command
+-
+-    def _run(self, args: list[str], timeout: float = 75.0) -> Any:
+-        if self._closed:
+-            raise RuntimeError("Sentinel browser provider is closed")
+-        output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
+-        env = dict(os.environ)
+-        # Chromium uses TZ when constructing the browser fingerprint.  Keep
+-        # the browser and the PH checkout locale coherent when supported.
+-        env.setdefault("TZ", "Asia/Manila")
+-        env["AGENT_BROWSER_NAMESPACE"] = self.namespace
+-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+-        status = -1
+-        try:
+-            with output_path.open("w", encoding="utf-8") as output:
+-                process = subprocess.Popen(
+-                    self._base_command() + args,
+-                    stdin=subprocess.DEVNULL,
+-                    stdout=output,
+-                    stderr=subprocess.STDOUT,
+-                    env=env,
+-                    creationflags=creation_flags,
+-                )
+-                try:
+-                    status = process.wait(timeout=timeout)
+-                except subprocess.TimeoutExpired as exc:
+-                    process.kill()
+-                    process.wait(timeout=5)
+-                    raise RuntimeError("agent-browser command timed out") from exc
+-            text = output_path.read_text(encoding="utf-8", errors="replace")
+-        finally:
+-            # The daemon can briefly retain the redirected handle.  Cleanup is
+-            # best-effort and the temporary directory is removed on close.
+-            for _ in range(10):
+-                try:
+-                    output_path.unlink()
+-                    break
+-                except OSError:
+-                    time.sleep(0.05)
+-        if status != 0:
+-            detail = _agent_browser_error_detail(text)
+-            suffix = f": {detail}" if detail else ""
+-            raise RuntimeError(f"agent-browser exited with status {status}{suffix}")
+-        return _decode_agent_browser_output(text)
+-
+-    def _eval(self, expression: str, timeout: float = 75.0) -> Any:
+-        return self._run(["eval", expression], timeout=timeout)
+-
+-    def _capture_bootstrap(self, wait_seconds: float = 0.0) -> bool:
+-        wait_ms = max(0, int(float(wait_seconds) * 1000))
+-        value = self._eval(
+-            "(async()=>{const deadline=Date.now()+" + str(wait_ms) + ";"
+-            "while(true){const node=document.getElementById('client-bootstrap');"
+-            "if(node){try{const data=JSON.parse(node.textContent||'{}');"
+-            "if(data.webDeploymentAttestation||Date.now()>=deadline){return {"
+-            "attestation:data.webDeploymentAttestation||'',locale:data.locale||'',"
+-            "sessionId:data.sessionId||''};}}catch(_){}}"
+-            "if(Date.now()>=deadline)return {};"
+-            "await new Promise(resolve=>setTimeout(resolve,500));}})()",
+-            timeout=max(30.0, wait_seconds + 15.0),
+-        )
+-        if isinstance(value, dict):
+-            attestation = str(value.get("attestation") or "").strip()
+-            if attestation:
+-                self._attestation = attestation
+-            bootstrap_session_id = str(value.get("sessionId") or "").strip()
+-            if bootstrap_session_id:
+-                self._bootstrap_session_id = bootstrap_session_id
+-        return bool(self._attestation)
+-
+-    def _resolve_sentinel_version(self) -> str:
+-        loader = self._eval(
+-            "(async()=>{try{const response=await fetch('/backend-api/sentinel/sdk.js',"
+-            "{credentials:'include',cache:'no-store'});"
+-            "if(!response.ok)return '';return await response.text();}catch(_){return '';}})()",
+-            timeout=30,
+-        )
+-        value = _sentinel_version_from_loader(loader if isinstance(loader, str) else "")
+-        self._sentinel_sdk_version = value
+-        return value
+-
+-    def _wait_for_sentinel_sdk(self, wait_seconds: float = 10.0) -> bool:
+-        wait_ms = max(0, int(float(wait_seconds) * 1000))
+-        value = self._eval(
+-            "(async()=>{const deadline=Date.now()+" + str(wait_ms) + ";"
+-            "while(true){if(typeof SentinelSDK!=='undefined'&&"
+-            "typeof SentinelSDK.token==='function')return true;"
+-            "if(Date.now()>=deadline)return false;"
+-            "await new Promise(resolve=>setTimeout(resolve,250));}})()",
+-            timeout=max(30.0, wait_seconds + 15.0),
+-        )
+-        return value is True
+-
+-    def _sync_cookies(self) -> None:
+-        value = self._run(["cookies", "get", "--json"])
+-        cookies: list[dict[str, Any]] = []
+-        if isinstance(value, dict):
+-            data = value.get("data")
+-            if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+-                cookies = [item for item in data["cookies"] if isinstance(item, dict)]
+-            elif isinstance(data, list):
+-                cookies = [item for item in data if isinstance(item, dict)]
+-        # Only send first-party ChatGPT cookies back through the API
+-        # transport.  The browser context can also contain Stripe/analytics
+-        # cookies, and duplicate Cookie names are ambiguous to HTTP servers.
+-        first_party: dict[str, str] = {"oai-did": self.device_id}
+-        for cookie in cookies:
+-            domain = str(cookie.get("domain") or "").strip().lower().lstrip(".")
+-            if domain and domain != "chatgpt.com" and not domain.endswith(".chatgpt.com"):
+-                continue
+-            name = str(cookie.get("name") or "").strip()
+-            val = str(cookie.get("value") or "")
+-            if name:
+-                first_party[name] = val
+-        # Sentinel binds the proof to the oai-did supplied by the curl
+-        # transport, so it wins even if an older browser cookie was restored.
+-        first_party["oai-did"] = self.device_id
+-        if first_party:
+-            self._cookies = "; ".join(f"{name}={val}" for name, val in first_party.items())
+-            headers = getattr(self.transport_session, "headers", None)
+-            if headers is not None:
+-                headers["Cookie"] = self._cookies
+-
+-    def _start(self) -> None:
+-        if not self.enabled:
+-            raise RuntimeError("agent-browser is disabled or unavailable")
+-        try:
+-            self._run(["open", "about:blank", "--json"])
+-            self._started = True
+-            self._launch_args_used = True
+-            self._run(
+-                [
+-                    "cookies",
+-                    "set",
+-                    "oai-did",
+-                    self.device_id,
+-                    "--url",
+-                    "https://chatgpt.com",
+-                ]
+-            )
+-            if getattr(self, "session_token", ""):
+-                self._run(
+-                    [
+-                        "cookies",
+-                        "set",
+-                        "__Secure-next-auth.session-token",
+-                        self.session_token,
+-                        "--url",
+-                        "https://chatgpt.com",
+-                        "--httpOnly",
+-                        "--secure",
+-                        "--sameSite",
+-                        "Lax",
+-                    ]
+-                )
+-            # Load the authenticated application shell before resolving the
+-            # Sentinel loader.  Successful browser captures load the current
+-            # versioned SDK/frame from this shell, not an unauthenticated,
+-            # unversioned frame that can serve an older deployment.
+-            auth_headers = {
+-                "Authorization": f"Bearer {self.access_token}",
+-                "oai-device-id": self.device_id,
+-                "oai-session-id": self.session_id,
+-                "oai-language": "en-US",
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
+-                "oai-client-version": os.getenv(
+-                    "OPLL_OAI_CLIENT_VERSION",
+-                    "prod-46437587156517d920436051cb9ab60a95f0503a",
+-                ),
+-            }
+-            account = account_id(self.access_token)
+-            if account:
+-                # The browser sends the selected ChatGPT account on the
+-                # authenticated bootstrap navigation.  Keeping it aligned
+-                # with the curl transport avoids loading a different account
+-                # shell when an AT belongs to a multi-account workspace.
+-                auth_headers["chatgpt-account-id"] = account
+-            self._run(
+-                [
+-                    "--headers",
+-                    json.dumps(auth_headers, separators=(",", ":")),
+-                    "open",
+-                    "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+-                ]
+-            )
+-            try:
+-                bootstrap_wait = max(
+-                    0.0,
+-                    float(os.getenv("OPLL_GCASH_SENTINEL_BOOTSTRAP_WAIT_SECONDS", "15")),
+-                )
+-            except ValueError:
+-                bootstrap_wait = 15.0
+-            self._capture_bootstrap(bootstrap_wait)
+-            require_attestation = os.getenv(
+-                "OPLL_GCASH_SENTINEL_REQUIRE_ATTESTATION", "1"
+-            ).strip().lower() not in {"0", "false", "off", "no"}
+-            if require_attestation and not self._attestation:
+-                raise RuntimeError("Sentinel bootstrap attestation unavailable")
+-
+-            sentinel_version = self._resolve_sentinel_version()
+-            if not sentinel_version:
+-                raise RuntimeError("current Sentinel SDK version unavailable")
+-            self._run(["open", _sentinel_frame_url(sentinel_version)])
+-            try:
+-                sdk_wait = max(
+-                    0.0,
+-                    float(os.getenv("OPLL_GCASH_SENTINEL_SDK_WAIT_SECONDS", "10")),
+-                )
+-            except ValueError:
+-                sdk_wait = 10.0
+-            if not self._wait_for_sentinel_sdk(sdk_wait):
+-                raise RuntimeError("versioned Sentinel SDK did not become ready")
+-            self._sync_cookies()
+-        except Exception:
+-            self._failed = True
+-            raise
+-
+-    def _ping(self, referer: str) -> None:
+-        # The browser sends this zero-length POST after generating the proof
+-        # and immediately before the protected checkout call.  Running it in
+-        # the same context keeps Sentinel cookies on the matching proxy IP.
+-        expression = (
+-            "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
+-            "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
+-            ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
+-        )
+-        status = self._eval(expression, timeout=30)
+-        try:
+-            status_code = int(status)
+-        except (TypeError, ValueError) as exc:
+-            raise RuntimeError("Sentinel ping returned no HTTP status") from exc
+-        if not 200 <= status_code < 300:
+-            raise RuntimeError(f"Sentinel ping failed HTTP {status_code}")
+-
+-    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+-        with self._lock:
+-            if self._failed:
+-                raise RuntimeError("Sentinel browser provider failed during startup")
+-            if not self._started:
+-                self._start()
+-            raw = self._eval(
+-                "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
+-                timeout=90,
+-            )
+-            if isinstance(raw, str):
+-                token = raw
+-            elif isinstance(raw, dict):
+-                token = json.dumps(raw, separators=(",", ":"))
+-            else:
+-                token = ""
+-            if not token:
+-                raise RuntimeError("SentinelSDK returned an empty token")
+-            # Successful captures consistently show token generation (and its
+-            # optional sentinel/req) before ping, followed by the protected
+-            # checkout request carrying this token.
+-            self._ping(referer)
+-            result = {"OpenAI-Sentinel-Token": token}
+-            if self._attestation:
+-                result["oai-web-deployment-attestation"] = self._attestation
+-                session_headers = getattr(self.transport_session, "headers", None)
+-                if session_headers is not None:
+-                    session_headers["oai-web-deployment-attestation"] = self._attestation
+-            if self._cookies:
+-                result["Cookie"] = self._cookies
+-            return result
+-
+-    def close(self) -> None:
+-        with self._lock:
+-            if self._closed:
+-                return
+-            if self._started and self.binary:
+-                try:
+-                    self._run(["close", "--json"], timeout=30)
+-                except Exception:
+-                    pass
+-            self._closed = True
+-            try:
+-                for child in self.temp_dir.iterdir():
+-                    try:
+-                        child.unlink()
+-                    except OSError:
+-                        pass
+-                self.temp_dir.rmdir()
+-            except OSError:
+-                pass
+-
+-
+ class DefaultTransportFactory:
+     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
+         device_id = str(uuid.uuid4())
+         session_id = str(uuid.uuid4())
+         session = new_session()
+-        payment_method = normalize_payment_method(config.payment_method)
+-        user_agent = os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
+-        observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+         session.headers.update(
+             {
+-                "User-Agent": user_agent,
++                "User-Agent": DEFAULT_USER_AGENT,
+                 "Accept": "*/*",
+                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
+                 "Authorization": f"Bearer {config.access_token}",
+@@ -967,9 +369,7 @@ class DefaultTransportFactory:
+                 "Content-Type": "application/json",
+                 "oai-device-id": device_id,
+                 "oai-session-id": session_id,
+-                # ChatGPT's API language is the browser UI locale; the
+-                # country-specific Accept-Language remains separate above.
+-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
++                "oai-language": country_locale(config),
+                 # These values match the current browser checkout contract;
+                 # environment overrides keep the transport forward-compatible
+                 # when the web deployment rotates its build identifier.
+@@ -978,81 +378,16 @@ class DefaultTransportFactory:
+                     "OPLL_OAI_CLIENT_VERSION",
+                     "prod-46437587156517d920436051cb9ab60a95f0503a",
+                 ),
+-                # The browser keeps one observation id for a request burst;
+-                # callers may pin a captured value for diagnostics, while the
+-                # default remains fresh for every transport session.
+-                "x-oai-is-client-observation": os.getenv(
+-                    "OPLL_OAI_IS_CLIENT_OBSERVATION",
+-                    f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+-                ),
+-                "sec-ch-ua": os.getenv(
+-                    "OPLL_SEC_CH_UA",
+-                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+-                ),
++                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
++                "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+                 "sec-ch-ua-mobile": "?0",
+-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
++                "sec-ch-ua-platform": '"Windows"',
+                 "sec-fetch-dest": "empty",
+                 "sec-fetch-mode": "cors",
+                 "sec-fetch-site": "same-origin",
+                 "Cookie": f"oai-did={device_id}",
+             }
+         )
+-        pending_updates = os.getenv("OPLL_X_OAI_IS_PENDING_UPDATES", "").strip()
+-        if pending_updates:
+-            session.headers["x-oai-is-pending-updates"] = pending_updates
+-        account = account_id(config.access_token)
+-        # The successful GCash captures omit this header on initial checkout,
+-        # then attach it to the checkout-session requests.  Keep the account
+-        # available for the authenticated bootstrap and add it dynamically
+-        # after the session has been created.
+-        if account and payment_method != "gcash":
+-            session.headers["chatgpt-account-id"] = account
+-        # Keep these values on the session for the GCash Sentinel adapter and
+-        # for diagnostics without putting identifiers into request URLs/logs.
+-        session.openai_device_id = device_id
+-        session.openai_did = device_id
+-        session.openai_proxy = proxy
+-        session.openai_account_id = account
+-        session.openai_payment_method = payment_method
+-        session.openai_client_observation = session.headers.get(
+-            "x-oai-is-client-observation", ""
+-        )
+-        session.openai_request_started = time.perf_counter()
+-
+-        def refresh_openai_request_headers(method: str, url: str) -> dict[str, str]:
+-            pinned = observation_override or os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+-            observation = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
+-            session.openai_client_observation = observation
+-            session.headers["x-oai-is-client-observation"] = observation
+-            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
+-            normalized_url = str(url or "").lower()
+-            is_initial_checkout = normalized_url.endswith("/backend-api/payments/checkout")
+-            is_checkout_api = "/backend-api/payments/checkout" in normalized_url
+-            is_route_data = normalized_url.endswith(".data") or ".data?" in normalized_url
+-            if payment_method == "gcash" and account and is_checkout_api and not is_initial_checkout and not is_route_data:
+-                dynamic["chatgpt-account-id"] = account
+-            if method.upper() == "POST" and (
+-                is_initial_checkout
+-                or normalized_url.endswith("/backend-api/payments/checkout/confirm")
+-            ):
+-                if normalized_url.endswith("/confirm"):
+-                    elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
+-                    values = [
+-                        1,
+-                        elapsed,
+-                        secrets.randbelow(200),
+-                        secrets.randbelow(200),
+-                        secrets.randbelow(120),
+-                        2,
+-                        0,
+-                        round(elapsed + secrets.randbelow(30), 1),
+-                    ]
+-                    dynamic["oai-telemetry"] = json.dumps(values, separators=(",", ":"))
+-                else:
+-                    dynamic["oai-telemetry"] = os.getenv("OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]")
+-            return dynamic
+-
+-        session.refresh_openai_request_headers = refresh_openai_request_headers
+         # Deployment attestation is browser-generated and optional.  Never
+         # bake a captured value into the repository; operators can inject a
+         # fresh value for environments that enforce it.
+@@ -1062,36 +397,14 @@ class DefaultTransportFactory:
+         sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
+         if sentinel:
+             session.openai_sentinel_token = sentinel
+-        sentinel_so = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "").strip()
+-        if sentinel_so:
+-            session.openai_sentinel_so_token = sentinel_so
+-        normalized_proxy = normalize_proxy_url(proxy)
+-        _ensure_iprocket_bridge_listener(normalized_proxy)
+-        if payment_method == "gcash":
+-            mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
+-            if mode not in {"0", "false", "off", "disabled", "no"}:
+-                session.openai_sentinel_strict = True
+-                session.openai_sentinel_provider = BrowserSentinelProvider(
+-                    access_token=config.access_token,
+-                    session_token=config.session_token,
+-                    device_id=device_id,
+-                    session_id=session_id,
+-                    user_agent=user_agent,
+-                    proxy=normalized_proxy,
+-                    transport_session=session,
+-                )
+-        session.proxies = (
+-            {"http": normalized_proxy, "https": normalized_proxy}
+-            if normalized_proxy
+-            else {}
+-        )
++        set_proxy_url(session, proxy)
+         return session
+ 
+     def stripe(self, config: ExtractionConfig) -> Any:
+         session = new_session()
+         session.headers.update(
+             {
+-                "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
++                "User-Agent": DEFAULT_USER_AGENT,
+                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
+             }
+         )
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 383a232..7823213 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -17,7 +17,6 @@ from ..config import (
+     normalize_payment_method,
+ )
+ from ..errors import ConfigurationError
+-from ..auth import extract_access_token, extract_session_token
+ from ..models import ExtractionConfig
+ from .proxy_probe import ProxyProbeError, probe_proxy
+ from .tasks import TaskManager, TaskNotFoundError, TaskStateError
+@@ -238,7 +237,6 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+ 
+ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+     access_token = _credential_value(payload) or os.getenv("OPLL_AT", "")
+-    session_token = extract_session_token(payload) or os.getenv("OPLL_SESSION_TOKEN", "")
+     pool_lines = _configured_proxy_pool().splitlines()
+     pool_first = pool_lines[0] if pool_lines else ""
+     checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
+@@ -260,9 +258,9 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         raise ConfigurationError("AT is required")
+     if not str(checkout_proxy or "").strip():
+         raise ConfigurationError("checkout proxy is required")
+-    payment_method = normalize_payment_method(payment_method)
+-    if apply_update and payment_method != "gcash" and not str(update_proxy or "").strip():
++    if apply_update and not str(update_proxy or "").strip():
+         raise ConfigurationError("update proxy is required")
++    payment_method = normalize_payment_method(payment_method)
+     country = country_for_payment_method(payment_method, country)
+     if country not in SUPPORTED_COUNTRIES:
+         country_config(country)
+@@ -281,7 +279,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         access_token=str(access_token).strip(),
+         checkout_proxy=str(checkout_proxy).strip(),
+         update_proxy=str(update_proxy or "").strip(),
+-        session_token=str(session_token or "").strip(),
+         stripe_hcaptcha_token=str(hcaptcha or "").strip(),
+         country=country,
+         payment_method=payment_method,
+@@ -342,7 +339,11 @@ def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -
+ 
+ 
+ def _credential_value(payload: dict[str, Any]) -> str:
+-    return extract_access_token(payload)
++    for key in ("access_token", "accessToken", "token"):
++        value = payload.get(key)
++        if isinstance(value, str) and value.strip():
++            return value.strip()
++    return ""
+ 
+ 
+ def _env_bool(name: str, default: bool) -> bool:
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 3d718f6..589a150 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -180,43 +180,8 @@
+       .replaceAll("'", "&#039;");
+   }
+ 
+-  const ACCESS_TOKEN_KEY_NAMES = new Set([
+-    "accesstoken", "access_token", "access-token", "token", "at",
+-  ]);
+-
+-  function normalizeTokenText(value) {
+-    return String(value || "")
+-      .trim()
+-      // Tokens copied from Markdown/JSON viewers can contain escaped URL-safe
+-      // characters (most commonly `\_`).  The escape is presentation noise,
+-      // not part of the credential.
+-      .replaceAll(/\\([A-Za-z0-9._~+/=-])/g, "$1")
+-      .replaceAll(/\s+/g, "");
+-  }
+-
+-  function embeddedAccessToken(value) {
+-    const text = String(value || "").trim();
+-    if (!text) return "";
+-    const keyed = text.match(
+-      /(?:^|[{,;\s])['"]?(?:access[_-]?token|accesstoken|token|at)['"]?\s*[:=]\s*['"]?([A-Za-z0-9._~+\/=\-]{8,})/i,
+-    );
+-    if (keyed) return normalizeTokenText(keyed[1]);
+-
+-    const jwt = normalizeTokenText(text).match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+-    if (jwt) return jwt[0];
+-
+-    // Some session exports are pasted starting at the access-token value and
+-    // ending with the next metadata field, e.g. `TOKEN","authProvider":...`.
+-    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
+-    if (metadata > 0) {
+-      const candidate = text.slice(0, metadata).replace(/^[\s'"{]+|[\s'"}]+$/g, "");
+-      return normalizeTokenText(candidate);
+-    }
+-    return "";
+-  }
+-
+   function findAccessToken(value) {
+-    if (typeof value === "string") return embeddedAccessToken(value);
++    if (typeof value === "string") return "";
+     if (Array.isArray(value)) {
+       for (const item of value) {
+         const token = findAccessToken(item);
+@@ -225,12 +190,8 @@
+       return "";
+     }
+     if (!value || typeof value !== "object") return "";
+-    for (const [key, item] of Object.entries(value)) {
+-      const normalizedKey = String(key).replaceAll("-", "_").toLowerCase();
+-      if (!ACCESS_TOKEN_KEY_NAMES.has(normalizedKey)) continue;
+-      const token = typeof item === "string"
+-        ? (embeddedAccessToken(item) || normalizeTokenText(item))
+-        : findAccessToken(item);
++    for (const key of ["accessToken", "access_token", "token"]) {
++      const token = typeof value[key] === "string" ? value[key].trim() : "";
+       if (token) return token;
+     }
+     for (const item of Object.values(value)) {
+@@ -267,16 +228,14 @@
+   }
+ 
+   function validateAccessToken(token) {
+-    token = normalizeTokenText(token);
+-    if (token.length < 8 || token.length > 16384 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(token)) {
+-      return "Access Token 格式无效";
+-    }
+-    const parts = token.split(".");
++    const parts = String(token || "").split(".");
++    if (parts.length !== 3 || parts.some(part => !part)) return "Access Token 格式无效";
+     const payload = decodeJwtPayload(token);
+-    if (parts.length === 3 && Object.keys(payload).length === 0) return "Access Token 内容无效";
+-    if (parts.length === 3 && payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
++    if (!payload || Object.keys(payload).length === 0) return "Access Token 内容无效";
++    if (payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
+       return "Access Token 已过期";
+     }
++    if (!extractAccountEmail(token)) return "Access Token 未解析出有效账号";
+     return "";
+   }
+ 
+@@ -284,13 +243,12 @@
+     const text = String(raw || "").trim();
+     if (!text) return { valid: false, isJson: false, message: "请输入 Access Token 或 JSON" };
+     if (!text.startsWith("{") && !text.startsWith("[")) {
+-      const token = embeddedAccessToken(text) || normalizeTokenText(text);
+-      const validationMessage = validateAccessToken(token);
++      const validationMessage = validateAccessToken(text);
+       return {
+         valid: !validationMessage,
+         isJson: false,
+-        accessToken: token,
+-        accountEmail: extractAccountEmail(token),
++        accessToken: text,
++        accountEmail: extractAccountEmail(text),
+         message: validationMessage || "Access Token 校验通过",
+       };
+     }
+@@ -301,7 +259,7 @@
+       return { valid: false, isJson: true, message: "JSON 格式无效" };
+     }
+     if (typeof parsed === "string") {
+-      const token = normalizeTokenText(parsed);
++      const token = parsed.trim();
+       const validationMessage = token ? validateAccessToken(token) : "JSON 中未找到 Access Token";
+       return {
+         valid: Boolean(token) && !validationMessage,
+@@ -867,12 +825,7 @@
+           return { ...entry, status: "invalid", message: inspection.message, accountEmail: "" };
+         }
+         const accountEmail = inspection.accountEmail || "";
+-        // Opaque ATs do not carry a JWT email claim.  Use the token itself as
+-        // the fallback identity so separate imported accounts are not marked
+-        // as duplicates merely because their emails are unavailable locally.
+-        const accountKey = accountEmail
+-          ? `email:${accountEmail.toLowerCase()}`
+-          : `token:${inspection.accessToken}`;
++        const accountKey = accountEmail.toLowerCase();
+         if (seenAccounts.has(accountKey)) {
+           return {
+             ...entry,
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index e6ecf09..b62a11b 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -683,7 +683,6 @@ class TaskManager:
+     def _secrets(config: ExtractionConfig) -> tuple[str, ...]:
+         return (
+             config.access_token,
+-            config.session_token,
+             config.checkout_proxy,
+             config.update_proxy,
+             config.stripe_hcaptcha_token,
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 4b2a248..04d0971 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -46,7 +46,7 @@
+           <div class="panel-heading">
+             <div>
+               <h2>新建任务</h2>
+-              <p>粘贴 Access Token，或粘贴包含 access_token / accessToken / token / sessionToken 的账号 JSON。</p>
++              <p>粘贴 Access Token，或粘贴包含 access_token / accessToken / token 的 JSON。</p>
+             </div>
+             <span class="quiet">敏感信息不会保存</span>
+           </div>
+@@ -228,6 +228,6 @@
+         </section>
+       </div>
+     </main>
+-    <script src="{{ url_for('static', filename='app.js', v='20260824-at-import-1') }}" defer></script>
++    <script src="{{ url_for('static', filename='app.js', v='20260823-gcash-1') }}" defer></script>
+   </body>
+ </html>
+diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
+index baadf91..cfae27d 100644
+--- a/tests/test_gcash_support.py
++++ b/tests/test_gcash_support.py
+@@ -1,37 +1,19 @@
+ from __future__ import annotations
+ 
+-import base64
+ import json
+ from pathlib import Path
+ from types import SimpleNamespace
+ 
+-import pytest
+-
+-from payment_link_extractor.application import (
+-    _normalize_config,
+-    _should_apply_checkout_update,
+-    extract_payment_link,
+-)
+-from payment_link_extractor.auth import (
+-    account_email,
+-    account_id,
+-    extract_access_token,
+-    extract_session_token,
+-    normalize_access_token,
+-)
+-from payment_link_extractor.checkout import create_checkout
++from payment_link_extractor.application import _normalize_config
+ from payment_link_extractor.config import billing_for_country, country_for_payment_method
+-from payment_link_extractor.errors import ProtocolError
+ from payment_link_extractor.flows.oaics import (
+     _custom_action_url,
+     continue_custom_checkout_method,
+     extract_oaics_provider,
+-    fetch_custom_checkout_data_state,
+ )
+ from payment_link_extractor.models import ExtractionConfig
+-from payment_link_extractor import transport
+ from payment_link_extractor.web.app import create_app
+-from payment_link_extractor.web.routes import _config_from_payload, _credential_value
++from payment_link_extractor.web.routes import _config_from_payload
+ 
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+@@ -55,54 +37,6 @@ def test_gcash_forces_ph_country_in_route_and_worker_config() -> None:
+     assert billing_for_country(normalized.country).country == "PH"
+ 
+ 
+-def test_session_token_is_preserved_from_account_export() -> None:
+-    session = "JWE.fixture.part.one.two"
+-    payload = {
+-        "accessToken": "access-fixture",
+-        "sessionToken": session,
+-        "checkout_proxy": "http://proxy.example:8080",
+-        "payment_method": "gcash",
+-    }
+-    assert extract_session_token(payload) == session
+-    config = _config_from_payload(payload)
+-    assert config.session_token == session
+-
+-
+-def test_session_token_can_be_read_from_cookie_header() -> None:
+-    session = "JWE.cookie.part.one.two"
+-    assert extract_session_token({"cookies": f"oai-did=x; __Secure-next-auth.session-token={session}"}) == session
+-
+-
+-def test_session_token_can_be_read_from_cookie_export_array() -> None:
+-    session = "JWE.array.part.one.two"
+-    assert extract_session_token({"cookies": [{"name": "__Secure-next-auth.session-token", "value": session}]}) == session
+-
+-
+-def test_gcash_embedded_promo_skips_legacy_update_requirement() -> None:
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="US",
+-        payment_method="gcash",
+-        apply_checkout_update=True,
+-    )
+-    normalized = _normalize_config(config)
+-    assert normalized.country == "PH"
+-    assert _should_apply_checkout_update(normalized) is False
+-    route_config = _config_from_payload(
+-        {
+-            "access_token": "token",
+-            "checkout_proxy": "http://proxy.example:8080",
+-            "update_proxy": "",
+-            "country": "US",
+-            "payment_method": "gcash",
+-            "apply_checkout_update": True,
+-        }
+-    )
+-    assert route_config.country == "PH"
+-
+-
+ def test_defaults_expose_paypal_and_gcash_payment_choices() -> None:
+     app = create_app({"TESTING": True})
+     response = app.test_client().get("/api/defaults", headers={"X-Workbench-Password": "test-password"})
+@@ -120,7 +54,6 @@ class _Response:
+         self.status_code = status_code
+         self._payload = payload
+         self.text = json.dumps(payload)
+-        self.headers: dict[str, str] = {}
+ 
+     def json(self) -> dict[str, object]:
+         return self._payload
+@@ -132,14 +65,6 @@ class _ChatGPT:
+ 
+     def request(self, method: str, url: str, **kwargs: object) -> _Response:
+         self.calls.append((method, url, kwargs))
+-        if url.endswith("/payments/checkout"):
+-            return _Response(
+-                200,
+-                {
+-                    "checkout_session_id": "oaics_fixture",
+-                    "processor_entity": "openai_ie",
+-                },
+-            )
+         if url.endswith("/payments/checkout/taxes"):
+             return _Response(200, {"checkout_session": {"custom_payment_methods": [{"id": "cpmt_gcash"}]}})
+         if "/payments/checkout/openai_ie/oaics_fixture" in url:
+@@ -154,30 +79,7 @@ class _ChatGPT:
+ class _ChatGPTWithSentinel(_ChatGPT):
+     def __init__(self) -> None:
+         super().__init__()
+-        self.headers = {
+-            "OpenAI-Sentinel-Token": "sentinel-fixture",
+-            "OpenAI-Sentinel-SO-Token": "so-fixture",
+-        }
+-
+-
+-class _ChatGPTRouteData(_ChatGPT):
+-    def request(self, method: str, url: str, **kwargs: object) -> _Response:
+-        if ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url:
+-            self.calls.append((method, url, kwargs))
+-            return _Response(
+-                200,
+-                {"loaderData": {"checkout_session": {"custom_payment_methods": [{"id": "cpmt_gcash", "name": "GCash"}]}}},
+-            )
+-        return super().request(method, url, **kwargs)
+-
+-
+-class _ScriptResponse(_Response):
+-    def __init__(self, status_code: int, text: str) -> None:
+-        super().__init__(status_code, {})
+-        self.text = text
+-
+-    def json(self) -> dict[str, object]:
+-        raise ValueError("text/x-script fixture")
++        self.headers = {"OpenAI-Sentinel-Token": "sentinel-fixture"}
+ 
+ 
+ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
+@@ -210,508 +112,12 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
+     assert result["payment_method_id"] == "cpmt_gcash"
+     assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls] == [
+         "/payments/checkout/taxes",
+-        "/payments/checkout/taxes",
+-        "/payments/checkout/confirm",
+-        "/payments/checkout/custom_payment_method/start",
+-    ]
+-    taxes = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/taxes"))
+-    assert taxes[2]["json"]["tax_id"] is None
+-    assert taxes[2]["json"]["billing_address"]["line2"] == ""
+-
+-
+-def test_application_gcash_does_not_call_legacy_coupon_or_update() -> None:
+-    chatgpt = _ChatGPTRouteData()
+-
+-    class Factory:
+-        def chatgpt(self, config: ExtractionConfig, proxy: str) -> _ChatGPT:
+-            return chatgpt
+-
+-        def stripe(self, config: ExtractionConfig) -> SimpleNamespace:
+-            return SimpleNamespace()
+-
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="US",
+-        payment_method="gcash",
+-        apply_checkout_update=True,
+-    )
+-    result = extract_payment_link(config, transport_factory=Factory())
+-    assert result.payment_method == "gcash"
+-    paths = [call[1].split("chatgpt.com", 1)[-1] for call in chatgpt.calls]
+-    assert "/backend-api/promo_campaign/check_coupon" not in " ".join(paths)
+-    assert "/backend-api/payments/checkout/update" not in paths
+-    assert chatgpt.calls[0][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+-
+-
+-def test_gcash_route_data_hydrates_method_before_tax_refresh() -> None:
+-    chatgpt = _ChatGPTRouteData()
+-    checkout = {
+-        "cs_id": "oaics_fixture",
+-        "session_kind": "openai_custom_checkout",
+-        "billing_country": "PH",
+-        "currency": "PHP",
+-        "processor_entity": "openai_ie",
+-    }
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    result = extract_oaics_provider(
+-        config,
+-        chatgpt,
+-        SimpleNamespace(),
+-        checkout,
+-        billing_for_country("PH").to_dict(),
+-        None,
+-    )
+-    assert result["payment_method_id"] == "cpmt_gcash"
+-    assert "/checkout/openai_ie/oaics_fixture.data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in chatgpt.calls[0][1]
+-    assert chatgpt.calls[0][2]["headers"]["Referer"] == "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+-    assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
+-        "/payments/checkout/taxes",
+-        "/payments/checkout/taxes",
+-        "/payments/checkout/confirm",
+-        "/payments/checkout/custom_payment_method/start",
+-    ]
+-
+-
+-def test_gcash_route_data_parser_accepts_script_embedded_json() -> None:
+-    class ScriptTransport:
+-        def request(self, method: str, url: str, **kwargs: object) -> _ScriptResponse:
+-            assert method == "GET"
+-            assert ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url
+-            return _ScriptResponse(
+-                200,
+-                'self.__next_f.push([1,"{\\"checkout_session\\":{\\"custom_payment_methods\\":[{\\"id\\":\\"cpmt_gcash\\"}]}}"] )',
+-            )
+-
+-    checkout = {"cs_id": "oaics_script", "billing_country": "PH", "processor_entity": "openai_ie"}
+-    payload = fetch_custom_checkout_data_state(ScriptTransport(), checkout, None)
+-    assert payload["checkout_session"]["custom_payment_methods"][0]["id"] == "cpmt_gcash"
+-    assert checkout["custom_payment_methods"][0]["id"] == "cpmt_gcash"
+-
+-
+-class _ChatGPTLegacyOnly(_ChatGPT):
+-    def request(self, method: str, url: str, **kwargs: object) -> _Response:
+-        self.calls.append((method, url, kwargs))
+-        if ".data?_routes=routes%2Fcheckout.%24entity.%24checkoutId" in url:
+-            return _Response(404, {})
+-        if url.endswith("/payments/checkout/taxes"):
+-            return _Response(200, {"checkout_session": {"currency": "PHP"}})
+-        if "/payments/checkout/openai_ie/oaics_legacy" in url:
+-            return _Response(200, {"custom_payment_methods": [{"id": "cpmt_gcash"}]})
+-        if url.endswith("/payments/checkout/confirm"):
+-            return _Response(200, {"status": "success"})
+-        if url.endswith("/payments/checkout/custom_payment_method/start"):
+-            return _Response(
+-                200,
+-                {
+-                    "status": "requires_action",
+-                    "next_action": {"url": "https://gcash.com/pay/legacy"},
+-                },
+-            )
+-        raise AssertionError(f"unexpected request: {method} {url}")
+-
+-
+-def test_gcash_legacy_state_read_is_fallback_only() -> None:
+-    chatgpt = _ChatGPTLegacyOnly()
+-    checkout = {
+-        "cs_id": "oaics_legacy",
+-        "session_kind": "openai_custom_checkout",
+-        "billing_country": "PH",
+-        "currency": "PHP",
+-        "processor_entity": "openai_ie",
+-    }
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    result = extract_oaics_provider(
+-        config,
+-        chatgpt,
+-        SimpleNamespace(),
+-        checkout,
+-        billing_for_country("PH").to_dict(),
+-        None,
+-    )
+-    assert result["gcash_url"].endswith("/legacy")
+-    assert chatgpt.calls[0][1].endswith(
+-        "/checkout/openai_ie/oaics_legacy.data?_routes=routes%2Fcheckout.%24entity.%24checkoutId"
+-    )
+-    assert [call[1].rsplit("/backend-api", 1)[-1] for call in chatgpt.calls[1:]] == [
+-        "/payments/checkout/openai_ie/oaics_legacy",
+-        "/payments/checkout/taxes",
+-        "/payments/checkout/taxes",
++        "/payments/checkout/openai_ie/oaics_fixture",
+         "/payments/checkout/confirm",
+         "/payments/checkout/custom_payment_method/start",
+     ]
+ 
+ 
+-def test_account_id_extracts_browser_auth_claim() -> None:
+-    payload = {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-fixture"}}
+-    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+-    assert account_id(f"header.{encoded}.signature") == "acct-fixture"
+-
+-
+-def test_import_recognizes_opaque_at_and_session_export_metadata() -> None:
+-    opaque = "OpaqueATFixture_abcdefghijklmnopqrstuvwxyz0123456789"
+-    session_export = f'{opaque}","rumViewTags":{{"light_account":{{"fetched":false}}}}}}'
+-    escaped_session_export = f'{opaque.replace("_", "\\_")}","rumViewTags":{{"light_account":{{"fetched":false}}}}}}'
+-
+-    assert extract_access_token(session_export) == opaque
+-    assert extract_access_token(escaped_session_export) == opaque
+-    assert normalize_access_token({"AT": opaque}) == opaque
+-    assert _credential_value({"credential": {"accessToken": opaque}}) == opaque
+-
+-
+-def test_import_extracts_jwt_before_trailing_session_metadata() -> None:
+-    payload = base64.urlsafe_b64encode(json.dumps({"email": "fixture@example.com"}).encode()).decode().rstrip("=")
+-    jwt = f"header.{payload}.signature_fixture"
+-    session_export = f'{jwt.replace("_", "\\_")}","authProvider":"openai'
+-
+-    assert extract_access_token(session_export) == jwt
+-    assert account_email(session_export) == "fixture@example.com"
+-
+-
+-def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
+-    class Session:
+-        def __init__(self) -> None:
+-            self.headers: dict[str, str] = {}
+-            self.proxies: dict[str, str] = {}
+-
+-    session = Session()
+-    monkeypatch.setattr(transport, "new_session", lambda: session)
+-    monkeypatch.setenv("OPLL_OPENAI_SENTINEL_TOKEN", "sentinel-fixture")
+-    monkeypatch.setenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "so-fixture")
+-    monkeypatch.setenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "v1.r.p.observation-fixture")
+-    token_payload = {
+-        "https://api.openai.com/auth": {
+-            "chatgpt_account_id": "acct-fixture",
+-        }
+-    }
+-    encoded = base64.urlsafe_b64encode(json.dumps(token_payload).encode()).decode().rstrip("=")
+-    config = ExtractionConfig(
+-        access_token=f"header.{encoded}.signature",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
+-    assert built is session
+-    assert "chatgpt-account-id" not in session.headers
+-    assert "x-oai-is-pending-updates" not in session.headers
+-    assert session.openai_account_id == "acct-fixture"
+-    assert session.headers["oai-client-build-number"] == "9723596"
+-    assert session.headers["x-oai-is-client-observation"] == "v1.r.p.observation-fixture"
+-    assert session.openai_sentinel_token == "sentinel-fixture"
+-    assert session.openai_sentinel_so_token == "so-fixture"
+-    initial = session.refresh_openai_request_headers(
+-        "POST", "https://chatgpt.com/backend-api/payments/checkout"
+-    )
+-    assert "chatgpt-account-id" not in initial
+-    dynamic = session.refresh_openai_request_headers(
+-        "POST", "https://chatgpt.com/backend-api/payments/checkout/taxes"
+-    )
+-    assert dynamic["chatgpt-account-id"] == "acct-fixture"
+-
+-
+-def test_transport_matches_current_gcash_locale_and_rotates_observation(monkeypatch) -> None:
+-    class Session:
+-        def __init__(self) -> None:
+-            self.headers: dict[str, str] = {}
+-            self.proxies: dict[str, str] = {}
+-            self.calls: list[dict[str, object]] = []
+-
+-        def request(self, method: str, url: str, **kwargs: object) -> _Response:
+-            self.calls.append(kwargs)
+-            return _Response(200, {"ok": True})
+-
+-    session = Session()
+-    monkeypatch.setattr(transport, "new_session", lambda: session)
+-    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "off")
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    built = transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
+-    assert built is session
+-    assert session.headers["oai-language"] == "en-US"
+-    assert "Chrome/151" in session.headers["User-Agent"]
+-    transport.stage_http_request(
+-        session,
+-        "fixture checkout",
+-        "POST",
+-        "https://chatgpt.com/backend-api/payments/checkout",
+-        None,
+-        headers={},
+-    )
+-    first = session.calls[-1]["headers"]["x-oai-is-client-observation"]
+-    assert session.calls[-1]["headers"]["oai-telemetry"] == "[1,null]"
+-    transport.stage_http_request(
+-        session,
+-        "fixture taxes",
+-        "POST",
+-        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+-        None,
+-        headers={},
+-    )
+-    second = session.calls[-1]["headers"]["x-oai-is-client-observation"]
+-    assert first != second
+-    assert "oai-telemetry" not in session.calls[-1]["headers"]
+-
+-
+-def test_sentinel_headers_prefer_fresh_provider_flow() -> None:
+-    class Provider:
+-        def __init__(self) -> None:
+-            self.calls: list[tuple[str, str]] = []
+-
+-        def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+-            self.calls.append((flow, referer))
+-            return {
+-                "OpenAI-Sentinel-Token": "fresh-token",
+-                "oai-web-deployment-attestation": "fresh-attestation",
+-            }
+-
+-    provider = Provider()
+-    session = SimpleNamespace(openai_sentinel_provider=provider)
+-    headers = transport.openai_sentinel_headers(
+-        session,
+-        flow="checkout_session_approval",
+-        referer="https://chatgpt.com/checkout/fixture",
+-    )
+-    assert headers["OpenAI-Sentinel-Token"] == "fresh-token"
+-    assert headers["oai-web-deployment-attestation"] == "fresh-attestation"
+-    assert provider.calls == [("checkout_session_approval", "https://chatgpt.com/checkout/fixture")]
+-
+-
+-def test_sentinel_version_loader_and_frame_url_are_pinned() -> None:
+-    loader = "export{a};const u='/sentinel/20260810913b/sdk.js';"
+-    assert transport._sentinel_version_from_loader(loader) == "20260810913b"
+-    assert transport._sentinel_frame_url("20260810913b").endswith(
+-        "/backend-api/sentinel/frame.html?sv=20260810913b"
+-    )
+-    assert transport._sentinel_version_from_loader("no sdk here") == ""
+-    assert transport._sentinel_frame_url("bad?sv=inject").endswith("/sentinel/frame.html")
+-
+-
+-def test_browser_sentinel_captures_only_bootstrap_metadata() -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider._attestation = ""
+-    provider._bootstrap_session_id = ""
+-    expressions: list[str] = []
+-
+-    def fake_eval(expression: str, timeout: float = 75.0) -> object:
+-        expressions.append(expression)
+-        return {
+-            "attestation": "fixture-attestation",
+-            "locale": "en-US",
+-            "sessionId": "fixture-bootstrap-session",
+-        }
+-
+-    provider._eval = fake_eval
+-    assert provider._capture_bootstrap(1.0) is True
+-    assert provider._attestation == "fixture-attestation"
+-    assert provider._bootstrap_session_id == "fixture-bootstrap-session"
+-    assert "accessToken" not in expressions[0]
+-
+-
+-def test_browser_sentinel_opens_authenticated_page_before_versioned_frame(monkeypatch) -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider.binary = "fixture-agent-browser"
+-    provider.access_token = "fixture-token"
+-    provider.device_id = "fixture-device"
+-    provider.session_id = "fixture-session"
+-    provider._started = False
+-    provider._failed = False
+-    provider._launch_args_used = False
+-    provider._attestation = ""
+-    provider.session_token = "fixture-session-cookie"
+-    events: list[object] = []
+-    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "auto")
+-
+-    def fake_run(args: list[str], timeout: float = 75.0) -> object:
+-        events.append(tuple(args))
+-        return {}
+-
+-    def fake_capture(wait_seconds: float = 0.0) -> bool:
+-        provider._attestation = "fixture-attestation"
+-        events.append("bootstrap")
+-        return True
+-
+-    provider._run = fake_run
+-    provider._capture_bootstrap = fake_capture
+-    provider._resolve_sentinel_version = lambda: "20260810913b"
+-    provider._wait_for_sentinel_sdk = lambda wait_seconds=10.0: True
+-    provider._sync_cookies = lambda: events.append("cookies")
+-    provider._start()
+-
+-    auth_index = next(
+-        index
+-        for index, event in enumerate(events)
+-        if isinstance(event, tuple)
+-        and "--headers" in event
+-        and "https://chatgpt.com/?promo_campaign=plus-1-month-free" in event
+-    )
+-    frame_index = next(
+-        index
+-        for index, event in enumerate(events)
+-        if isinstance(event, tuple) and any("frame.html?sv=20260810913b" in item for item in event)
+-    )
+-    assert auth_index < frame_index
+-
+-
+-def test_browser_sentinel_sets_nextauth_cookie_before_bootstrap(monkeypatch) -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider.binary = "fixture-agent-browser"
+-    provider.access_token = "fixture-token"
+-    provider.session_token = "fixture-session-cookie"
+-    provider.device_id = "fixture-device"
+-    provider.session_id = "fixture-session"
+-    provider._started = False
+-    provider._failed = False
+-    provider._launch_args_used = False
+-    provider._attestation = ""
+-    events: list[tuple[object, ...]] = []
+-    monkeypatch.setenv("OPLL_GCASH_SENTINEL_BROWSER", "auto")
+-    provider._run = lambda args, timeout=75.0: events.append(tuple(args)) or {}
+-    provider._capture_bootstrap = lambda wait_seconds=0.0: setattr(provider, "_attestation", "att") or True
+-    provider._resolve_sentinel_version = lambda: "20260810913b"
+-    provider._wait_for_sentinel_sdk = lambda wait_seconds=10.0: True
+-    provider._sync_cookies = lambda: None
+-    provider._start()
+-    cookie_index = next(i for i, event in enumerate(events) if "__Secure-next-auth.session-token" in event)
+-    promo_index = next(
+-        i
+-        for i, event in enumerate(events)
+-        if any("promo_campaign=plus-1-month-free" in str(item) for item in event)
+-    )
+-    assert cookie_index < promo_index
+-
+-
+-def test_browser_sentinel_resolves_version_from_live_loader_shape() -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider._sentinel_sdk_version = ""
+-    provider._eval = lambda expression, timeout=75.0: (
+-        '(()=>import("/sentinel/20260810913b/sdk.js"))()'
+-    )
+-    assert provider._resolve_sentinel_version() == "20260810913b"
+-    assert provider._sentinel_sdk_version == "20260810913b"
+-
+-
+-def test_strict_gcash_sentinel_does_not_silently_fall_back(monkeypatch) -> None:
+-    class Provider:
+-        def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+-            raise RuntimeError("fixture browser startup failed")
+-
+-    monkeypatch.delenv("OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", raising=False)
+-    session = SimpleNamespace(
+-        openai_sentinel_provider=Provider(),
+-        openai_sentinel_strict=True,
+-    )
+-    with pytest.raises(transport.ConfigurationError, match="GCash Sentinel bootstrap failed"):
+-        transport.openai_sentinel_headers(session, flow="chatgpt_checkout")
+-
+-
+-def test_local_vendor_bridge_is_started_and_verified(monkeypatch) -> None:
+-    import iprocket_chain_bridge
+-
+-    calls: list[str] = []
+-
+-    class Probe:
+-        def close(self) -> None:
+-            calls.append("close")
+-
+-    monkeypatch.setattr(
+-        iprocket_chain_bridge,
+-        "ensure_background_server",
+-        lambda: calls.append("ensure") or True,
+-    )
+-    monkeypatch.setattr(
+-        transport.socket,
+-        "create_connection",
+-        lambda address, timeout=0.25: calls.append(f"probe:{address[1]}") or Probe(),
+-    )
+-    transport._ensure_iprocket_bridge_listener(
+-        "http://iprb_fixture:fixture@127.0.0.1:18796"
+-    )
+-    transport._ensure_iprocket_bridge_listener("http://proxy.example:8080")
+-    assert calls == ["ensure", "probe:18796", "close"]
+-
+-
+-def test_iprocket_61999_uses_socks5_gateway_protocol() -> None:
+-    assert transport._iprocket_protocol(61999) == "socks5"
+-
+-
+-def test_browser_proxy_translates_curl_socks5h_scheme() -> None:
+-    source = "socks5h://fixture-user:fixture-pass@proxy.example:3000"
+-    assert transport._browser_proxy_url(source) == (
+-        "socks5://fixture-user:fixture-pass@proxy.example:3000"
+-    )
+-    assert transport._browser_proxy_url("http://proxy.example:8080") == "http://proxy.example:8080"
+-
+-
+-def test_browser_sentinel_generates_token_before_ping() -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider._lock = transport.threading.RLock()
+-    provider._failed = False
+-    provider._started = True
+-    provider._attestation = ""
+-    provider._cookies = ""
+-    provider.transport_session = SimpleNamespace(headers={})
+-    events: list[str] = []
+-
+-    def fake_eval(expression: str, timeout: float = 75.0) -> object:
+-        if "SentinelSDK.token" in expression:
+-            events.append("token")
+-            return {"flow": "checkout_session_approval", "id": "fixture-device"}
+-        events.append("ping")
+-        return 200
+-
+-    provider._eval = fake_eval
+-    headers = provider.headers(
+-        "checkout_session_approval",
+-        referer="https://chatgpt.com/checkout/fixture",
+-    )
+-    assert events == ["token", "ping"]
+-    assert json.loads(headers["OpenAI-Sentinel-Token"])["flow"] == "checkout_session_approval"
+-
+-
+-def test_browser_sentinel_syncs_only_first_party_deduplicated_cookies() -> None:
+-    provider = object.__new__(transport.BrowserSentinelProvider)
+-    provider.device_id = "fixture-device"
+-    provider.transport_session = SimpleNamespace(headers={})
+-    provider._cookies = ""
+-    provider._run = lambda args: {
+-        "data": {
+-            "cookies": [
+-                {"name": "oai-did", "value": "stale-device", "domain": ".chatgpt.com"},
+-                {"name": "cf_clearance", "value": "old", "domain": ".chatgpt.com"},
+-                {"name": "cf_clearance", "value": "fresh", "domain": "chatgpt.com"},
+-                {"name": "stripe_mid", "value": "foreign", "domain": ".stripe.com"},
+-            ]
+-        }
+-    }
+-    provider._sync_cookies()
+-    assert provider._cookies == "oai-did=fixture-device; cf_clearance=fresh"
+-    assert provider.transport_session.headers["Cookie"] == provider._cookies
+-
+-
+ def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
+     chatgpt = _ChatGPTWithSentinel()
+     checkout = {
+@@ -744,60 +150,6 @@ def test_gcash_confirm_attaches_optional_har_sentinel_header() -> None:
+     assert result["gcash_url"].endswith("/fixture")
+     confirm = next(call for call in chatgpt.calls if call[1].endswith("/payments/checkout/confirm"))
+     assert confirm[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
+-    assert confirm[2]["headers"]["OpenAI-Sentinel-SO-Token"] == "so-fixture"
+-
+-
+-def test_gcash_initial_checkout_matches_har_sentinel_contract() -> None:
+-    chatgpt = _ChatGPTWithSentinel()
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    checkout = create_checkout(config, chatgpt, None)
+-    assert checkout["cs_id"] == "oaics_fixture"
+-    call = chatgpt.calls[0]
+-    assert call[2]["json"] == {
+-        "entry_point": "all_plans_pricing_modal",
+-        "plan_name": "chatgptplusplan",
+-        "billing_details": {"country": "PH", "currency": "PHP"},
+-        "promo_campaign": {
+-            "promo_campaign_id": "plus-1-month-free",
+-            "is_coupon_from_query_param": False,
+-        },
+-        "checkout_ui_mode": "custom",
+-    }
+-    assert call[2]["headers"]["Referer"] == "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+-    assert len(json.dumps(call[2]["json"], separators=(",", ":"))) == 245
+-    assert call[2]["headers"]["OpenAI-Sentinel-Token"] == "sentinel-fixture"
+-    assert call[2]["headers"]["OpenAI-Sentinel-SO-Token"] == "so-fixture"
+-
+-
+-def test_gcash_checkout_failure_records_status_edge_and_proof_state() -> None:
+-    class FailingChatGPT(_ChatGPTWithSentinel):
+-        def request(self, method: str, url: str, **kwargs: object) -> _Response:
+-            response = _Response(403, {"detail": "unusual activity"})
+-            response.headers["cf-ray"] = "fixture-ray-MNL"
+-            return response
+-
+-    config = ExtractionConfig(
+-        access_token="token",
+-        checkout_proxy="http://proxy.example:8080",
+-        update_proxy="",
+-        country="PH",
+-        payment_method="gcash",
+-        apply_checkout_update=False,
+-    )
+-    with pytest.raises(ProtocolError) as caught:
+-        create_checkout(config, FailingChatGPT(), None)
+-    message = str(caught.value)
+-    assert "HTTP 403" in message
+-    assert "edge=MNL" in message
+-    assert "sentinel=yes" in message
+-    assert "attestation=no" in message
+ 
+ 
+ def test_gcash_action_url_accepts_redirect_to_url_shape() -> None:
+diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
+index e8a5bda..517589f 100644
+--- a/tests/test_ui_button_contracts.py
++++ b/tests/test_ui_button_contracts.py
+@@ -166,10 +166,6 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
+     assert 'elements.viewToggle.addEventListener("click"' in source
+     assert "请至少粘贴一条账号 Token 或 JSON" in source
+     assert "elements.logoutButton.hidden = !password;" in source
+-    assert "const ACCESS_TOKEN_KEY_NAMES = new Set" in source
+-    assert "authProvider" in source
+-    assert "const accountKey = accountEmail" in source
+-    assert "token:${inspection.accessToken}" in source
+     for attribute in {
+         "data-details",
+         "data-cancel",

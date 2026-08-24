@@ -1,0 +1,62 @@
+BRANCH_FIELD_RESULT=main / repository tree restored to f168ad3c86128bab7ae90178aa6c286be616a1f4
+BASE_COMMIT=10b7698d0c8d6e83cf5f4b34d232a523810c0f5e
+TARGET_COMMIT=f168ad3c86128bab7ae90178aa6c286be616a1f4
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+CHANGED_BRANCH_FIELDS=all tracked post-f168 GCash/access-token/browser/proxy optimizations restored to f168 state
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\ROLLBACK.sh
+
+TREE_CHECK
+COMMAND=git diff --cached --exit-code f168ad3c86128bab7ae90178aa6c286be616a1f4
+LITERAL_OUTPUT=(empty)
+EXIT_STATUS=0
+RESULT=index and worktree source tree match TARGET_COMMIT; pre-existing used_local_card_hashes.txt remains unstaged and preserved
+
+BASELINE
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (BASE_COMMIT)
+INPUT=repository before rollback
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 0.67s
+LITERAL_OUTPUT_END
+BASELINE_EXIT=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT=(empty)
+COMPILE_EXIT=0
+RESULT=pre-rollback suite passed
+
+MODIFIED
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (TARGET_COMMIT tree)
+INPUT=all tracked post-f168 optimizations restored to TARGET_COMMIT
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 64%]
+........................................                                 [100%]
+112 passed in 0.67s
+LITERAL_OUTPUT_END
+MODIFIED_EXIT=0
+RESULT=repository now has the requested f168 behavior and test surface
+
+ROLLBACK_COPY
+COMMAND=C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\ROLLBACK.sh <another BASE_COMMIT copy>
+INPUT=clean BASE_COMMIT archive; DIFF_FILE.patch applied forward to TARGET_COMMIT
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+........................................................................ [ 64%]
+........................................                                 [100%]
+112 passed in 0.84s
+ROLLBACK_COMPILE_EXIT=0
+LITERAL_OUTPUT_END
+ROLLBACK_SCRIPT_EXIT=0
+RESULT=the rollback script reproduced TARGET_COMMIT behavior on another copy
+RESTORED_BEHAVIOR_STATUS=restored; MODIFIED_FILE remains at TARGET_COMMIT state
+
+GIT
+COMMAND=git add -A; git commit; git push origin main
+INPUT=restore commit to be created without staging pre-existing paypal_agreement_protocol/data/used_local_card_hashes.txt
+LITERAL_OUTPUT=(pending until commit/push)
+EXIT_STATUS=(pending)

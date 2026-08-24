@@ -180,43 +180,8 @@
       .replaceAll("'", "&#039;");
   }
 
-  const ACCESS_TOKEN_KEY_NAMES = new Set([
-    "accesstoken", "access_token", "access-token", "token", "at",
-  ]);
-
-  function normalizeTokenText(value) {
-    return String(value || "")
-      .trim()
-      // Tokens copied from Markdown/JSON viewers can contain escaped URL-safe
-      // characters (most commonly `\_`).  The escape is presentation noise,
-      // not part of the credential.
-      .replaceAll(/\\([A-Za-z0-9._~+/=-])/g, "$1")
-      .replaceAll(/\s+/g, "");
-  }
-
-  function embeddedAccessToken(value) {
-    const text = String(value || "").trim();
-    if (!text) return "";
-    const keyed = text.match(
-      /(?:^|[{,;\s])['"]?(?:access[_-]?token|accesstoken|token|at)['"]?\s*[:=]\s*['"]?([A-Za-z0-9._~+\/=\-]{8,})/i,
-    );
-    if (keyed) return normalizeTokenText(keyed[1]);
-
-    const jwt = normalizeTokenText(text).match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
-    if (jwt) return jwt[0];
-
-    // Some session exports are pasted starting at the access-token value and
-    // ending with the next metadata field, e.g. `TOKEN","authProvider":...`.
-    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
-    if (metadata > 0) {
-      const candidate = text.slice(0, metadata).replace(/^[\s'"{]+|[\s'"}]+$/g, "");
-      return normalizeTokenText(candidate);
-    }
-    return "";
-  }
-
   function findAccessToken(value) {
-    if (typeof value === "string") return embeddedAccessToken(value);
+    if (typeof value === "string") return "";
     if (Array.isArray(value)) {
       for (const item of value) {
         const token = findAccessToken(item);
@@ -225,12 +190,8 @@
       return "";
     }
     if (!value || typeof value !== "object") return "";
-    for (const [key, item] of Object.entries(value)) {
-      const normalizedKey = String(key).replaceAll("-", "_").toLowerCase();
-      if (!ACCESS_TOKEN_KEY_NAMES.has(normalizedKey)) continue;
-      const token = typeof item === "string"
-        ? (embeddedAccessToken(item) || normalizeTokenText(item))
-        : findAccessToken(item);
+    for (const key of ["accessToken", "access_token", "token"]) {
+      const token = typeof value[key] === "string" ? value[key].trim() : "";
       if (token) return token;
     }
     for (const item of Object.values(value)) {
@@ -267,16 +228,14 @@
   }
 
   function validateAccessToken(token) {
-    token = normalizeTokenText(token);
-    if (token.length < 8 || token.length > 16384 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(token)) {
-      return "Access Token 格式无效";
-    }
-    const parts = token.split(".");
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3 || parts.some(part => !part)) return "Access Token 格式无效";
     const payload = decodeJwtPayload(token);
-    if (parts.length === 3 && Object.keys(payload).length === 0) return "Access Token 内容无效";
-    if (parts.length === 3 && payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
+    if (!payload || Object.keys(payload).length === 0) return "Access Token 内容无效";
+    if (payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
       return "Access Token 已过期";
     }
+    if (!extractAccountEmail(token)) return "Access Token 未解析出有效账号";
     return "";
   }
 
@@ -284,13 +243,12 @@
     const text = String(raw || "").trim();
     if (!text) return { valid: false, isJson: false, message: "请输入 Access Token 或 JSON" };
     if (!text.startsWith("{") && !text.startsWith("[")) {
-      const token = embeddedAccessToken(text) || normalizeTokenText(text);
-      const validationMessage = validateAccessToken(token);
+      const validationMessage = validateAccessToken(text);
       return {
         valid: !validationMessage,
         isJson: false,
-        accessToken: token,
-        accountEmail: extractAccountEmail(token),
+        accessToken: text,
+        accountEmail: extractAccountEmail(text),
         message: validationMessage || "Access Token 校验通过",
       };
     }
@@ -301,7 +259,7 @@
       return { valid: false, isJson: true, message: "JSON 格式无效" };
     }
     if (typeof parsed === "string") {
-      const token = normalizeTokenText(parsed);
+      const token = parsed.trim();
       const validationMessage = token ? validateAccessToken(token) : "JSON 中未找到 Access Token";
       return {
         valid: Boolean(token) && !validationMessage,
@@ -867,12 +825,7 @@
           return { ...entry, status: "invalid", message: inspection.message, accountEmail: "" };
         }
         const accountEmail = inspection.accountEmail || "";
-        // Opaque ATs do not carry a JWT email claim.  Use the token itself as
-        // the fallback identity so separate imported accounts are not marked
-        // as duplicates merely because their emails are unavailable locally.
-        const accountKey = accountEmail
-          ? `email:${accountEmail.toLowerCase()}`
-          : `token:${inspection.accessToken}`;
+        const accountKey = accountEmail.toLowerCase();
         if (seenAccounts.has(accountKey)) {
           return {
             ...entry,

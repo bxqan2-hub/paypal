@@ -2,18 +2,8 @@ from __future__ import annotations
 
 import os
 import base64
-import json
-import re
-import secrets
-import shutil
-import socket
-import subprocess
-import sys
-import tempfile
-import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -23,8 +13,7 @@ try:
 except ImportError:  # pragma: no cover - installation issue handled at runtime
     requests = None  # type: ignore
 
-from .auth import account_id
-from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
+from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
 from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
 from .models import ExtractionConfig
@@ -57,105 +46,15 @@ class TransportFactory(Protocol):
     def stripe(self, config: ExtractionConfig) -> Any: ...
 
 
-_SENTINEL_VERSION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_SENTINEL_LOADER_RE = re.compile(r"/sentinel/([A-Za-z0-9_-]+)/sdk\.js")
-
-
-def _agent_browser_error_detail(value: Any) -> str:
-    """Keep the useful CLI failure line while removing credential material."""
-    text = safe_log_text(value, 800)
-    text = re.sub(r"(?i)(authorization\s*[=:]\s*['\"]?)([^'\"\s,}]+)", r"\1***", text)
-    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
-    text = re.sub(r"(?i)(__secure-next-auth\.session-token\s*[=:]\s*)([^;\s]+)", r"\1***", text)
-    text = re.sub(r"(?i)(oai-at\s*[=:]\s*)([^;\s]+)", r"\1***", text)
-    return text.replace("\r", " ").replace("\n", " ").strip()
-
-
-def _sentinel_frame_url(version: str = "") -> str:
-    """Build the version-pinned Sentinel frame URL from a validated version."""
-    value = str(version or "").strip()
-    if value and _SENTINEL_VERSION_RE.fullmatch(value):
-        return f"https://chatgpt.com/backend-api/sentinel/frame.html?sv={value}"
-    return "https://chatgpt.com/backend-api/sentinel/frame.html"
-
-
-def _sentinel_version_from_loader(text: str) -> str:
-    """Extract the current Sentinel SDK version from the loader response."""
-    match = _SENTINEL_LOADER_RE.search(str(text or ""))
-    if not match:
-        return ""
-    value = match.group(1).strip()
-    return value if _SENTINEL_VERSION_RE.fullmatch(value) else ""
-
-
-def _browser_proxy_url(proxy: str) -> str:
-    """Translate curl's remote-DNS SOCKS spelling to Chromium's SOCKS5 URL.
-
-    curl accepts ``socks5h://`` while Chromium reports
-    ``ERR_NO_SUPPORTED_PROXIES`` for that scheme.  Chromium's SOCKS5 proxy
-    implementation already performs hostname resolution through the proxy,
-    so only the scheme spelling must differ between the two transports.
-    """
-    text = str(proxy or "").strip()
-    try:
-        parsed = urlsplit(text)
-    except Exception:
-        return text
-    if parsed.scheme.lower() != "socks5h":
-        return text
-    return urlunsplit(("socks5", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
-
-
-def _ensure_iprocket_bridge_listener(normalized_proxy: str) -> None:
-    """Ensure a local dynamic-proxy bridge is listening before use.
-
-    Vendor proxy URLs are rewritten to credentials understood by the local
-    bridge.  The web service may be started without ``START.bat`` (or the
-    standalone bridge may have exited because no subscription URL was
-    exported), so start the in-process listener lazily and verify readiness.
-    External/non-local bridge endpoints are left untouched.
-    """
-    parsed = urlsplit(str(normalized_proxy or ""))
-    host = (parsed.hostname or "").lower()
-    username = unquote(parsed.username or "")
-    if not username.startswith("iprb_"):
-        return
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        return
-    try:
-        port = parsed.port or int(os.getenv("IPROCKET_BRIDGE_PORT", "18796"))
-        from iprocket_chain_bridge import ensure_background_server
-
-        ensure_background_server()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                probe = socket.create_connection((host, port), timeout=0.25)
-                probe.close()
-                return
-            except OSError:
-                time.sleep(0.05)
-    except Exception as exc:
-        raise ConfigurationError("IPRocket chain bridge unavailable") from exc
-    raise ConfigurationError("IPRocket chain bridge unavailable")
-
-
 def new_session() -> Any:
     if CurlCffiSession is not None:
-        return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
+        return CurlCffiSession(impersonate="firefox")
     if requests is None:
         raise ConfigurationError("requests is required; install requirements.txt")
     return requests.Session()
 
 
 def safe_close(session: Any) -> None:
-    provider = getattr(session, "openai_sentinel_provider", None)
-    close_provider = getattr(provider, "close", None)
-    if callable(close_provider):
-        try:
-            close_provider()
-        except Exception:
-            pass
     close = getattr(session, "close", None)
     if callable(close):
         try:
@@ -198,7 +97,7 @@ def _iprocket_protocol(port: int, scheme: str = "") -> str:
         return "socks5"
     if lowered in {"http", "https"}:
         return "http"
-    if port in {9595, 59999, 61999}:
+    if port in {9595, 59999, 619999}:
         return "socks5"
     if port in {5959, 61999}:
         return "http"
@@ -364,7 +263,6 @@ def normalize_proxy_url(proxy: str) -> str:
 
 def set_proxy_url(session: Any, proxy: str) -> None:
     normalized = normalize_proxy_url(proxy)
-    _ensure_iprocket_bridge_listener(normalized)
     session.proxies = {"http": normalized, "https": normalized} if normalized else {}
 
 
@@ -378,21 +276,6 @@ def stage_http_request(
 ) -> Any:
     started = time.perf_counter()
     emit_log(log, f"{stage}: {method.upper()} {compact_url(url)}")
-    # The browser rotates this short-lived observation value on each logical
-    # request.  Keep it out of call sites so route/tax/confirm requests all
-    # receive the same transport-level treatment while test doubles remain
-    # unchanged.
-    refresh_headers = getattr(session, "refresh_openai_request_headers", None)
-    if callable(refresh_headers):
-        try:
-            dynamic = refresh_headers(method.upper(), url)
-        except Exception:
-            dynamic = {}
-        if dynamic:
-            request_headers = dict(kwargs.get("headers") or {})
-            for key, value in dynamic.items():
-                request_headers[key] = value
-            kwargs["headers"] = request_headers
     try:
         response = session.request(method.upper(), url, **kwargs)
     except Exception as exc:
@@ -411,10 +294,10 @@ def stage_http_request(
 def openai_sentinel_token(session: Any) -> str:
     """Return an optional Sentinel token supplied by the caller's session.
 
-    The browser sends the short-lived value on checkout creation and custom
-    checkout confirmation.  It must not be embedded in source; callers may
-    inject a fresh value on a transport session (or through the environment
-    for a one-off run).
+    Browser captures show that only the custom-checkout confirmation request
+    carries ``OpenAI-Sentinel-Token``.  The token is short-lived and must not
+    be embedded in source; callers may inject it on a transport session (or
+    through the environment for a one-off run).
     """
     value = getattr(session, "openai_sentinel_token", "")
     if not value:
@@ -423,74 +306,6 @@ def openai_sentinel_token(session: Any) -> str:
     if not value:
         value = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
     return str(value or "").strip()
-
-
-def openai_sentinel_so_token(session: Any) -> str:
-    """Return the optional Sentinel SO token captured on some browser runs."""
-    value = getattr(session, "openai_sentinel_so_token", "")
-    if not value:
-        headers = getattr(session, "headers", {})
-        value = headers.get("OpenAI-Sentinel-SO-Token") or headers.get(
-            "openai-sentinel-so-token"
-        )
-    if not value:
-        value = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
-    return str(value or "").strip()
-
-
-def openai_sentinel_headers(
-    session: Any,
-    *,
-    flow: str = "",
-    referer: str = "",
-    log: Any | None = None,
-) -> dict[str, str]:
-    """Build fresh Sentinel/attestation headers for a browser checkout.
-
-    A live browser provider is preferred for the two protected checkout
-    operations.  The environment/session fallback remains available for
-    deployments that deliberately inject their own short-lived values and for
-    older non-GCash flows.
-    """
-    headers: dict[str, str] = {}
-    provider = getattr(session, "openai_sentinel_provider", None)
-    if flow and provider is not None:
-        try:
-            generated = provider.headers(flow, referer=referer)
-            if generated:
-                headers.update(generated)
-                # Preserve an explicitly injected fresh attestation/SO token
-                # when the browser page is unauthenticated and cannot expose
-                # its bootstrap field yet.
-                if "oai-web-deployment-attestation" not in headers:
-                    fallback_attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
-                    if fallback_attestation:
-                        headers["oai-web-deployment-attestation"] = fallback_attestation
-                if "OpenAI-Sentinel-SO-Token" not in headers:
-                    fallback_so = openai_sentinel_so_token(session)
-                    if fallback_so:
-                        headers["OpenAI-Sentinel-SO-Token"] = fallback_so
-                if "OpenAI-Sentinel-Token" in headers:
-                    return headers
-        except Exception as exc:
-            emit_log(log, f"Sentinel browser provider unavailable: {safe_log_text(exc, 180)}")
-            if bool(getattr(session, "openai_sentinel_strict", False)) and os.getenv(
-                "OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", "0"
-            ).strip().lower() not in {"1", "true", "yes", "on"}:
-                raise ConfigurationError(
-                    f"GCash Sentinel bootstrap failed: {safe_log_text(exc, 180)}"
-                ) from exc
-        if bool(getattr(session, "openai_sentinel_strict", False)) and os.getenv(
-            "OPLL_GCASH_SENTINEL_ALLOW_FALLBACK", "0"
-        ).strip().lower() not in {"1", "true", "yes", "on"}:
-            raise ConfigurationError("GCash Sentinel provider returned no proof token")
-    token = openai_sentinel_token(session)
-    if token:
-        headers["OpenAI-Sentinel-Token"] = token
-    so_token = openai_sentinel_so_token(session)
-    if so_token:
-        headers["OpenAI-Sentinel-SO-Token"] = so_token
-    return headers
 
 
 def is_network_exception(exc: BaseException) -> bool:
@@ -538,427 +353,14 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
     return payload
 
 
-def _agent_browser_binary() -> str:
-    """Locate the optional native agent-browser executable."""
-    configured = os.getenv("OPLL_AGENT_BROWSER_BIN", "").strip()
-    if configured and Path(configured).exists():
-        return configured
-    if sys.platform == "win32":
-        candidates = (
-            Path.home()
-            / "AppData"
-            / "Roaming"
-            / "npm"
-            / "node_modules"
-            / "agent-browser"
-            / "bin"
-            / "agent-browser-win32-x64.exe",
-            Path(sys.prefix)
-            / "node_modules"
-            / "agent-browser"
-            / "bin"
-            / "agent-browser-win32-x64.exe",
-        )
-    else:
-        candidates = ()
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return shutil.which("agent-browser") or shutil.which("agent-browser.cmd") or ""
-
-
-def _decode_agent_browser_output(text: str) -> Any:
-    """Decode agent-browser's JSON output without logging its contents."""
-    value = str(text or "").strip()
-    if not value:
-        return None
-    try:
-        return json.loads(value)
-    except Exception:
-        pass
-    # Native builds can prepend a one-line status glyph when JSON mode is not
-    # requested.  Decode the first complete JSON value in the remaining text.
-    for start, char in enumerate(value):
-        if char not in "[{\"":
-            continue
-        try:
-            return json.JSONDecoder().raw_decode(value[start:])[0]
-        except Exception:
-            continue
-    return value
-
-
-class BrowserSentinelProvider:
-    """Generate short-lived Sentinel headers in a real browser context.
-
-    The checkout API binds the Sentinel proof to the browser's device cookie,
-    user-agent and fingerprint.  Replaying a HAR token therefore cannot work.
-    This adapter keeps the browser helper optional: when it is not installed or
-    a deployment cannot be opened, callers retain the explicit environment
-    fallback used by older deployments.
-    """
-
-    def __init__(
-        self,
-        *,
-        access_token: str,
-        device_id: str,
-        session_id: str,
-        user_agent: str,
-        proxy: str,
-        transport_session: Any,
-        session_token: str = "",
-        log: Any | None = None,
-    ) -> None:
-        self.access_token = str(access_token or "").strip()
-        self.session_token = str(session_token or "").strip()
-        self.device_id = str(device_id or "").strip()
-        self.session_id = str(session_id or "").strip()
-        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
-        self.proxy = _browser_proxy_url(proxy)
-        self.transport_session = transport_session
-        self.log = log
-        self.binary = _agent_browser_binary()
-        self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
-        self.session_name = "checkout_" + uuid.uuid4().hex[:12]
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
-        self.locale_script = self.temp_dir / "locale.js"
-        self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
-            encoding="utf-8",
-        )
-        self._lock = threading.RLock()
-        self._started = False
-        self._closed = False
-        self._failed = False
-        self._attestation = ""
-        self._bootstrap_session_id = ""
-        self._sentinel_sdk_version = ""
-        self._cookies = ""
-        self._launch_args_used = False
-
-    @property
-    def enabled(self) -> bool:
-        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
-        return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
-
-    def _base_command(self) -> list[str]:
-        if not self.binary:
-            raise RuntimeError("agent-browser executable not found")
-        command = [
-            self.binary,
-            "--namespace",
-            self.namespace,
-            "--session",
-            self.session_name,
-            "--user-agent",
-            self.user_agent,
-            "--init-script",
-            str(self.locale_script),
-        ]
-        if self.proxy:
-            command.extend(["--proxy", self.proxy])
-        if not self._launch_args_used:
-            command.extend(["--args", "--disable-blink-features=AutomationControlled"])
-        return command
-
-    def _run(self, args: list[str], timeout: float = 75.0) -> Any:
-        if self._closed:
-            raise RuntimeError("Sentinel browser provider is closed")
-        output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
-        env = dict(os.environ)
-        # Chromium uses TZ when constructing the browser fingerprint.  Keep
-        # the browser and the PH checkout locale coherent when supported.
-        env.setdefault("TZ", "Asia/Manila")
-        env["AGENT_BROWSER_NAMESPACE"] = self.namespace
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        status = -1
-        try:
-            with output_path.open("w", encoding="utf-8") as output:
-                process = subprocess.Popen(
-                    self._base_command() + args,
-                    stdin=subprocess.DEVNULL,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    creationflags=creation_flags,
-                )
-                try:
-                    status = process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired as exc:
-                    process.kill()
-                    process.wait(timeout=5)
-                    raise RuntimeError("agent-browser command timed out") from exc
-            text = output_path.read_text(encoding="utf-8", errors="replace")
-        finally:
-            # The daemon can briefly retain the redirected handle.  Cleanup is
-            # best-effort and the temporary directory is removed on close.
-            for _ in range(10):
-                try:
-                    output_path.unlink()
-                    break
-                except OSError:
-                    time.sleep(0.05)
-        if status != 0:
-            detail = _agent_browser_error_detail(text)
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"agent-browser exited with status {status}{suffix}")
-        return _decode_agent_browser_output(text)
-
-    def _eval(self, expression: str, timeout: float = 75.0) -> Any:
-        return self._run(["eval", expression], timeout=timeout)
-
-    def _capture_bootstrap(self, wait_seconds: float = 0.0) -> bool:
-        wait_ms = max(0, int(float(wait_seconds) * 1000))
-        value = self._eval(
-            "(async()=>{const deadline=Date.now()+" + str(wait_ms) + ";"
-            "while(true){const node=document.getElementById('client-bootstrap');"
-            "if(node){try{const data=JSON.parse(node.textContent||'{}');"
-            "if(data.webDeploymentAttestation||Date.now()>=deadline){return {"
-            "attestation:data.webDeploymentAttestation||'',locale:data.locale||'',"
-            "sessionId:data.sessionId||''};}}catch(_){}}"
-            "if(Date.now()>=deadline)return {};"
-            "await new Promise(resolve=>setTimeout(resolve,500));}})()",
-            timeout=max(30.0, wait_seconds + 15.0),
-        )
-        if isinstance(value, dict):
-            attestation = str(value.get("attestation") or "").strip()
-            if attestation:
-                self._attestation = attestation
-            bootstrap_session_id = str(value.get("sessionId") or "").strip()
-            if bootstrap_session_id:
-                self._bootstrap_session_id = bootstrap_session_id
-        return bool(self._attestation)
-
-    def _resolve_sentinel_version(self) -> str:
-        loader = self._eval(
-            "(async()=>{try{const response=await fetch('/backend-api/sentinel/sdk.js',"
-            "{credentials:'include',cache:'no-store'});"
-            "if(!response.ok)return '';return await response.text();}catch(_){return '';}})()",
-            timeout=30,
-        )
-        value = _sentinel_version_from_loader(loader if isinstance(loader, str) else "")
-        self._sentinel_sdk_version = value
-        return value
-
-    def _wait_for_sentinel_sdk(self, wait_seconds: float = 10.0) -> bool:
-        wait_ms = max(0, int(float(wait_seconds) * 1000))
-        value = self._eval(
-            "(async()=>{const deadline=Date.now()+" + str(wait_ms) + ";"
-            "while(true){if(typeof SentinelSDK!=='undefined'&&"
-            "typeof SentinelSDK.token==='function')return true;"
-            "if(Date.now()>=deadline)return false;"
-            "await new Promise(resolve=>setTimeout(resolve,250));}})()",
-            timeout=max(30.0, wait_seconds + 15.0),
-        )
-        return value is True
-
-    def _sync_cookies(self) -> None:
-        value = self._run(["cookies", "get", "--json"])
-        cookies: list[dict[str, Any]] = []
-        if isinstance(value, dict):
-            data = value.get("data")
-            if isinstance(data, dict) and isinstance(data.get("cookies"), list):
-                cookies = [item for item in data["cookies"] if isinstance(item, dict)]
-            elif isinstance(data, list):
-                cookies = [item for item in data if isinstance(item, dict)]
-        # Only send first-party ChatGPT cookies back through the API
-        # transport.  The browser context can also contain Stripe/analytics
-        # cookies, and duplicate Cookie names are ambiguous to HTTP servers.
-        first_party: dict[str, str] = {"oai-did": self.device_id}
-        for cookie in cookies:
-            domain = str(cookie.get("domain") or "").strip().lower().lstrip(".")
-            if domain and domain != "chatgpt.com" and not domain.endswith(".chatgpt.com"):
-                continue
-            name = str(cookie.get("name") or "").strip()
-            val = str(cookie.get("value") or "")
-            if name:
-                first_party[name] = val
-        # Sentinel binds the proof to the oai-did supplied by the curl
-        # transport, so it wins even if an older browser cookie was restored.
-        first_party["oai-did"] = self.device_id
-        if first_party:
-            self._cookies = "; ".join(f"{name}={val}" for name, val in first_party.items())
-            headers = getattr(self.transport_session, "headers", None)
-            if headers is not None:
-                headers["Cookie"] = self._cookies
-
-    def _start(self) -> None:
-        if not self.enabled:
-            raise RuntimeError("agent-browser is disabled or unavailable")
-        try:
-            self._run(["open", "about:blank", "--json"])
-            self._started = True
-            self._launch_args_used = True
-            self._run(
-                [
-                    "cookies",
-                    "set",
-                    "oai-did",
-                    self.device_id,
-                    "--url",
-                    "https://chatgpt.com",
-                ]
-            )
-            if getattr(self, "session_token", ""):
-                self._run(
-                    [
-                        "cookies",
-                        "set",
-                        "__Secure-next-auth.session-token",
-                        self.session_token,
-                        "--url",
-                        "https://chatgpt.com",
-                        "--httpOnly",
-                        "--secure",
-                        "--sameSite",
-                        "Lax",
-                    ]
-                )
-            # Load the authenticated application shell before resolving the
-            # Sentinel loader.  Successful browser captures load the current
-            # versioned SDK/frame from this shell, not an unauthenticated,
-            # unversioned frame that can serve an older deployment.
-            auth_headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "oai-device-id": self.device_id,
-                "oai-session-id": self.session_id,
-                "oai-language": "en-US",
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9723596"),
-                "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION",
-                    "prod-46437587156517d920436051cb9ab60a95f0503a",
-                ),
-            }
-            account = account_id(self.access_token)
-            if account:
-                # The browser sends the selected ChatGPT account on the
-                # authenticated bootstrap navigation.  Keeping it aligned
-                # with the curl transport avoids loading a different account
-                # shell when an AT belongs to a multi-account workspace.
-                auth_headers["chatgpt-account-id"] = account
-            self._run(
-                [
-                    "--headers",
-                    json.dumps(auth_headers, separators=(",", ":")),
-                    "open",
-                    "https://chatgpt.com/?promo_campaign=plus-1-month-free",
-                ]
-            )
-            try:
-                bootstrap_wait = max(
-                    0.0,
-                    float(os.getenv("OPLL_GCASH_SENTINEL_BOOTSTRAP_WAIT_SECONDS", "15")),
-                )
-            except ValueError:
-                bootstrap_wait = 15.0
-            self._capture_bootstrap(bootstrap_wait)
-            require_attestation = os.getenv(
-                "OPLL_GCASH_SENTINEL_REQUIRE_ATTESTATION", "1"
-            ).strip().lower() not in {"0", "false", "off", "no"}
-            if require_attestation and not self._attestation:
-                raise RuntimeError("Sentinel bootstrap attestation unavailable")
-
-            sentinel_version = self._resolve_sentinel_version()
-            if not sentinel_version:
-                raise RuntimeError("current Sentinel SDK version unavailable")
-            self._run(["open", _sentinel_frame_url(sentinel_version)])
-            try:
-                sdk_wait = max(
-                    0.0,
-                    float(os.getenv("OPLL_GCASH_SENTINEL_SDK_WAIT_SECONDS", "10")),
-                )
-            except ValueError:
-                sdk_wait = 10.0
-            if not self._wait_for_sentinel_sdk(sdk_wait):
-                raise RuntimeError("versioned Sentinel SDK did not become ready")
-            self._sync_cookies()
-        except Exception:
-            self._failed = True
-            raise
-
-    def _ping(self, referer: str) -> None:
-        # The browser sends this zero-length POST after generating the proof
-        # and immediately before the protected checkout call.  Running it in
-        # the same context keeps Sentinel cookies on the matching proxy IP.
-        expression = (
-            "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
-            "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
-            ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
-        )
-        status = self._eval(expression, timeout=30)
-        try:
-            status_code = int(status)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("Sentinel ping returned no HTTP status") from exc
-        if not 200 <= status_code < 300:
-            raise RuntimeError(f"Sentinel ping failed HTTP {status_code}")
-
-    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
-        with self._lock:
-            if self._failed:
-                raise RuntimeError("Sentinel browser provider failed during startup")
-            if not self._started:
-                self._start()
-            raw = self._eval(
-                "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
-                timeout=90,
-            )
-            if isinstance(raw, str):
-                token = raw
-            elif isinstance(raw, dict):
-                token = json.dumps(raw, separators=(",", ":"))
-            else:
-                token = ""
-            if not token:
-                raise RuntimeError("SentinelSDK returned an empty token")
-            # Successful captures consistently show token generation (and its
-            # optional sentinel/req) before ping, followed by the protected
-            # checkout request carrying this token.
-            self._ping(referer)
-            result = {"OpenAI-Sentinel-Token": token}
-            if self._attestation:
-                result["oai-web-deployment-attestation"] = self._attestation
-                session_headers = getattr(self.transport_session, "headers", None)
-                if session_headers is not None:
-                    session_headers["oai-web-deployment-attestation"] = self._attestation
-            if self._cookies:
-                result["Cookie"] = self._cookies
-            return result
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            if self._started and self.binary:
-                try:
-                    self._run(["close", "--json"], timeout=30)
-                except Exception:
-                    pass
-            self._closed = True
-            try:
-                for child in self.temp_dir.iterdir():
-                    try:
-                        child.unlink()
-                    except OSError:
-                        pass
-                self.temp_dir.rmdir()
-            except OSError:
-                pass
-
-
 class DefaultTransportFactory:
     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
         device_id = str(uuid.uuid4())
         session_id = str(uuid.uuid4())
         session = new_session()
-        payment_method = normalize_payment_method(config.payment_method)
-        user_agent = os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
-        observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
         session.headers.update(
             {
-                "User-Agent": user_agent,
+                "User-Agent": DEFAULT_USER_AGENT,
                 "Accept": "*/*",
                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
                 "Authorization": f"Bearer {config.access_token}",
@@ -967,9 +369,7 @@ class DefaultTransportFactory:
                 "Content-Type": "application/json",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
-                # ChatGPT's API language is the browser UI locale; the
-                # country-specific Accept-Language remains separate above.
-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
+                "oai-language": country_locale(config),
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
@@ -978,81 +378,16 @@ class DefaultTransportFactory:
                     "OPLL_OAI_CLIENT_VERSION",
                     "prod-46437587156517d920436051cb9ab60a95f0503a",
                 ),
-                # The browser keeps one observation id for a request burst;
-                # callers may pin a captured value for diagnostics, while the
-                # default remains fresh for every transport session.
-                "x-oai-is-client-observation": os.getenv(
-                    "OPLL_OAI_IS_CLIENT_OBSERVATION",
-                    f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
-                ),
-                "sec-ch-ua": os.getenv(
-                    "OPLL_SEC_CH_UA",
-                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-                ),
+                "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
+                "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
                 "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
+                "sec-ch-ua-platform": '"Windows"',
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
                 "Cookie": f"oai-did={device_id}",
             }
         )
-        pending_updates = os.getenv("OPLL_X_OAI_IS_PENDING_UPDATES", "").strip()
-        if pending_updates:
-            session.headers["x-oai-is-pending-updates"] = pending_updates
-        account = account_id(config.access_token)
-        # The successful GCash captures omit this header on initial checkout,
-        # then attach it to the checkout-session requests.  Keep the account
-        # available for the authenticated bootstrap and add it dynamically
-        # after the session has been created.
-        if account and payment_method != "gcash":
-            session.headers["chatgpt-account-id"] = account
-        # Keep these values on the session for the GCash Sentinel adapter and
-        # for diagnostics without putting identifiers into request URLs/logs.
-        session.openai_device_id = device_id
-        session.openai_did = device_id
-        session.openai_proxy = proxy
-        session.openai_account_id = account
-        session.openai_payment_method = payment_method
-        session.openai_client_observation = session.headers.get(
-            "x-oai-is-client-observation", ""
-        )
-        session.openai_request_started = time.perf_counter()
-
-        def refresh_openai_request_headers(method: str, url: str) -> dict[str, str]:
-            pinned = observation_override or os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
-            observation = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
-            session.openai_client_observation = observation
-            session.headers["x-oai-is-client-observation"] = observation
-            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
-            normalized_url = str(url or "").lower()
-            is_initial_checkout = normalized_url.endswith("/backend-api/payments/checkout")
-            is_checkout_api = "/backend-api/payments/checkout" in normalized_url
-            is_route_data = normalized_url.endswith(".data") or ".data?" in normalized_url
-            if payment_method == "gcash" and account and is_checkout_api and not is_initial_checkout and not is_route_data:
-                dynamic["chatgpt-account-id"] = account
-            if method.upper() == "POST" and (
-                is_initial_checkout
-                or normalized_url.endswith("/backend-api/payments/checkout/confirm")
-            ):
-                if normalized_url.endswith("/confirm"):
-                    elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
-                    values = [
-                        1,
-                        elapsed,
-                        secrets.randbelow(200),
-                        secrets.randbelow(200),
-                        secrets.randbelow(120),
-                        2,
-                        0,
-                        round(elapsed + secrets.randbelow(30), 1),
-                    ]
-                    dynamic["oai-telemetry"] = json.dumps(values, separators=(",", ":"))
-                else:
-                    dynamic["oai-telemetry"] = os.getenv("OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]")
-            return dynamic
-
-        session.refresh_openai_request_headers = refresh_openai_request_headers
         # Deployment attestation is browser-generated and optional.  Never
         # bake a captured value into the repository; operators can inject a
         # fresh value for environments that enforce it.
@@ -1062,36 +397,14 @@ class DefaultTransportFactory:
         sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
         if sentinel:
             session.openai_sentinel_token = sentinel
-        sentinel_so = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "").strip()
-        if sentinel_so:
-            session.openai_sentinel_so_token = sentinel_so
-        normalized_proxy = normalize_proxy_url(proxy)
-        _ensure_iprocket_bridge_listener(normalized_proxy)
-        if payment_method == "gcash":
-            mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
-            if mode not in {"0", "false", "off", "disabled", "no"}:
-                session.openai_sentinel_strict = True
-                session.openai_sentinel_provider = BrowserSentinelProvider(
-                    access_token=config.access_token,
-                    session_token=config.session_token,
-                    device_id=device_id,
-                    session_id=session_id,
-                    user_agent=user_agent,
-                    proxy=normalized_proxy,
-                    transport_session=session,
-                )
-        session.proxies = (
-            {"http": normalized_proxy, "https": normalized_proxy}
-            if normalized_proxy
-            else {}
-        )
+        set_proxy_url(session, proxy)
         return session
 
     def stripe(self, config: ExtractionConfig) -> Any:
         session = new_session()
         session.headers.update(
             {
-                "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
+                "User-Agent": DEFAULT_USER_AGENT,
                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
             }
         )

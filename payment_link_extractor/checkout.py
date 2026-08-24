@@ -4,11 +4,11 @@ import json
 import re
 from typing import Any
 
-from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
+from .config import DEFAULT_TIMEOUT, processor_entity_for_country
 from .errors import ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
-from .transport import openai_sentinel_headers, response_json, set_proxy_url, stage_http_request
+from .transport import response_json, set_proxy_url, stage_http_request
 
 CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
 PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
@@ -127,51 +127,12 @@ def create_checkout(
     log: Any | None,
 ) -> CheckoutData:
     path = "/backend-api/payments/checkout"
-    payment_method = normalize_payment_method(config.payment_method)
-    if payment_method == "gcash":
-        # The browser's PH custom-checkout request carries the campaign in the
-        # initial payload.  Sending the legacy cancel_url/check_card_proxy
-        # shape creates a different session contract and leads to a later
-        # confirm status=blocked response.
-        body = {
-            "entry_point": "all_plans_pricing_modal",
-            "plan_name": "chatgptplusplan",
-            "billing_details": {
-                "country": config.country.upper(),
-                "currency": config_currency(config),
-            },
-            "promo_campaign": {
-                "promo_campaign_id": "plus-1-month-free",
-                "is_coupon_from_query_param": False,
-            },
-            "checkout_ui_mode": "custom",
-        }
-        referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
-    else:
-        body = {
-            "entry_point": "all_plans_pricing_modal",
-            "plan_name": "chatgptplusplan",
-            "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
-            "cancel_url": "https://chatgpt.com/",
-            "checkout_ui_mode": "custom",
-            "check_card_proxy": True,
-        }
-        referer = "https://chatgpt.com/"
-    headers = {
-        "Referer": referer,
-        "x-openai-target-path": path,
-        "x-openai-target-route": path,
+    body = {
+        "entry_point": "all_plans_pricing_modal",
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
+        "checkout_ui_mode": "custom",
     }
-    # The browser can attach a fresh Sentinel token on the initial checkout
-    # request.  Keep it optional so older deployments remain compatible.
-    headers.update(
-        openai_sentinel_headers(
-            chatgpt,
-            flow="chatgpt_checkout" if payment_method == "gcash" else "",
-            referer=referer,
-            log=log,
-        )
-    )
     response = stage_http_request(
         chatgpt,
         "ChatGPT checkout",
@@ -179,39 +140,15 @@ def create_checkout(
         "https://chatgpt.com" + path,
         log,
         json=body,
-        headers=headers,
+        headers={
+            "Referer": "https://chatgpt.com/",
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
-        response_headers = getattr(response, "headers", {})
-        cf_ray = ""
-        if hasattr(response_headers, "get"):
-            cf_ray = str(response_headers.get("cf-ray") or response_headers.get("CF-Ray") or "")
-        edge = cf_ray.rsplit("-", 1)[-1].upper() if "-" in cf_ray else "?"
-        provider = getattr(chatgpt, "openai_sentinel_provider", None)
-        sdk_version = str(getattr(provider, "_sentinel_sdk_version", "") or "?")
-        session_headers = getattr(chatgpt, "headers", {})
-        sentinel_present = "OpenAI-Sentinel-Token" in headers or (
-            hasattr(session_headers, "get")
-            and bool(
-                session_headers.get("OpenAI-Sentinel-Token")
-                or session_headers.get("openai-sentinel-token")
-            )
-        )
-        attestation_present = "oai-web-deployment-attestation" in headers or (
-            hasattr(session_headers, "get")
-            and bool(session_headers.get("oai-web-deployment-attestation"))
-        )
-        protection = (
-            f"sentinel={'yes' if sentinel_present else 'no'}, "
-            f"attestation={'yes' if attestation_present else 'no'}, "
-            f"sdk={sdk_version}, edge={edge}"
-        )
-        raise ProtocolError(
-            response.status_code,
-            f"checkout create failed (HTTP {response.status_code}; {protection}): "
-            f"{safe_log_text(response.text)}",
-        )
+        raise ProtocolError(response.status_code, f"checkout create failed: {response.text[:500]}")
     payload = response_json(response, "checkout create")
     session_id = extract_checkout_session_id(payload)
     kind = checkout_session_kind(session_id)

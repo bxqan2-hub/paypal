@@ -17,7 +17,6 @@ from ..config import (
     normalize_payment_method,
 )
 from ..errors import ConfigurationError
-from ..auth import extract_access_token, extract_session_token
 from ..models import ExtractionConfig
 from .proxy_probe import ProxyProbeError, probe_proxy
 from .tasks import TaskManager, TaskNotFoundError, TaskStateError
@@ -238,7 +237,6 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
 
 def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     access_token = _credential_value(payload) or os.getenv("OPLL_AT", "")
-    session_token = extract_session_token(payload) or os.getenv("OPLL_SESSION_TOKEN", "")
     pool_lines = _configured_proxy_pool().splitlines()
     pool_first = pool_lines[0] if pool_lines else ""
     checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
@@ -260,9 +258,9 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("AT is required")
     if not str(checkout_proxy or "").strip():
         raise ConfigurationError("checkout proxy is required")
-    payment_method = normalize_payment_method(payment_method)
-    if apply_update and payment_method != "gcash" and not str(update_proxy or "").strip():
+    if apply_update and not str(update_proxy or "").strip():
         raise ConfigurationError("update proxy is required")
+    payment_method = normalize_payment_method(payment_method)
     country = country_for_payment_method(payment_method, country)
     if country not in SUPPORTED_COUNTRIES:
         country_config(country)
@@ -281,7 +279,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         access_token=str(access_token).strip(),
         checkout_proxy=str(checkout_proxy).strip(),
         update_proxy=str(update_proxy or "").strip(),
-        session_token=str(session_token or "").strip(),
         stripe_hcaptcha_token=str(hcaptcha or "").strip(),
         country=country,
         payment_method=payment_method,
@@ -342,7 +339,11 @@ def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -
 
 
 def _credential_value(payload: dict[str, Any]) -> str:
-    return extract_access_token(payload)
+    for key in ("access_token", "accessToken", "token"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _env_bool(name: str, default: bool) -> bool:

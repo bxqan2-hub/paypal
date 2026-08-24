@@ -1,0 +1,23 @@
+BRANCH_FIELD_RESULT=main / repository tree restored to f168ad3c86128bab7ae90178aa6c286be616a1f4
+BASE_COMMIT=10b7698d0c8d6e83cf5f4b34d232a523810c0f5e
+TARGET_COMMIT=f168ad3c86128bab7ae90178aa6c286be616a1f4
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+CHANGED_BRANCH_FIELDS=all tracked post-f168 GCash/access-token/browser/proxy optimizations restored to f168 state
+CHANGED_PATHS=
+.env.example;artifacts/at-import-recognition-20260824/DIFF_FILE.patch;artifacts/at-import-recognition-20260824/MODIFIED_FILE;artifacts/at-import-recognition-20260824/ROLLBACK.sh;artifacts/at-import-recognition-20260824/VERIFICATION.txt;artifacts/gcash-browser-proxy-scheme-fix-20260824/DIFF_FILE.patch;artifacts/gcash-browser-proxy-scheme-fix-20260824/MODIFIED_FILE;artifacts/gcash-browser-proxy-scheme-fix-20260824/ROLLBACK.sh;artifacts/gcash-browser-proxy-scheme-fix-20260824/VERIFICATION.txt;artifacts/gcash-har-polish-20260823/DIFF_FILE.patch;artifacts/gcash-har-polish-20260823/MODIFIED_FILE;artifacts/gcash-har-polish-20260823/ROLLBACK.sh;artifacts/gcash-har-polish-20260823/VERIFICATION.txt;artifacts/gcash-route-data-polish-20260824/DIFF_FILE.patch;artifacts/gcash-route-data-polish-20260824/MODIFIED_FILE;artifacts/gcash-route-data-polish-20260824/ROLLBACK.sh;artifacts/gcash-route-data-polish-20260824/VERIFICATION.txt;artifacts/gcash-sentinel-promo-fix-20260824/DIFF_FILE.patch;artifacts/gcash-sentinel-promo-fix-20260824/MODIFIED_FILE;artifacts/gcash-sentinel-promo-fix-20260824/ROLLBACK.sh;artifacts/gcash-sentinel-promo-fix-20260824/VERIFICATION.txt;artifacts/gcash-sentinel-runtime-fix-20260824/CHANGED_FILES.txt;artifacts/gcash-sentinel-runtime-fix-20260824/DIFF_FILE;artifacts/gcash-sentinel-runtime-fix-20260824/MODIFIED_FILE;artifacts/gcash-sentinel-runtime-fix-20260824/ROLLBACK.sh;artifacts/gcash-sentinel-runtime-fix-20260824/VERIFICATION.txt;artifacts/gcash-session-cookie-fix-20260824/DIFF_FILE.patch;artifacts/gcash-session-cookie-fix-20260824/MODIFIED_FILE;artifacts/gcash-session-cookie-fix-20260824/ROLLBACK.sh;artifacts/gcash-session-cookie-fix-20260824/VERIFICATION.txt;iprocket_chain_bridge.py;payment_link_extractor/application.py;payment_link_extractor/auth.py;payment_link_extractor/checkout.py;payment_link_extractor/cli.py;payment_link_extractor/config.py;payment_link_extractor/flows/oaics.py;payment_link_extractor/models.py;payment_link_extractor/transport.py;payment_link_extractor/web/routes.py;payment_link_extractor/web/static/app.js;payment_link_extractor/web/tasks.py;payment_link_extractor/web/templates/index.html;tests/test_gcash_support.py;tests/test_ui_button_contracts.py
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\rollback-to-f168ad3c-20260824\ROLLBACK.sh
+
+TREE_CHECK
+INDEX_EQUALS_TARGET=f168ad3c86128bab7ae90178aa6c286be616a1f4
+
+TARGET_SHA256
+payment_link_extractor/flows/oaics.py TARGET_SHA256=7d47429cbd5aabca9a38c2575071d97e6df7c44b04331e6d4bdb45d683c4cb4d
+payment_link_extractor/transport.py TARGET_SHA256=aeff964d0fb722ac4358977c8ba2752d066d27ac02b8bff81b7e317a1207ad70
+payment_link_extractor/auth.py TARGET_SHA256=11c263a064666a8821f2f90ffbded41143f54887ed56a20258fd1df2e4d43a61
+payment_link_extractor/models.py TARGET_SHA256=dc421455bd743f6671a300e2b5bfc6eb101f9f0832f729ea60b21a463068b25d
+tests/test_gcash_support.py TARGET_SHA256=cc16cf1db47b53527664cf4bf5614ac7ee93610a324f0607f3cd799ae3e2c6f8

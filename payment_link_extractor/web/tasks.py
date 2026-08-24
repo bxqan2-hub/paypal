@@ -683,7 +683,6 @@ class TaskManager:
     def _secrets(config: ExtractionConfig) -> tuple[str, ...]:
         return (
             config.access_token,
-            config.session_token,
             config.checkout_proxy,
             config.update_proxy,
             config.stripe_hcaptcha_token,

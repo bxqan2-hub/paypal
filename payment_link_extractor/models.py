@@ -18,7 +18,6 @@ class ExtractionConfig:
     retry_count: int = 0
     checkout_proxy_attempts: tuple[str, ...] = ()
     update_proxy_attempts: tuple[str, ...] = ()
-    session_token: str = ""
 
 
 @dataclass(frozen=True)

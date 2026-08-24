@@ -116,7 +116,7 @@ def open_chain(
         protocol, proxy_host, proxy_port, username, password = credential
     else:
         proxy_host, proxy_port, username, password = load_credential()
-        protocol = "socks5" if proxy_port in {9595, 59999, 61999} else "http"
+        protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
     upstream: socket.socket | None = None
     try:
         try:
@@ -242,10 +242,6 @@ def stop_background_server() -> None:
 
 
 if __name__ == "__main__":
-    # Do not preload the optional subscription credential here.  The web
-    # transport passes vendor credentials per CONNECT request, and a blank
-    # subscription URL previously made START.bat exit before opening the
-    # listener.  Subscription-based requests still load lazily in
-    # ``open_chain`` when no per-request credential is supplied.
+    load_credential(force=True)
     with Server((LISTEN_HOST, LISTEN_PORT), Handler) as server:
         server.serve_forever()
