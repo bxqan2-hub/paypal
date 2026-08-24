@@ -11,6 +11,7 @@ CONFIRM[113] status=200 sentinel_len=5838
 START[127] status=200
 ADYEN_REDIRECT[135] status=302 location_host=m.gcash.com
 GCASH_PAGE[138] status=200 host=m.gcash.com
+GCASH_DOWNSTREAM=not present in this later partial capture
 CHROME151_REQUESTS=178
 
 FILE=m.gcash.com1.har
@@ -28,5 +29,9 @@ CONFIRM[265] status=200 sentinel_len=5802
 START[281] status=200
 ADYEN_REDIRECT[291] status=302 location_host=m.gcash.com
 GCASH_PAGE[294] status=200 host=m.gcash.com
+GCASH_HANDSHAKE[312] status=200 path=/c4/v3/key-agreement/handshake
+GCASH_AUTH_CONSULT[321] status=200 operation=ap.mobilewallet.gka.authorisation.stateless.consult
+GCASH_SHORT_DYNAMIC[328] status=200 operation=ap.mobilewallet.short.dynamic.link short_url_host=m.gcash short_url_path=/s/J1lF19Y
+GCASH_QUERY_RESULT[334] status=200 operation=ap.mobilewallet.gka.query.result
 CHROME151_REQUESTS=332
 
