@@ -1,0 +1,5 @@
+BASELINE_COMMIT=cf26ca8
+CHANGED_BRANCH=attach existing RoxyBrowser CDP page + start/stop control files + specific-node capture + discovery tests
+ORIGINAL_SHA256_tools/roxy_har_capture.py=BASELINE_FILE_ABSENT
+MODIFIED_SHA256_tools/roxy_har_capture.py=7a1da44ddd607925d47c4e641a115d26e858329cb82b36cc55e9be4f61d46a2c
+MODIFIED_FILE=tools/roxy_har_capture.py (working tree copy for existing-page attachment)

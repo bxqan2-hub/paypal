@@ -16,6 +16,19 @@ HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_ca
 HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
 ```
 
+RoxyBrowser 已打开的页面使用 `ROXY_CAPTURE_START.bat` 抓包，工具会扫描 RoxyBrowser 的 `DevToolsActivePort`，列出当前页面并直接附加，不会创建新的 Chrome。选中页面后，先在 RoxyBrowser 中走到需要的节点，再回到终端按 Enter 开始；抓包过程中按终端 Enter 或双击 `ROXY_CAPTURE_STOP.bat` 结束。
+
+```text
+ROXY_CAPTURE_START.bat
+ROXY_CAPTURE_STOP.bat
+```
+
+也可以指定输出路径：
+
+```cmd
+ROXY_CAPTURE_START.bat "data\captures\roxy-gcash.har"
+```
+
 正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本会通过 `chatgpt.com` 检查实际目标链路和延迟，默认超过 10000ms 就要求重新输入代理，不回显代理账号密码。也可以通过 `OPLL_CAPTURE_PROXY_MAX_LATENCY_MS` 调整阈值，或设置 `OPLL_CAPTURE_SOCKS5` 与 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
 每次 BAT 启动默认使用新的 `data\har-capture-profile\run-随机值` 配置目录，因此 Cookie、Local Storage 和会话状态是新的；Chrome/Edge 可执行文件版本、User-Agent 等浏览器本身属性仍保持本机版本。设置 `OPLL_CAPTURE_REUSE_PROFILE=1` 才会复用 `data\har-capture-profile\default`。
 代理条目中的 `region-XX` 会自动选择语言、`Accept-Language` 和时区。例如 `region-PH` 使用 `en-US` 与 `Asia/Manila`；没有识别到地区时默认使用英文 `en-US`。需要覆盖时可传 `--lang`、`--accept-lang` 和 `--timezone-id`。
