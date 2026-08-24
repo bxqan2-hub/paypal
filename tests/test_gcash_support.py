@@ -658,6 +658,14 @@ def test_iprocket_61999_uses_socks5_gateway_protocol() -> None:
     assert transport._iprocket_protocol(61999) == "socks5"
 
 
+def test_browser_proxy_translates_curl_socks5h_scheme() -> None:
+    source = "socks5h://fixture-user:fixture-pass@proxy.example:3000"
+    assert transport._browser_proxy_url(source) == (
+        "socks5://fixture-user:fixture-pass@proxy.example:3000"
+    )
+    assert transport._browser_proxy_url("http://proxy.example:8080") == "http://proxy.example:8080"
+
+
 def test_browser_sentinel_generates_token_before_ping() -> None:
     provider = object.__new__(transport.BrowserSentinelProvider)
     provider._lock = transport.threading.RLock()

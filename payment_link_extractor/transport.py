@@ -88,6 +88,24 @@ def _sentinel_version_from_loader(text: str) -> str:
     return value if _SENTINEL_VERSION_RE.fullmatch(value) else ""
 
 
+def _browser_proxy_url(proxy: str) -> str:
+    """Translate curl's remote-DNS SOCKS spelling to Chromium's SOCKS5 URL.
+
+    curl accepts ``socks5h://`` while Chromium reports
+    ``ERR_NO_SUPPORTED_PROXIES`` for that scheme.  Chromium's SOCKS5 proxy
+    implementation already performs hostname resolution through the proxy,
+    so only the scheme spelling must differ between the two transports.
+    """
+    text = str(proxy or "").strip()
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return text
+    if parsed.scheme.lower() != "socks5h":
+        return text
+    return urlunsplit(("socks5", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 def _ensure_iprocket_bridge_listener(normalized_proxy: str) -> None:
     """Ensure a local dynamic-proxy bridge is listening before use.
 
@@ -597,7 +615,7 @@ class BrowserSentinelProvider:
         self.device_id = str(device_id or "").strip()
         self.session_id = str(session_id or "").strip()
         self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
-        self.proxy = str(proxy or "").strip()
+        self.proxy = _browser_proxy_url(proxy)
         self.transport_session = transport_session
         self.log = log
         self.binary = _agent_browser_binary()
