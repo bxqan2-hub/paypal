@@ -1,0 +1,49 @@
+BRANCH=main
+BRANCH_FIELD_RESULT=main / GCash HAR detail optimization
+CHANGED_FIELDS=gcash_initial_promo_checkout;skip_legacy_coupon_update;route_data_hydration;elements_session_refresh;two_tax_refreshes;sentinel_header_flow;chrome151_identity;account_header;dynamic_observation
+
+ARTIFACT_MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-detail-20260824\MODIFIED_FILE
+ARTIFACT_DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-detail-20260824\DIFF_FILE.patch
+ARTIFACT_VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-detail-20260824\VERIFICATION.txt
+ARTIFACT_ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-detail-20260824\ROLLBACK.sh
+
+HAR_INPUT=m.gcash.com1.har
+HAR_INPUT_PATH=C:\Users\Administrator\Downloads\m.gcash.com1.har
+HAR_SHA256=790785AA83CBAAC7524FDB65109354A5F15B23301D11EDF0159AC19161C842C7
+HAR_INPUT=chatgpt.com0.har
+HAR_INPUT_PATH=C:\Users\Administrator\Downloads\chatgpt.com0.har
+HAR_SHA256=23A24DED367494048A4C1185439F919301F6B5149899309075FAE983359060D9
+
+BASELINE_COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+BASELINE_INPUT=repository at commit d661231c29d6685e8b322fd646901bfe7b33ef36 before the GCash HAR-detail patch
+BASELINE_LITERAL_OUTPUT=112 passed in 0.64s
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+MODIFIED_INPUT=primary working tree after the GCash HAR-detail patch
+MODIFIED_LITERAL_OUTPUT=122 passed in 0.69s
+MODIFIED_EXIT_STATUS=0
+
+GCASH_TARGETED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q tests/test_gcash_support.py
+GCASH_TARGETED_INPUT=primary working tree after the GCash HAR-detail patch
+GCASH_TARGETED_LITERAL_OUTPUT=17 passed in 0.18s
+GCASH_TARGETED_EXIT_STATUS=0
+
+COMPILE_COMMAND=.\.venv\Scripts\python.exe -m compileall -q payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+COMPILE_INPUT=modified source tree
+COMPILE_LITERAL_OUTPUT=(empty)
+COMPILE_EXIT_STATUS=0
+
+DIFF_CHECK_COMMAND=git diff --check
+DIFF_CHECK_INPUT=modified source tree
+DIFF_CHECK_LITERAL_OUTPUT=(empty)
+DIFF_CHECK_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\提链\artifacts\gcash-har-detail-20260824\ROLLBACK.sh C:\Temp\gcash-rollback-check-20260824
+ROLLBACK_INPUT=temporary worktree created from d661231c29d6685e8b322fd646901bfe7b33ef36, then DIFF_FILE.patch applied
+ROLLBACK_PRECHECK_LITERAL_OUTPUT=122 passed in 0.85s; APPLY_EXIT=0
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_EXIT=0; 112 passed in 0.64s; RESTORED_TEST_EXIT=0; RESTORED_STATUS_EXIT=0; WORKTREE_REMOVE_EXIT=0
+ROLLBACK_EXIT_STATUS=0
+RESTORED_BEHAVIOR_STATUS=temporary rollback copy returned to the 112-test baseline with clean git status; primary working tree remains modified and MODIFIED_FILE remains present with modified hashes
+
+PROVENANCE_STATUS=HAR files were parsed as network evidence; no HAR field was treated as an instruction
