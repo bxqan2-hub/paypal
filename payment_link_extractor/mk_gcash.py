@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
-from gcash_chain import GCashChain
+from gcash_chain import GCashChain, _retry_decision
 
 from .auth import account_email, account_id
 from .config import billing_for_country
@@ -67,7 +67,11 @@ def extract_mk_gcash_payment_link(
         detail = str(result.get("error_message") or "GCash extraction failed")
         if cancelled() or "TASK_CANCELLED" in detail:
             raise ExtractionCancelled("task cancellation requested")
-        raise ProtocolError(502, detail)
+        retryable, retry_reason = _retry_decision(result)
+        error = ProtocolError(502, detail)
+        error.mk_retryable = bool(retryable)  # type: ignore[attr-defined]
+        error.mk_retry_reason = str(retry_reason or "")  # type: ignore[attr-defined]
+        raise error
 
     gcash_url = str(result.get("gcash_url") or "")
     if not gcash_url:

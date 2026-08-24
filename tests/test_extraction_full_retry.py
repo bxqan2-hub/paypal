@@ -195,7 +195,7 @@ def test_route_config_rejects_invalid_retry_count(value) -> None:
         )
 
 
-def test_retry_ui_builds_a_fresh_proxy_plan_for_every_full_attempt() -> None:
+def test_retry_ui_uses_the_mk_single_proxy_pool_contract() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
@@ -207,8 +207,32 @@ def test_retry_ui_builds_a_fresh_proxy_plan_for_every_full_attempt() -> None:
     )
 
     assert 'id="failure-retry-count"' in html
-    assert "每次重试都会换一个代理 IP，并从资格检查开始完整重跑提链流程。" in html
-    assert "function buildProxyAttempts(value, kind, rotateInitial, retryCount)" in source
-    assert "const mustRotate = rotateInitial || index > 0;" in source
-    assert "payload.checkout_proxy_attempts = attempts;" in source
+    assert 'id="proxy-pool"' in html
+    assert "所有支付步骤共用一个自备节点池" in html
+    assert "payload.proxy_pool" in source
+    assert "payload.max_attempts = retryCount + 1;" in source
     assert 'event.type === "task.retrying"' in source
+
+
+def test_route_config_maps_mk_proxy_pool_to_every_payment_step() -> None:
+    config = _config_from_payload(
+        {
+            "access_token": "fixture-token",
+            "proxy_pool": [
+                "http://proxy-1.example:8080",
+                "http://proxy-2.example:8080",
+            ],
+            "max_attempts": 5,
+            "country": "GB",
+            "payment_method": "paypal",
+        }
+    )
+
+    assert config.retry_count == 4
+    assert config.checkout_proxy == "http://proxy-1.example:8080"
+    assert config.update_proxy == config.checkout_proxy
+    assert config.checkout_proxy_attempts == config.update_proxy_attempts
+    assert config.proxy_pool == (
+        "http://proxy-1.example:8080",
+        "http://proxy-2.example:8080",
+    )

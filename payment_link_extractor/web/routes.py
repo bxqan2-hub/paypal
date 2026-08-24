@@ -53,6 +53,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "payment_method_countries": {"gcash": "PH"},
                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
+                "proxy_pool": proxy_pool,
                 "proxy_pool_id": hashlib.sha256(proxy_pool.encode("utf-8")).hexdigest()[:16] if proxy_pool else "",
                 "proxy_source_url": os.getenv("OPLL_PROXY_SOURCE_URL", ""),
                 "apply_checkout_update": _env_bool("OPLL_UPDATE_CHECKOUT", True),
@@ -163,8 +164,15 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
         if update_proxy is not None and not isinstance(update_proxy, str):
             return _error("update_proxy must be a string", 400)
         try:
+            proxy_pool = (
+                _single_proxy_pool_values(payload.get("proxy_pool"))
+                if "proxy_pool" in payload
+                else None
+            )
             retry_count = (
-                _retry_count_value(payload.get("retry_count"))
+                _max_attempts_value(payload.get("max_attempts")) - 1
+                if "max_attempts" in payload
+                else _retry_count_value(payload.get("retry_count"))
                 if "retry_count" in payload
                 else None
             )
@@ -180,6 +188,11 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
             )
         except ConfigurationError as exc:
             return _error(str(exc), 400)
+        if proxy_pool:
+            checkout_proxy = proxy_pool[0]
+            update_proxy = proxy_pool[0]
+            checkout_proxy_attempts = proxy_pool
+            update_proxy_attempts = proxy_pool
         try:
             snapshot = manager.retry(
                 task_id,
@@ -188,6 +201,7 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 retry_count=retry_count,
                 checkout_proxy_attempts=checkout_proxy_attempts,
                 update_proxy_attempts=update_proxy_attempts,
+                proxy_pool=proxy_pool,
             )
         except TaskNotFoundError:
             return _error("task not found", 404)
@@ -240,15 +254,28 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     access_token = _credential_value(payload) or os.getenv("OPLL_AT", "")
     pool_lines = _configured_proxy_pool().splitlines()
     pool_first = pool_lines[0] if pool_lines else ""
-    checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
-    update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
+    submitted_pool = _single_proxy_pool_values(payload.get("proxy_pool"))
+    if not submitted_pool and pool_lines:
+        submitted_pool = tuple(line.strip() for line in pool_lines if line.strip())
+    if submitted_pool:
+        checkout_proxy = submitted_pool[0]
+        update_proxy = submitted_pool[0]
+    else:
+        # Backward compatibility for API/CLI callers created before the MK UI
+        # migration. The browser now submits only proxy_pool.
+        checkout_proxy = payload.get("checkout_proxy") or pool_first or os.getenv("OPLL_CHECKOUT_PROXY", "")
+        update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
     hcaptcha = _value(payload, "stripe_hcaptcha_token", "OPLL_STRIPE_HCAPTCHA_TOKEN")
     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
     country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
-    retry_count = _retry_count_value(
-        payload.get("retry_count", os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2"))
-    )
+    if "max_attempts" in payload:
+        max_attempts = _max_attempts_value(payload.get("max_attempts"))
+        retry_count = max_attempts - 1
+    else:
+        retry_count = _retry_count_value(
+            payload.get("retry_count", os.getenv("OPLL_EXTRACTION_RETRY_COUNT", "2"))
+        )
     # Accept both OAICS (oaics_*) and Stripe Checkout (cs_*) PayPal flows.
     # Old browser preferences could keep oaics_only=true and discard most
     # otherwise usable accounts before provider confirmation.
@@ -266,16 +293,23 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     if country not in SUPPORTED_COUNTRIES:
         country_config(country)
     total_attempts = retry_count + 1
-    checkout_proxy_attempts = _fit_proxy_attempt_values(
-        checkout_proxy,
-        _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts"),
-        total_attempts,
-    )
-    update_proxy_attempts = _fit_proxy_attempt_values(
-        update_proxy,
-        _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts"),
-        total_attempts,
-    )
+    if submitted_pool:
+        unified_attempts = _fit_proxy_attempt_values(
+            checkout_proxy, submitted_pool, total_attempts
+        )
+        checkout_proxy_attempts = unified_attempts
+        update_proxy_attempts = unified_attempts
+    else:
+        checkout_proxy_attempts = _fit_proxy_attempt_values(
+            checkout_proxy,
+            _proxy_attempt_values(payload.get("checkout_proxy_attempts"), "checkout_proxy_attempts"),
+            total_attempts,
+        )
+        update_proxy_attempts = _fit_proxy_attempt_values(
+            update_proxy,
+            _proxy_attempt_values(payload.get("update_proxy_attempts"), "update_proxy_attempts"),
+            total_attempts,
+        )
     return ExtractionConfig(
         access_token=str(access_token).strip(),
         checkout_proxy=str(checkout_proxy).strip(),
@@ -289,7 +323,46 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         retry_count=retry_count,
         checkout_proxy_attempts=checkout_proxy_attempts,
         update_proxy_attempts=update_proxy_attempts,
+        proxy_pool=submitted_pool,
     )
+
+
+def _max_attempts_value(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ConfigurationError("max_attempts must be an integer between 1 and 10")
+    try:
+        attempts = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("max_attempts must be an integer between 1 and 10") from exc
+    if attempts < 1 or attempts > 10:
+        raise ConfigurationError("max_attempts must be between 1 and 10")
+    return attempts
+
+
+def _single_proxy_pool_values(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raw_values = value.splitlines()
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raise ConfigurationError("proxy_pool must be a string or array")
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        if not isinstance(item, str):
+            raise ConfigurationError("proxy_pool must contain only proxy strings")
+        proxy = item.strip()
+        if not proxy or proxy in seen:
+            continue
+        if len(proxy) > 1024 or any(character.isspace() for character in proxy):
+            raise ConfigurationError("invalid proxy in proxy_pool")
+        seen.add(proxy)
+        values.append(proxy)
+        if len(values) > 100:
+            raise ConfigurationError("proxy_pool supports at most 100 proxies")
+    return tuple(values)
 
 
 def _retry_count_value(value: Any) -> int:

@@ -18,6 +18,9 @@ class ExtractionConfig:
     retry_count: int = 0
     checkout_proxy_attempts: tuple[str, ...] = ()
     update_proxy_attempts: tuple[str, ...] = ()
+    # MK-style single proxy pool. Legacy checkout/update fields remain as
+    # transport aliases, but new web tasks populate both from this one pool.
+    proxy_pool: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

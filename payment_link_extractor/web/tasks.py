@@ -151,6 +151,7 @@ class TaskManager:
         retry_count: int | None = None,
         checkout_proxy_attempts: tuple[str, ...] | None = None,
         update_proxy_attempts: tuple[str, ...] | None = None,
+        proxy_pool: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._cleanup_locked()
@@ -179,20 +180,37 @@ class TaskManager:
                     raise TaskStateError("retry count must be between 0 and 10")
                 retry_config = replace(retry_config, retry_count=normalized_retry_count)
             total_attempts = max(1, min(11, int(retry_config.retry_count) + 1))
-            checkout_attempts = self._fit_proxy_attempts(
-                retry_config.checkout_proxy,
-                checkout_proxy_attempts
-                if checkout_proxy_attempts is not None
-                else retry_config.checkout_proxy_attempts,
-                total_attempts,
-            )
-            update_attempts = self._fit_proxy_attempts(
-                retry_config.update_proxy,
-                update_proxy_attempts
-                if update_proxy_attempts is not None
-                else retry_config.update_proxy_attempts,
-                total_attempts,
-            )
+            if proxy_pool is not None:
+                unified_attempts = self._fit_proxy_attempts(
+                    retry_config.checkout_proxy,
+                    proxy_pool,
+                    total_attempts,
+                )
+                retry_config = replace(
+                    retry_config,
+                    checkout_proxy=unified_attempts[0],
+                    update_proxy=unified_attempts[0],
+                    checkout_proxy_attempts=unified_attempts,
+                    update_proxy_attempts=unified_attempts,
+                    proxy_pool=proxy_pool,
+                )
+                checkout_attempts = unified_attempts
+                update_attempts = unified_attempts
+            else:
+                checkout_attempts = self._fit_proxy_attempts(
+                    retry_config.checkout_proxy,
+                    checkout_proxy_attempts
+                    if checkout_proxy_attempts is not None
+                    else retry_config.checkout_proxy_attempts,
+                    total_attempts,
+                )
+                update_attempts = self._fit_proxy_attempts(
+                    retry_config.update_proxy,
+                    update_proxy_attempts
+                    if update_proxy_attempts is not None
+                    else retry_config.update_proxy_attempts,
+                    total_attempts,
+                )
             retry_config = replace(
                 retry_config,
                 checkout_proxy_attempts=checkout_attempts,
@@ -421,6 +439,19 @@ class TaskManager:
     @classmethod
     def _config_for_attempt(cls, config: ExtractionConfig, attempt_index: int) -> ExtractionConfig:
         total_attempts = max(1, min(11, int(config.retry_count) + 1))
+        if config.proxy_pool:
+            attempts = cls._fit_proxy_attempts(
+                config.checkout_proxy, config.proxy_pool, total_attempts
+            )
+            proxy = attempts[attempt_index] if attempts else config.checkout_proxy
+            return replace(
+                config,
+                checkout_proxy=proxy,
+                update_proxy=proxy,
+                checkout_proxy_attempts=attempts,
+                update_proxy_attempts=attempts,
+                proxy_pool=attempts,
+            )
         checkout_attempts = cls._fit_proxy_attempts(
             config.checkout_proxy, config.checkout_proxy_attempts, total_attempts
         )
@@ -504,7 +535,15 @@ class TaskManager:
                         self._finish_cancelled_locked(record, str(exc))
                         return
                     error = redact_text(exc, self._secrets(record.config))
-                    if attempt_index < retry_count:
+                    mk_retryable = bool(getattr(exc, "mk_retryable", False))
+                    may_retry = (
+                        attempt_index < retry_count
+                        and (
+                            record.config.payment_method != "gcash"
+                            or mk_retryable
+                        )
+                    )
+                    if may_retry:
                         record.status = "running"
                         record.stage = "retrying"
                         record.progress = STAGE_PROGRESS[record.stage]

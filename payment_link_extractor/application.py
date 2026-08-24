@@ -41,6 +41,17 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         raise ConfigurationError("update proxy is required")
     country = country_for_payment_method(payment_method, config.country)
     country, *_ = country_config(country)
+    proxy_pool = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in (
+                config.proxy_pool
+                or config.checkout_proxy_attempts
+                or (config.checkout_proxy,)
+            )
+            if str(value).strip()
+        )
+    )
     return replace(
         config,
         access_token=token,
@@ -49,6 +60,7 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         stripe_hcaptcha_token=str(config.stripe_hcaptcha_token or "").strip(),
         country=country,
         payment_method=payment_method,
+        proxy_pool=proxy_pool,
     )
 
 

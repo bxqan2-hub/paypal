@@ -1,0 +1,77 @@
+MK SINGLE PROXY POOL / UI ALIGNMENT VERIFICATION
+
+CHANGED BRANCH/FIELD
+branch: main
+field: MK-style single proxy_pool, upstream retry semantics, and browser workbench styling; payment-method selector remains the local entry-point difference.
+baseline_commit: f0d8388c9b39eb97fec76a0ec7475975bcc06b9b
+upstream_reference_commit: 2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+
+FOUR ARTIFACT PATHS
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\MODIFIED_FILE
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\DIFF_FILE.patch
+VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\VERIFICATION.txt
+ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\ROLLBACK.sh
+UI_PREVIEW.png: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\UI_PREVIEW.png
+
+BASELINE
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Users\Administrator\Desktop\提链 at commit f0d8388c9b39eb97fec76a0ec7475975bcc06b9b
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 1.45s
+exit status: 0
+
+MODIFIED
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-single-proxy-pool-rollback-20260824-1858 after applying DIFF_FILE.patch
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+....                                                                     [100%]
+148 passed in 1.56s
+exit status: 0
+
+JAVASCRIPT
+command: node --check payment_link_extractor\web\static\app.js
+cwd/input: C:\Temp\mk-single-proxy-pool-rollback-20260824-1858 after applying DIFF_FILE.patch
+literal output/result:
+node_syntax=ok
+exit status: 0
+
+BROWSER UI
+command: Playwright Chromium headless form/login inspection at http://127.0.0.1:18985/
+input: WEB_PASSWORD=ui-test; proxy_pool lines http://proxy-1.example:8080 and http://proxy-2.example:8080; max attempts=5
+literal output/result:
+visible_textareas=credential-input,proxy-pool
+proxy_count=2 / 100
+payment_entry=visible
+console_errors_after_auth=0
+exit status: 0
+preview: C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\UI_PREVIEW.png
+
+ROLLBACK
+command: "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\mk-single-proxy-pool-20260824\ROLLBACK.sh" "C:\Temp\mk-single-proxy-pool-rollback-20260824-1858"
+input: modified disposable worktree created from baseline commit and DIFF_FILE.patch
+literal output/result:
+ROLLBACK_OK target=C:\Temp\mk-single-proxy-pool-rollback-20260824-1858 restored_commit=f0d8388c9b39eb97fec76a0ec7475975bcc06b9b
+exit status: 0
+
+ROLLBACK RESTORED BEHAVIOR/STATUS
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-single-proxy-pool-rollback-20260824-1858 after ROLLBACK.sh
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 1.27s
+exit status: 0
+restored behavior/status: baseline suite restored to 147 passing tests; git status --short returned no output (clean).
+
+BEHAVIOR RESULT
+- Web/API input is one proxy_pool (maximum 100 entries).
+- Checkout and update steps use the same selected proxy on every attempt.
+- max_attempts follows the upstream 1..10 total-attempt contract.
+- GCash retries only when upstream gcash_chain._retry_decision marks the failure recoverable.
+- The payment-method selector is retained as the only intentional entry-point difference.

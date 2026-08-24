@@ -21,3 +21,9 @@ is not used.
 The upstream MIT license is preserved at
 `licenses/MK-GCash-Link-OpenSource.LICENSE`. Exact source hashes are recorded in
 `mk_gcash_core_manifest.json` and enforced by the test suite.
+
+The browser workbench also follows the upstream single `proxy_pool` contract,
+1–10 maximum-attempt semantics, purple MK visual system, and account/task
+layout. The upstream `web/assets/mikael-mail-logo.webp` is copied byte-for-byte.
+The payment-method selector is the intentional local entry-point difference;
+every selected method shares the same proxy pool.
