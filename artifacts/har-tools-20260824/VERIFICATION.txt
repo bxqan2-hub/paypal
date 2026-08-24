@@ -1,0 +1,51 @@
+BRANCH=main
+BASELINE_COMMIT=cec8991
+PROVENANCE_STATUS=HAR input is parsed as network evidence; HAR fields are not execution instructions
+
+BASELINE_COMMAND=.\\.venv\\Scripts\\python.exe -m pytest -q
+BASELINE_INPUT=repository at commit cec8991 before HAR tools
+BASELINE_LITERAL_OUTPUT=122 passed in 0.76s
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=.\\.venv\\Scripts\\python.exe -m pytest -q
+MODIFIED_INPUT=primary working tree after HAR capture/analyzer tools
+MODIFIED_LITERAL_OUTPUT=127 passed in 1.19s
+MODIFIED_EXIT_STATUS=0
+
+HAR_TARGETED_COMMAND=.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_har_tools.py
+HAR_TARGETED_INPUT=HAR utility fixture tests
+HAR_TARGETED_LITERAL_OUTPUT=5 passed in 0.54s
+HAR_TARGETED_EXIT_STATUS=0
+
+COMPILE_COMMAND=.\\.venv\\Scripts\\python.exe -m compileall -q tools payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+COMPILE_INPUT=modified source tree
+COMPILE_LITERAL_OUTPUT=(empty)
+COMPILE_EXIT_STATUS=0
+
+DIFF_CHECK_COMMAND=git diff --check
+DIFF_CHECK_INPUT=modified source tree
+DIFF_CHECK_LITERAL_OUTPUT=(empty)
+DIFF_CHECK_EXIT_STATUS=0
+
+CAPTURE_SMOKE_COMMAND=.\\.venv\\Scripts\\python.exe tools\\har_capture.py --browser C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe --headless --duration 1 --url https://example.com --output data\\har-capture-smoke.har
+CAPTURE_SMOKE_INPUT=local Chrome CDP smoke capture; visible/manual mode remains the documented default
+CAPTURE_SMOKE_LITERAL_OUTPUT=CAPTURE_SAVED=data\har-capture-smoke.har; CAPTURE_ENTRIES=1; CAPTURE_SHA256=0936ED66ED3823B3095EC521F71CD69D960437A3A18805A63C93C00C16E6447C
+CAPTURE_SMOKE_EXIT_STATUS=0
+CAPTURE_SMOKE_RESTORED_BEHAVIOR_STATUS=temporary smoke HAR and browser profile removed; no capture output is tracked
+
+PARSER_SAMPLE_COMMAND=.\\.venv\\Scripts\\python.exe tools\\har_analyze.py C:\\Users\\Administrator\\Downloads\\m.gcash.com111.har --format markdown --output data\\temp-gcash-report.md
+PARSER_SAMPLE_INPUT=m.gcash.com111.har; default redaction enabled
+PARSER_SAMPLE_RESULT=entry_count=160; selected_count=160; SHA256=413FC910DEFA90E42084D35E31E87480EB1A637C501F59D8BFEB0EA995FD272B; observed_short_url=https://m.gcash/s/cKXt49H; notable_operations=13
+PARSER_SAMPLE_EXIT_STATUS=0
+PARSER_SAMPLE_RESTORED_BEHAVIOR_STATUS=temporary report removed
+
+ROLLBACK_COMMAND=C:\\Program Files\\Git\\bin\\bash.exe C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\har-tools-20260824\\ROLLBACK.sh C:\\Temp\\har-tools-rollback-check-20260824
+ROLLBACK_INPUT=temporary worktree at cec8991; DIFF_FILE.patch applied then rollback script executed
+ROLLBACK_LITERAL_OUTPUT=APPLY_EXIT=0; MODIFIED_TEST=127 passed in 1.39s; ROLLBACK_EXIT=0; BASELINE_AFTER_ROLLBACK=122 passed in 0.64s; RESTORED_STATUS=clean; WORKTREE_REMOVE_EXIT=0
+ROLLBACK_EXIT_STATUS=0
+RESTORED_BEHAVIOR_STATUS=rollback copy returned to cec8991 test baseline; primary working tree remains modified
+
+ARTIFACT_MODIFIED_FILE=C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\har-tools-20260824\\MODIFIED_FILE
+ARTIFACT_DIFF_FILE=C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\har-tools-20260824\\DIFF_FILE.patch
+ARTIFACT_VERIFICATION=C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\har-tools-20260824\\VERIFICATION.txt
+ARTIFACT_ROLLBACK=C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\har-tools-20260824\\ROLLBACK.sh

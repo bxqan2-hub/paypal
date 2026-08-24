@@ -7,4 +7,6 @@ __pycache__/
 .env.*
 !.env.example
 data/*.log
+data/captures/
+data/har-capture-profile/
 artifacts/screenshots/
