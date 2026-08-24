@@ -2,6 +2,23 @@
 
 工具位于本站根目录的 `tools` 文件夹，使用 Python 标准库和本机 Chrome/Edge，不需要额外安装抓包库。
 
+## 0. 一键 BAT
+
+直接双击根目录的 `HAR_CAPTURE.bat` 即可启动手动抓包；默认保存到 `data\captures`。也可以在命令行传入输出路径和起始 URL：
+
+```cmd
+HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+```
+
+双击 `HAR_ANALYZE.bat` 会要求输入 HAR 路径并生成同目录的 `.report.md`；命令行调用方式：
+
+```cmd
+HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
+```
+
+如果已经设置 `OPLL_CAPTURE_SOCKS5=HOST:PORT:USERNAME:PASSWORD`，`HAR_CAPTURE.bat` 会自动启用认证 SOCKS5 临时桥接。
+自动化 smoke test 可额外设置 `OPLL_CAPTURE_HEADLESS=1` 和 `OPLL_CAPTURE_DURATION=10`；手动抓包时不设置这两个变量。
+
 ## 1. 启动手动抓包
 
 在 PowerShell 中执行：

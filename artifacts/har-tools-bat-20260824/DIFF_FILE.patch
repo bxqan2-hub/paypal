@@ -1,0 +1,354 @@
+diff --git a/HAR_TOOLS.md b/HAR_TOOLS.md
+index 6665188..db33879 100644
+--- a/HAR_TOOLS.md
++++ b/HAR_TOOLS.md
+@@ -2,6 +2,23 @@
+ 
+ 工具位于本站根目录的 `tools` 文件夹，使用 Python 标准库和本机 Chrome/Edge，不需要额外安装抓包库。
+ 
++## 0. 一键 BAT
++
++直接双击根目录的 `HAR_CAPTURE.bat` 即可启动手动抓包；默认保存到 `data\captures`。也可以在命令行传入输出路径和起始 URL：
++
++```cmd
++HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_campaign=plus-1-month-free"
++```
++
++双击 `HAR_ANALYZE.bat` 会要求输入 HAR 路径并生成同目录的 `.report.md`；命令行调用方式：
++
++```cmd
++HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
++```
++
++如果已经设置 `OPLL_CAPTURE_SOCKS5=HOST:PORT:USERNAME:PASSWORD`，`HAR_CAPTURE.bat` 会自动启用认证 SOCKS5 临时桥接。
++自动化 smoke test 可额外设置 `OPLL_CAPTURE_HEADLESS=1` 和 `OPLL_CAPTURE_DURATION=10`；手动抓包时不设置这两个变量。
++
+ ## 1. 启动手动抓包
+ 
+ 在 PowerShell 中执行：
+diff --git a/tests/test_har_tools.py b/tests/test_har_tools.py
+index 94bed0d..3ec7601 100644
+--- a/tests/test_har_tools.py
++++ b/tests/test_har_tools.py
+@@ -1,11 +1,12 @@
+ from __future__ import annotations
+ 
+ import json
++import base64
+ from pathlib import Path
+ 
+ import pytest
+ 
+-from tools.har_capture import Socks5HttpBridge
++from tools.har_capture import HARRecorder, Socks5HttpBridge
+ from tools.har_utils import analyze_har, entry_summary, markdown_report
+ 
+ 
+@@ -100,3 +101,42 @@ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
+ def test_socks5_bridge_rejects_malformed_proxy() -> None:
+     with pytest.raises(ValueError):
+         Socks5HttpBridge("not-a-proxy")
++
++
++def test_capture_preserves_valid_base64_when_body_limit_truncates() -> None:
++    recorder = HARRecorder(object(), max_body_bytes=3)  # type: ignore[arg-type]
++    encoded = base64.b64encode(b"abcdef").decode("ascii")
++    recorder._finish(
++        {
++            "request_event": {"wallTime": 0, "timestamp": 1},
++            "request": {"method": "GET", "url": "https://example.com/file", "headers": {}},
++            "response": {"status": 200, "mimeType": "application/octet-stream", "headers": {}},
++            "body": encoded,
++            "base64Encoded": True,
++        },
++        timestamp=1.1,
++    )
++    content = recorder.entries[0]["response"]["content"]
++    assert content["encoding"] == "base64"
++    assert base64.b64decode(content["text"]) == b"abc"
++    assert content["size"] == 3
++    assert content["_captureTruncated"] is True
++
++
++def test_capture_flushes_in_flight_request_and_keeps_post_data() -> None:
++    recorder = HARRecorder(object())  # type: ignore[arg-type]
++    recorder.states["1"] = {
++        "request_event": {"wallTime": 0, "timestamp": 1},
++        "request": {
++            "method": "POST",
++            "url": "https://example.com/submit",
++            "headers": {"content-type": "application/json"},
++            "postData": '{"ok":true}',
++        },
++        "response": {"status": 0, "headers": {}},
++        "body": "",
++        "base64Encoded": False,
++    }
++    recorder.flush_pending()
++    assert len(recorder.entries) == 1
++    assert recorder.entries[0]["request"]["postData"]["text"] == '{"ok":true}'
+diff --git a/tools/har_analyze.py b/tools/har_analyze.py
+index 66a019d..c1f644c 100644
+--- a/tools/har_analyze.py
++++ b/tools/har_analyze.py
+@@ -5,7 +5,10 @@ import json
+ import sys
+ from pathlib import Path
+ 
+-from har_utils import analyze_har, markdown_report
++try:
++    from .har_utils import analyze_har, markdown_report
++except ImportError:  # direct ``python tools/har_analyze.py`` invocation
++    from har_utils import analyze_har, markdown_report
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+diff --git a/tools/har_capture.py b/tools/har_capture.py
+index 083e511..74eef00 100644
+--- a/tools/har_capture.py
++++ b/tools/har_capture.py
+@@ -217,6 +217,13 @@ class HARRecorder:
+                 state["base64Encoded"] = encoded
+                 self._finish(state, timestamp=params.get("timestamp"))
+ 
++    def flush_pending(self) -> None:
++        """Materialize requests still in flight when capture stops."""
++        pending = list(self.states.values())
++        self.states.clear()
++        for state in pending:
++            self._finish(state)
++
+     def _finish(self, state: dict[str, Any], *, response: dict[str, Any] | None = None, timestamp: Any = None) -> None:
+         request = state.get("request") if isinstance(state.get("request"), dict) else {}
+         response = response or (state.get("response") if isinstance(state.get("response"), dict) else {})
+@@ -227,16 +234,44 @@ class HARRecorder:
+         except (TypeError, ValueError):
+             duration = 0.0
+         body = str(state.get("body") or "")
+-        if len(body.encode("utf-8", errors="replace")) > self.max_body_bytes:
++        original_body = body
++        truncated = False
++        is_base64 = bool(state.get("base64Encoded"))
++        if is_base64:
++            try:
++                raw_body = base64.b64decode(original_body, validate=True)
++            except Exception:
++                is_base64 = False
++                raw_body = original_body.encode("utf-8", errors="replace")
++            if len(raw_body) > self.max_body_bytes:
++                raw_body = raw_body[: self.max_body_bytes]
++                truncated = True
++            body = base64.b64encode(raw_body).decode("ascii") if is_base64 else raw_body.decode("utf-8", errors="replace")
++        elif len(body.encode("utf-8", errors="replace")) > self.max_body_bytes:
+             body = body.encode("utf-8", errors="replace")[: self.max_body_bytes].decode("utf-8", errors="replace")
++            truncated = True
++        request_body = request.get("postData")
++        if isinstance(request_body, dict):
++            request_body = request_body.get("text", "")
++        request_body = str(request_body or "")
++        request_headers = _header_list(request.get("headers"))
++        request_content_type = next(
++            (item.get("value", "") for item in request_headers if str(item.get("name", "")).lower() == "content-type"),
++            "",
++        )
++        content_size = len(body.encode("utf-8", errors="replace"))
++        if is_base64:
++            content_size = len(base64.b64decode(body, validate=True)) if body else 0
+         content: dict[str, Any] = {
+-            "size": len(body.encode("utf-8", errors="replace")),
++            "size": content_size,
+             "mimeType": str(response.get("mimeType") or "application/octet-stream"),
+         }
+         if body:
+             content["text"] = body
+-            if state.get("base64Encoded"):
++            if is_base64:
+                 content["encoding"] = "base64"
++        if truncated:
++            content["_captureTruncated"] = True
+         response_headers = _header_list(response.get("headers"))
+         location = next(
+             (item.get("value", "") for item in response_headers if str(item.get("name", "")).lower() == "location"),
+@@ -249,11 +284,11 @@ class HARRecorder:
+                 "method": str(request.get("method") or "GET"),
+                 "url": str(request.get("url") or ""),
+                 "httpVersion": "HTTP/1.1",
+-                "headers": _header_list(request.get("headers")),
++                "headers": request_headers,
+                 "queryString": _query_list(str(request.get("url") or "")),
+                 "cookies": [],
+                 "headersSize": -1,
+-                "bodySize": len(str(request.get("postData") or "").encode("utf-8")),
++                "bodySize": len(request_body.encode("utf-8")),
+             },
+             "response": {
+                 "status": int(response.get("status", 0) or 0),
+@@ -264,11 +299,16 @@ class HARRecorder:
+                 "content": content,
+                 "redirectURL": str(location) if int(response.get("status", 0) or 0) in {301, 302, 303, 307, 308} else "",
+                 "headersSize": -1,
+-                "bodySize": int(response.get("encodedDataLength", content["size"]) or content["size"]),
++                "bodySize": max(0, int(response.get("encodedDataLength", content["size"]) or content["size"])),
+             },
+             "cache": {},
+             "timings": {"send": 0, "wait": round(duration, 2), "receive": 0},
+         }
++        if request_body:
++            entry["request"]["postData"] = {
++                "mimeType": request_content_type,
++                "text": request_body,
++            }
+         if state.get("error"):
+             entry["_error"] = state["error"]
+         self.entries.append(entry)
+@@ -321,27 +361,37 @@ def _read_until_headers(sock: socket.socket, *, limit: int = 65536) -> bytes:
+     return bytes(data)
+ 
+ 
++def _recv_exact_socket(sock: socket.socket, size: int) -> bytes:
++    data = bytearray()
++    while len(data) < size:
++        part = sock.recv(size - len(data))
++        if not part:
++            raise RuntimeError("SOCKS5 connection closed during handshake")
++        data.extend(part)
++    return bytes(data)
++
++
+ def _socks5_connect(sock: socket.socket, host: str, port: int, username: str, password: str) -> None:
+     if username:
+         sock.sendall(b"\x05\x01\x02")
+-        if sock.recv(2) != b"\x05\x02":
++        if _recv_exact_socket(sock, 2) != b"\x05\x02":
+             raise RuntimeError("SOCKS5 username/password authentication was rejected")
+         user = username.encode("utf-8")
+         secret = password.encode("utf-8")
+         if len(user) > 255 or len(secret) > 255:
+             raise ValueError("SOCKS5 credentials are too long")
+         sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(secret)]) + secret)
+-        if sock.recv(2) != b"\x01\x00":
++        if _recv_exact_socket(sock, 2) != b"\x01\x00":
+             raise RuntimeError("SOCKS5 authentication failed")
+     else:
+         sock.sendall(b"\x05\x01\x00")
+-        if sock.recv(2) != b"\x05\x00":
++        if _recv_exact_socket(sock, 2) != b"\x05\x00":
+             raise RuntimeError("SOCKS5 no-authentication mode was rejected")
+     encoded_host = host.encode("idna")
+     if len(encoded_host) > 255:
+         raise ValueError("destination hostname is too long")
+     sock.sendall(b"\x05\x01\x00\x03" + bytes([len(encoded_host)]) + encoded_host + struct.pack("!H", port))
+-    reply = sock.recv(4)
++    reply = _recv_exact_socket(sock, 4)
+     if len(reply) != 4 or reply[1] != 0:
+         code = reply[1] if len(reply) > 1 else -1
+         raise RuntimeError(f"SOCKS5 destination connection failed ({code})")
+@@ -350,9 +400,7 @@ def _socks5_connect(sock: socket.socket, host: str, port: int, username: str, pa
+     elif reply[3] == 4:
+         address_size = 16
+     elif reply[3] == 3:
+-        length = sock.recv(1)
+-        if not length:
+-            raise RuntimeError("SOCKS5 reply omitted domain length")
++        length = _recv_exact_socket(sock, 1)
+         address_size = length[0]
+     else:
+         raise RuntimeError("SOCKS5 reply has an unknown address type")
+@@ -563,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
+             except KeyboardInterrupt:
+                 break
+             recorder.handle(message)
++        recorder.flush_pending()
+         har = recorder.as_har(title=args.url)
+         args.output.parent.mkdir(parents=True, exist_ok=True)
+         args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+@@ -572,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
+         return 0
+     except KeyboardInterrupt:
+         if cdp:
++            recorder.flush_pending()  # type: ignore[name-defined]
+             har = recorder.as_har(title=args.url)  # type: ignore[name-defined]
+             args.output.parent.mkdir(parents=True, exist_ok=True)
+             args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+diff --git a/HAR_CAPTURE.bat b/HAR_CAPTURE.bat
+new file mode 100644
+index 0000000..ab635f7
+--- /dev/null
++++ b/HAR_CAPTURE.bat
+@@ -0,0 +1,35 @@
++@echo off
++setlocal EnableExtensions
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++  echo Please run INSTALL_AND_START.bat first.
++  pause
++  exit /b 1
++)
++if not exist "data\captures" mkdir "data\captures"
++
++set "OUTPUT=%~1"
++if "%OUTPUT%"=="" set "OUTPUT=data\captures\gcash-%RANDOM%-%RANDOM%.har"
++set "URL=%~2"
++if "%URL%"=="" set "URL=https://chatgpt.com/?promo_campaign=plus-1-month-free"
++set "PYTHON=%~dp0.venv\Scripts\python.exe"
++set "MODE_ARGS="
++if /I "%OPLL_CAPTURE_HEADLESS%"=="1" set "MODE_ARGS=%MODE_ARGS% --headless"
++if defined OPLL_CAPTURE_DURATION set "MODE_ARGS=%MODE_ARGS% --duration %OPLL_CAPTURE_DURATION%"
++
++echo Starting manual HAR capture.
++echo URL: %URL%
++echo Output: %OUTPUT%
++echo Complete the flow in the Chrome window, then press Ctrl+C here to save.
++
++if defined OPLL_CAPTURE_SOCKS5 (
++  "%PYTHON%" tools\har_capture.py --url "%URL%" --socks5-proxy-env OPLL_CAPTURE_SOCKS5 %MODE_ARGS% --output "%OUTPUT%"
++) else (
++  "%PYTHON%" tools\har_capture.py --url "%URL%" %MODE_ARGS% --output "%OUTPUT%"
++)
++set "EXIT_CODE=%ERRORLEVEL%"
++echo Capture exit status: %EXIT_CODE%
++if not defined HAR_TOOLS_NO_PAUSE pause
++exit /b %EXIT_CODE%
+diff --git a/HAR_ANALYZE.bat b/HAR_ANALYZE.bat
+new file mode 100644
+index 0000000..115646b
+--- /dev/null
++++ b/HAR_ANALYZE.bat
+@@ -0,0 +1,35 @@
++@echo off
++setlocal EnableExtensions
++chcp 65001 >nul
++cd /d "%~dp0"
++
++if not exist ".venv\Scripts\python.exe" (
++  echo Please run INSTALL_AND_START.bat first.
++  pause
++  exit /b 1
++)
++
++set "INPUT=%~1"
++if "%INPUT%"=="" set /p "INPUT=Enter HAR path: "
++if "%INPUT%"=="" (
++  echo HAR path is required.
++  pause
++  exit /b 2
++)
++if not exist "%INPUT%" (
++  echo HAR file not found: %INPUT%
++  pause
++  exit /b 2
++)
++
++set "OUTPUT=%~2"
++if "%OUTPUT%"=="" for %%I in ("%INPUT%") do set "OUTPUT=%%~dpnI.report.md"
++set "PYTHON=%~dp0.venv\Scripts\python.exe"
++
++echo Parsing: %INPUT%
++echo Report: %OUTPUT%
++"%PYTHON%" tools\har_analyze.py "%INPUT%" --format markdown --output "%OUTPUT%"
++set "EXIT_CODE=%ERRORLEVEL%"
++echo Parser exit status: %EXIT_CODE%
++if not defined HAR_TOOLS_NO_PAUSE pause
++exit /b %EXIT_CODE%

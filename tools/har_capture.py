@@ -217,6 +217,13 @@ class HARRecorder:
                 state["base64Encoded"] = encoded
                 self._finish(state, timestamp=params.get("timestamp"))
 
+    def flush_pending(self) -> None:
+        """Materialize requests still in flight when capture stops."""
+        pending = list(self.states.values())
+        self.states.clear()
+        for state in pending:
+            self._finish(state)
+
     def _finish(self, state: dict[str, Any], *, response: dict[str, Any] | None = None, timestamp: Any = None) -> None:
         request = state.get("request") if isinstance(state.get("request"), dict) else {}
         response = response or (state.get("response") if isinstance(state.get("response"), dict) else {})
@@ -227,16 +234,44 @@ class HARRecorder:
         except (TypeError, ValueError):
             duration = 0.0
         body = str(state.get("body") or "")
-        if len(body.encode("utf-8", errors="replace")) > self.max_body_bytes:
+        original_body = body
+        truncated = False
+        is_base64 = bool(state.get("base64Encoded"))
+        if is_base64:
+            try:
+                raw_body = base64.b64decode(original_body, validate=True)
+            except Exception:
+                is_base64 = False
+                raw_body = original_body.encode("utf-8", errors="replace")
+            if len(raw_body) > self.max_body_bytes:
+                raw_body = raw_body[: self.max_body_bytes]
+                truncated = True
+            body = base64.b64encode(raw_body).decode("ascii") if is_base64 else raw_body.decode("utf-8", errors="replace")
+        elif len(body.encode("utf-8", errors="replace")) > self.max_body_bytes:
             body = body.encode("utf-8", errors="replace")[: self.max_body_bytes].decode("utf-8", errors="replace")
+            truncated = True
+        request_body = request.get("postData")
+        if isinstance(request_body, dict):
+            request_body = request_body.get("text", "")
+        request_body = str(request_body or "")
+        request_headers = _header_list(request.get("headers"))
+        request_content_type = next(
+            (item.get("value", "") for item in request_headers if str(item.get("name", "")).lower() == "content-type"),
+            "",
+        )
+        content_size = len(body.encode("utf-8", errors="replace"))
+        if is_base64:
+            content_size = len(base64.b64decode(body, validate=True)) if body else 0
         content: dict[str, Any] = {
-            "size": len(body.encode("utf-8", errors="replace")),
+            "size": content_size,
             "mimeType": str(response.get("mimeType") or "application/octet-stream"),
         }
         if body:
             content["text"] = body
-            if state.get("base64Encoded"):
+            if is_base64:
                 content["encoding"] = "base64"
+        if truncated:
+            content["_captureTruncated"] = True
         response_headers = _header_list(response.get("headers"))
         location = next(
             (item.get("value", "") for item in response_headers if str(item.get("name", "")).lower() == "location"),
@@ -249,11 +284,11 @@ class HARRecorder:
                 "method": str(request.get("method") or "GET"),
                 "url": str(request.get("url") or ""),
                 "httpVersion": "HTTP/1.1",
-                "headers": _header_list(request.get("headers")),
+                "headers": request_headers,
                 "queryString": _query_list(str(request.get("url") or "")),
                 "cookies": [],
                 "headersSize": -1,
-                "bodySize": len(str(request.get("postData") or "").encode("utf-8")),
+                "bodySize": len(request_body.encode("utf-8")),
             },
             "response": {
                 "status": int(response.get("status", 0) or 0),
@@ -264,11 +299,16 @@ class HARRecorder:
                 "content": content,
                 "redirectURL": str(location) if int(response.get("status", 0) or 0) in {301, 302, 303, 307, 308} else "",
                 "headersSize": -1,
-                "bodySize": int(response.get("encodedDataLength", content["size"]) or content["size"]),
+                "bodySize": max(0, int(response.get("encodedDataLength", content["size"]) or content["size"])),
             },
             "cache": {},
             "timings": {"send": 0, "wait": round(duration, 2), "receive": 0},
         }
+        if request_body:
+            entry["request"]["postData"] = {
+                "mimeType": request_content_type,
+                "text": request_body,
+            }
         if state.get("error"):
             entry["_error"] = state["error"]
         self.entries.append(entry)
@@ -321,27 +361,37 @@ def _read_until_headers(sock: socket.socket, *, limit: int = 65536) -> bytes:
     return bytes(data)
 
 
+def _recv_exact_socket(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        part = sock.recv(size - len(data))
+        if not part:
+            raise RuntimeError("SOCKS5 connection closed during handshake")
+        data.extend(part)
+    return bytes(data)
+
+
 def _socks5_connect(sock: socket.socket, host: str, port: int, username: str, password: str) -> None:
     if username:
         sock.sendall(b"\x05\x01\x02")
-        if sock.recv(2) != b"\x05\x02":
+        if _recv_exact_socket(sock, 2) != b"\x05\x02":
             raise RuntimeError("SOCKS5 username/password authentication was rejected")
         user = username.encode("utf-8")
         secret = password.encode("utf-8")
         if len(user) > 255 or len(secret) > 255:
             raise ValueError("SOCKS5 credentials are too long")
         sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(secret)]) + secret)
-        if sock.recv(2) != b"\x01\x00":
+        if _recv_exact_socket(sock, 2) != b"\x01\x00":
             raise RuntimeError("SOCKS5 authentication failed")
     else:
         sock.sendall(b"\x05\x01\x00")
-        if sock.recv(2) != b"\x05\x00":
+        if _recv_exact_socket(sock, 2) != b"\x05\x00":
             raise RuntimeError("SOCKS5 no-authentication mode was rejected")
     encoded_host = host.encode("idna")
     if len(encoded_host) > 255:
         raise ValueError("destination hostname is too long")
     sock.sendall(b"\x05\x01\x00\x03" + bytes([len(encoded_host)]) + encoded_host + struct.pack("!H", port))
-    reply = sock.recv(4)
+    reply = _recv_exact_socket(sock, 4)
     if len(reply) != 4 or reply[1] != 0:
         code = reply[1] if len(reply) > 1 else -1
         raise RuntimeError(f"SOCKS5 destination connection failed ({code})")
@@ -350,9 +400,7 @@ def _socks5_connect(sock: socket.socket, host: str, port: int, username: str, pa
     elif reply[3] == 4:
         address_size = 16
     elif reply[3] == 3:
-        length = sock.recv(1)
-        if not length:
-            raise RuntimeError("SOCKS5 reply omitted domain length")
+        length = _recv_exact_socket(sock, 1)
         address_size = length[0]
     else:
         raise RuntimeError("SOCKS5 reply has an unknown address type")
@@ -563,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 break
             recorder.handle(message)
+        recorder.flush_pending()
         har = recorder.as_har(title=args.url)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -572,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         if cdp:
+            recorder.flush_pending()  # type: ignore[name-defined]
             har = recorder.as_har(title=args.url)  # type: ignore[name-defined]
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")

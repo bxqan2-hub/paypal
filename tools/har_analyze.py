@@ -5,7 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from har_utils import analyze_har, markdown_report
+try:
+    from .har_utils import analyze_har, markdown_report
+except ImportError:  # direct ``python tools/har_analyze.py`` invocation
+    from har_utils import analyze_har, markdown_report
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import base64
 from pathlib import Path
 
 import pytest
 
-from tools.har_capture import Socks5HttpBridge
+from tools.har_capture import HARRecorder, Socks5HttpBridge
 from tools.har_utils import analyze_har, entry_summary, markdown_report
 
 
@@ -100,3 +101,42 @@ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
 def test_socks5_bridge_rejects_malformed_proxy() -> None:
     with pytest.raises(ValueError):
         Socks5HttpBridge("not-a-proxy")
+
+
+def test_capture_preserves_valid_base64_when_body_limit_truncates() -> None:
+    recorder = HARRecorder(object(), max_body_bytes=3)  # type: ignore[arg-type]
+    encoded = base64.b64encode(b"abcdef").decode("ascii")
+    recorder._finish(
+        {
+            "request_event": {"wallTime": 0, "timestamp": 1},
+            "request": {"method": "GET", "url": "https://example.com/file", "headers": {}},
+            "response": {"status": 200, "mimeType": "application/octet-stream", "headers": {}},
+            "body": encoded,
+            "base64Encoded": True,
+        },
+        timestamp=1.1,
+    )
+    content = recorder.entries[0]["response"]["content"]
+    assert content["encoding"] == "base64"
+    assert base64.b64decode(content["text"]) == b"abc"
+    assert content["size"] == 3
+    assert content["_captureTruncated"] is True
+
+
+def test_capture_flushes_in_flight_request_and_keeps_post_data() -> None:
+    recorder = HARRecorder(object())  # type: ignore[arg-type]
+    recorder.states["1"] = {
+        "request_event": {"wallTime": 0, "timestamp": 1},
+        "request": {
+            "method": "POST",
+            "url": "https://example.com/submit",
+            "headers": {"content-type": "application/json"},
+            "postData": '{"ok":true}',
+        },
+        "response": {"status": 0, "headers": {}},
+        "body": "",
+        "base64Encoded": False,
+    }
+    recorder.flush_pending()
+    assert len(recorder.entries) == 1
+    assert recorder.entries[0]["request"]["postData"]["text"] == '{"ok":true}'

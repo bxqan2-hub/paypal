@@ -1,0 +1,5 @@
+BASELINE_COMMIT=833d182
+CHANGED_BRANCH=HAR_CAPTURE.bat + tools/har_capture.py + tools/har_analyze.py + tests/test_har_tools.py + HAR_TOOLS.md
+ORIGINAL_SHA256_tools/har_capture.py=a744eab395294f0508b8e358bc998e7feaa0b44962d6deeb862ff5397bb2ade4
+MODIFIED_SHA256_tools/har_capture.py=0ef88432691b3de4e16300e7c6d38dccf72346017422af78cc27d85bb97c132a
+MODIFIED_FILE=tools/har_capture.py (working tree copy with edge-case fixes)

@@ -1,0 +1,63 @@
+HAR capture/parser hardening and one-click BAT verification
+
+CHANGED_BRANCH=HAR_CAPTURE.bat launch path + HAR_ANALYZE.bat launch path + tools/har_capture.py edge handling + tools/har_analyze.py direct/module import + tests/test_har_tools.py regression coverage
+BASELINE_COMMIT=833d182
+
+ORIGINAL_SHA256=tools/har_capture.py at baseline 833d182 (recorded in MODIFIED_FILE)
+MODIFIED_SHA256=tools/har_capture.py working copy (recorded in MODIFIED_FILE)
+
+BASELINE:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (executed in clean worktree at 833d182)
+LITERAL_OUTPUT: 127 passed in 1.33s
+EXIT_STATUS: 0
+
+MODIFIED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+LITERAL_OUTPUT: 129 passed in 1.18s
+EXIT_STATUS: 0
+
+TARGETED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_har_tools.py
+LITERAL_OUTPUT: 7 passed in 0.54s
+EXIT_STATUS: 0
+
+STATIC_AND_ENTRYPOINTS:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q tools payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT: (empty)
+EXIT_STATUS: 0
+COMMAND: git diff --check
+LITERAL_OUTPUT: (warnings only for LF/CRLF; no whitespace errors)
+EXIT_STATUS: 0
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m tools.har_analyze --help
+LITERAL_OUTPUT: help text displayed
+EXIT_STATUS: 0
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_analyze.py --help
+LITERAL_OUTPUT: help text displayed
+EXIT_STATUS: 0
+
+BAT_ANALYZE_SMOKE:
+COMMAND: cmd /c 'set HAR_TOOLS_NO_PAUSE=1&&HAR_ANALYZE.bat C:\Users\Administrator\Downloads\m.gcash.com111.har data\bat-report.md'
+LITERAL_OUTPUT: Parsing: C:\Users\Administrator\Downloads\m.gcash.com111.har; Report: data\bat-report.md; Parser exit status: 0; BAT_ANALYZE_EXIT=0
+EXIT_STATUS: 0
+
+BAT_CAPTURE_SMOKE:
+COMMAND: cmd /c 'set HAR_TOOLS_NO_PAUSE=1&&set OPLL_CAPTURE_HEADLESS=1&&set OPLL_CAPTURE_DURATION=1&&set OPLL_CAPTURE_SOCKS5=&&HAR_CAPTURE.bat data\bat-capture.har https://example.com'
+LITERAL_OUTPUT: CAPTURE_ENTRIES=1; CAPTURE_SHA256=E223D33E4C4AF585A6A657F566D7BF63F77F17D69CF0D9FAE15CBA2D748F105F; Capture exit status: 0; BAT_CAPTURE_EXIT=0
+EXIT_STATUS: 0
+
+HAR_PARSER_SAMPLE:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_analyze.py C:\Users\Administrator\Downloads\m.gcash.com111.har --format json --output data\temp-gcash-report.json
+LITERAL_OUTPUT: entry_count=160; selected_count=160; sha256=413FC910DEFA90E42084D35E31E87480EB1A637C501F59D8BFEB0EA995FD272B; observations.short_urls=https://m.gcash/s/cKXt49H; observations.notable_operations=13
+EXIT_STATUS: 0
+
+ROLLBACK:
+COMMAND: C:\Program Files\Git\bin\bash.exe artifacts\har-tools-bat-20260824\ROLLBACK.sh C:\Temp\har-tools-bat-rollback-check-20260824 833d182
+LITERAL_OUTPUT: ROLLBACK_RESTORED=C:\Temp\har-tools-bat-rollback-check-20260824@833d182; restored pytest output=127 passed in 1.17s; clean status
+EXIT_STATUS: 0
+
+RESTORED_BEHAVIOR: rollback copy returned to commit 833d182 and baseline test count; working tree remains modified on main.
+ARTIFACTS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-bat-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-bat-20260824\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-bat-20260824\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-bat-20260824\ROLLBACK.sh
