@@ -237,6 +237,7 @@ class HARRecorder:
                 state["finish"] = params
                 body = ""
                 encoded = False
+                self._fill_missing_request_body(state)
                 try:
                     result = self.command("Network.getResponseBody", {"requestId": request_id})
                     body = str(result.get("body") or "")
@@ -246,6 +247,24 @@ class HARRecorder:
                 state["body"] = body
                 state["base64Encoded"] = encoded
                 self._finish(state, timestamp=params.get("timestamp"))
+
+    def _fill_missing_request_body(self, state: dict[str, Any]) -> None:
+        """Ask CDP for POST data omitted from requestWillBeSent (seen in RoxyChrome)."""
+        request = state.get("request") if isinstance(state.get("request"), dict) else {}
+        method = str(request.get("method") or "").upper()
+        if method not in {"POST", "PUT", "PATCH"} or request.get("postData"):
+            return
+        request_id = str(state.get("request_id") or "")
+        if not request_id:
+            return
+        try:
+            result = self.command("Network.getRequestPostData", {"requestId": request_id})
+            post_data = result.get("postData") if isinstance(result, dict) else None
+            if post_data:
+                request["postData"] = str(post_data)
+        except Exception:
+            # Chrome legitimately returns an error for bodyless POSTs or after a redirect.
+            return
 
     def flush_pending(self) -> None:
         """Materialize requests still in flight when capture stops."""

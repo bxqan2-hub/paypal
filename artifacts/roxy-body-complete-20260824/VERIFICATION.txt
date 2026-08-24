@@ -1,0 +1,55 @@
+RoxyBrowser complete request-body capture verification
+
+CHANGED_BRANCH=CDP Network.getRequestPostData fallback for POST/PUT/PATCH bodies omitted by requestWillBeSent + regression test
+BASELINE_COMMIT=513257a
+
+ORIGINAL_SHA256=tools/har_capture.py at baseline 513257a (recorded in MODIFIED_FILE)
+MODIFIED_SHA256=tools/har_capture.py working copy (recorded in MODIFIED_FILE)
+
+INPUT_HAR_CHECK:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_analyze.py C:\Users\Administrator\Desktop\提链\data\captures\roxy-15247-29016.har --format json --output data\roxy-15247-29016.report.json
+LITERAL_OUTPUT: entry_count=135; selected_count=135; sha256=E7DF7F3895737101477211C34E1DA2964B2D0A1E696A479E74A7ED074F7B5596; notable_operations=12
+RESULT: valid HAR 1.2, attach-existing-roxy metadata, no _error fields, no missing responses; checkout/confirm and custom_payment_method/start responses are present, but their request bodySize was 0 in this already-captured file.
+EXIT_STATUS: 0
+
+BASELINE:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (clean worktree at 513257a)
+LITERAL_OUTPUT: 132 passed in 1.18s
+EXIT_STATUS: 0
+
+MODIFIED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+LITERAL_OUTPUT: 133 passed in 1.35s
+EXIT_STATUS: 0
+
+TARGETED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_har_tools.py tests/test_roxy_har_capture.py
+LITERAL_OUTPUT: 11 passed in 0.56s
+EXIT_STATUS: 0
+
+STATIC:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q tools payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT: (empty)
+EXIT_STATUS: 0
+COMMAND: git diff --check
+LITERAL_OUTPUT: (warnings only for LF/CRLF; no whitespace errors)
+EXIT_STATUS: 0
+
+BODY_RECOVERY_TEST:
+COMMAND: pytest test_capture_recovers_post_data_omitted_by_request_event
+LITERAL_OUTPUT: passed; Network.getRequestPostData fallback populated HAR request.postData
+EXIT_STATUS: 0
+
+ROLLBACK:
+COMMAND: C:\Program Files\Git\bin\bash.exe artifacts\roxy-body-complete-20260824\ROLLBACK.sh C:\Temp\roxy-body-complete-rollback-20260824 513257a
+LITERAL_OUTPUT: ROLLBACK_RESTORED=C:\Temp\roxy-body-complete-rollback-20260824@513257a; modified pytest=133 passed in 1.43s; restored pytest=132 passed in 1.18s; clean status
+EXIT_STATUS: 0
+
+RESTORED_BEHAVIOR: rollback copy returned to 513257a and baseline test count; main working tree remains on the modified branch.
+CAPTURE_BEHAVIOR: future Roxy captures query CDP Network.getRequestPostData for POST/PUT/PATCH events when requestWillBeSent omitted postData; bodyless POST errors are ignored so capture continues.
+
+ARTIFACTS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-body-complete-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-body-complete-20260824\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\roxy-body-complete-20260824\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\roxy-body-complete-20260824\ROLLBACK.sh

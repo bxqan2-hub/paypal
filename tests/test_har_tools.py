@@ -189,3 +189,39 @@ def test_capture_flushes_in_flight_request_and_keeps_post_data() -> None:
     recorder.flush_pending()
     assert len(recorder.entries) == 1
     assert recorder.entries[0]["request"]["postData"]["text"] == '{"ok":true}'
+
+
+def test_capture_recovers_post_data_omitted_by_request_event() -> None:
+    recorder = HARRecorder(object())  # type: ignore[arg-type]
+
+    def fake_command(method: str, params: dict | None = None) -> dict:
+        if method == "Network.getRequestPostData":
+            return {"postData": '{"checkout_session_id":"fixture"}'}
+        if method == "Network.getResponseBody":
+            return {"body": "{}", "base64Encoded": False}
+        return {}
+
+    recorder.command = fake_command  # type: ignore[method-assign]
+    recorder.handle(
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "r1",
+                "timestamp": 1,
+                "wallTime": 0,
+                "request": {
+                    "method": "POST",
+                    "url": "https://example.com/checkout",
+                    "headers": {"content-type": "application/json"},
+                },
+            },
+        }
+    )
+    recorder.handle(
+        {
+            "method": "Network.responseReceived",
+            "params": {"requestId": "r1", "response": {"status": 200, "headers": {}}},
+        }
+    )
+    recorder.handle({"method": "Network.loadingFinished", "params": {"requestId": "r1", "timestamp": 1.1}})
+    assert recorder.entries[0]["request"]["postData"]["text"] == '{"checkout_session_id":"fixture"}'
