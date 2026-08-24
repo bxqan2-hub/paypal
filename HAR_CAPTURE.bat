@@ -15,31 +15,31 @@ if "%OUTPUT%"=="" set "OUTPUT=data\captures\gcash-%RANDOM%-%RANDOM%.har"
 set "URL=%~2"
 if "%URL%"=="" set "URL=https://chatgpt.com/?promo_campaign=plus-1-month-free"
 set "PYTHON=%~dp0.venv\Scripts\python.exe"
-if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
-  set "PROXY_VALUE=%OPLL_CAPTURE_SOCKS5%"
-  set "PROXY_ARGS="
-) else (
-  echo Enter authenticated SOCKS5 proxy as HOST:PORT:USERNAME:PASSWORD.
-  set "PROXY_VALUE="
-  set /p "PROXY_VALUE=Proxy: "
-  set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
-)
-if defined PROXY_VALUE set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
-if not defined PROXY_VALUE if not "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
-  echo A proxy is required. Set OPLL_CAPTURE_SKIP_PROXY_PROMPT=1 only for a no-proxy smoke test.
-  if not defined HAR_TOOLS_NO_PAUSE pause
+if not defined OPLL_CAPTURE_PROXY_MAX_LATENCY_MS set "OPLL_CAPTURE_PROXY_MAX_LATENCY_MS=10000"
+if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" goto PROXY_READY
+
+:PROXY_PROMPT
+echo Enter authenticated SOCKS5 proxy as HOST:PORT:USERNAME:PASSWORD.
+set "PROXY_VALUE="
+set /p "PROXY_VALUE=Proxy: "
+if not defined PROXY_VALUE (
+  echo A proxy is required; capture stopped.
   exit /b 2
 )
 set "OPLL_CAPTURE_SOCKS5=%PROXY_VALUE%"
-if defined PROXY_VALUE (
-  echo Checking proxy connectivity before opening Chrome...
-  "%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
-  if errorlevel 1 (
-    echo Proxy check failed; Chrome was not started.
-    if not defined HAR_TOOLS_NO_PAUSE pause
-    exit /b 2
-  )
-)
+echo Checking proxy connectivity and latency before opening Chrome...
+"%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5 --proxy-check-url "https://chatgpt.com/" --proxy-max-latency-ms %OPLL_CAPTURE_PROXY_MAX_LATENCY_MS%
+if not errorlevel 1 goto PROXY_READY
+echo Proxy check failed or is too slow. Chrome was not started.
+set "RETRY="
+set /p "RETRY=Type R to enter another proxy, or Q to quit: "
+if /I "%RETRY%"=="R" goto PROXY_PROMPT
+if /I "%RETRY%"=="Q" exit /b 2
+exit /b 2
+
+:PROXY_READY
+if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" set "PROXY_ARGS="
+if defined OPLL_CAPTURE_SOCKS5 set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
 if /I "%OPLL_CAPTURE_REUSE_PROFILE%"=="1" (
   set "PROFILE=data\har-capture-profile\default"
 ) else (

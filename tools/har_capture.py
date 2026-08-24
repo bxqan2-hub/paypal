@@ -419,6 +419,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
         assert isinstance(server, _Socks5BridgeServer)
         client = self.request
         client.settimeout(20)
+        client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         upstream: socket.socket | None = None
         try:
             header = _read_until_headers(client)
@@ -432,6 +434,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
                 host, port_text = parts[1], "443"
             upstream = socket.create_connection((server.proxy_host, server.proxy_port), timeout=20)
             upstream.settimeout(20)
+            upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            upstream.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             _socks5_connect(upstream, host.strip("[]"), int(port_text), server.proxy_user, server.proxy_password)
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             client.settimeout(None)
@@ -458,6 +462,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
 class _Socks5BridgeServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    block_on_close = False
+    request_queue_size = 128
 
     def __init__(self, address: tuple[str, int], proxy_host: str, proxy_port: int, proxy_user: str, proxy_password: str) -> None:
         self.proxy_host = proxy_host
@@ -521,18 +527,20 @@ class Socks5HttpBridge:
         self.thread.join(timeout=2)
 
 
-def check_socks5_proxy(value: str, url: str = "https://example.com/") -> tuple[bool, str]:
+def check_socks5_proxy(value: str, url: str = "https://example.com/", *, timeout: float = 15) -> tuple[bool, str, int]:
     """Validate an authenticated SOCKS5 entry through the same bridge Chrome uses."""
     bridge = Socks5HttpBridge(value)
+    started = time.perf_counter()
     try:
         opener = build_opener(ProxyHandler({"http": bridge.proxy_server, "https": bridge.proxy_server}))
         request = Request(url, headers={"User-Agent": "opll-har-proxy-check/1.0"})
-        with opener.open(request, timeout=20) as response:
+        with opener.open(request, timeout=timeout) as response:
             response.read(64)
             status = getattr(response, "status", None)
             if status is None:
                 status = response.getcode()
-            return True, str(status)
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            return True, str(status), latency_ms
     finally:
         bridge.close()
 
@@ -563,6 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ignore-certificate-errors", action="store_true")
     parser.add_argument("--check-proxy", action="store_true", help="validate the SOCKS5 proxy and exit without opening Chrome")
     parser.add_argument("--proxy-check-url", default="https://example.com/", help="URL used with --check-proxy")
+    parser.add_argument("--proxy-check-timeout", type=float, default=15, help="proxy check timeout in seconds")
+    parser.add_argument("--proxy-max-latency-ms", type=int, default=0, help="fail proxy check above this latency; 0 disables the threshold")
     return parser
 
 
@@ -574,8 +584,19 @@ def main(argv: list[str] | None = None) -> int:
             print("PROXY_CHECK_ERROR=SOCKS5 proxy is required", file=sys.stderr)
             return 2
         try:
-            status_ok, status = check_socks5_proxy(socks5_value, args.proxy_check_url)
-            print(f"PROXY_CHECK=ok status={status}")
+            status_ok, status, latency_ms = check_socks5_proxy(
+                socks5_value,
+                args.proxy_check_url,
+                timeout=max(args.proxy_check_timeout, 1),
+            )
+            if args.proxy_max_latency_ms > 0 and latency_ms > args.proxy_max_latency_ms:
+                print(
+                    f"PROXY_CHECK_ERROR=latency {latency_ms}ms exceeds {args.proxy_max_latency_ms}ms "
+                    f"(status={status})",
+                    file=sys.stderr,
+                )
+                return 2
+            print(f"PROXY_CHECK=ok status={status} latency_ms={latency_ms}")
             return 0 if status_ok else 2
         except (OSError, ValueError, RuntimeError, TimeoutError, URLError) as exc:
             print(f"PROXY_CHECK_ERROR={exc}", file=sys.stderr)

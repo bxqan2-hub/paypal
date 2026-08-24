@@ -1,0 +1,5 @@
+BASELINE_COMMIT=4c4708a
+CHANGED_BRANCH=proxy latency validation + SOCKS bridge socket tuning + BAT retry flow + tools/har_capture.py check thresholds
+ORIGINAL_SHA256_tools/har_capture.py=52d5b8457eb9515d036796dba956e0ca3841201d8db8860dab1f8e2aa7fdfb5f
+MODIFIED_SHA256_tools/har_capture.py=b444a1c8ebdd1fd4108d8cb7c8d76157352b1ef5de7c39fd04866a753306ba87
+MODIFIED_FILE=tools/har_capture.py (working tree copy with latency-aware proxy validation)

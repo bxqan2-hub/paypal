@@ -1,0 +1,196 @@
+diff --git a/HAR_CAPTURE.bat b/HAR_CAPTURE.bat
+index 50b583a..bc4c9b4 100644
+--- a/HAR_CAPTURE.bat
++++ b/HAR_CAPTURE.bat
+@@ -15,31 +15,31 @@ if "%OUTPUT%"=="" set "OUTPUT=data\captures\gcash-%RANDOM%-%RANDOM%.har"
+ set "URL=%~2"
+ if "%URL%"=="" set "URL=https://chatgpt.com/?promo_campaign=plus-1-month-free"
+ set "PYTHON=%~dp0.venv\Scripts\python.exe"
+-if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
+-  set "PROXY_VALUE=%OPLL_CAPTURE_SOCKS5%"
+-  set "PROXY_ARGS="
+-) else (
+-  echo Enter authenticated SOCKS5 proxy as HOST:PORT:USERNAME:PASSWORD.
+-  set "PROXY_VALUE="
+-  set /p "PROXY_VALUE=Proxy: "
+-  set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
+-)
+-if defined PROXY_VALUE set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
+-if not defined PROXY_VALUE if not "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
+-  echo A proxy is required. Set OPLL_CAPTURE_SKIP_PROXY_PROMPT=1 only for a no-proxy smoke test.
+-  if not defined HAR_TOOLS_NO_PAUSE pause
++if not defined OPLL_CAPTURE_PROXY_MAX_LATENCY_MS set "OPLL_CAPTURE_PROXY_MAX_LATENCY_MS=10000"
++if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" goto PROXY_READY
++
++:PROXY_PROMPT
++echo Enter authenticated SOCKS5 proxy as HOST:PORT:USERNAME:PASSWORD.
++set "PROXY_VALUE="
++set /p "PROXY_VALUE=Proxy: "
++if not defined PROXY_VALUE (
++  echo A proxy is required; capture stopped.
+   exit /b 2
+ )
+ set "OPLL_CAPTURE_SOCKS5=%PROXY_VALUE%"
+-if defined PROXY_VALUE (
+-  echo Checking proxy connectivity before opening Chrome...
+-  "%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
+-  if errorlevel 1 (
+-    echo Proxy check failed; Chrome was not started.
+-    if not defined HAR_TOOLS_NO_PAUSE pause
+-    exit /b 2
+-  )
+-)
++echo Checking proxy connectivity and latency before opening Chrome...
++"%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5 --proxy-check-url "https://chatgpt.com/" --proxy-max-latency-ms %OPLL_CAPTURE_PROXY_MAX_LATENCY_MS%
++if not errorlevel 1 goto PROXY_READY
++echo Proxy check failed or is too slow. Chrome was not started.
++set "RETRY="
++set /p "RETRY=Type R to enter another proxy, or Q to quit: "
++if /I "%RETRY%"=="R" goto PROXY_PROMPT
++if /I "%RETRY%"=="Q" exit /b 2
++exit /b 2
++
++:PROXY_READY
++if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" set "PROXY_ARGS="
++if defined OPLL_CAPTURE_SOCKS5 set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
+ if /I "%OPLL_CAPTURE_REUSE_PROFILE%"=="1" (
+   set "PROFILE=data\har-capture-profile\default"
+ ) else (
+
+diff --git a/HAR_TOOLS.md b/HAR_TOOLS.md
+index 2de72cc..9979192 100644
+--- a/HAR_TOOLS.md
++++ b/HAR_TOOLS.md
+@@ -16,7 +16,7 @@ HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_ca
+ HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
+ ```
+ 
+-正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本只显示检查结果，不回显代理账号密码。也可以预先设置 `OPLL_CAPTURE_SOCKS5`，并设置 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
++正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本会通过 `chatgpt.com` 检查实际目标链路和延迟，默认超过 10000ms 就要求重新输入代理，不回显代理账号密码。也可以通过 `OPLL_CAPTURE_PROXY_MAX_LATENCY_MS` 调整阈值，或设置 `OPLL_CAPTURE_SOCKS5` 与 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
+ 每次 BAT 启动默认使用新的 `data\har-capture-profile\run-随机值` 配置目录，因此 Cookie、Local Storage 和会话状态是新的；Chrome/Edge 可执行文件版本、User-Agent 等浏览器本身属性仍保持本机版本。设置 `OPLL_CAPTURE_REUSE_PROFILE=1` 才会复用 `data\har-capture-profile\default`。
+ 自动化 smoke test 可额外设置 `OPLL_CAPTURE_HEADLESS=1` 和 `OPLL_CAPTURE_DURATION=10`；手动抓包时不设置这两个变量。
+ 
+@@ -51,13 +51,15 @@ CAPTURE_SHA256=...
+ 
+ ### 代理启动
+ 
+-一键 BAT 已经包含代理连通性检查。底层命令也可单独检查代理，不会启动 Chrome：
++一键 BAT 已经包含代理连通性和延迟检查。底层命令也可单独检查代理，不会启动 Chrome：
+ 
+ ```powershell
+ $env:OPLL_CAPTURE_SOCKS5 = 'HOST:PORT:USERNAME:PASSWORD'
+ .\.venv\Scripts\python.exe tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
+ ```
+ 
++检查结果会输出 `status` 和 `latency_ms`；代理握手、TLS 或目标站点连接失败时会返回非零状态。
++
+ Chrome 的 `--proxy-server` 参数使用无认证代理地址：
+ 
+ ```powershell
+
+diff --git a/tests/test_har_tools.py b/tests/test_har_tools.py
+index ecb4cec..805a573 100644
+--- a/tests/test_har_tools.py
++++ b/tests/test_har_tools.py
+@@ -128,12 +128,12 @@ def test_proxy_check_uses_the_same_local_http_bridge(monkeypatch: pytest.MonkeyP
+ 
+     class FakeOpener:
+         def open(self, request: object, timeout: int) -> FakeResponse:
+-            assert timeout == 20
++            assert timeout == 15
+             return FakeResponse()
+ 
+     monkeypatch.setattr("tools.har_capture.Socks5HttpBridge", FakeBridge)
+     monkeypatch.setattr("tools.har_capture.build_opener", lambda *_: FakeOpener())
+-    assert check_socks5_proxy("proxy.example:1080:user:pass") == (True, "204")
++    assert check_socks5_proxy("proxy.example:1080:user:pass") == (True, "204", 0)
+ 
+ 
+ def test_capture_preserves_valid_base64_when_body_limit_truncates() -> None:
+
+diff --git a/tools/har_capture.py b/tools/har_capture.py
+index 43c81a3..b1c86a5 100644
+--- a/tools/har_capture.py
++++ b/tools/har_capture.py
+@@ -419,6 +419,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
+         assert isinstance(server, _Socks5BridgeServer)
+         client = self.request
+         client.settimeout(20)
++        client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++        client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+         upstream: socket.socket | None = None
+         try:
+             header = _read_until_headers(client)
+@@ -432,6 +434,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
+                 host, port_text = parts[1], "443"
+             upstream = socket.create_connection((server.proxy_host, server.proxy_port), timeout=20)
+             upstream.settimeout(20)
++            upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++            upstream.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+             _socks5_connect(upstream, host.strip("[]"), int(port_text), server.proxy_user, server.proxy_password)
+             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+             client.settimeout(None)
+@@ -458,6 +462,8 @@ class _Socks5BridgeHandler(socketserver.BaseRequestHandler):
+ class _Socks5BridgeServer(socketserver.ThreadingTCPServer):
+     allow_reuse_address = True
+     daemon_threads = True
++    block_on_close = False
++    request_queue_size = 128
+ 
+     def __init__(self, address: tuple[str, int], proxy_host: str, proxy_port: int, proxy_user: str, proxy_password: str) -> None:
+         self.proxy_host = proxy_host
+@@ -521,18 +527,20 @@ class Socks5HttpBridge:
+         self.thread.join(timeout=2)
+ 
+ 
+-def check_socks5_proxy(value: str, url: str = "https://example.com/") -> tuple[bool, str]:
++def check_socks5_proxy(value: str, url: str = "https://example.com/", *, timeout: float = 15) -> tuple[bool, str, int]:
+     """Validate an authenticated SOCKS5 entry through the same bridge Chrome uses."""
+     bridge = Socks5HttpBridge(value)
++    started = time.perf_counter()
+     try:
+         opener = build_opener(ProxyHandler({"http": bridge.proxy_server, "https": bridge.proxy_server}))
+         request = Request(url, headers={"User-Agent": "opll-har-proxy-check/1.0"})
+-        with opener.open(request, timeout=20) as response:
++        with opener.open(request, timeout=timeout) as response:
+             response.read(64)
+             status = getattr(response, "status", None)
+             if status is None:
+                 status = response.getcode()
+-            return True, str(status)
++            latency_ms = round((time.perf_counter() - started) * 1000)
++            return True, str(status), latency_ms
+     finally:
+         bridge.close()
+ 
+@@ -563,6 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
+     parser.add_argument("--ignore-certificate-errors", action="store_true")
+     parser.add_argument("--check-proxy", action="store_true", help="validate the SOCKS5 proxy and exit without opening Chrome")
+     parser.add_argument("--proxy-check-url", default="https://example.com/", help="URL used with --check-proxy")
++    parser.add_argument("--proxy-check-timeout", type=float, default=15, help="proxy check timeout in seconds")
++    parser.add_argument("--proxy-max-latency-ms", type=int, default=0, help="fail proxy check above this latency; 0 disables the threshold")
+     return parser
+ 
+ 
+@@ -574,8 +584,19 @@ def main(argv: list[str] | None = None) -> int:
+             print("PROXY_CHECK_ERROR=SOCKS5 proxy is required", file=sys.stderr)
+             return 2
+         try:
+-            status_ok, status = check_socks5_proxy(socks5_value, args.proxy_check_url)
+-            print(f"PROXY_CHECK=ok status={status}")
++            status_ok, status, latency_ms = check_socks5_proxy(
++                socks5_value,
++                args.proxy_check_url,
++                timeout=max(args.proxy_check_timeout, 1),
++            )
++            if args.proxy_max_latency_ms > 0 and latency_ms > args.proxy_max_latency_ms:
++                print(
++                    f"PROXY_CHECK_ERROR=latency {latency_ms}ms exceeds {args.proxy_max_latency_ms}ms "
++                    f"(status={status})",
++                    file=sys.stderr,
++                )
++                return 2
++            print(f"PROXY_CHECK=ok status={status} latency_ms={latency_ms}")
+             return 0 if status_ok else 2
+         except (OSError, ValueError, RuntimeError, TimeoutError, URLError) as exc:
+             print(f"PROXY_CHECK_ERROR={exc}", file=sys.stderr)

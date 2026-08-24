@@ -16,7 +16,7 @@ HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_ca
 HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
 ```
 
-正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本只显示检查结果，不回显代理账号密码。也可以预先设置 `OPLL_CAPTURE_SOCKS5`，并设置 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
+正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本会通过 `chatgpt.com` 检查实际目标链路和延迟，默认超过 10000ms 就要求重新输入代理，不回显代理账号密码。也可以通过 `OPLL_CAPTURE_PROXY_MAX_LATENCY_MS` 调整阈值，或设置 `OPLL_CAPTURE_SOCKS5` 与 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
 每次 BAT 启动默认使用新的 `data\har-capture-profile\run-随机值` 配置目录，因此 Cookie、Local Storage 和会话状态是新的；Chrome/Edge 可执行文件版本、User-Agent 等浏览器本身属性仍保持本机版本。设置 `OPLL_CAPTURE_REUSE_PROFILE=1` 才会复用 `data\har-capture-profile\default`。
 自动化 smoke test 可额外设置 `OPLL_CAPTURE_HEADLESS=1` 和 `OPLL_CAPTURE_DURATION=10`；手动抓包时不设置这两个变量。
 
@@ -51,12 +51,14 @@ CAPTURE_SHA256=...
 
 ### 代理启动
 
-一键 BAT 已经包含代理连通性检查。底层命令也可单独检查代理，不会启动 Chrome：
+一键 BAT 已经包含代理连通性和延迟检查。底层命令也可单独检查代理，不会启动 Chrome：
 
 ```powershell
 $env:OPLL_CAPTURE_SOCKS5 = 'HOST:PORT:USERNAME:PASSWORD'
 .\.venv\Scripts\python.exe tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
 ```
+
+检查结果会输出 `status` 和 `latency_ms`；代理握手、TLS 或目标站点连接失败时会返回非零状态。
 
 Chrome 的 `--proxy-server` 参数使用无认证代理地址：
 

@@ -128,12 +128,12 @@ def test_proxy_check_uses_the_same_local_http_bridge(monkeypatch: pytest.MonkeyP
 
     class FakeOpener:
         def open(self, request: object, timeout: int) -> FakeResponse:
-            assert timeout == 20
+            assert timeout == 15
             return FakeResponse()
 
     monkeypatch.setattr("tools.har_capture.Socks5HttpBridge", FakeBridge)
     monkeypatch.setattr("tools.har_capture.build_opener", lambda *_: FakeOpener())
-    assert check_socks5_proxy("proxy.example:1080:user:pass") == (True, "204")
+    assert check_socks5_proxy("proxy.example:1080:user:pass") == (True, "204", 0)
 
 
 def test_capture_preserves_valid_base64_when_body_limit_truncates() -> None:
