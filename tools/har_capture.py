@@ -18,7 +18,8 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.error import URLError
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 
 class CDPWebSocket:
@@ -520,6 +521,22 @@ class Socks5HttpBridge:
         self.thread.join(timeout=2)
 
 
+def check_socks5_proxy(value: str, url: str = "https://example.com/") -> tuple[bool, str]:
+    """Validate an authenticated SOCKS5 entry through the same bridge Chrome uses."""
+    bridge = Socks5HttpBridge(value)
+    try:
+        opener = build_opener(ProxyHandler({"http": bridge.proxy_server, "https": bridge.proxy_server}))
+        request = Request(url, headers={"User-Agent": "opll-har-proxy-check/1.0"})
+        with opener.open(request, timeout=20) as response:
+            response.read(64)
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()
+            return True, str(status)
+    finally:
+        bridge.close()
+
+
 def _wait_json(port: int, path: str, timeout: float) -> Any:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -534,7 +551,7 @@ def _wait_json(port: int, path: str, timeout: float) -> Any:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Capture a manual Chrome/Edge session as HAR 1.2 through CDP.")
     parser.add_argument("--url", default="https://chatgpt.com/", help="first page opened in the capture browser")
-    parser.add_argument("--output", "-o", type=Path, required=True, help="HAR output path")
+    parser.add_argument("--output", "-o", type=Path, help="HAR output path")
     parser.add_argument("--browser", default="", help="Chrome or Edge executable")
     parser.add_argument("--user-data-dir", type=Path, default=Path("data/har-capture-profile"), help="persistent browser profile")
     parser.add_argument("--proxy-server", default="", help="Chrome proxy-server value, e.g. http://127.0.0.1:8080")
@@ -544,13 +561,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-body-bytes", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--headless", action="store_true", help="run headless; manual entry normally uses the visible window")
     parser.add_argument("--ignore-certificate-errors", action="store_true")
+    parser.add_argument("--check-proxy", action="store_true", help="validate the SOCKS5 proxy and exit without opening Chrome")
+    parser.add_argument("--proxy-check-url", default="https://example.com/", help="URL used with --check-proxy")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    browser = _find_browser(args.browser)
     socks5_value = args.socks5_proxy or (os.getenv(args.socks5_proxy_env, "") if args.socks5_proxy_env else "")
+    if args.check_proxy:
+        if not socks5_value:
+            print("PROXY_CHECK_ERROR=SOCKS5 proxy is required", file=sys.stderr)
+            return 2
+        try:
+            status_ok, status = check_socks5_proxy(socks5_value, args.proxy_check_url)
+            print(f"PROXY_CHECK=ok status={status}")
+            return 0 if status_ok else 2
+        except (OSError, ValueError, RuntimeError, TimeoutError, URLError) as exc:
+            print(f"PROXY_CHECK_ERROR={exc}", file=sys.stderr)
+            return 2
+    if args.output is None:
+        print("CAPTURE_ERROR=--output/-o is required unless --check-proxy is used", file=sys.stderr)
+        return 2
+    browser = _find_browser(args.browser)
     if args.proxy_server and socks5_value:
         print("CAPTURE_ERROR=use either --proxy-server or --socks5-proxy", file=sys.stderr)
         return 2

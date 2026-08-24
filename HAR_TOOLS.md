@@ -4,7 +4,7 @@
 
 ## 0. 一键 BAT
 
-直接双击根目录的 `HAR_CAPTURE.bat` 即可启动手动抓包；默认保存到 `data\captures`。也可以在命令行传入输出路径和起始 URL：
+直接双击根目录的 `HAR_CAPTURE.bat` 即可启动手动抓包；脚本会先要求手动输入认证 SOCKS5 代理，连通性检查通过后才启动独立 Chrome，默认保存到 `data\captures`。也可以在命令行传入输出路径和起始 URL：
 
 ```cmd
 HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_campaign=plus-1-month-free"
@@ -16,7 +16,8 @@ HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_ca
 HAR_ANALYZE.bat "data\captures\gcash-success.har" "data\captures\gcash-success.report.md"
 ```
 
-如果已经设置 `OPLL_CAPTURE_SOCKS5=HOST:PORT:USERNAME:PASSWORD`，`HAR_CAPTURE.bat` 会自动启用认证 SOCKS5 临时桥接。
+正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本只显示检查结果，不回显代理账号密码。也可以预先设置 `OPLL_CAPTURE_SOCKS5`，并设置 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
+每次 BAT 启动默认使用新的 `data\har-capture-profile\run-随机值` 配置目录，因此 Cookie、Local Storage 和会话状态是新的；Chrome/Edge 可执行文件版本、User-Agent 等浏览器本身属性仍保持本机版本。设置 `OPLL_CAPTURE_REUSE_PROFILE=1` 才会复用 `data\har-capture-profile\default`。
 自动化 smoke test 可额外设置 `OPLL_CAPTURE_HEADLESS=1` 和 `OPLL_CAPTURE_DURATION=10`；手动抓包时不设置这两个变量。
 
 ## 1. 启动手动抓包
@@ -49,6 +50,13 @@ CAPTURE_SHA256=...
 ```
 
 ### 代理启动
+
+一键 BAT 已经包含代理连通性检查。底层命令也可单独检查代理，不会启动 Chrome：
+
+```powershell
+$env:OPLL_CAPTURE_SOCKS5 = 'HOST:PORT:USERNAME:PASSWORD'
+.\.venv\Scripts\python.exe tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
+```
 
 Chrome 的 `--proxy-server` 参数使用无认证代理地址：
 

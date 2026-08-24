@@ -15,6 +15,36 @@ if "%OUTPUT%"=="" set "OUTPUT=data\captures\gcash-%RANDOM%-%RANDOM%.har"
 set "URL=%~2"
 if "%URL%"=="" set "URL=https://chatgpt.com/?promo_campaign=plus-1-month-free"
 set "PYTHON=%~dp0.venv\Scripts\python.exe"
+if /I "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
+  set "PROXY_VALUE=%OPLL_CAPTURE_SOCKS5%"
+  set "PROXY_ARGS="
+) else (
+  echo Enter authenticated SOCKS5 proxy as HOST:PORT:USERNAME:PASSWORD.
+  set "PROXY_VALUE="
+  set /p "PROXY_VALUE=Proxy: "
+  set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
+)
+if defined PROXY_VALUE set "PROXY_ARGS=--socks5-proxy-env OPLL_CAPTURE_SOCKS5"
+if not defined PROXY_VALUE if not "%OPLL_CAPTURE_SKIP_PROXY_PROMPT%"=="1" (
+  echo A proxy is required. Set OPLL_CAPTURE_SKIP_PROXY_PROMPT=1 only for a no-proxy smoke test.
+  if not defined HAR_TOOLS_NO_PAUSE pause
+  exit /b 2
+)
+set "OPLL_CAPTURE_SOCKS5=%PROXY_VALUE%"
+if defined PROXY_VALUE (
+  echo Checking proxy connectivity before opening Chrome...
+  "%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5
+  if errorlevel 1 (
+    echo Proxy check failed; Chrome was not started.
+    if not defined HAR_TOOLS_NO_PAUSE pause
+    exit /b 2
+  )
+)
+if /I "%OPLL_CAPTURE_REUSE_PROFILE%"=="1" (
+  set "PROFILE=data\har-capture-profile\default"
+) else (
+set "PROFILE=data\har-capture-profile\run-%RANDOM%-%RANDOM%"
+)
 set "MODE_ARGS="
 if /I "%OPLL_CAPTURE_HEADLESS%"=="1" set "MODE_ARGS=%MODE_ARGS% --headless"
 if defined OPLL_CAPTURE_DURATION set "MODE_ARGS=%MODE_ARGS% --duration %OPLL_CAPTURE_DURATION%"
@@ -22,13 +52,10 @@ if defined OPLL_CAPTURE_DURATION set "MODE_ARGS=%MODE_ARGS% --duration %OPLL_CAP
 echo Starting manual HAR capture.
 echo URL: %URL%
 echo Output: %OUTPUT%
+echo Profile: %PROFILE%
 echo Complete the flow in the Chrome window, then press Ctrl+C here to save.
 
-if defined OPLL_CAPTURE_SOCKS5 (
-  "%PYTHON%" tools\har_capture.py --url "%URL%" --socks5-proxy-env OPLL_CAPTURE_SOCKS5 %MODE_ARGS% --output "%OUTPUT%"
-) else (
-  "%PYTHON%" tools\har_capture.py --url "%URL%" %MODE_ARGS% --output "%OUTPUT%"
-)
+"%PYTHON%" tools\har_capture.py --url "%URL%" %PROXY_ARGS% --user-data-dir "%PROFILE%" %MODE_ARGS% --output "%OUTPUT%"
 set "EXIT_CODE=%ERRORLEVEL%"
 echo Capture exit status: %EXIT_CODE%
 if not defined HAR_TOOLS_NO_PAUSE pause

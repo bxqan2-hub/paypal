@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.har_capture import HARRecorder, Socks5HttpBridge
+from tools.har_capture import HARRecorder, Socks5HttpBridge, check_socks5_proxy
 from tools.har_utils import analyze_har, entry_summary, markdown_report
 
 
@@ -101,6 +101,39 @@ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
 def test_socks5_bridge_rejects_malformed_proxy() -> None:
     with pytest.raises(ValueError):
         Socks5HttpBridge("not-a-proxy")
+
+
+def test_proxy_check_uses_the_same_local_http_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeBridge:
+        proxy_server = "http://127.0.0.1:4567"
+
+        def __init__(self, value: str) -> None:
+            assert value == "proxy.example:1080:user:pass"
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeResponse:
+        status = 204
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self, _: int) -> bytes:
+            return b""
+
+    class FakeOpener:
+        def open(self, request: object, timeout: int) -> FakeResponse:
+            assert timeout == 20
+            return FakeResponse()
+
+    monkeypatch.setattr("tools.har_capture.Socks5HttpBridge", FakeBridge)
+    monkeypatch.setattr("tools.har_capture.build_opener", lambda *_: FakeOpener())
+    assert check_socks5_proxy("proxy.example:1080:user:pass") == (True, "204")
 
 
 def test_capture_preserves_valid_base64_when_body_limit_truncates() -> None:

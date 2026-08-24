@@ -1,0 +1,5 @@
+BASELINE_COMMIT=dde0c81
+CHANGED_BRANCH=HAR_CAPTURE.bat proxy prompt/check + per-run Chrome profile + tools/har_capture.py --check-proxy + HAR_TOOLS.md + tests/test_har_tools.py
+ORIGINAL_SHA256_tools/har_capture.py=0ef88432691b3de4e16300e7c6d38dccf72346017422af78cc27d85bb97c132a
+MODIFIED_SHA256_tools/har_capture.py=52d5b8457eb9515d036796dba956e0ca3841201d8db8860dab1f8e2aa7fdfb5f
+MODIFIED_FILE=tools/har_capture.py (working tree copy with proxy validation and profile controls)

@@ -1,0 +1,56 @@
+HAR proxy prompt/check and independent Chrome profile verification
+
+CHANGED_BRANCH=HAR_CAPTURE.bat proxy prompt/check + per-run profile + tools/har_capture.py --check-proxy + HAR_TOOLS.md + tests/test_har_tools.py
+BASELINE_COMMIT=dde0c81
+
+ORIGINAL_SHA256=tools/har_capture.py at baseline dde0c81 (recorded in MODIFIED_FILE)
+MODIFIED_SHA256=tools/har_capture.py working copy (recorded in MODIFIED_FILE)
+
+BASELINE:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (clean worktree at dde0c81)
+LITERAL_OUTPUT: 129 passed in 1.43s
+EXIT_STATUS: 0
+
+MODIFIED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+LITERAL_OUTPUT: 130 passed in 1.27s
+EXIT_STATUS: 0
+
+TARGETED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_har_tools.py
+LITERAL_OUTPUT: 8 passed in 0.56s
+EXIT_STATUS: 0
+
+STATIC:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q tools payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT: (empty)
+EXIT_STATUS: 0
+COMMAND: git diff --check
+LITERAL_OUTPUT: (warnings only for LF/CRLF; no whitespace errors)
+EXIT_STATUS: 0
+
+PROXY_CHECK_ENTRYPOINT:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_capture.py --check-proxy --socks5-proxy not-a-proxy
+LITERAL_OUTPUT: PROXY_CHECK_ERROR=--socks5-proxy must be socks5://host:port:user:password or a host:port:user:password entry
+EXIT_STATUS: 2 (expected validation failure)
+
+BAT_CAPTURE_SMOKE_WITHOUT_PROXY:
+COMMAND: cmd /c 'set HAR_TOOLS_NO_PAUSE=1&&set OPLL_CAPTURE_SKIP_PROXY_PROMPT=1&&set OPLL_CAPTURE_HEADLESS=1&&set OPLL_CAPTURE_DURATION=1&&set OPLL_CAPTURE_SOCKS5=&&HAR_CAPTURE.bat data\bat-capture.har https://example.com'
+LITERAL_OUTPUT: Profile=data\har-capture-profile\run-25635-12048; CAPTURE_ENTRIES=1; CAPTURE_SHA256=03DF42CEF7998A0FEDFC4F4F8E2A35956605271A7F2ED238442FF32792C053BB; Capture exit status: 0; BAT_CAPTURE_EXIT=0
+EXIT_STATUS: 0
+
+ROLLBACK:
+COMMAND: C:\Program Files\Git\bin\bash.exe artifacts\har-tools-proxy-profile-20260824\ROLLBACK.sh C:\Temp\har-tools-proxy-profile-rollback-20260824 dde0c81
+LITERAL_OUTPUT: ROLLBACK_RESTORED=C:\Temp\har-tools-proxy-profile-rollback-20260824@dde0c81; modified pytest=130 passed in 1.40s; restored pytest=129 passed in 1.20s; clean status
+EXIT_STATUS: 0
+
+RESTORED_BEHAVIOR: rollback copy returned to dde0c81 and baseline test count; main working tree remains on the modified branch.
+PROFILE_BEHAVIOR: BAT defaults to a new run-* user-data directory per launch; OPLL_CAPTURE_REUSE_PROFILE=1 selects the reusable default profile.
+PROXY_BEHAVIOR: manual BAT entry is checked before Chrome starts; failed validation exits without launching Chrome.
+
+ARTIFACTS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-proxy-profile-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-proxy-profile-20260824\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-proxy-profile-20260824\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\har-tools-proxy-profile-20260824\ROLLBACK.sh
+
