@@ -1,0 +1,41 @@
+diff --git a/artifacts/ui-panel-position-correction-20260825/MODIFIED_FILE b/artifacts/ui-panel-position-correction-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..e36e742
+--- /dev/null
++++ b/artifacts/ui-panel-position-correction-20260825/MODIFIED_FILE
+@@ -0,0 +1,7 @@
++payment_link_extractor/web/static/styles.css
++
++Changed branch/field: workspace-grid column geometry. The prior compact pass
++reduced padding, but its .72fr/.1.28fr columns widened the left information
++panel. This correction restores the original panel proportions and only keeps
++the smaller 14px inter-panel gap, moving the two information regions outward
++without stretching either region.
+diff --git a/artifacts/ui-panel-position-correction-20260825/ROLLBACK.sh b/artifacts/ui-panel-position-correction-20260825/ROLLBACK.sh
+new file mode 100755
+index 0000000..8ed9f13
+--- /dev/null
++++ b/artifacts/ui-panel-position-correction-20260825/ROLLBACK.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++TARGET="${1:?usage: ROLLBACK.sh <git-worktree> }"
++BASELINE="6e6f2471637ee5e40a23cc463b70793f6006987c"
++git -C "$TARGET" reset --hard "$BASELINE"
++git -C "$TARGET" clean -fd
++test "$(git -C "$TARGET" rev-parse HEAD)" = "$BASELINE"
++echo "ROLLBACK_OK target=$TARGET restored_commit=$BASELINE"
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index e807a48..0339d23 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -38,7 +38,7 @@ button { cursor: pointer; }
+ .auth-card > p:not(.eyebrow) { margin-bottom: 20px; color: #75808c; font-size: 13px; }
+ .auth-card .primary { width: 100%; margin-top: 16px; }
+ 
+-.workspace-grid { display: grid; grid-template-columns: minmax(380px, .72fr) minmax(0, 1.28fr); gap: 18px; align-items: start; }
++.workspace-grid { display: grid; grid-template-columns: minmax(330px, .78fr) minmax(0, 1.8fr); gap: 14px; align-items: start; }
+ 
+ .topbar, .panel-heading, .section-heading, .form-actions, .task-header, .task-footer, .result-row {
+   display: flex; align-items: center; justify-content: space-between; gap: 16px;

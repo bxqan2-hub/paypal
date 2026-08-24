@@ -1,0 +1,55 @@
+OBJECT: 本站工作台信息框位置修正
+BRANCH/FIELD: main / workspace-grid panel positions and inter-panel whitespace
+BASELINE_COMMIT: 6e6f2471637ee5e40a23cc463b70793f6006987c
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\web\static\styles.css
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-panel-position-correction-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-panel-position-correction-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-panel-position-correction-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at 6e6f2471637ee5e40a23cc463b70793f6006987c.
+BASELINE OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.25s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: restored original .78fr/1.8fr panel proportions and changed
+  only the inter-panel gap to 14px.
+MODIFIED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.30s
+
+CSS CHECK COMMAND (exit 0): git diff --check
+CSS CHECK OUTPUT: no whitespace errors.
+
+UI RESULT: the existing information panels are no longer widened by the
+  compact-layout correction. The left and right regions keep their original
+  relative widths, sit 14px apart instead of 18px, and retain the previously
+  reduced outer padding. This reduces the central blank gap by positioning the
+  regions closer together without stretching either information box.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\ui-panel-position-correction-20260825\ROLLBACK.sh" "C:\Temp\ui-panel-position-correction-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\ui-panel-position-correction-rollback-20260825 restored_commit=6e6f2471637ee5e40a23cc463b70793f6006987c
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests
+RESTORED INPUT: working directory C:\Temp\ui-panel-position-correction-rollback-20260825 after ROLLBACK.sh.
+RESTORED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.29s
+
+RESTORED STATUS: disposable worktree HEAD equals BASELINE_COMMIT and `git status --short --branch` is clean;
+  main retains the position correction and preserves the user's existing dirty
+  paypal_agreement_protocol/data/used_local_card_hashes.txt.

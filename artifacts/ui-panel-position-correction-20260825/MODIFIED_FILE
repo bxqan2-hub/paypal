@@ -1,0 +1,7 @@
+payment_link_extractor/web/static/styles.css
+
+Changed branch/field: workspace-grid column geometry. The prior compact pass
+reduced padding, but its .72fr/.1.28fr columns widened the left information
+panel. This correction restores the original panel proportions and only keeps
+the smaller 14px inter-panel gap, moving the two information regions outward
+without stretching either region.

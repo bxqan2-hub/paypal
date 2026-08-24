@@ -38,7 +38,7 @@ button { cursor: pointer; }
 .auth-card > p:not(.eyebrow) { margin-bottom: 20px; color: #75808c; font-size: 13px; }
 .auth-card .primary { width: 100%; margin-top: 16px; }
 
-.workspace-grid { display: grid; grid-template-columns: minmax(380px, .72fr) minmax(0, 1.28fr); gap: 18px; align-items: start; }
+.workspace-grid { display: grid; grid-template-columns: minmax(330px, .78fr) minmax(0, 1.8fr); gap: 14px; align-items: start; }
 
 .topbar, .panel-heading, .section-heading, .form-actions, .task-header, .task-footer, .result-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
