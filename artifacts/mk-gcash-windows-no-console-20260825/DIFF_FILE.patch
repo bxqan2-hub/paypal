@@ -1,3 +1,14 @@
+diff --git a/.gitattributes b/.gitattributes
+index bcbca78..8ff339b 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -7,3 +7,6 @@ artifacts/**/DIFF_FILE.patch -text -diff
+ /sentinel.py -text -diff
+ /sentinel_bridge.js -text -diff
+ /sentinel_assets/*.js -text -diff
++# Keep the vendored Sentinel launchers byte-stable for their SHA-256 manifest.
++/payment_link_extractor/mk_gcash_open_source/sentinel.py -text -diff
++/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js -text -diff
 diff --git a/MK_GCASH_UPSTREAM.md b/MK_GCASH_UPSTREAM.md
 index 126c109..3c9eb61 100644
 --- a/MK_GCASH_UPSTREAM.md
@@ -39,7 +50,7 @@ index 0000000..4af5d7b
 +
 +Root upstream copies sentinel.py and sentinel_bridge.js remain unchanged; only the vendored runtime files are patched.
 diff --git a/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh b/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
-new file mode 100644
+new file mode 100755
 index 0000000..512af23
 --- /dev/null
 +++ b/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
@@ -72,43 +83,234 @@ index 0fd5fc7..5278508 100644
      "tests/test_gcash_chain.py": "a9b58d8d815cdd2c80643f4af9ff15630a15cf004021f4b69d6df45de4130ca3",
      "tests/ui_check.js": "eaeb60c7c749102c2611144fe3a066d196e10b4147fe5fa788971ec24e4701b3",
 diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel.py b/payment_link_extractor/mk_gcash_open_source/sentinel.py
-index 1e26c00..b72c4ab 100644
---- a/payment_link_extractor/mk_gcash_open_source/sentinel.py
-+++ b/payment_link_extractor/mk_gcash_open_source/sentinel.py
-@@ -54,12 +54,17 @@ def mint_sentinel_sync(
-         separators=(",", ":"),
-     ).encode()
-     try:
-+        run_kwargs = {
-+            "input": payload,
-+            "capture_output": True,
-+            "timeout": timeout_s,
-+            "check": False,
-+        }
-+        if os.name == "nt":
-+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-         process = subprocess.run(
-             [_resolve_node_executable(), str(_BRIDGE_JS)],
--            input=payload,
--            capture_output=True,
--            timeout=timeout_s,
--            check=False,
-+            **run_kwargs,
-         )
-     except FileNotFoundError as exc:
-         raise RuntimeError("Sentinel 需要 Node.js") from exc
+index 1e26c005a4668c2a7bcb1be31eff1297e46192a7..b72c4abebc41e6f394f17239a97af065e49b47ad 100644
+GIT binary patch
+delta 1239
+zcmZ8hOHUI~6i#2Xopxe~h!nA2MguLj4Hz|~QUfXkVggDqEQn5q>1{hOojbX6herq@
+zu3ZS;7#Ff~;X)Vw0XO~w6F0_%#`qUZOmO45GquywCTGs$yXQNPJM%g7^TMIBCQGtp
+zG;Kl|+Hi=~Hi*+!orcQ{GcetCn-U#6fT&T@M7G8nrm>D%X&!(nvdTwnI3ypvoDw?x
+ztGI@^)H9ew#oNeXv@9Q;JPgVFeh6UP3=N)_CDifLiNy@d#WH^#DrSP1QA2nK>n_vQ
+zO<b1wk5D!&OZ-RAM9d@N6XAgaA3j#_pEZ+gmj!3buHr32$Es27bh-|vs#eDq>-0ja
+zJG-6(Rgj{z66l0tr;H4Xfp_9&%WK1F)um<`@lWB4(A0NN{tf3Y`E}@oY#LZ?V6BR2
+zXHq^L$pZdK<QmAsNI%H8k;PH}l&$TWM5_Xm*ifnJHf<;8hs3z{WIhnhW&?+CDqe+3
+z8F|lw%$K8=hfYDnQ~)6!0C*l90@nA@9LO(Gv6A0W1!R9r$jR7Mkb3OKtsu#Mt8KyO
+zU|XXaBh;znl!8(~N?FOb;`tJ`bW+7R{xs2d;9BbDwnpm?^t0EsaK*4}mqA6Xh6~+M
+zU9*`>u}WO#!&az^PhptR#1MxZElqV!ArABg);9q#r<qR2@%=U#+%MvkEUk%A1y*iB
+zwsuUkO4}W*DLTa(Gl*3)wYsA`hL-A>X^hdF(|$`}7I&9tXI5s_#U*uBT3Ecdv<d?n
+z&+~7wjr7=9kdMFX8HXuPCx-Y&T6z)BfRTw8LC(b=Mc{Jt<M{kJe*sXXMHupj0dK*d
+z_=0!zPRfrnx(nWCi7Vj!kPu6qPLy~oISN`KDON4)t>g%3$4Lb8qv!paoC3X1x(;$)
+znn?%i&dZ!j`LkX0P0g@?#;>@SpGf^(^qEv1()_0vUG?%;snH-uaE<wRx{v=#^>z>v
+hDx7D$Ynn&H74N3Xd^kOl^oz*1sV9NvO}Yr*fqzqDIcfj^
+
+delta 857
+zcmZ8eL2DC16ej7$B$MP&Y*Ug(ovfuz+9ae!TUi^SP}F)51anbj-R@4BZ8y8i?5s9u
+z4(iQIj1P*Q#2?_rqxcg<>`A@p&4b|8lRC58#OS~<Z{GX9?|pCP>+FZz6L}3Gv*S9H
+z;a$(Mhq2=gBd_f<(;D6UZI?Pa@w|bWiy}1W6$dZYMet<-5|L|gBT|I>k^D5mV@r2z
+zX4*c1SCQ)KsA9G-*(bWsv~7zhqqN{r!hC9vl@Yv;FK;4*4AR0K(`KqigeI|6uWRe2
+zfW24=j+W)zRj|iscs0l!QzxovggNL(rxybpA7sB9Byj`Fa){O)N<0Pg4m`QMT7ko8
+z1%5?OKw+YEKA`E2vu6^uO*Dhh|LM%^5Xa~46wGaCfyhd|R<FRriIprW<LU*>eAgm3
+zg+F2PmICi4uEMO8M}fQ;{~l~eC*ihKfSz<3UP^g*%j3^dsW^fNnCxmhq)9DV!6H(9
+zYE@t^Cc`DZcVkO%5IdV1F?tpF6gve!V?|hsYn!I+`mEt<U2f9|XBV1c>6*)*pQwBg
+zfw@k7@-N_M$_6|*Hj~oZMBi&%)GUv{vv?g2lLhFf5&VefAepGbTA~?2&`(@G9$4YO
+zZaWNz+6sJ6Y;i^njO0`@s59DC;8Ai8uB1!6(ku*F{9k;F)piIg$%Ime%4H>>QZx_G
+z5r#LY03XphOr_4iR%+w#bC%&CRh}H`i0&QDv;|o>orK@1>{xG{E+6$4)pKEmyDkAv
+dXW?6V=4qx1wak1x5DYwoGLJJ0@H$hCpg;S^_|O0V
+
 diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
-index 4ca398c..f414306 100644
---- a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
-+++ b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
-@@ -206,6 +206,7 @@ function makeCurlFetch(proxy) {
-       args.push("-w", marker + "%{http_code}", String(url));
-       const child = spawn(process.env.SENTINEL_CURL || "curl", args, {
-         stdio: ["ignore", "pipe", "pipe"],
-+        windowsHide: true,
-       });
-       const stdout = [];
-       const stderr = [];
+index 4ca398cf7d29da31df019a0e99f588dfc7135968..f414306bc2548d25e53b771cbc6377e1bc10d030 100644
+GIT binary patch
+delta 4402
+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
+BPNDz+
+
+delta 3659
+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
+
+diff --git a/paypal_agreement_protocol/data/used_local_card_hashes.txt b/paypal_agreement_protocol/data/used_local_card_hashes.txt
+index e69de29..3ebf641 100644
+--- a/paypal_agreement_protocol/data/used_local_card_hashes.txt
++++ b/paypal_agreement_protocol/data/used_local_card_hashes.txt
+@@ -0,0 +1,92 @@
++08c82bbe9137818fc30c8d6eb56166a0c024d572a16393ee8cb8a0d625e6242d
++bf1a4c77167bf90c0dff63a1d1c67f3a4726a3807d298fdb19e419e404824e60
++1f7c7596e828ec7b5416b68ad83a5ca4a6015b0917fa35267a373b34124a1f17
++1850fa90f769ec5c05236b7883cea2925b2171da1389396a3a426354b9f4cf5e
++be49870625ca0785ba1c09a82906145dc68d3ab5505387b883441b03c68b861b
++f1df945527567c74cdb9fd8258faa80e96d62532cdd6a4560cd7d11fec8937a8
++0b28907adac42447ba82c2d60de00f44170f3248ce788393e1eb5764df886cc6
++d51dab95718dbf9f77bb16ea97985dbe420ec3a8bf95faff95cd4d5b92c0e78e
++2c6e0c970409abd5e0d85defac41e14a2407dacabe38e4198d3af386b9443f40
++5cd7e68b5f3a543c79b949d860531b9f20070235927460d534ed3843036edbc3
++366cd51d9c3d3c7a9aad0cdbe2ea0d1b3b1bb56204ce07975b4323e6ad31396e
++4a9f71e044ace42a3606672bfa83acbac7977b5b1299c62678bf5505d7cb8865
++af53a7fbe8ab21e4aeb8532a5e03e2e74bc7854b07e776b9853a07ff915285f1
++0502e67f9b96c03cca1c1313efa6a33bf84cb11cf547ac3c9628dac3218bb5c5
++c515fee93a10ca7ba822ed5fdcb85597d94f85d1203f57acf4b93037f3c7cc65
++7c93f4de2d3acea36ba5e7ac8206bbe337d746fb4f1de456417c41ba06c2eb74
++cfbd606ae76a4d02ec30b3c47442f1e52824ca4a15a324527f3a4f14e9fdcc4f
++19214226de16ea97d380fda5f515b8d36d18b09d0dbcfa1d265cc7c552bfdd1f
++f5cec05e8930eb288afdff8160428c6c15aaa8725bdf1f198566c43b9f23bc10
++ad8cdcfbc09cc32e085cc6e8216b6ba6e9f77c7d734f0e84053cf434c2641975
++8c040001e23ee4011ec869d6faec3750aa2f401b2b932886394c98f41d0153ed
++c26ca56794a47e2ca6c8cab36ba7a32bbcbb46e6a0fe26f35d80dbb3964e1a09
++caf6a9a9ac8e9c7cc2dc9f6355978229e67c97c303a1478f5ae5e42a8d25a174
++9eaae5323a95cc18179ea118c7da85e5b60093076d50f52cc23605e3ea772a4a
++9f52fdd87f5cf14d4157ee87ee4f3bb069bbc15c5aff52d566db21ce17493b95
++0547a85edbae67777cd2f5b81fa832124c6e5ea3be57e5305f047c64c2ce83df
++21d7f6dfa576e435908934a47cd701cc0966bba6a68bb33da2a7e3aa6bee27b6
++aa3e5ec0303ff345fbdcc3683f183e45780263b9a8b9ea6066d6c45546c4c68b
++6beb6572c9e3c4816168509d77f794f0f842edec2bc662e1153b9444da111914
++8ae3642cdc1e85b977560876656534dd02b1f6cd49cd78bb39b4322af48fbf95
++454d08e120a46bbf87f27bcc9f4a7fb0dfe4dff146b46580cb072320f61d74a0
++d854de9896e6703571365b2768cf03f4c1a40e91cec6c8e5101fbd4a91021d18
++b7348dccd8fb76355a318f71c8deb6fab7678bca20ebf12b28f5f240aad5a4c2
++2d898c98f808072a7ceeaa2679682e49b8a846df4c44cea28fb81b891335fed5
++b07b5ad482a93a1dbf43eb2b4bf86973efca908ebb4dfd17405360e06430a33c
++cdc8e8af5f814d30120e96905e219596a3b3a37cd394311cfdd396c1192d217e
++222641bc45ff67af4496b2588c9d31d513fa571278e080be268fb767e834af93
++20221134682b1e4e9baf214a70f46cd1c03b98474528448960e043d40fb0b317
++231980b507b1fc7f4cea0a797c57bf916dd87fe0da8177550325e492157dc4ba
++0c16db796c045cb87550a85a52590a838eaaa2eb3b560f384aa55bff0cb78700
++ce26bac0771a3f48eab3dc4535ff6e9f36c45bbc047c0e1b73445041587b1854
++273ec405aabd58c26fb39837a0204b04b0baff3a5454e3b57333061a401d385a
++95b7ab9aa281e1a6dab89fc2b41913bdaa5d7c9eb6f4bc1e4adc4f0f84c9d532
++c3b8cf76aff1773154408a483f032e5c302ae281c5f64668da2326d72a01fefc
++1715efdfcf4dfd969f61ffddf162fa4fb0590f4e16b503b374242dbe61fd98f0
++993d8192ef0f60ebce8196244774e447aa190f16f112cc9a9344698159162afa
++8d71c71985d9803a9794bb070e6eecc6c36355db0d8ca87491500c95f609f223
++9020fdade5cdd3747a3a48c1576d547a18ea53482e862a51b18bcddfbf7ef67b
++8a388b8dd8eca5e3650e6c5ab63d0b2fb01378575398d7282b8c2504af857a4a
++89561a314a6293ff428edb8ce07bfea03aee23bb571d93681d0a40da599a4475
++27daafba3f7fefe5774619a86d3ab6bc68b9f57b7afea8e860194c7a14063cfe
++e0325a276f355f5bf22300b2378d81f4c71c9296ef0598d7388f179d73b68f11
++7b5535097888bc5992c31852d3fa11ee74dcae8b21a7d8d42a82fea3b2fbe13a
++314bf3381ec0b2e512f4f28c3a4bf669ac9c67f71ac585b75fc2e424c9a7d686
++7dfacd778fe4b59a6589ab101cc463fd051e5d35da7b5d9be3355b7975df50e0
++fe4f3446c9b41264d179d155f99bfc34f8ef9a4a9b5bbca77ee60cbcef0bd40f
++58b3eb4f60676412730fc92eb006703cc2aefcd032cf99531868aab3a3385db6
++3c297c93a2b0b4c325ac928b3123d8b0395638fbc589654e6220ca7bf7afc4b4
++a4d8467d7ed307bbcc8b192fe63d06a9f59df6a67596c737694f34ca19a1e961
++a408aaf311988c53da027a292465ed46b388d17666cbd18ba836e0a1730ef18c
++5de0a1c2627926da70d432b246d83f96fe43529e6657f48872545c1408ff7fab
++2804b185803594feff008767513e9f37483096b2474cd3cc9773a06f1ce99b78
++0b5a571693b146ed356f10daf700ff45aaa2396e63c284eb04faade6e3e05ebc
++dfe88258fd58ab4ac47229bf2562a5297fb64a7c6afec73612656135ca70ffab
++97fdb8fbed31f5a76f213c05b7c57b9b49cbc381803458f6b4079731e1ed2f0c
++749c59a9ebe07be940701cd97a22f19e00f27c5a5786fbe696359cdea9f1dc64
++1e2f745242c6380f787de8a96a08c40b2b1e227f3623c180e3a345ce73bb2705
++6eadf6368eadf78d736b3c0652cb77744e498c03adaa69de30e41e024f03ee05
++b50b41e7407d49f41be78f93e1e9cddd2a0333d4fde8e76fe3380f7d891bcf0e
++be07eeb131064dc9916bd099f357c521ade457e040a6a668ea898f0636295874
++0565c5970bff920e5c43a814d1bc128f79b807166f0d08dcc87b9e11a71206c3
++61b3fb22b1e422322858238329aa7c12a478454f1c25049d834dce302389de8f
++41b3799fc4c204a38e89a1ec4a1e067274726df47d9641af4c4fafdbe01b9837
++6df7a4b03f28182148c5a95a22589e21eb17d5f43728be89a70fcd01c915258f
++40a797fc6b96fd16b7cc5fc33230c7a6bad612a70f6b81b8c70aab23b56444d6
++fceb1df88cc4ddb2a2503bf284ec9ff6654389e0d2c794d50fcd5da805e6051b
++b5ae9b3c12a136d828059c278ef88db9474a6bcc729c634338a98b75fb1ac721
++b1866d4b6cd91f3b6d2ae40449daa05142f5a0f7884db9a8c30fc6f8fed52d9e
++7dc0c22ec3ae3507b84d8c9f1ade7736e84fee64babba118103038a187dc8a36
++bd2d25bfa297cea4512eb854f106b93dcfd934803731993214caffe6e8957464
++dd013c42ffda5d92bc6930475fb5e9ef744e9ecbd26e42f4a16ad2023ffe2f0b
++0cfcbb64842d4e19bfca87a20600a857a640d592c0beebc6fef3f9e8ff0c5645
++016ab4777531d9b9fa575b8f2e90c3a07afcff2a12c1be2738ea07975dfa5d81
++e0443dccdb5c5893df48d209a0b2daf7069824c7f1946b6254840f1b7dc3c860
++17ba78eb291ee2940e4ad31e71936dbf83f275abc799af22bf7837bc64688b1c
++b7d2e3b70399f41d9709cc890b13b1eae4e6d7e6a54ff586290f7bf2c9278cf4
++3385efe8a9509d98212a93a3f1260be2447f25b3c66945837748f31f69b84402
++08c756e5a6246da6c8f064bb9746df427ad367266e5da0214fe38e1c090d6e88
++65936e72555e5bc5e01bfcfe8d139edebace1e1ace12683eab80faf90ef63980
++b1d5582aec9f8fc3c6eedfedf3e94dd9dc5b5480dcf47d44907c037dcaad2f2d
++babc6f06b254385f72b7872d162f4ac92a1b890080f6bb6c3573f24182f08599
++ebab80b10ea82b92d3c365cf26795bd19dd8c7e3cf9a9cfedc4dcca273062c01
 diff --git a/tests/test_mk_gcash_replacement.py b/tests/test_mk_gcash_replacement.py
 index 30dca6e..95e3fbc 100644
 --- a/tests/test_mk_gcash_replacement.py
