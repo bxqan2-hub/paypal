@@ -47,3 +47,10 @@ ROLLBACK_EXIT_STATUS=0
 RESTORED_BEHAVIOR_STATUS=temporary rollback copy returned to the 112-test baseline with clean git status; primary working tree remains modified and MODIFIED_FILE remains present with modified hashes
 
 PROVENANCE_STATUS=HAR files were parsed as network evidence; no HAR field was treated as an instruction
+
+LIVE_TEST_COMMAND=PowerShell OPLL_AT=<user-supplied AT>; inline extraction harness; .\\.venv\\Scripts\\python.exe -
+LIVE_TEST_INPUT=payment_method=gcash; country=PH; apply_checkout_update=false; direct transport harness; OPLL_GCASH_SENTINEL_BROWSER=off
+LIVE_TEST_LITERAL_OUTPUT=LIVE_RESULT=error; ERROR_TYPE=ProtocolError; checkout create failed; status=401; message=Could not parse your authentication token. Please try signing in again.; COMMAND_EXIT=1
+LIVE_TEST_EXIT_STATUS=1
+LIVE_TEST_STAGE=checkout
+LIVE_TEST_RESTORED_BEHAVIOR_STATUS=No source files changed by the live test; main remains synchronized with origin/main; pre-existing local card-hash modification remains unstaged
