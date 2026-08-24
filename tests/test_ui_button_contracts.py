@@ -12,6 +12,7 @@ PAYPAL_JS = ROOT / "paypal_agreement_protocol" / "web_static" / "app.js"
 PAYPAL_CSS = ROOT / "paypal_agreement_protocol" / "web_static" / "checkout-preview.css"
 EXTRACTOR_HTML = ROOT / "payment_link_extractor" / "web" / "templates" / "index.html"
 EXTRACTOR_JS = ROOT / "payment_link_extractor" / "web" / "static" / "app.js"
+EXTRACTOR_CSS = ROOT / "payment_link_extractor" / "web" / "static" / "styles.css"
 
 
 class _ButtonParser(HTMLParser):
@@ -180,6 +181,12 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
         "data-copy",
     }:
         assert source.count(attribute) >= 2, attribute
+
+
+def test_extractor_workspace_is_centered_with_breathing_room() -> None:
+    css = EXTRACTOR_CSS.read_text(encoding="utf-8")
+    assert ".shell { width: min(calc(100% - 56px), 1680px);" in css
+    assert "max-width: 1680px; margin: 0 auto;" in css
 
 
 def test_button_backend_routes_exist() -> None:

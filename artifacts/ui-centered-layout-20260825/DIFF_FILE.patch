@@ -1,0 +1,59 @@
+diff --git a/artifacts/ui-centered-layout-20260825/MODIFIED_FILE b/artifacts/ui-centered-layout-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..cbfa73c
+--- /dev/null
++++ b/artifacts/ui-centered-layout-20260825/MODIFIED_FILE
+@@ -0,0 +1,5 @@
++MODIFIED_FILE
++payment_link_extractor/web/static/styles.css
++- The desktop .shell is now centered with a 56px total breathing-room allowance and a 1680px maximum width.
++- The existing two-column information panels keep their widths and move inward together instead of touching the viewport edges.
++- Mobile layout remains full-width through the existing max-width: 640px override.
+diff --git a/artifacts/ui-centered-layout-20260825/ROLLBACK.sh b/artifacts/ui-centered-layout-20260825/ROLLBACK.sh
+new file mode 100644
+index 0000000..15419ac
+--- /dev/null
++++ b/artifacts/ui-centered-layout-20260825/ROLLBACK.sh
+@@ -0,0 +1,4 @@
++#!/usr/bin/env bash
++set -euo pipefail
++BASELINE=ee23c87ba9641b5f374277901fb884bc2d160e8e
++git restore --source="$BASELINE" -- payment_link_extractor/web/static/styles.css tests/test_ui_button_contracts.py
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index e1969fe..3143bf5 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
+ 
+ button { cursor: pointer; }
+ 
+-.shell { width: 100%; max-width: none; margin: 0; padding: 16px 12px 40px; }
++.shell { width: min(calc(100% - 56px), 1680px); max-width: 1680px; margin: 0 auto; padding: 16px 0 40px; }
+ 
+ .auth-gate {
+   position: fixed;
+diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
+index 5ba6af5..a3e62ad 100644
+--- a/tests/test_ui_button_contracts.py
++++ b/tests/test_ui_button_contracts.py
+@@ -12,6 +12,7 @@ PAYPAL_JS = ROOT / "paypal_agreement_protocol" / "web_static" / "app.js"
+ PAYPAL_CSS = ROOT / "paypal_agreement_protocol" / "web_static" / "checkout-preview.css"
+ EXTRACTOR_HTML = ROOT / "payment_link_extractor" / "web" / "templates" / "index.html"
+ EXTRACTOR_JS = ROOT / "payment_link_extractor" / "web" / "static" / "app.js"
++EXTRACTOR_CSS = ROOT / "payment_link_extractor" / "web" / "static" / "styles.css"
+ 
+ 
+ class _ButtonParser(HTMLParser):
+@@ -182,6 +183,12 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
+         assert source.count(attribute) >= 2, attribute
+ 
+ 
++def test_extractor_workspace_is_centered_with_breathing_room() -> None:
++    css = EXTRACTOR_CSS.read_text(encoding="utf-8")
++    assert ".shell { width: min(calc(100% - 56px), 1680px);" in css
++    assert "max-width: 1680px; margin: 0 auto;" in css
++
++
+ def test_button_backend_routes_exist() -> None:
+     app = create_app({"TESTING": True})
+     rules = {rule.rule: set(rule.methods or ()) for rule in app.url_map.iter_rules()}

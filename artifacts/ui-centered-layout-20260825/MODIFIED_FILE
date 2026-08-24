@@ -1,0 +1,5 @@
+MODIFIED_FILE
+payment_link_extractor/web/static/styles.css
+- The desktop .shell is now centered with a 56px total breathing-room allowance and a 1680px maximum width.
+- The existing two-column information panels keep their widths and move inward together instead of touching the viewport edges.
+- Mobile layout remains full-width through the existing max-width: 640px override.
