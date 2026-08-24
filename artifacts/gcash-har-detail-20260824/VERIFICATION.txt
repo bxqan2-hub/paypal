@@ -54,3 +54,13 @@ LIVE_TEST_LITERAL_OUTPUT=LIVE_RESULT=error; ERROR_TYPE=ProtocolError; checkout c
 LIVE_TEST_EXIT_STATUS=1
 LIVE_TEST_STAGE=checkout
 LIVE_TEST_RESTORED_BEHAVIOR_STATUS=No source files changed by the live test; main remains synchronized with origin/main; pre-existing local card-hash modification remains unstaged
+
+LIVE_PROXY_PROBE_COMMAND=curl.exe --proxy socks5h://<redacted>@us.1024proxy.io:3000 --max-time 20 -sS https://api.ipify.org
+LIVE_PROXY_PROBE_INPUT=five supplied PH-session proxy entries
+LIVE_PROXY_PROBE_LITERAL_OUTPUT=five distinct egress IP responses; EXIT=0 for all five entries
+LIVE_PROXY_PROBE_EXIT_STATUS=0
+LIVE_PROXY_EXTRACTION_COMMAND=OPLL_GCASH_SENTINEL_BROWSER=auto; inline GCash extraction harness through supplied 1024Proxy entry; .\\.venv\\Scripts\\python.exe -
+LIVE_PROXY_EXTRACTION_INPUT=payment_method=gcash; country=PH; apply_checkout_update=false; supplied AT; supplied authenticated SOCKS5 proxy
+LIVE_PROXY_EXTRACTION_LITERAL_OUTPUT=AUTO_SENTINEL_RESULT=error; ERROR_TYPE=ProtocolError; checkout create failed; status=401; message=Could not parse your authentication token. Please try signing in again.; STAGES=["checkout"]; COMMAND_EXIT=1
+LIVE_PROXY_EXTRACTION_EXIT_STATUS=1
+LIVE_PROXY_EXTRACTION_RESTORED_BEHAVIOR_STATUS=All proxy probes succeeded; authenticated checkout rejected the AT before session creation; no source file changed; primary optimized tree remains intact
