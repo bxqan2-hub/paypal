@@ -21,6 +21,7 @@ from curl_cffi import CurlOpt
 
 from .errors import ExtractionCancelled, ProtocolError
 from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
+from .web.socks5_bridge import http_proxy_for
 
 
 MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
@@ -106,7 +107,13 @@ def _max_attempts(config: ExtractionConfig) -> int:
 
 def _proxy_pool(config: ExtractionConfig) -> list[str]:
     values = config.proxy_pool or config.checkout_proxy_attempts or (config.checkout_proxy,)
-    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+    return list(
+        dict.fromkeys(
+            http_proxy_for(str(value).strip())
+            for value in values
+            if str(value).strip()
+        )
+    )
 
 
 def _payload(config: ExtractionConfig) -> dict[str, Any]:

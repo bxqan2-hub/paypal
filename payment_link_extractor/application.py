@@ -83,9 +83,9 @@ def extract_payment_link(
             stage_callback(stage)
 
     config = _normalize_config(config)
-    # GCash is a direct integration of MK-GCash-Link-OpenSource.  Dispatch it
-    # before constructing any legacy checkout/Stripe transports so none of the
-    # site's previous GCash implementation participates in this branch.
+    # Payment methods stay isolated. GCash leaves the PayPal/legacy branch
+    # here and enters mk_gcash.py, which directly calls the complete copied
+    # MK-GCash-Link-OpenSource app. No legacy transport is constructed.
     if config.payment_method == "gcash":
         from .mk_gcash import extract_mk_gcash_payment_link
 

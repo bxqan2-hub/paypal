@@ -1,0 +1,64 @@
+OBJECT: GCash SOCKS5 proxy bridge and payment-method separation
+BRANCH/FIELD: main / GCash proxy_pool -> authenticated SOCKS5 to loopback HTTP CONNECT
+BASELINE_COMMIT: 965cb29a6d5f6e8c1918e7fe479ee928e90f0266
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\web\socks5_bridge.py
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-socks5-bridge-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-socks5-bridge-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-socks5-bridge-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at 965cb29a6d5f6e8c1918e7fe479ee928e90f0266; no bridge source.
+BASELINE OUTPUT:
+  ........................................................................ [ 48%]
+  ........................................................................ [ 96%]
+  ......                                                                   [100%]
+  150 passed in 1.27s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: authenticated SOCKS5 bridge, explicit payment-method routing,
+  architecture documentation, and bridge tests enabled.
+MODIFIED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.26s
+
+UPSTREAM-COPY COMMAND (exit 0):
+  (cd payment_link_extractor/mk_gcash_open_source && C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q)
+UPSTREAM-COPY OUTPUT:
+  ...........                                                              [100%]
+  11 passed in 0.67s
+
+BRIDGE TEST COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_socks5_bridge.py
+BRIDGE TEST RESULT: 2 passed; fake authenticated SOCKS5 handshake and HTTP
+  CONNECT relay both succeeded without external network access.
+
+FORMAT TEST COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c "from payment_link_extractor.web.socks5_bridge import http_proxy_for; a='socks5://user:pass@127.0.0.1:3000'; b='host:port:user:pass'; print(http_proxy_for(a).startswith('http://127.0.0.1:'), http_proxy_for(b)==b)"
+FORMAT TEST OUTPUT:
+  True True
+FORMAT RESULT: authenticated SOCKS5 is converted to a loopback HTTP proxy;
+  host:port:user:pass remains a direct HTTP proxy.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-socks5-bridge-20260825\ROLLBACK.sh" "C:\Temp\mk-gcash-socks5-bridge-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\mk-gcash-socks5-bridge-rollback-20260825 restored_commit=965cb29a6d5f6e8c1918e7fe479ee928e90f0266
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests
+RESTORED INPUT: working directory C:\Temp\mk-gcash-socks5-bridge-rollback-20260825 after ROLLBACK.sh.
+RESTORED OUTPUT:
+  ........................................................................ [ 48%]
+  ........................................................................ [ 96%]
+  ......                                                                   [100%]
+  150 passed in 1.37s
+
+RESTORED STATUS: disposable worktree HEAD equals BASELINE_COMMIT and `git status --short --branch` is clean;
+  main retains the bridge change and preserves the user's existing dirty
+  paypal_agreement_protocol/data/used_local_card_hashes.txt.

@@ -1,0 +1,450 @@
+diff --git a/.env.example b/.env.example
+index bef6047..f227343 100644
+--- a/.env.example
++++ b/.env.example
+@@ -18,6 +18,8 @@ OPLL_X_OAI_IS_PENDING_UPDATES=
+ # dead-proxy TCP connect phase. The upstream 30-second request timeout remains.
+ MK_GCASH_PREWARM=true
+ MK_GCASH_CONNECT_TIMEOUT_MS=8000
++# GCash accepts host:port:user:pass, socks5://host:port, and authenticated
++# socks5://user:pass@host:port (the latter is bridged to local HTTP CONNECT).
+ OPLL_USER_AGENT=
+ OPLL_OAI_LANGUAGE=en-US
+ OPLL_SEC_CH_UA=
+diff --git a/artifacts/mk-gcash-socks5-bridge-20260825/MODIFIED_FILE b/artifacts/mk-gcash-socks5-bridge-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..42d4ded
+--- /dev/null
++++ b/artifacts/mk-gcash-socks5-bridge-20260825/MODIFIED_FILE
+@@ -0,0 +1,6 @@
++payment_link_extractor/web/socks5_bridge.py
++
++Changed branch/field: GCash proxy_pool normalization now detects authenticated
++SOCKS5 entries and exposes a loopback HTTP CONNECT bridge. The GCash upstream
++project remains copied and unmodified; PayPal and future payment methods keep
++their own routes.
+diff --git a/artifacts/mk-gcash-socks5-bridge-20260825/ROLLBACK.sh b/artifacts/mk-gcash-socks5-bridge-20260825/ROLLBACK.sh
+new file mode 100755
+index 0000000..1970665
+--- /dev/null
++++ b/artifacts/mk-gcash-socks5-bridge-20260825/ROLLBACK.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++TARGET="${1:?usage: ROLLBACK.sh <git-worktree> }"
++BASELINE="965cb29a6d5f6e8c1918e7fe479ee928e90f0266"
++git -C "$TARGET" reset --hard "$BASELINE"
++git -C "$TARGET" clean -fd
++test "$(git -C "$TARGET" rev-parse HEAD)" = "$BASELINE"
++echo "ROLLBACK_OK target=$TARGET restored_commit=$BASELINE"
+diff --git a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+new file mode 100644
+index 0000000..7c20191
+--- /dev/null
++++ b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+@@ -0,0 +1,32 @@
++# 提链方式分层
++
++本站每种提链方式保持独立入口，新增方式不得把协议代码混入其他方式：
++
++| 方式 | 入口 | 核心位置 | 代理入口 |
++|---|---|---|---|
++| PayPal | `application.py` 的 PayPal 分支 | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
++| GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
++| 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
++
++## GCash 调用边界
++
++`payment_link_extractor/mk_gcash.py` 只做三件事：
++
++1. 把本站账号和 `proxy_pool` 转成开源项目 `app.py` 的 `create_job()` 输入；
++2. 直接轮询开源项目 `public_job()`；
++3. 把开源项目结果转换成本站任务模型。
++
++GCash 的建单、税费、确认、GCash 页面、二维码、回调监控和重试都留在
++`payment_link_extractor/mk_gcash_open_source/`，不复用 PayPal 的 provider 或
++checkout transport。
++
++## 代理规范
++
++- `host:port:user:pass`：按认证 HTTP 代理直接交给开源项目。
++- `socks5://host:port`：无认证 SOCKS5，直接交给开源项目。
++- `socks5://user:pass@host:port`：由
++  `web/socks5_bridge.py` 在 `127.0.0.1` 创建 HTTP CONNECT 桥，再交给开源项目。
++- 输入中出现 `\\@` 时会规范化为 `@`，因此带转义的 SOCKS5 用户名密码也能使用。
++
++每个 SOCKS5 上游只创建一个复用桥，多个重试和账号共享同一个桥；进程退出时
++统一关闭桥接监听器。
+diff --git a/payment_link_extractor/application.py b/payment_link_extractor/application.py
+index 562dea4..29c8a60 100644
+--- a/payment_link_extractor/application.py
++++ b/payment_link_extractor/application.py
+@@ -83,9 +83,9 @@ def extract_payment_link(
+             stage_callback(stage)
+ 
+     config = _normalize_config(config)
+-    # GCash is a direct integration of MK-GCash-Link-OpenSource.  Dispatch it
+-    # before constructing any legacy checkout/Stripe transports so none of the
+-    # site's previous GCash implementation participates in this branch.
++    # Payment methods stay isolated. GCash leaves the PayPal/legacy branch
++    # here and enters mk_gcash.py, which directly calls the complete copied
++    # MK-GCash-Link-OpenSource app. No legacy transport is constructed.
+     if config.payment_method == "gcash":
+         from .mk_gcash import extract_mk_gcash_payment_link
+ 
+diff --git a/payment_link_extractor/mk_gcash.py b/payment_link_extractor/mk_gcash.py
+index c944aa6..3ff85d1 100644
+--- a/payment_link_extractor/mk_gcash.py
++++ b/payment_link_extractor/mk_gcash.py
+@@ -21,6 +21,7 @@ from curl_cffi import CurlOpt
+ 
+ from .errors import ExtractionCancelled, ProtocolError
+ from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
++from .web.socks5_bridge import http_proxy_for
+ 
+ 
+ MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+@@ -106,7 +107,13 @@ def _max_attempts(config: ExtractionConfig) -> int:
+ 
+ def _proxy_pool(config: ExtractionConfig) -> list[str]:
+     values = config.proxy_pool or config.checkout_proxy_attempts or (config.checkout_proxy,)
+-    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
++    return list(
++        dict.fromkeys(
++            http_proxy_for(str(value).strip())
++            for value in values
++            if str(value).strip()
++        )
++    )
+ 
+ 
+ def _payload(config: ExtractionConfig) -> dict[str, Any]:
+diff --git a/payment_link_extractor/web/socks5_bridge.py b/payment_link_extractor/web/socks5_bridge.py
+new file mode 100644
+index 0000000..750778c
+--- /dev/null
++++ b/payment_link_extractor/web/socks5_bridge.py
+@@ -0,0 +1,236 @@
++from __future__ import annotations
++
++"""Local HTTP CONNECT bridges for authenticated SOCKS5 upstream proxies.
++
++Playwright's proxy configuration used by the upstream GCash project cannot
++carry SOCKS5 credentials.  This small bridge exposes an unauthenticated
++loopback HTTP proxy while forwarding every CONNECT through the authenticated
++SOCKS5 endpoint.  It is deliberately kept in the web/integration layer and
++does not modify the vendored MK project.
++"""
++
++import atexit
++import select
++import socket
++import threading
++from dataclasses import dataclass
++from urllib.parse import unquote, urlsplit
++
++
++def _parse_socks5(value: str) -> tuple[str, int, str, str]:
++    normalized = str(value or "").strip().replace("\\@", "@")
++    parsed = urlsplit(normalized)
++    if parsed.scheme.lower() not in {"socks5", "socks5h"} or not parsed.hostname:
++        raise ValueError("SOCKS5 代理格式无效")
++    port = parsed.port or 1080
++    if not 1 <= int(port) <= 65535:
++        raise ValueError("SOCKS5 代理端口无效")
++    return (
++        parsed.hostname,
++        int(port),
++        unquote(parsed.username or ""),
++        unquote(parsed.password or ""),
++    )
++
++
++def is_authenticated_socks5(value: str) -> bool:
++    try:
++        _, _, username, password = _parse_socks5(value)
++    except (TypeError, ValueError):
++        return False
++    return bool(username or password)
++
++
++def _recv_exact(sock: socket.socket, size: int) -> bytes:
++    chunks = bytearray()
++    while len(chunks) < size:
++        block = sock.recv(size - len(chunks))
++        if not block:
++            raise OSError("SOCKS5 upstream closed during handshake")
++        chunks.extend(block)
++    return bytes(chunks)
++
++
++def _socks5_connect(
++    proxy_host: str,
++    proxy_port: int,
++    username: str,
++    password: str,
++    target_host: str,
++    target_port: int,
++    timeout: float,
++) -> socket.socket:
++    upstream = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
++    try:
++        methods = b"\x05\x02\x00\x02" if username or password else b"\x05\x01\x00"
++        upstream.sendall(methods)
++        version, method = _recv_exact(upstream, 2)
++        if version != 5 or method == 0xFF:
++            raise OSError("SOCKS5 upstream rejected authentication methods")
++        if method == 0x02:
++            user_bytes = username.encode("utf-8")
++            pass_bytes = password.encode("utf-8")
++            if len(user_bytes) > 255 or len(pass_bytes) > 255:
++                raise OSError("SOCKS5 credentials are too long")
++            upstream.sendall(b"\x01" + bytes([len(user_bytes)]) + user_bytes + bytes([len(pass_bytes)]) + pass_bytes)
++            auth_version, auth_status = _recv_exact(upstream, 2)
++            if auth_version != 1 or auth_status != 0:
++                raise OSError("SOCKS5 username/password authentication failed")
++        elif method != 0x00:
++            raise OSError("SOCKS5 upstream selected an unsupported method")
++
++        host_bytes = target_host.encode("idna")
++        if len(host_bytes) > 255:
++            raise OSError("SOCKS5 target hostname is too long")
++        request = b"\x05\x01\x00\x03" + bytes([len(host_bytes)]) + host_bytes + int(target_port).to_bytes(2, "big")
++        upstream.sendall(request)
++        header = _recv_exact(upstream, 4)
++        if header[0] != 5 or header[1] != 0:
++            raise OSError(f"SOCKS5 CONNECT failed with code {header[1]}")
++        address_type = header[3]
++        if address_type == 1:
++            _recv_exact(upstream, 4)
++        elif address_type == 3:
++            length = _recv_exact(upstream, 1)[0]
++            _recv_exact(upstream, length)
++        elif address_type == 4:
++            _recv_exact(upstream, 16)
++        else:
++            raise OSError("SOCKS5 upstream returned an invalid address type")
++        _recv_exact(upstream, 2)
++        upstream.settimeout(None)
++        return upstream
++    except Exception:
++        upstream.close()
++        raise
++
++
++def _relay(left: socket.socket, right: socket.socket) -> None:
++    sockets = [left, right]
++    try:
++        while True:
++            readable, _, _ = select.select(sockets, [], [], 60.0)
++            if not readable:
++                continue
++            for source in readable:
++                data = source.recv(64 * 1024)
++                if not data:
++                    return
++                destination = right if source is left else left
++                destination.sendall(data)
++    except (OSError, ValueError):
++        return
++
++
++@dataclass
++class Socks5HttpBridge:
++    source: str
++    connect_timeout: float = 8.0
++
++    def __post_init__(self) -> None:
++        self._proxy_host, self._proxy_port, self._username, self._password = _parse_socks5(self.source)
++        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++        self._listener.bind(("127.0.0.1", 0))
++        self._listener.listen(32)
++        self._listener.settimeout(0.5)
++        self._stopped = threading.Event()
++        self._thread = threading.Thread(target=self._serve, name="gcash-socks5-bridge", daemon=True)
++        self._thread.start()
++
++    @property
++    def proxy(self) -> str:
++        host, port = self._listener.getsockname()[:2]
++        return f"http://127.0.0.1:{port}"
++
++    def stop(self) -> None:
++        if self._stopped.is_set():
++            return
++        self._stopped.set()
++        try:
++            self._listener.close()
++        except OSError:
++            pass
++
++    def _serve(self) -> None:
++        while not self._stopped.is_set():
++            try:
++                client, _ = self._listener.accept()
++            except socket.timeout:
++                continue
++            except OSError:
++                return
++            threading.Thread(target=self._handle, args=(client,), name="gcash-socks5-client", daemon=True).start()
++
++    def _handle(self, client: socket.socket) -> None:
++        remote = None
++        try:
++            client.settimeout(self.connect_timeout)
++            request = b""
++            while b"\r\n\r\n" not in request and len(request) < 16 * 1024:
++                block = client.recv(4096)
++                if not block:
++                    return
++                request += block
++            first_line = request.split(b"\r\n", 1)[0].decode("latin1", errors="replace")
++            method, target, _ = first_line.split(" ", 2)
++            if method.upper() != "CONNECT":
++                client.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
++                return
++            if target.startswith("["):
++                host_end = target.find("]")
++                target_host = target[1:host_end]
++                target_port = int(target[host_end + 2:])
++            else:
++                target_host, port_text = target.rsplit(":", 1)
++                target_port = int(port_text)
++            remote = _socks5_connect(
++                self._proxy_host,
++                self._proxy_port,
++                self._username,
++                self._password,
++                target_host,
++                target_port,
++                self.connect_timeout,
++            )
++            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
++            client.settimeout(None)
++            _relay(client, remote)
++        except (OSError, ValueError, UnicodeError):
++            try:
++                client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
++            except OSError:
++                pass
++        finally:
++            for sock in (client, remote):
++                if sock is not None:
++                    try:
++                        sock.close()
++                    except OSError:
++                        pass
++
++
++_BRIDGES: dict[str, Socks5HttpBridge] = {}
++_BRIDGES_LOCK = threading.RLock()
++
++
++def http_proxy_for(value: str) -> str:
++    """Return an upstream-compatible proxy, creating a bridge when needed."""
++    if not is_authenticated_socks5(value):
++        return str(value).strip()
++    normalized = str(value).strip().replace("\\@", "@")
++    with _BRIDGES_LOCK:
++        bridge = _BRIDGES.get(normalized)
++        if bridge is None:
++            bridge = Socks5HttpBridge(normalized)
++            _BRIDGES[normalized] = bridge
++        return bridge.proxy
++
++
++@atexit.register
++def _stop_bridges() -> None:
++    with _BRIDGES_LOCK:
++        bridges = list(_BRIDGES.values())
++        _BRIDGES.clear()
++    for bridge in bridges:
++        bridge.stop()
+diff --git a/tests/test_socks5_bridge.py b/tests/test_socks5_bridge.py
+new file mode 100644
+index 0000000..4de1796
+--- /dev/null
++++ b/tests/test_socks5_bridge.py
+@@ -0,0 +1,80 @@
++from __future__ import annotations
++
++import socket
++import threading
++from urllib.parse import urlsplit
++
++from payment_link_extractor.web.socks5_bridge import (
++    Socks5HttpBridge,
++    _parse_socks5,
++    is_authenticated_socks5,
++)
++
++
++def _recv_exact(sock: socket.socket, size: int) -> bytes:
++    data = b""
++    while len(data) < size:
++        data += sock.recv(size - len(data))
++    return data
++
++
++def test_authenticated_socks5_parser_accepts_escaped_at():
++    host, port, username, password = _parse_socks5(
++        r"socks5://user:pass\@127.0.0.1:3000"
++    )
++    assert (host, port, username, password) == ("127.0.0.1", 3000, "user", "pass")
++    assert is_authenticated_socks5("socks5://user:pass@127.0.0.1:3000")
++    assert not is_authenticated_socks5("socks5://127.0.0.1:3000")
++
++
++def test_http_bridge_tunnels_authenticated_socks5_connect():
++    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++    listener.bind(("127.0.0.1", 0))
++    listener.listen(1)
++    upstream_port = listener.getsockname()[1]
++    ready = threading.Event()
++
++    def fake_socks5() -> None:
++        ready.set()
++        server, _ = listener.accept()
++        try:
++            assert _recv_exact(server, 4) == b"\x05\x02\x00\x02"
++            server.sendall(b"\x05\x02")
++            version = _recv_exact(server, 1)
++            user_len = _recv_exact(server, 1)[0]
++            user = _recv_exact(server, user_len)
++            pass_len = _recv_exact(server, 1)[0]
++            password = _recv_exact(server, pass_len)
++            assert (version, user, password) == (b"\x01", b"user", b"pass")
++            server.sendall(b"\x01\x00")
++            assert _recv_exact(server, 4) == b"\x05\x01\x00\x03"
++            target_len = _recv_exact(server, 1)[0]
++            target = _recv_exact(server, target_len)
++            target_port = _recv_exact(server, 2)
++            assert (target, target_port) == (b"example.com", (443).to_bytes(2, "big"))
++            server.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
++            payload = server.recv(4)
++            server.sendall(payload)
++        finally:
++            server.close()
++
++    thread = threading.Thread(target=fake_socks5, daemon=True)
++    thread.start()
++    ready.wait(1)
++    bridge = Socks5HttpBridge(f"socks5://user:pass@127.0.0.1:{upstream_port}")
++    try:
++        bridge_host = urlsplit(bridge.proxy).hostname
++        bridge_port = urlsplit(bridge.proxy).port
++        client = socket.create_connection((bridge_host, bridge_port), timeout=2)
++        try:
++            client.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
++            response = client.recv(1024)
++            assert response.startswith(b"HTTP/1.1 200 Connection Established")
++            client.sendall(b"ping")
++            assert _recv_exact(client, 4) == b"ping"
++        finally:
++            client.close()
++    finally:
++        bridge.stop()
++        listener.close()
++        thread.join(timeout=1)

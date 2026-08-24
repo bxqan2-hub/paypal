@@ -1,0 +1,6 @@
+payment_link_extractor/web/socks5_bridge.py
+
+Changed branch/field: GCash proxy_pool normalization now detects authenticated
+SOCKS5 entries and exposes a loopback HTTP CONNECT bridge. The GCash upstream
+project remains copied and unmodified; PayPal and future payment methods keep
+their own routes.
