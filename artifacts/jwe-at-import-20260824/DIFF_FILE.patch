@@ -1,0 +1,340 @@
+diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
+index 15f8529..4413d0f 100644
+--- a/payment_link_extractor/auth.py
++++ b/payment_link_extractor/auth.py
+@@ -2,36 +2,97 @@ from __future__ import annotations
+ 
+ import base64
+ import json
++import re
+ from typing import Any
+ 
+ 
+-def normalize_access_token(raw: str) -> str:
+-    token = str(raw or "").strip()
+-    if token.startswith("{") or token.startswith("["):
++_TOKEN_KEYS = {"at", "token", "access_token", "accesstoken"}
++_TOKEN_CHARS_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
++
++
++def _clean_token(value: Any) -> str:
++    token = str(value or "").strip()
++    if token.lower().startswith("bearer "):
++        token = token[7:].strip()
++    # Markdown and chat exports often escape URL-safe JWT/JWE characters.
++    token = re.sub(r"\\([A-Za-z0-9._~+/=-])", r"\1", token)
++    return re.sub(r"\s+", "", token)
++
++
++def _token_shape(value: Any) -> bool:
++    token = _clean_token(value)
++    if not 1 <= len(token) <= 16384 or not _TOKEN_CHARS_RE.fullmatch(token):
++        return False
++    parts = token.split(".")
++    # Signed JWT/JWS.
++    if len(parts) == 3:
++        return all(parts)
++    # Compact JWE.  `alg=dir` legitimately has an empty encrypted-key part.
++    if len(parts) == 5:
++        return bool(parts[0] and parts[2] and parts[3] and parts[4])
++    # Keep compatibility with opaque access-token formats.
++    return "." not in token
++
++
++def _find_token(value: Any) -> str:
++    if isinstance(value, dict):
++        for key, nested in value.items():
++            normalized_key = str(key or "").replace("-", "_").lower()
++            if normalized_key in _TOKEN_KEYS and isinstance(nested, str):
++                candidate = _extract_from_text(nested)
++                if candidate:
++                    return candidate
++        for nested in value.values():
++            candidate = _find_token(nested)
++            if candidate:
++                return candidate
++    elif isinstance(value, list):
++        for nested in value:
++            candidate = _find_token(nested)
++            if candidate:
++                return candidate
++    return ""
++
++
++def _extract_from_text(value: Any) -> str:
++    text = str(value or "").strip()
++    if not text:
++        return ""
++    # Stop at the next JSON property when a session export is pasted from the
++    # token value onward, e.g. TOKEN","authProvider":"openai.
++    marker = re.search(r"['\"]\s*,\s*['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s*:", text)
++    if marker:
++        text = text[: marker.start()]
++    candidate = _clean_token(text.strip(" \t\r\n'\"{}[]"))
++    if _token_shape(candidate):
++        return candidate
++    # Extract a compact JWS/JWE embedded in otherwise malformed export text.
++    for match in re.finditer(r"[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]*){2,4}", text):
++        candidate = _clean_token(match.group(0))
++        if _token_shape(candidate):
++            return candidate
++    return ""
++
++
++def extract_access_token(raw: Any) -> str:
++    """Extract JWT, compact JWE, or opaque AT from common import envelopes."""
++    if isinstance(raw, (dict, list)):
++        return _find_token(raw)
++    text = str(raw or "").strip()
++    if text.startswith("{") or text.startswith("["):
+         try:
+-            value = json.loads(token)
++            value = json.loads(text)
+         except json.JSONDecodeError:
+-            return token
+-
+-        def find(item: Any) -> str:
+-            if isinstance(item, dict):
+-                for key in ("accessToken", "access_token", "token"):
+-                    found = str(item.get(key) or "").strip()
+-                    if found:
+-                        return found
+-                for nested in item.values():
+-                    found = find(nested)
+-                    if found:
+-                        return found
+-            elif isinstance(item, list):
+-                for nested in item:
+-                    found = find(nested)
+-                    if found:
+-                        return found
+-            return ""
+-
+-        return find(value) or token
+-    return token
++            value = None
++        if value is not None:
++            if isinstance(value, str):
++                return _extract_from_text(value)
++            return _find_token(value)
++    return _extract_from_text(text)
++
++
++def normalize_access_token(raw: str) -> str:
++    return extract_access_token(raw)
+ 
+ 
+ def decode_jwt_payload(token: str) -> dict[str, Any]:
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 2a58376..43c6986 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -17,6 +17,7 @@ from ..config import (
+     normalize_payment_method,
+ )
+ from ..errors import ConfigurationError
++from ..auth import extract_access_token
+ from ..models import ExtractionConfig
+ from .proxy_probe import ProxyProbeError, probe_proxy
+ from .tasks import TaskManager, TaskNotFoundError, TaskStateError
+@@ -339,11 +340,7 @@ def _value(payload: dict[str, Any], key: str, env_key: str, default: str = "") -
+ 
+ 
+ def _credential_value(payload: dict[str, Any]) -> str:
+-    for key in ("access_token", "accessToken", "token"):
+-        value = payload.get(key)
+-        if isinstance(value, str) and value.strip():
+-            return value.strip()
+-    return ""
++    return extract_access_token(payload)
+ 
+ 
+ def _env_bool(name: str, default: bool) -> bool:
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 589a150..b13b1db 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -180,8 +180,40 @@
+       .replaceAll("'", "&#039;");
+   }
+ 
++  const ACCESS_TOKEN_KEYS = new Set(["at", "token", "access_token", "accesstoken"]);
++
++  function normalizeTokenText(value) {
++    return String(value || "")
++      .trim()
++      .replace(/^bearer\s+/i, "")
++      .replaceAll(/\\([A-Za-z0-9._~+/=-])/g, "$1")
++      .replaceAll(/\s+/g, "");
++  }
++
++  function hasAccessTokenShape(value) {
++    const token = normalizeTokenText(value);
++    if (token.length < 8 || token.length > 16384 || !/^[A-Za-z0-9._~+/=-]+$/.test(token)) return false;
++    const parts = token.split(".");
++    if (parts.length === 3) return parts.every(Boolean);
++    // Compact JWE with `alg=dir` has an intentionally empty second part.
++    if (parts.length === 5) return Boolean(parts[0] && parts[2] && parts[3] && parts[4]);
++    return !token.includes(".");
++  }
++
++  function tokenFromText(value) {
++    let text = String(value || "").trim();
++    if (!text) return "";
++    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
++    if (metadata > 0) text = text.slice(0, metadata);
++    const direct = normalizeTokenText(text.replace(/^[\s'"{\[]+|[\s'"}\]]+$/g, ""));
++    if (hasAccessTokenShape(direct)) return direct;
++    const embedded = text.match(/[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]*){2,4}/);
++    const candidate = embedded ? normalizeTokenText(embedded[0]) : "";
++    return hasAccessTokenShape(candidate) ? candidate : "";
++  }
++
+   function findAccessToken(value) {
+-    if (typeof value === "string") return "";
++    if (typeof value === "string") return tokenFromText(value);
+     if (Array.isArray(value)) {
+       for (const item of value) {
+         const token = findAccessToken(item);
+@@ -190,8 +222,10 @@
+       return "";
+     }
+     if (!value || typeof value !== "object") return "";
+-    for (const key of ["accessToken", "access_token", "token"]) {
+-      const token = typeof value[key] === "string" ? value[key].trim() : "";
++    for (const [key, item] of Object.entries(value)) {
++      const normalizedKey = String(key).replaceAll("-", "_").toLowerCase();
++      if (!ACCESS_TOKEN_KEYS.has(normalizedKey)) continue;
++      const token = typeof item === "string" ? tokenFromText(item) : findAccessToken(item);
+       if (token) return token;
+     }
+     for (const item of Object.values(value)) {
+@@ -228,14 +262,19 @@
+   }
+ 
+   function validateAccessToken(token) {
+-    const parts = String(token || "").split(".");
+-    if (parts.length !== 3 || parts.some(part => !part)) return "Access Token 格式无效";
+-    const payload = decodeJwtPayload(token);
+-    if (!payload || Object.keys(payload).length === 0) return "Access Token 内容无效";
+-    if (payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
++    token = normalizeTokenText(token);
++    if (!hasAccessTokenShape(token)) return "Access Token 格式无效";
++    const parts = token.split(".");
++    if (parts.length === 5) {
++      const header = decodeJwtPayload(`${parts[0]}.${parts[0]}`);
++      if (!header.alg || !header.enc) return "JWE Access Token 头部无效";
++      return "";
++    }
++    const payload = parts.length === 3 ? decodeJwtPayload(token) : {};
++    if (parts.length === 3 && Object.keys(payload).length === 0) return "Access Token 内容无效";
++    if (parts.length === 3 && payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
+       return "Access Token 已过期";
+     }
+-    if (!extractAccountEmail(token)) return "Access Token 未解析出有效账号";
+     return "";
+   }
+ 
+@@ -243,12 +282,13 @@
+     const text = String(raw || "").trim();
+     if (!text) return { valid: false, isJson: false, message: "请输入 Access Token 或 JSON" };
+     if (!text.startsWith("{") && !text.startsWith("[")) {
+-      const validationMessage = validateAccessToken(text);
++      const token = tokenFromText(text);
++      const validationMessage = token ? validateAccessToken(token) : "Access Token 格式无效";
+       return {
+-        valid: !validationMessage,
++        valid: Boolean(token) && !validationMessage,
+         isJson: false,
+-        accessToken: text,
+-        accountEmail: extractAccountEmail(text),
++        accessToken: token,
++        accountEmail: extractAccountEmail(token),
+         message: validationMessage || "Access Token 校验通过",
+       };
+     }
+@@ -259,7 +299,7 @@
+       return { valid: false, isJson: true, message: "JSON 格式无效" };
+     }
+     if (typeof parsed === "string") {
+-      const token = parsed.trim();
++      const token = tokenFromText(parsed);
+       const validationMessage = token ? validateAccessToken(token) : "JSON 中未找到 Access Token";
+       return {
+         valid: Boolean(token) && !validationMessage,
+@@ -825,7 +865,9 @@
+           return { ...entry, status: "invalid", message: inspection.message, accountEmail: "" };
+         }
+         const accountEmail = inspection.accountEmail || "";
+-        const accountKey = accountEmail.toLowerCase();
++        const accountKey = accountEmail
++          ? `email:${accountEmail.toLowerCase()}`
++          : `token:${inspection.accessToken}`;
+         if (seenAccounts.has(accountKey)) {
+           return {
+             ...entry,
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 04d0971..f755746 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -228,6 +228,6 @@
+         </section>
+       </div>
+     </main>
+-    <script src="{{ url_for('static', filename='app.js', v='20260823-gcash-1') }}" defer></script>
++    <script src="{{ url_for('static', filename='app.js', v='20260824-jwe-at-1') }}" defer></script>
+   </body>
+ </html>
+diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
+index cd629f7..039e8dd 100644
+--- a/tests/test_gcash_support.py
++++ b/tests/test_gcash_support.py
+@@ -10,7 +10,7 @@ from payment_link_extractor.application import (
+     _should_apply_checkout_update,
+     extract_payment_link,
+ )
+-from payment_link_extractor.auth import account_id
++from payment_link_extractor.auth import account_id, extract_access_token
+ from payment_link_extractor.checkout import create_checkout
+ from payment_link_extractor.config import billing_for_country, country_for_payment_method
+ from payment_link_extractor.flows.oaics import (
+@@ -22,7 +22,7 @@ from payment_link_extractor.flows.oaics import (
+ from payment_link_extractor.models import ExtractionConfig
+ from payment_link_extractor import transport
+ from payment_link_extractor.web.app import create_app
+-from payment_link_extractor.web.routes import _config_from_payload
++from payment_link_extractor.web.routes import _config_from_payload, _credential_value
+ 
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+@@ -330,6 +330,16 @@ def test_account_id_extracts_browser_auth_claim() -> None:
+     assert account_id(f"header.{encoded}.signature") == "acct-fixture"
+ 
+ 
++def test_import_recognizes_compact_jwe_with_empty_encrypted_key() -> None:
++    protected = base64.urlsafe_b64encode(json.dumps({"alg": "dir", "enc": "A256GCM"}).encode()).decode().rstrip("=")
++    jwe = f"{protected}..iv_fixture.cipher_text_fixture.auth_tag_fixture"
++    escaped = jwe.replace("_", r"\_")
++
++    assert extract_access_token(escaped) == jwe
++    assert extract_access_token(f'{escaped}","authProvider":"openai') == jwe
++    assert _credential_value({"credential": {"AT": escaped}}) == jwe
++
++
+ def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:
+     class Session:
+         def __init__(self) -> None:
+diff --git a/tests/test_ui_button_contracts.py b/tests/test_ui_button_contracts.py
+index 517589f..5ba6af5 100644
+--- a/tests/test_ui_button_contracts.py
++++ b/tests/test_ui_button_contracts.py
+@@ -166,6 +166,9 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
+     assert 'elements.viewToggle.addEventListener("click"' in source
+     assert "请至少粘贴一条账号 Token 或 JSON" in source
+     assert "elements.logoutButton.hidden = !password;" in source
++    assert "function hasAccessTokenShape(value)" in source
++    assert "parts.length === 5" in source
++    assert "token:${inspection.accessToken}" in source
+     for attribute in {
+         "data-details",
+         "data-cancel",

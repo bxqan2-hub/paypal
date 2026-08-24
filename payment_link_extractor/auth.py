@@ -2,36 +2,97 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import Any
 
 
-def normalize_access_token(raw: str) -> str:
-    token = str(raw or "").strip()
-    if token.startswith("{") or token.startswith("["):
+_TOKEN_KEYS = {"at", "token", "access_token", "accesstoken"}
+_TOKEN_CHARS_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
+
+
+def _clean_token(value: Any) -> str:
+    token = str(value or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    # Markdown and chat exports often escape URL-safe JWT/JWE characters.
+    token = re.sub(r"\\([A-Za-z0-9._~+/=-])", r"\1", token)
+    return re.sub(r"\s+", "", token)
+
+
+def _token_shape(value: Any) -> bool:
+    token = _clean_token(value)
+    if not 1 <= len(token) <= 16384 or not _TOKEN_CHARS_RE.fullmatch(token):
+        return False
+    parts = token.split(".")
+    # Signed JWT/JWS.
+    if len(parts) == 3:
+        return all(parts)
+    # Compact JWE.  `alg=dir` legitimately has an empty encrypted-key part.
+    if len(parts) == 5:
+        return bool(parts[0] and parts[2] and parts[3] and parts[4])
+    # Keep compatibility with opaque access-token formats.
+    return "." not in token
+
+
+def _find_token(value: Any) -> str:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = str(key or "").replace("-", "_").lower()
+            if normalized_key in _TOKEN_KEYS and isinstance(nested, str):
+                candidate = _extract_from_text(nested)
+                if candidate:
+                    return candidate
+        for nested in value.values():
+            candidate = _find_token(nested)
+            if candidate:
+                return candidate
+    elif isinstance(value, list):
+        for nested in value:
+            candidate = _find_token(nested)
+            if candidate:
+                return candidate
+    return ""
+
+
+def _extract_from_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Stop at the next JSON property when a session export is pasted from the
+    # token value onward, e.g. TOKEN","authProvider":"openai.
+    marker = re.search(r"['\"]\s*,\s*['\"][A-Za-z][A-Za-z0-9_-]*['\"]\s*:", text)
+    if marker:
+        text = text[: marker.start()]
+    candidate = _clean_token(text.strip(" \t\r\n'\"{}[]"))
+    if _token_shape(candidate):
+        return candidate
+    # Extract a compact JWS/JWE embedded in otherwise malformed export text.
+    for match in re.finditer(r"[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]*){2,4}", text):
+        candidate = _clean_token(match.group(0))
+        if _token_shape(candidate):
+            return candidate
+    return ""
+
+
+def extract_access_token(raw: Any) -> str:
+    """Extract JWT, compact JWE, or opaque AT from common import envelopes."""
+    if isinstance(raw, (dict, list)):
+        return _find_token(raw)
+    text = str(raw or "").strip()
+    if text.startswith("{") or text.startswith("["):
         try:
-            value = json.loads(token)
+            value = json.loads(text)
         except json.JSONDecodeError:
-            return token
+            value = None
+        if value is not None:
+            if isinstance(value, str):
+                return _extract_from_text(value)
+            return _find_token(value)
+    return _extract_from_text(text)
 
-        def find(item: Any) -> str:
-            if isinstance(item, dict):
-                for key in ("accessToken", "access_token", "token"):
-                    found = str(item.get(key) or "").strip()
-                    if found:
-                        return found
-                for nested in item.values():
-                    found = find(nested)
-                    if found:
-                        return found
-            elif isinstance(item, list):
-                for nested in item:
-                    found = find(nested)
-                    if found:
-                        return found
-            return ""
 
-        return find(value) or token
-    return token
+def normalize_access_token(raw: str) -> str:
+    return extract_access_token(raw)
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any]:

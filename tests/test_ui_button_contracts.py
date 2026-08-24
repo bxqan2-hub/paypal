@@ -166,6 +166,9 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
     assert 'elements.viewToggle.addEventListener("click"' in source
     assert "请至少粘贴一条账号 Token 或 JSON" in source
     assert "elements.logoutButton.hidden = !password;" in source
+    assert "function hasAccessTokenShape(value)" in source
+    assert "parts.length === 5" in source
+    assert "token:${inspection.accessToken}" in source
     for attribute in {
         "data-details",
         "data-cancel",

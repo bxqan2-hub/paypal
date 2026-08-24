@@ -180,8 +180,40 @@
       .replaceAll("'", "&#039;");
   }
 
+  const ACCESS_TOKEN_KEYS = new Set(["at", "token", "access_token", "accesstoken"]);
+
+  function normalizeTokenText(value) {
+    return String(value || "")
+      .trim()
+      .replace(/^bearer\s+/i, "")
+      .replaceAll(/\\([A-Za-z0-9._~+/=-])/g, "$1")
+      .replaceAll(/\s+/g, "");
+  }
+
+  function hasAccessTokenShape(value) {
+    const token = normalizeTokenText(value);
+    if (token.length < 8 || token.length > 16384 || !/^[A-Za-z0-9._~+/=-]+$/.test(token)) return false;
+    const parts = token.split(".");
+    if (parts.length === 3) return parts.every(Boolean);
+    // Compact JWE with `alg=dir` has an intentionally empty second part.
+    if (parts.length === 5) return Boolean(parts[0] && parts[2] && parts[3] && parts[4]);
+    return !token.includes(".");
+  }
+
+  function tokenFromText(value) {
+    let text = String(value || "").trim();
+    if (!text) return "";
+    const metadata = text.search(/['"]\s*,\s*['"][A-Za-z][A-Za-z0-9_-]*['"]\s*:/i);
+    if (metadata > 0) text = text.slice(0, metadata);
+    const direct = normalizeTokenText(text.replace(/^[\s'"{\[]+|[\s'"}\]]+$/g, ""));
+    if (hasAccessTokenShape(direct)) return direct;
+    const embedded = text.match(/[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]*){2,4}/);
+    const candidate = embedded ? normalizeTokenText(embedded[0]) : "";
+    return hasAccessTokenShape(candidate) ? candidate : "";
+  }
+
   function findAccessToken(value) {
-    if (typeof value === "string") return "";
+    if (typeof value === "string") return tokenFromText(value);
     if (Array.isArray(value)) {
       for (const item of value) {
         const token = findAccessToken(item);
@@ -190,8 +222,10 @@
       return "";
     }
     if (!value || typeof value !== "object") return "";
-    for (const key of ["accessToken", "access_token", "token"]) {
-      const token = typeof value[key] === "string" ? value[key].trim() : "";
+    for (const [key, item] of Object.entries(value)) {
+      const normalizedKey = String(key).replaceAll("-", "_").toLowerCase();
+      if (!ACCESS_TOKEN_KEYS.has(normalizedKey)) continue;
+      const token = typeof item === "string" ? tokenFromText(item) : findAccessToken(item);
       if (token) return token;
     }
     for (const item of Object.values(value)) {
@@ -228,14 +262,19 @@
   }
 
   function validateAccessToken(token) {
-    const parts = String(token || "").split(".");
-    if (parts.length !== 3 || parts.some(part => !part)) return "Access Token 格式无效";
-    const payload = decodeJwtPayload(token);
-    if (!payload || Object.keys(payload).length === 0) return "Access Token 内容无效";
-    if (payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
+    token = normalizeTokenText(token);
+    if (!hasAccessTokenShape(token)) return "Access Token 格式无效";
+    const parts = token.split(".");
+    if (parts.length === 5) {
+      const header = decodeJwtPayload(`${parts[0]}.${parts[0]}`);
+      if (!header.alg || !header.enc) return "JWE Access Token 头部无效";
+      return "";
+    }
+    const payload = parts.length === 3 ? decodeJwtPayload(token) : {};
+    if (parts.length === 3 && Object.keys(payload).length === 0) return "Access Token 内容无效";
+    if (parts.length === 3 && payload.exp && Number.isFinite(Number(payload.exp)) && Number(payload.exp) <= Date.now() / 1000) {
       return "Access Token 已过期";
     }
-    if (!extractAccountEmail(token)) return "Access Token 未解析出有效账号";
     return "";
   }
 
@@ -243,12 +282,13 @@
     const text = String(raw || "").trim();
     if (!text) return { valid: false, isJson: false, message: "请输入 Access Token 或 JSON" };
     if (!text.startsWith("{") && !text.startsWith("[")) {
-      const validationMessage = validateAccessToken(text);
+      const token = tokenFromText(text);
+      const validationMessage = token ? validateAccessToken(token) : "Access Token 格式无效";
       return {
-        valid: !validationMessage,
+        valid: Boolean(token) && !validationMessage,
         isJson: false,
-        accessToken: text,
-        accountEmail: extractAccountEmail(text),
+        accessToken: token,
+        accountEmail: extractAccountEmail(token),
         message: validationMessage || "Access Token 校验通过",
       };
     }
@@ -259,7 +299,7 @@
       return { valid: false, isJson: true, message: "JSON 格式无效" };
     }
     if (typeof parsed === "string") {
-      const token = parsed.trim();
+      const token = tokenFromText(parsed);
       const validationMessage = token ? validateAccessToken(token) : "JSON 中未找到 Access Token";
       return {
         valid: Boolean(token) && !validationMessage,
@@ -825,7 +865,9 @@
           return { ...entry, status: "invalid", message: inspection.message, accountEmail: "" };
         }
         const accountEmail = inspection.accountEmail || "";
-        const accountKey = accountEmail.toLowerCase();
+        const accountKey = accountEmail
+          ? `email:${accountEmail.toLowerCase()}`
+          : `token:${inspection.accessToken}`;
         if (seenAccounts.has(accountKey)) {
           return {
             ...entry,

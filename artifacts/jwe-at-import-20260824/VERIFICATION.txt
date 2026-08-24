@@ -1,0 +1,25 @@
+CHANGED_BRANCH=main
+CHANGED_FIELD=access-token import parser and validator for compact JWE/JWS/opaque formats
+BASELINE_HEAD=fef14b08a8e70da93f65470acc24cf9ffca52cc9
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\DIFF_FILE.patch
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\ROLLBACK.sh
+
+BASELINE_COMMAND=.\.venv\Scripts\python.exe -m pytest -q; node --check payment_link_extractor/web/static/app.js
+BASELINE_INPUT=HEAD fef14b08a8e70da93f65470acc24cf9ffca52cc9 before compact-JWE import support
+BASELINE_LITERAL_OUTPUT=........................................................................ [ 54%]; ............................................................. [100%]; 133 passed in 1.39s; BASELINE_EXIT=0; BASELINE_NODE_EXIT=0
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q; node --check payment_link_extractor/web/static/app.js; .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor; git diff --check; Node VM compact-JWE import probe
+MODIFIED_INPUT=working tree with a sanitized alg=dir/A256GCM compact-JWE fixture containing an empty second segment and escaped underscores
+MODIFIED_LITERAL_OUTPUT=........................................................................ [ 53%]; .............................................................. [100%]; 134 passed in 1.35s; PYTEST_EXIT=0 NODE_EXIT=0 COMPILE_EXIT=0 DIFF_EXIT=0; {"valid":true,"exact":true,"message":"Access Token 校验通过","segments":5}
+MODIFIED_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=Copy MODIFIED_FILE to a temporary second copy; execute ROLLBACK.sh with baseline fef14b08a8e70da93f65470acc24cf9ffca52cc9; compare temporary-copy SHA-256 to baseline app.js
+ROLLBACK_INPUT=temporary rollback copy of MODIFIED_FILE; source_path=payment_link_extractor/web/static/app.js; primary MODIFIED_FILE retained
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_APPLIED: <temporary-copy> restored from fef14b08a8e70da93f65470acc24cf9ffca52cc9; ROLLBACK_COPY_BEFORE_SHA256=86758efd10866aeee0f7a8cbe2158fa8436943af902043887e2fc1709e911e66; ROLLBACK_COPY_AFTER_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_EXPECTED_BASELINE_SHA256=72a662927c1a5bfdace460abf89119b8714e7d6442f40515db74e959fb840300; ROLLBACK_RESTORED_BASELINE=1; MODIFIED_FILE_LEFT_CHANGED=1; ROLLBACK_TEST_TEMP_CLEANED=1
+ROLLBACK_EXIT_STATUS=0
+
+RESTORED_BEHAVIOR=rollback copy restored the baseline three-segment-only browser validator; working source and MODIFIED_FILE retain compact-JWE support.

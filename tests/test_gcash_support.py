@@ -10,7 +10,7 @@ from payment_link_extractor.application import (
     _should_apply_checkout_update,
     extract_payment_link,
 )
-from payment_link_extractor.auth import account_id
+from payment_link_extractor.auth import account_id, extract_access_token
 from payment_link_extractor.checkout import create_checkout
 from payment_link_extractor.config import billing_for_country, country_for_payment_method
 from payment_link_extractor.flows.oaics import (
@@ -22,7 +22,7 @@ from payment_link_extractor.flows.oaics import (
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor import transport
 from payment_link_extractor.web.app import create_app
-from payment_link_extractor.web.routes import _config_from_payload
+from payment_link_extractor.web.routes import _config_from_payload, _credential_value
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -328,6 +328,16 @@ def test_account_id_extracts_browser_auth_claim() -> None:
     payload = {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-fixture"}}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     assert account_id(f"header.{encoded}.signature") == "acct-fixture"
+
+
+def test_import_recognizes_compact_jwe_with_empty_encrypted_key() -> None:
+    protected = base64.urlsafe_b64encode(json.dumps({"alg": "dir", "enc": "A256GCM"}).encode()).decode().rstrip("=")
+    jwe = f"{protected}..iv_fixture.cipher_text_fixture.auth_tag_fixture"
+    escaped = jwe.replace("_", r"\_")
+
+    assert extract_access_token(escaped) == jwe
+    assert extract_access_token(f'{escaped}","authProvider":"openai') == jwe
+    assert _credential_value({"credential": {"AT": escaped}}) == jwe
 
 
 def test_transport_builds_har_identity_and_browser_headers(monkeypatch) -> None:

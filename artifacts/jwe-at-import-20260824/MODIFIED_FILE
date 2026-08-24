@@ -1,0 +1,34 @@
+MODIFIED_FILE
+changed_branch: main
+changed_field: access-token import parser and validator for compact JWE/JWS/opaque formats
+result:
+- Compact JWE with five segments is accepted, including the valid empty encrypted-key segment used by alg=dir.
+- Markdown-escaped URL-safe characters are normalized before parsing.
+- Raw token values, nested JSON AT/accessToken/access_token/token fields, and token-plus-metadata exports are recognized.
+- JWE protected headers are checked for alg and enc; JWS expiry validation remains active.
+- Encrypted/opaque tokens without a locally readable email use token identity for batch deduplication.
+- Server payload extraction uses the same extensible token parser.
+
+source_hashes_before_change:
+- payment_link_extractor/auth.py: 15f852930862f0811d007d0764d68f444e6a3df8
+- payment_link_extractor/web/routes.py: 2a58376fbd9f082f9df595d655cae6cbe719a029
+- payment_link_extractor/web/static/app.js: 589a1508e686a3f5a9d3a09dfc9efafbf5d22df7
+- payment_link_extractor/web/templates/index.html: 04d09715ecb44849e546b5991b0577319e0f32bd
+- tests/test_gcash_support.py: cd629f7c07b8ea8067e8438a81c661195938a0ec
+- tests/test_ui_button_contracts.py: 517589fd344c4239e0d44ed27654b1356767cd58
+
+source_hashes_after_change:
+- payment_link_extractor/auth.py: 4413d0fe69b9d8dee6f850634d4a49e173fb5e6d
+- payment_link_extractor/web/routes.py: 43c6986d9150e5aeda0e160c8ce5702a7e24c108
+- payment_link_extractor/web/static/app.js: b13b1db120188a3d82f14dc625d13ec2a87556dc
+- payment_link_extractor/web/templates/index.html: f755746cf5b4841dc8faa4fdb441411740714e2c
+- tests/test_gcash_support.py: 039e8dd9d68dde1ec75a4c5ece4f49483ac0a901
+- tests/test_ui_button_contracts.py: 5ba6af5bd8b56c29f90bb73d564e7703015c23ce
+
+artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\jwe-at-import-20260824\ROLLBACK.sh
+
+
