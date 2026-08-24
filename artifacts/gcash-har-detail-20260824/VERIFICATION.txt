@@ -64,3 +64,11 @@ LIVE_PROXY_EXTRACTION_INPUT=payment_method=gcash; country=PH; apply_checkout_upd
 LIVE_PROXY_EXTRACTION_LITERAL_OUTPUT=AUTO_SENTINEL_RESULT=error; ERROR_TYPE=ProtocolError; checkout create failed; status=401; message=Could not parse your authentication token. Please try signing in again.; STAGES=["checkout"]; COMMAND_EXIT=1
 LIVE_PROXY_EXTRACTION_EXIT_STATUS=1
 LIVE_PROXY_EXTRACTION_RESTORED_BEHAVIOR_STATUS=All proxy probes succeeded; authenticated checkout rejected the AT before session creation; no source file changed; primary optimized tree remains intact
+
+CURRENT_AT_SIGNATURE_CHECK=SIGNATURE_VALID=1 after normalizing Markdown-escaped underscores; token structure and RS256 signature matched the published key
+CURRENT_AT_TEST_COMMAND=OPLL_AT=<current supplied AT>; OPLL_CHECKOUT_PROXY=<redacted supplied 1024Proxy entry>; .\\.venv\\Scripts\\python.exe -m payment_link_extractor --quiet --payment-method gcash --country PH --no-update-checkout --checkout-proxy <proxy>
+CURRENT_AT_TEST_INPUT=current supplied AT; first supplied PH proxy; GCash; PH; no legacy update
+CURRENT_AT_TEST_LITERAL_OUTPUT={"ok": false, "error": "checkout create failed: {\"detail\":\"Our systems have detected unusual activity. Please try again later.\"}"}; COMMAND_EXIT=1
+CURRENT_AT_TEST_EXIT_STATUS=1
+CURRENT_AT_TEST_STAGE=checkout
+CURRENT_AT_RESTORED_BEHAVIOR_STATUS=Proxy connection completed and authentication was accepted far enough to return an unusual-activity response; no checkout session or GCash URL was created; source tree remains unchanged

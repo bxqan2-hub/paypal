@@ -8,6 +8,7 @@ MODIFIED_PATHS=.env.example;payment_link_extractor/application.py;payment_link_e
 BASELINE_COMMIT=d661231c29d6685e8b322fd646901bfe7b33ef36
 LIVE_TEST_RESULT=checkout create rejected with HTTP 401 unauthorized_unknown before a checkout session or GCash redirect was returned
 LIVE_PROXY_RESULT=five PH proxy sessions reachable; GCash checkout through proxy and automatic Sentinel still rejected the supplied AT with HTTP 401 unauthorized_unknown
+CURRENT_AT_RESULT=RS256-valid normalized AT reached ChatGPT checkout through the first proxy; service returned unusual-activity rejection before session creation
 .env.example MODIFIED_SHA256=DA3954ADC863395591558791B9B9AD16F9588C5C6A330ABA28CB253A192188E8
 payment_link_extractor/application.py MODIFIED_SHA256=FDAAC9EB3EF3C815CA47F8542958A616643A6733E655EC826CCA901FB6840992
 payment_link_extractor/auth.py MODIFIED_SHA256=B7DFB62010F2ED0603E3DE17CAA42DFEFD1808ECEF4716D92B7F24E983874106
