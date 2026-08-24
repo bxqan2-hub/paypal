@@ -1,0 +1,30 @@
+{
+  "source": "https://github.com/mika50000/MK-GCash-Link-OpenSource",
+  "commit": "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5",
+  "project_dir": "payment_link_extractor/mk_gcash_open_source",
+  "tracked_file_count": 22,
+  "sha256": {
+    ".gitignore": "f18ea6191cae2040922bfd4f35b72bf4a46d1591c6d7b17916263249e3728913",
+    "INSTALL.cmd": "f4e4b8d1bdd80a904bef4d3280fd60d875b243924ce9f0a553c7f807958451bf",
+    "LICENSE": "cd488f74183b600bcb29b23e959ea38e667b4ea3671c58d1bea82f81fca5e864",
+    "README.md": "e267b207eb4e97b08e48ff578e61067c62e5fbc9365f1e69af26645b2bf245f6",
+    "SECURITY.md": "5b880ef1a847b4f941879807b9ae1c2c823f4e669834a77504419ddae53dac8f",
+    "START.cmd": "f7826f6e6afd7093ab0e6652b54763d2a1c29536ea9f6a2e9a91af02d49ed7ce",
+    "app.py": "41ddcfd4d0abf4b3fca5b25ad4289a2ceffc81c5209652f52428bcb4975aeefd",
+    "gcash_chain.py": "1ae7dfad417bf49199f4053e12bdafe1f89850aab7984ed6d1892d235434af38",
+    "payment_monitor.py": "2d183d7d42a52d9d5ca9e7d6c5d899a71bc2f51b49e3c7737440c68eae8c3088",
+    "requirements.txt": "45ea08bcb0eec73531e2186b2b99e71d3cbc3d12aaa02131ed833a1919a1efe0",
+    "sentinel.py": "558078c9264dde77e715f59173129394f6c7a8cbff33e224407babc3e72780d2",
+    "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
+    "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8",
+    "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
+    "tests/test_app.py": "fff8b2d4feac87d9acce8e2c1d594cc2104219b901b86c6207a6e9c5cbd18109",
+    "tests/test_gcash_chain.py": "a9b58d8d815cdd2c80643f4af9ff15630a15cf004021f4b69d6df45de4130ca3",
+    "tests/ui_check.js": "eaeb60c7c749102c2611144fe3a066d196e10b4147fe5fa788971ec24e4701b3",
+    "web/app.js": "0f1e64446864ffa5c2653339f7d9a48186afabb5dc44b14986406cbffc0a621c",
+    "web/assets/logo.svg": "a79ceeb824481dc0a9d472bd8b8cc39cf7f1e8799b695dbe8f069301cf0cca39",
+    "web/assets/mikael-mail-logo.webp": "e6d77431c99484d79760a988ee386ecc66fb10cf1736988e270d44a1b7ae7930",
+    "web/index.html": "964b9e664b3159ad9db7b6f7da45a258ce5082362c87ba532d1fd73ef760d449",
+    "web/style.css": "bed27929a055d97c8500042b512dc0f0bca1a828eb6e701a613fe0dcf8ca8773"
+  }
+}

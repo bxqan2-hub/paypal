@@ -59,8 +59,8 @@ def create_app(
     )
     app.extensions["payment_task_manager"] = manager
     register_routes(app, manager)
-    # Keep the agreement protocol in this Flask process.  The adapter mounts
-    # the clean upstream core below /paypal-pay without opening another port.
+    # Keep the agreement protocol in this Flask process. GCash starts the
+    # complete copied upstream app directly; it does not mount a merged flow.
     register_paypal_protocol(app)
     if (
         not app.config.get("TESTING")

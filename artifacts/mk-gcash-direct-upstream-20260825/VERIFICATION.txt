@@ -1,0 +1,61 @@
+OBJECT: GCash 提链入口
+BRANCH/FIELD: main / GCash dispatch -> complete copied MK app.py create_job()
+BASELINE_COMMIT: 62996ad2fd01162b4701b82fa371baa4e5d0bad4
+UPSTREAM_COMMIT: 2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\mk_gcash.py
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-direct-upstream-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-direct-upstream-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-direct-upstream-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at 62996ad2fd01162b4701b82fa371baa4e5d0bad4; no source changes.
+BASELINE OUTPUT:
+  ........................................................................ [ 48%]
+  ........................................................................ [ 96%]
+  ......                                                                   [100%]
+  150 passed in 1.49s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: complete upstream tree at payment_link_extractor/mk_gcash_open_source/; direct bridge enabled.
+MODIFIED OUTPUT:
+  ........................................................................ [ 48%]
+  ........................................................................ [ 96%]
+  ......                                                                   [100%]
+  150 passed in 1.27s
+
+UPSTREAM-COPY COMMAND (exit 0):
+  (cd payment_link_extractor/mk_gcash_open_source && C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q)
+UPSTREAM-COPY INPUT: the copied upstream project's own tests.
+UPSTREAM-COPY OUTPUT:
+  ...........                                                              [100%]
+  11 passed in 0.67s
+
+COPY-INTEGRITY COMMAND (exit 0): compare every git ls-files SHA-256 from
+  C:\Temp\MK-GCash-Link-OpenSource-audit-20260824-1705 to
+  C:\Users\Administrator\Desktop\提链\payment_link_extractor\mk_gcash_open_source
+COPY-INTEGRITY RESULT: SOURCE_TRACKED=22; VENDORED_FILES=22; MISMATCH_COUNT=0;
+  HEAD=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5.
+
+DIRECT-CALL RESULT: _load_upstream_app().__file__ resolves to
+  C:\Users\Administrator\Desktop\提链\payment_link_extractor\mk_gcash_open_source\app.py;
+  gcash_chain.__file__ resolves to the same copied project. GCash tasks call
+  copied app.create_job(payload), poll copied app.public_job(job_id), and use
+  copied CHAIN_MANAGER; the site's legacy GCash transport is not constructed.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-direct-upstream-20260825\ROLLBACK.sh" "C:\Temp\mk-gcash-direct-upstream-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\mk-gcash-direct-upstream-rollback-20260825 restored_commit=62996ad2fd01162b4701b82fa371baa4e5d0bad4
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q C:\Temp\mk-gcash-direct-upstream-rollback-20260825\tests
+RESTORED OUTPUT:
+  ........................................................................ [ 48%]
+  ........................................................................ [ 96%]
+  ......                                                                   [100%]
+  150 passed in 1.51s
+RESTORED STATUS: disposable worktree HEAD equals 62996ad2fd01162b4701b82fa371baa4e5d0bad4; git status clean. Main worktree remains modified for delivery and preserves the user's pre-existing dirty used_local_card_hashes.txt.

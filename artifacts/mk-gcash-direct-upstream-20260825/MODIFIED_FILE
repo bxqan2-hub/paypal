@@ -1,0 +1,8 @@
+payment_link_extractor/mk_gcash.py
+
+Changed branch/field: GCash dispatch now loads the complete copied
+payment_link_extractor/mk_gcash_open_source/app.py and calls its create_job()
+directly; the site only maps the upstream task snapshot into its own result.
+
+The complete upstream project (22 tracked files) is present at
+payment_link_extractor/mk_gcash_open_source/.

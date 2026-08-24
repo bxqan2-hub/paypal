@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MK提链 · 开源版</title>
+  <link rel="icon" href="assets/mikael-mail-logo.webp" type="image/webp">
+  <link rel="stylesheet" href="style.css?v=20260824-openui01">
+</head>
+<body>
+  <header class="titlebar">
+    <a class="brand" href="/" aria-label="MK提链首页">
+      <img src="assets/mikael-mail-logo.webp" width="34" height="34" alt="MK">
+      <strong>MK提链 <span>开源版</span></strong>
+    </a>
+    <div class="titleActions">
+      <div class="queueState checking" id="queueStatus" aria-live="polite">
+        <i></i><span>服务检查中</span>
+      </div>
+      <div class="topStat"><b id="accountCount">0</b><span>账号</span></div>
+      <span class="repoLink">本地模式</span>
+    </div>
+  </header>
+
+  <nav class="steps" aria-label="任务步骤">
+    <button class="step active" type="button" data-step="1">
+      <span class="stepNum">1</span>
+      <b>导入账号</b>
+      <span class="stepState" id="stepState1">当前</span>
+    </button>
+    <span class="connector"></span>
+    <button class="step" type="button" data-step="2">
+      <span class="stepNum">2</span>
+      <b>确认账号与提链</b>
+      <span class="stepState" id="stepState2">0</span>
+    </button>
+  </nav>
+
+  <main class="workspace">
+    <section class="stage active" id="stage1">
+      <div class="stageHeader">
+        <div>
+          <span class="eyebrow">本地任务</span>
+          <h1>导入账号</h1>
+        </div>
+        <span class="capacity" id="inputCounter">0 个账号 · 0 个节点</span>
+      </div>
+
+      <div class="importGrid">
+        <section class="inputPane panel">
+          <div class="panelTitle">
+            <div><b>粘贴 AT</b><span>Bearer / Authorization / email|AT</span></div>
+            <span class="muted" id="importStatus">等待导入</span>
+          </div>
+          <textarea id="tokenInput" spellcheck="false" autocomplete="off" placeholder="每行一个 AT，可使用 email@example.com|eyJ..."></textarea>
+          <div class="buttonRow">
+            <label class="button secondary fileButton">选择 TXT<input id="txtFile" type="file" accept=".txt,text/plain"></label>
+            <button class="secondary" id="clearToken" type="button">清空</button>
+            <span class="grow"></span>
+            <button class="primary actionButton" id="importTokenBtn" type="button">解析账号</button>
+          </div>
+        </section>
+
+        <aside class="proxyPane panel">
+          <div class="panelTitle">
+            <div><b>PH 住宅代理池</b><span>仅使用自备节点</span></div>
+            <span class="proxyCount" id="proxyCount">0 / 100</span>
+          </div>
+          <textarea id="proxyInput" spellcheck="false" autocomplete="off" placeholder="host:port:user:pass&#10;http://user:pass@host:port&#10;socks5://host:port"></textarea>
+          <div class="proxyOptions">
+            <label for="maxAttempts">单账号重试</label>
+            <select id="maxAttempts">
+              <option value="1">1 次</option>
+              <option value="3">3 次</option>
+              <option value="5" selected>5 次</option>
+              <option value="7">7 次</option>
+              <option value="10">10 次</option>
+            </select>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="stage" id="stage2">
+      <div class="stageHeader compact">
+        <div>
+          <span class="eyebrow">本地任务</span>
+          <h1>确认账号与提链</h1>
+        </div>
+        <div class="headerActions">
+          <span class="selectionBadge" id="selectionBadge">已选 0 / 0</span>
+          <button class="secondary" id="backImport" type="button">重新导入</button>
+        </div>
+      </div>
+
+      <div class="accountToolbar">
+        <label class="searchBox">
+          <span aria-hidden="true">⌕</span>
+          <input id="search" type="search" placeholder="搜索邮箱或名称">
+        </label>
+        <select id="stateFilter" aria-label="账号状态">
+          <option value="">全部状态</option>
+          <option value="valid">有效</option>
+          <option value="expired">已过期</option>
+        </select>
+        <button class="secondary" id="selectVisible" type="button">全选当前</button>
+        <button class="danger" id="deleteSelected" type="button">删除所选</button>
+      </div>
+
+      <div class="accountArea">
+        <div class="accountGrid" id="accountRows"></div>
+        <div class="emptyState" id="accountEmpty">
+          <div class="emptyIcon">◎</div><b>暂无账号</b>
+        </div>
+      </div>
+
+      <div class="nextBar panel">
+        <div>
+          <b id="selectionText">已选 0 个账号</b>
+          <span id="selectionMeta">自备节点 0 条 · 重试 5 次</span>
+        </div>
+        <div class="nextActions">
+          <button class="danger actionButton hidden" id="stopJob" type="button">停止任务</button>
+          <button class="primary actionButton" id="startJob" type="button">开始提链</button>
+        </div>
+      </div>
+
+      <section class="resultsSection" id="resultsSection">
+        <div class="sectionHeader">
+          <div><span class="eyebrow">当前任务</span><h2>结果中心</h2></div>
+          <button class="secondary" id="clearResults" type="button">清空结果</button>
+        </div>
+
+        <div class="resultStats" id="resultStats">
+          <div class="stat success"><span>出链</span><b id="readyCount">0</b></div>
+          <div class="stat fail"><span>失败</span><b id="failedCount">0</b></div>
+          <div class="stat paid"><span>支付成功</span><b id="paidCount">0</b></div>
+          <div class="stat"><span>总计</span><b id="totalCount">0</b></div>
+        </div>
+
+        <div class="warnings hidden" id="warnings"></div>
+        <div class="progressGrid hidden" id="progressGrid"></div>
+        <div class="resultGrid" id="resultGrid"></div>
+        <div class="emptyState resultEmpty" id="resultEmpty">
+          <div class="emptyIcon">▦</div><b>暂无结果</b>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="qrModal" role="dialog" aria-modal="true" aria-labelledby="qrTitle">
+    <div class="modalPanel">
+      <div class="modalHeader">
+        <div><span class="eyebrow">GCash</span><h2 id="qrTitle">支付二维码</h2></div>
+        <button class="iconButton" id="closeQr" type="button" aria-label="关闭" title="关闭">×</button>
+      </div>
+      <div class="qrFrame">
+        <img class="hidden" id="qrImage" alt="GCash 支付二维码">
+        <div class="qrPending" id="qrPending"><i></i><b>二维码生成中</b></div>
+      </div>
+      <div class="qrMeta"><strong id="qrEmail"></strong><span id="qrState"></span></div>
+      <div class="modalActions">
+        <button class="secondary" id="copyModalLink" type="button">复制链接</button>
+        <button class="secondary" id="downloadQr" type="button">保存二维码</button>
+        <button class="primary" id="refreshQr" type="button">刷新二维码</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js?v=20260824-openui01" defer></script>
+</body>
+</html>
