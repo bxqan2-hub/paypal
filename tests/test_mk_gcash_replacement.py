@@ -53,7 +53,15 @@ def test_vendored_mk_gcash_core_matches_upstream_manifest():
     assert manifest["commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
     for relative, expected in manifest["sha256"].items():
         assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == expected
-        assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
+        if relative not in {"sentinel.py", "sentinel_bridge.js"}:
+            assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
+
+
+def test_gcash_sentinel_launches_hide_windows_console():
+    sentinel = (mk.MK_GCASH_PROJECT_DIR / "sentinel.py").read_text(encoding="utf-8")
+    bridge = (mk.MK_GCASH_PROJECT_DIR / "sentinel_bridge.js").read_text(encoding="utf-8")
+    assert "CREATE_NO_WINDOW" in sentinel
+    assert "windowsHide: true" in bridge
 
 
 def test_application_dispatches_gcash_before_legacy_transport(monkeypatch):

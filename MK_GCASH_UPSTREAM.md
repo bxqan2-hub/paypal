@@ -29,8 +29,11 @@ transport, so the previous site GCash implementation is not used.
 
 The upstream MIT license is preserved at
 `licenses/MK-GCash-Link-OpenSource.LICENSE`. Exact source hashes are recorded in
-`mk_gcash_core_manifest.json` and enforced by the test suite. The full copied
-project remains source-identical to the recorded upstream commit.
+`mk_gcash_core_manifest.json` and enforced by the test suite for the protocol
+source. The vendored `sentinel.py` and `sentinel_bridge.js` additionally carry
+two local Windows process-launch flags (`CREATE_NO_WINDOW` and `windowsHide`) so
+Node and curl never flash a console window; their Sentinel protocol behavior is
+otherwise unchanged.
 
 The browser workbench also follows the upstream single `proxy_pool` contract,
 1–10 maximum-attempt semantics, purple MK visual system, and account/task
@@ -42,5 +45,5 @@ GCash account metadata now follows the copied upstream `app.py`: explicit accoun
 `email`/`name` wins, then JWT profile claims; expired JWTs are rejected before
 checkout. No synthetic Philippine address is injected. The integration only
 adds runtime observability, shared-Chromium prewarming, and an 8-second proxy
-TCP connect cap; the vendored protocol files and their recorded hashes remain
-unchanged.
+TCP connect cap; the two console-suppression flags are the only local changes
+inside the copied Sentinel launchers.

@@ -1,0 +1,132 @@
+diff --git a/MK_GCASH_UPSTREAM.md b/MK_GCASH_UPSTREAM.md
+index 126c109..3c9eb61 100644
+--- a/MK_GCASH_UPSTREAM.md
++++ b/MK_GCASH_UPSTREAM.md
+@@ -29,8 +29,11 @@ transport, so the previous site GCash implementation is not used.
+ 
+ The upstream MIT license is preserved at
+ `licenses/MK-GCash-Link-OpenSource.LICENSE`. Exact source hashes are recorded in
+-`mk_gcash_core_manifest.json` and enforced by the test suite. The full copied
+-project remains source-identical to the recorded upstream commit.
++`mk_gcash_core_manifest.json` and enforced by the test suite for the protocol
++source. The vendored `sentinel.py` and `sentinel_bridge.js` additionally carry
++two local Windows process-launch flags (`CREATE_NO_WINDOW` and `windowsHide`) so
++Node and curl never flash a console window; their Sentinel protocol behavior is
++otherwise unchanged.
+ 
+ The browser workbench also follows the upstream single `proxy_pool` contract,
+ 1–10 maximum-attempt semantics, purple MK visual system, and account/task
+@@ -42,5 +45,5 @@ GCash account metadata now follows the copied upstream `app.py`: explicit accoun
+ `email`/`name` wins, then JWT profile claims; expired JWTs are rejected before
+ checkout. No synthetic Philippine address is injected. The integration only
+ adds runtime observability, shared-Chromium prewarming, and an 8-second proxy
+-TCP connect cap; the vendored protocol files and their recorded hashes remain
+-unchanged.
++TCP connect cap; the two console-suppression flags are the only local changes
++inside the copied Sentinel launchers.
+diff --git a/artifacts/mk-gcash-windows-no-console-20260825/MODIFIED_FILE b/artifacts/mk-gcash-windows-no-console-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..4af5d7b
+--- /dev/null
++++ b/artifacts/mk-gcash-windows-no-console-20260825/MODIFIED_FILE
+@@ -0,0 +1,8 @@
++MODIFIED_FILE
++payment_link_extractor/mk_gcash_open_source/sentinel.py
++- Windows Node bridge launch now passes subprocess.CREATE_NO_WINDOW on Windows.
++
++payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
++- curl spawn now passes windowsHide: true.
++
++Root upstream copies sentinel.py and sentinel_bridge.js remain unchanged; only the vendored runtime files are patched.
+diff --git a/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh b/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
+new file mode 100644
+index 0000000..512af23
+--- /dev/null
++++ b/artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++set -euo pipefail
++# Restore the pre-change commit in a disposable worktree.
++BASELINE=92ca47c08858d5af727a4db15b878d38414098fe
++git restore --source="$BASELINE" -- \
++  MK_GCASH_UPSTREAM.md \
++  mk_gcash_project_manifest.json \
++  payment_link_extractor/mk_gcash_open_source/sentinel.py \
++  payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js \
++  tests/test_mk_gcash_replacement.py
+diff --git a/mk_gcash_project_manifest.json b/mk_gcash_project_manifest.json
+index 0fd5fc7..5278508 100644
+--- a/mk_gcash_project_manifest.json
++++ b/mk_gcash_project_manifest.json
+@@ -14,10 +14,10 @@
+     "gcash_chain.py": "1ae7dfad417bf49199f4053e12bdafe1f89850aab7984ed6d1892d235434af38",
+     "payment_monitor.py": "2d183d7d42a52d9d5ca9e7d6c5d899a71bc2f51b49e3c7737440c68eae8c3088",
+     "requirements.txt": "45ea08bcb0eec73531e2186b2b99e71d3cbc3d12aaa02131ed833a1919a1efe0",
+-    "sentinel.py": "558078c9264dde77e715f59173129394f6c7a8cbff33e224407babc3e72780d2",
++    "sentinel.py": "40db2ed31e706f21ecbed1fc570e2a67173759d34c4fab47172dd006de1cba3a",
+     "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
+     "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8",
+-    "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
++    "sentinel_bridge.js": "df670e4188f1bde360b237d7bf610e98b7738f8372b6e4d4edabb26be8d09eed",
+     "tests/test_app.py": "fff8b2d4feac87d9acce8e2c1d594cc2104219b901b86c6207a6e9c5cbd18109",
+     "tests/test_gcash_chain.py": "a9b58d8d815cdd2c80643f4af9ff15630a15cf004021f4b69d6df45de4130ca3",
+     "tests/ui_check.js": "eaeb60c7c749102c2611144fe3a066d196e10b4147fe5fa788971ec24e4701b3",
+diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel.py b/payment_link_extractor/mk_gcash_open_source/sentinel.py
+index 1e26c00..b72c4ab 100644
+--- a/payment_link_extractor/mk_gcash_open_source/sentinel.py
++++ b/payment_link_extractor/mk_gcash_open_source/sentinel.py
+@@ -54,12 +54,17 @@ def mint_sentinel_sync(
+         separators=(",", ":"),
+     ).encode()
+     try:
++        run_kwargs = {
++            "input": payload,
++            "capture_output": True,
++            "timeout": timeout_s,
++            "check": False,
++        }
++        if os.name == "nt":
++            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+         process = subprocess.run(
+             [_resolve_node_executable(), str(_BRIDGE_JS)],
+-            input=payload,
+-            capture_output=True,
+-            timeout=timeout_s,
+-            check=False,
++            **run_kwargs,
+         )
+     except FileNotFoundError as exc:
+         raise RuntimeError("Sentinel 需要 Node.js") from exc
+diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
+index 4ca398c..f414306 100644
+--- a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
++++ b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
+@@ -206,6 +206,7 @@ function makeCurlFetch(proxy) {
+       args.push("-w", marker + "%{http_code}", String(url));
+       const child = spawn(process.env.SENTINEL_CURL || "curl", args, {
+         stdio: ["ignore", "pipe", "pipe"],
++        windowsHide: true,
+       });
+       const stdout = [];
+       const stderr = [];
+diff --git a/tests/test_mk_gcash_replacement.py b/tests/test_mk_gcash_replacement.py
+index 30dca6e..95e3fbc 100644
+--- a/tests/test_mk_gcash_replacement.py
++++ b/tests/test_mk_gcash_replacement.py
+@@ -53,7 +53,15 @@ def test_vendored_mk_gcash_core_matches_upstream_manifest():
+     assert manifest["commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+     for relative, expected in manifest["sha256"].items():
+         assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == expected
+-        assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
++        if relative not in {"sentinel.py", "sentinel_bridge.js"}:
++            assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
++
++
++def test_gcash_sentinel_launches_hide_windows_console():
++    sentinel = (mk.MK_GCASH_PROJECT_DIR / "sentinel.py").read_text(encoding="utf-8")
++    bridge = (mk.MK_GCASH_PROJECT_DIR / "sentinel_bridge.js").read_text(encoding="utf-8")
++    assert "CREATE_NO_WINDOW" in sentinel
++    assert "windowsHide: true" in bridge
+ 
+ 
+ def test_application_dispatches_gcash_before_legacy_transport(monkeypatch):

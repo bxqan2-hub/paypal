@@ -54,12 +54,17 @@ def mint_sentinel_sync(
         separators=(",", ":"),
     ).encode()
     try:
+        run_kwargs = {
+            "input": payload,
+            "capture_output": True,
+            "timeout": timeout_s,
+            "check": False,
+        }
+        if os.name == "nt":
+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         process = subprocess.run(
             [_resolve_node_executable(), str(_BRIDGE_JS)],
-            input=payload,
-            capture_output=True,
-            timeout=timeout_s,
-            check=False,
+            **run_kwargs,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("Sentinel 需要 Node.js") from exc

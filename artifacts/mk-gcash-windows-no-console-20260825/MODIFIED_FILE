@@ -1,0 +1,8 @@
+MODIFIED_FILE
+payment_link_extractor/mk_gcash_open_source/sentinel.py
+- Windows Node bridge launch now passes subprocess.CREATE_NO_WINDOW on Windows.
+
+payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
+- curl spawn now passes windowsHide: true.
+
+Root upstream copies sentinel.py and sentinel_bridge.js remain unchanged; only the vendored runtime files are patched.
