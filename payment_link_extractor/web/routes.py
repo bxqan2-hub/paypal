@@ -324,6 +324,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         checkout_proxy_attempts=checkout_proxy_attempts,
         update_proxy_attempts=update_proxy_attempts,
         proxy_pool=submitted_pool,
+        account_name=str(payload.get("name") or "").strip(),
+        account_email=str(payload.get("email") or "").strip(),
     )
 
 

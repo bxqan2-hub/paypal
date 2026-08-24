@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import threading
 from typing import Any, Mapping
 
 from flask import Flask, render_template, request
@@ -61,6 +62,21 @@ def create_app(
     # Keep the agreement protocol in this Flask process.  The adapter mounts
     # the clean upstream core below /paypal-pay without opening another port.
     register_paypal_protocol(app)
+    if (
+        not app.config.get("TESTING")
+        and os.getenv("MK_GCASH_PREWARM", "true").strip().lower()
+        not in {"0", "false", "no", "off"}
+    ):
+        from ..mk_gcash import prewarm_mk_gcash_runtime
+
+        def prewarm() -> None:
+            try:
+                version = prewarm_mk_gcash_runtime()
+                app.logger.info("MK GCash Chromium prewarmed: %s", version)
+            except Exception as exc:
+                app.logger.warning("MK GCash Chromium prewarm skipped: %s", type(exc).__name__)
+
+        threading.Thread(target=prewarm, name="mk-gcash-prewarm", daemon=True).start()
 
     @app.before_request
     def require_api_password() -> Any:

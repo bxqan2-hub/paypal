@@ -1,0 +1,561 @@
+diff --git a/.env.example b/.env.example
+index 2dc54f6..bef6047 100644
+--- a/.env.example
++++ b/.env.example
+@@ -14,10 +14,10 @@ OPLL_OPENAI_SENTINEL_TOKEN=
+ OPLL_OPENAI_SENTINEL_SO_TOKEN=
+ OPLL_OAI_IS_CLIENT_OBSERVATION=
+ OPLL_X_OAI_IS_PENDING_UPDATES=
+-# GCash uses a live SentinelSDK browser context when agent-browser is installed.
+-# Set to off only for deployments that inject fresh headers themselves.
+-OPLL_GCASH_SENTINEL_BROWSER=auto
+-OPLL_AGENT_BROWSER_BIN=
++# MK GCash runtime: prewarm its shared Playwright Chromium and bound only the
++# dead-proxy TCP connect phase. The upstream 30-second request timeout remains.
++MK_GCASH_PREWARM=true
++MK_GCASH_CONNECT_TIMEOUT_MS=8000
+ OPLL_USER_AGENT=
+ OPLL_OAI_LANGUAGE=en-US
+ OPLL_SEC_CH_UA=
+diff --git a/GCASH_PERFORMANCE.md b/GCASH_PERFORMANCE.md
+new file mode 100644
+index 0000000..bbf3a4b
+--- /dev/null
++++ b/GCASH_PERFORMANCE.md
+@@ -0,0 +1,48 @@
++# GCash performance diagnosis
++
++## Observed cause
++
++The recent slow extraction recorded in the local service log was blocked before
++a successful ChatGPT connection. It was not spending the time calculating
++billing or inside the payment-method adapter.
++
++Sanitized timeline for the most recent five-attempt task:
++
++| Attempt | Start | End | Duration | Result |
++|---|---:|---:|---:|---|
++| 1 | 18:53:10.832 | 18:53:40.847 | 30.015 s | proxy connection timeout |
++| 2 | 18:53:40.848 | 18:54:10.853 | 30.005 s | proxy connection timeout |
++| 3 | 18:54:10.853 | 18:54:40.860 | 30.007 s | proxy connection timeout |
++| 4 | 18:54:40.860 | 18:55:10.873 | 30.013 s | proxy connection timeout |
++| 5 | 18:55:10.873 | 18:55:31.948 | 21.075 s | proxy could not connect to ChatGPT |
++
++Total wall time was **141.116 seconds**. Four entries exhausted the upstream
++30-second request timeout consecutively. The final error also explicitly
++reported that the proxy could not connect to `chatgpt.com:443`. Therefore the
++dominant delay was an unreachable/slow proxy pool combined with five sequential
++attempts.
++
++## Optimizations applied
++
++1. The shared upstream Playwright Chromium is prewarmed when the service starts,
++   removing first-GCash-task browser cold-start work.
++2. The upstream 30-second HTTP response deadline remains unchanged, but the TCP
++   proxy connection phase is capped at 8 seconds by default. A dead five-node
++   pool now reaches rotation/failure much earlier instead of consuming roughly
++   30 seconds per node.
++3. Each task stage is now written to the log by name, and every attempt records
++   `elapsed_ms`.
++4. Successful GCash results expose `stage_offsets_ms`, `total_elapsed_ms`, and
++   `connect_timeout_ms`, so the next real run identifies whether time is spent
++   in proxy preflight, checkout, taxes, confirmation, redirect, or QR capture.
++
++Environment controls:
++
++```dotenv
++MK_GCASH_PREWARM=true
++MK_GCASH_CONNECT_TIMEOUT_MS=8000
++```
++
++The connect cap is bounded to 3–15 seconds. These integration optimizations do
++not alter `gcash_chain.py`, `payment_monitor.py`, Sentinel code, checkout body,
++tax/confirm/start order, payment monitor, or callback behavior.
+diff --git a/MK_GCASH_UPSTREAM.md b/MK_GCASH_UPSTREAM.md
+index f8db727..a0ab726 100644
+--- a/MK_GCASH_UPSTREAM.md
++++ b/MK_GCASH_UPSTREAM.md
+@@ -27,3 +27,10 @@ The browser workbench also follows the upstream single `proxy_pool` contract,
+ layout. The upstream `web/assets/mikael-mail-logo.webp` is copied byte-for-byte.
+ The payment-method selector is the intentional local entry-point difference;
+ every selected method shares the same proxy pool.
++
++GCash account metadata now follows upstream `app.py`: explicit account
++`email`/`name` wins, then JWT profile claims; expired JWTs are rejected before
++checkout. No synthetic Philippine address is injected. The integration only
++adds runtime observability, shared-Chromium prewarming, and an 8-second proxy
++TCP connect cap; the vendored protocol files and their recorded hashes remain
++unchanged.
+diff --git a/payment_link_extractor/mk_gcash.py b/payment_link_extractor/mk_gcash.py
+index a10ba83..585006c 100644
+--- a/payment_link_extractor/mk_gcash.py
++++ b/payment_link_extractor/mk_gcash.py
+@@ -1,14 +1,19 @@
+ from __future__ import annotations
+ 
++import asyncio
++import os
++import secrets
+ import threading
++import time
+ from typing import Any, Callable
+ 
+ from gcash_chain import GCashChain, _retry_decision
++from curl_cffi import CurlOpt
++from payment_monitor import manager as payment_monitor
+ 
+-from .auth import account_email, account_id
+-from .config import billing_for_country
++from .auth import decode_jwt_payload
+ from .errors import ExtractionCancelled, ProtocolError
+-from .models import ExtractionConfig, PaymentLinkResult
++from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
+ 
+ 
+ MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+@@ -30,6 +35,85 @@ def _as_int(value: Any) -> int:
+         return 0
+ 
+ 
++def _connect_timeout_ms() -> int:
++    try:
++        return max(3_000, min(int(os.getenv("MK_GCASH_CONNECT_TIMEOUT_MS", "8000")), 15_000))
++    except (TypeError, ValueError):
++        return 8_000
++
++
++def _upstream_account(config: ExtractionConfig) -> tuple[str, str, str]:
++    """Apply MK app.py's explicit/JWT account metadata and expiry rules."""
++    payload = decode_jwt_payload(config.access_token)
++    profile = payload.get("https://api.openai.com/profile")
++    auth = payload.get("https://api.openai.com/auth")
++    profile = profile if isinstance(profile, dict) else {}
++    auth = auth if isinstance(auth, dict) else {}
++    expires_at = payload.get("exp")
++    try:
++        expires_at = int(expires_at) if expires_at is not None else None
++    except (TypeError, ValueError):
++        expires_at = None
++    if expires_at is not None and expires_at <= int(time.time()):
++        raise ProtocolError(401, "AT 已过期")
++    email = str(
++        config.account_email
++        or profile.get("email")
++        or payload.get("email")
++        or payload.get("preferred_username")
++        or ""
++    ).strip()
++    name = str(
++        config.account_name
++        or profile.get("name")
++        or payload.get("name")
++        or payload.get("given_name")
++        or ""
++    ).strip()
++    token_account_id = str(
++        auth.get("chatgpt_account_id")
++        or payload.get("chatgpt_account_id")
++        or payload.get("account_id")
++        or ""
++    ).strip()
++    return token_account_id, email, name
++
++
++def _upstream_billing(email: str, name: str) -> BillingProfile:
++    # MK sends only checkout_email, billing_name, country=PH and tax_id=None.
++    # Keep absent address fields absent instead of injecting the site's former
++    # synthetic Philippine identity.
++    return BillingProfile(
++        name=name or "GCash User",
++        email=email,
++        phone="",
++        country="PH",
++        line1="",
++        city="",
++        state="",
++        postal_code="",
++    )
++
++
++def _apply_connect_timeout(chain: GCashChain) -> int:
++    timeout_ms = _connect_timeout_ms()
++    session = getattr(chain, "_session", None)
++    options = getattr(session, "curl_options", None)
++    if isinstance(options, dict):
++        options[CurlOpt.CONNECTTIMEOUT_MS] = timeout_ms
++    return timeout_ms
++
++
++def prewarm_mk_gcash_runtime(timeout: float = 20.0) -> str:
++    """Launch the upstream shared Chromium before the first GCash task."""
++    payment_monitor._ensure_loop()
++    future = asyncio.run_coroutine_threadsafe(
++        payment_monitor._get_browser(), payment_monitor._loop
++    )
++    browser = future.result(timeout=max(1.0, float(timeout)))
++    return str(browser.version)
++
++
+ def extract_mk_gcash_payment_link(
+     config: ExtractionConfig,
+     *,
+@@ -37,31 +121,38 @@ def extract_mk_gcash_payment_link(
+     stage_callback: Callable[[str], None] | None = None,
+ ) -> PaymentLinkResult:
+     """Run the vendored MK GCash core and adapt its result to this application."""
+-    billing = billing_for_country("PH")
+-    token_account_id = account_id(config.access_token)
+-    email = account_email(config.access_token) or billing.email
++    token_account_id, email, name = _upstream_account(config)
++    billing = _upstream_billing(email, name)
+     last_stage = ""
++    started_at = time.perf_counter()
++    stage_offsets_ms: dict[str, int] = {}
+ 
+     def cancelled() -> bool:
+         return bool(cancel_event is not None and cancel_event.is_set())
+ 
+     def on_update(snapshot: dict[str, Any]) -> None:
+         nonlocal last_stage
+-        stage = _STAGE_MAP.get(str(snapshot.get("current_step") or ""), "")
++        upstream_stage = str(snapshot.get("current_step") or "")
++        if upstream_stage and upstream_stage not in stage_offsets_ms:
++            stage_offsets_ms[upstream_stage] = round((time.perf_counter() - started_at) * 1000)
++        stage = _STAGE_MAP.get(upstream_stage, "")
+         if stage and stage != last_stage and stage_callback is not None:
+             last_stage = stage
+             stage_callback(stage)
+ 
+     chain = GCashChain(
+         token=config.access_token,
+-        client_account_id=token_account_id or email,
++        client_account_id="acct_" + secrets.token_hex(8),
+         account_id=token_account_id,
+         billing_email=email,
+-        billing_name=billing.name,
++        billing_name=name,
+         proxy=config.checkout_proxy,
+         on_update=on_update,
+         cancel_check=cancelled,
+     )
++    # Keep the upstream 30-second request deadline, but cap only the TCP proxy
++    # connect phase. Dead pool entries previously consumed 30 seconds apiece.
++    connect_timeout_ms = _apply_connect_timeout(chain)
+     result = chain.run()
+     if str(result.get("status") or "") != "success":
+         detail = str(result.get("error_message") or "GCash extraction failed")
+@@ -71,6 +162,8 @@ def extract_mk_gcash_payment_link(
+         error = ProtocolError(502, detail)
+         error.mk_retryable = bool(retryable)  # type: ignore[attr-defined]
+         error.mk_retry_reason = str(retry_reason or "")  # type: ignore[attr-defined]
++        error.mk_stage_offsets_ms = dict(stage_offsets_ms)  # type: ignore[attr-defined]
++        error.mk_elapsed_ms = round((time.perf_counter() - started_at) * 1000)  # type: ignore[attr-defined]
+         raise error
+ 
+     gcash_url = str(result.get("gcash_url") or "")
+@@ -102,6 +195,9 @@ def extract_mk_gcash_payment_link(
+             "qr_expires_at": result.get("qr_expires_at"),
+             "monitor_id": str(result.get("monitor_id") or ""),
+             "callback_status": str(result.get("callback_status") or ""),
++            "stage_offsets_ms": stage_offsets_ms,
++            "total_elapsed_ms": round((time.perf_counter() - started_at) * 1000),
++            "connect_timeout_ms": connect_timeout_ms,
+         },
+     )
+     if stage_callback is not None:
+diff --git a/payment_link_extractor/models.py b/payment_link_extractor/models.py
+index 8d0e10c..e2fc85b 100644
+--- a/payment_link_extractor/models.py
++++ b/payment_link_extractor/models.py
+@@ -21,6 +21,10 @@ class ExtractionConfig:
+     # MK-style single proxy pool. Legacy checkout/update fields remain as
+     # transport aliases, but new web tasks populate both from this one pool.
+     proxy_pool: tuple[str, ...] = ()
++    # Optional account metadata accepted by the upstream MK app.py account
++    # object. GCash uses these before falling back to JWT profile claims.
++    account_name: str = ""
++    account_email: str = ""
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/payment_link_extractor/web/app.py b/payment_link_extractor/web/app.py
+index eaeebb2..ee5442d 100644
+--- a/payment_link_extractor/web/app.py
++++ b/payment_link_extractor/web/app.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import json
+ import os
+ import queue
++import threading
+ from typing import Any, Mapping
+ 
+ from flask import Flask, render_template, request
+@@ -61,6 +62,21 @@ def create_app(
+     # Keep the agreement protocol in this Flask process.  The adapter mounts
+     # the clean upstream core below /paypal-pay without opening another port.
+     register_paypal_protocol(app)
++    if (
++        not app.config.get("TESTING")
++        and os.getenv("MK_GCASH_PREWARM", "true").strip().lower()
++        not in {"0", "false", "no", "off"}
++    ):
++        from ..mk_gcash import prewarm_mk_gcash_runtime
++
++        def prewarm() -> None:
++            try:
++                version = prewarm_mk_gcash_runtime()
++                app.logger.info("MK GCash Chromium prewarmed: %s", version)
++            except Exception as exc:
++                app.logger.warning("MK GCash Chromium prewarm skipped: %s", type(exc).__name__)
++
++        threading.Thread(target=prewarm, name="mk-gcash-prewarm", daemon=True).start()
+ 
+     @app.before_request
+     def require_api_password() -> Any:
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 31a4095..47f8728 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -324,6 +324,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         checkout_proxy_attempts=checkout_proxy_attempts,
+         update_proxy_attempts=update_proxy_attempts,
+         proxy_pool=submitted_pool,
++        account_name=str(payload.get("name") or "").strip(),
++        account_email=str(payload.get("email") or "").strip(),
+     )
+ 
+ 
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 0e048c7..85ad60f 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
+ from datetime import datetime, timedelta, timezone
+ import queue
+ import threading
++import time
+ import uuid
+ from decimal import Decimal, InvalidOperation
+ from typing import Any, Callable
+@@ -515,6 +516,7 @@ class TaskManager:
+                 task_log.info("full extraction attempt {}/{} started", record.attempt, total_attempts)
+ 
+             try:
++                attempt_started = time.perf_counter()
+                 result = self._extractor(
+                     record.config,
+                     cancel_event=record.cancel_event,
+@@ -535,6 +537,7 @@ class TaskManager:
+                         self._finish_cancelled_locked(record, str(exc))
+                         return
+                     error = redact_text(exc, self._secrets(record.config))
++                    elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
+                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
+                     may_retry = (
+                         attempt_index < retry_count
+@@ -560,13 +563,14 @@ class TaskManager:
+                                 "next_attempt": record.attempt + 1,
+                                 "max_attempts": total_attempts,
+                                 "ip_rotated": True,
++                                "elapsed_ms": elapsed_ms,
+                             },
+                         )
+                         task_log.warning(
+                             "full extraction attempt {}/{} failed; restarting from the beginning with the next proxy IP: {}",
+                             record.attempt,
+                             total_attempts,
+-                            error,
++                            f"{error} elapsed_ms={elapsed_ms}",
+                         )
+                         continue
+                     record.status = "failed"
+@@ -584,9 +588,16 @@ class TaskManager:
+                             "progress": record.progress,
+                             "attempt": record.attempt,
+                             "max_attempts": total_attempts,
++                            "elapsed_ms": elapsed_ms,
+                         },
+                     )
+-                    task_log.error("task failed after {}/{} attempts: {}", record.attempt, total_attempts, record.error)
++                    task_log.error(
++                        "task failed after {}/{} attempts elapsed_ms={}: {}",
++                        record.attempt,
++                        total_attempts,
++                        elapsed_ms,
++                        record.error,
++                    )
+                 return
+ 
+             with self._lock:
+@@ -613,7 +624,12 @@ class TaskManager:
+                         "max_attempts": total_attempts,
+                     },
+                 )
+-                task_log.info("task succeeded on full extraction attempt {}/{}", record.attempt, total_attempts)
++                task_log.info(
++                    "task succeeded on full extraction attempt {}/{} elapsed_ms={}",
++                    record.attempt,
++                    total_attempts,
++                    round((time.perf_counter() - attempt_started) * 1000),
++                )
+             return
+ 
+     def _stage(self, task_id: str, stage: str) -> None:
+@@ -644,7 +660,9 @@ class TaskManager:
+                     "progress": record.progress,
+                 },
+             )
+-            log_context(component="task", task_id=task_id, stage=record.stage).info("task stage")
++            log_context(component="task", task_id=task_id, stage=record.stage).info(
++                "task stage: {} progress={}", record.stage, record.progress
++            )
+ 
+     def _finish_cancelled_locked(self, record: TaskRecord, detail: str = "") -> None:
+         record.status = "cancelled"
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 8210b35..9462106 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -174,12 +174,16 @@ def test_route_config_accepts_manual_retry_count_and_proxy_attempt_plan() -> Non
+             ],
+             "country": "GB",
+             "payment_method": "paypal",
++            "email": "explicit@example.com",
++            "name": "Explicit Name",
+         }
+     )
+ 
+     assert config.retry_count == 2
+     assert config.checkout_proxy_attempts[-1] == "http://checkout-ip-3.example:8080"
+     assert config.update_proxy_attempts[-1] == "http://update-ip-3.example:8080"
++    assert config.account_email == "explicit@example.com"
++    assert config.account_name == "Explicit Name"
+ 
+ 
+ @pytest.mark.parametrize("value", (-1, 11, True, "bad"))
+diff --git a/tests/test_mk_gcash_replacement.py b/tests/test_mk_gcash_replacement.py
+index f32b395..8bf8421 100644
+--- a/tests/test_mk_gcash_replacement.py
++++ b/tests/test_mk_gcash_replacement.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import base64
+ import json
+ from pathlib import Path
+ from types import SimpleNamespace
+@@ -16,6 +17,13 @@ from payment_link_extractor.models import ExtractionConfig
+ ROOT = Path(__file__).resolve().parents[1]
+ 
+ 
++def jwt(payload: dict) -> str:
++    encode = lambda value: base64.urlsafe_b64encode(
++        json.dumps(value, separators=(",", ":")).encode()
++    ).decode().rstrip("=")
++    return f"{encode({'alg': 'none'})}.{encode(payload)}.signature"
++
++
+ def gcash_config() -> ExtractionConfig:
+     return ExtractionConfig(
+         access_token="fixture-token",
+@@ -58,6 +66,7 @@ def test_adapter_maps_mk_core_success(monkeypatch):
+     class FakeChain:
+         def __init__(self, **kwargs):
+             self.kwargs = kwargs
++            self._session = SimpleNamespace(curl_options={})
+             self.cid = "oaics_fixture"
+             self.cpmt = "cpmt_fixture"
+             self.adyen_url = "https://checkoutshopper-live.adyen.com/fixture"
+@@ -89,6 +98,11 @@ def test_adapter_maps_mk_core_success(monkeypatch):
+     assert result.currency == "PHP"
+     assert result.provider_value.startswith("https://m.gcash.com/")
+     assert result.extra["mk_gcash_source_commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
++    assert result.extra["connect_timeout_ms"] == 8000
++    assert set(result.extra["stage_offsets_ms"]) == {
++        "proxy_test", "create_checkout", "configure_taxes",
++        "confirm_payment", "start_payment", "follow_redirect",
++    }
+     assert stages == [
+         "eligibility_check", "checkout", "taxes", "payment_confirmation",
+         "redirect_resolution", "completed",
+@@ -108,7 +122,7 @@ def test_adapter_propagates_failures(monkeypatch, result, cancelled, exception):
+         checkout_amount = 0
+ 
+         def __init__(self, **_kwargs):
+-            pass
++            self._session = SimpleNamespace(curl_options={})
+ 
+         def run(self):
+             return result
+@@ -117,3 +131,70 @@ def test_adapter_propagates_failures(monkeypatch, result, cancelled, exception):
+     event = SimpleNamespace(is_set=lambda: cancelled)
+     with pytest.raises(exception):
+         extract_mk_gcash_payment_link(gcash_config(), cancel_event=event)
++
++
++def test_adapter_uses_upstream_account_billing_instead_of_site_fixture(monkeypatch):
++    captured = {}
++
++    class FakeChain:
++        cid = "oaics_fixture"
++        cpmt = "cpmt_fixture"
++        adyen_url = "https://checkoutshopper-live.adyen.com/fixture"
++        checkout_amount = 0
++
++        def __init__(self, **kwargs):
++            captured.update(kwargs)
++            self._session = SimpleNamespace(curl_options={})
++
++        def run(self):
++            return {
++                "status": "success",
++                "gcash_url": "https://m.gcash.com/gcash-login-web/index.html?netAuthId=fixture",
++            }
++
++    monkeypatch.setattr("payment_link_extractor.mk_gcash.GCashChain", FakeChain)
++    config = ExtractionConfig(
++        access_token=jwt({
++            "https://api.openai.com/profile": {
++                "email": "jwt@example.com",
++                "name": "JWT Name",
++            },
++            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-jwt"},
++        }),
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="",
++        payment_method="gcash",
++        account_email="explicit@example.com",
++        account_name="Explicit Name",
++    )
++    result = extract_mk_gcash_payment_link(config)
++
++    assert captured["account_id"] == "acct-jwt"
++    assert captured["billing_email"] == "explicit@example.com"
++    assert captured["billing_name"] == "Explicit Name"
++    assert captured["client_account_id"].startswith("acct_")
++    assert result.billing.to_dict() == {
++        "name": "Explicit Name",
++        "email": "explicit@example.com",
++        "phone": "",
++        "country": "PH",
++        "line1": "",
++        "city": "",
++        "state": "",
++        "postal_code": "",
++    }
++
++
++def test_adapter_rejects_expired_token_before_starting_core(monkeypatch):
++    monkeypatch.setattr(
++        "payment_link_extractor.mk_gcash.GCashChain",
++        lambda **_kwargs: pytest.fail("expired account reached core"),
++    )
++    config = ExtractionConfig(
++        access_token=jwt({"exp": 1}),
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="",
++        payment_method="gcash",
++    )
++    with pytest.raises(ProtocolError, match="AT 已过期"):
++        extract_mk_gcash_payment_link(config)

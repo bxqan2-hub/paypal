@@ -21,6 +21,10 @@ class ExtractionConfig:
     # MK-style single proxy pool. Legacy checkout/update fields remain as
     # transport aliases, but new web tasks populate both from this one pool.
     proxy_pool: tuple[str, ...] = ()
+    # Optional account metadata accepted by the upstream MK app.py account
+    # object. GCash uses these before falling back to JWT profile claims.
+    account_name: str = ""
+    account_email: str = ""
 
 
 @dataclass(frozen=True)

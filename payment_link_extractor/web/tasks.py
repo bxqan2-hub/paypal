@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import queue
 import threading
+import time
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
@@ -515,6 +516,7 @@ class TaskManager:
                 task_log.info("full extraction attempt {}/{} started", record.attempt, total_attempts)
 
             try:
+                attempt_started = time.perf_counter()
                 result = self._extractor(
                     record.config,
                     cancel_event=record.cancel_event,
@@ -535,6 +537,7 @@ class TaskManager:
                         self._finish_cancelled_locked(record, str(exc))
                         return
                     error = redact_text(exc, self._secrets(record.config))
+                    elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
                     may_retry = (
                         attempt_index < retry_count
@@ -560,13 +563,14 @@ class TaskManager:
                                 "next_attempt": record.attempt + 1,
                                 "max_attempts": total_attempts,
                                 "ip_rotated": True,
+                                "elapsed_ms": elapsed_ms,
                             },
                         )
                         task_log.warning(
                             "full extraction attempt {}/{} failed; restarting from the beginning with the next proxy IP: {}",
                             record.attempt,
                             total_attempts,
-                            error,
+                            f"{error} elapsed_ms={elapsed_ms}",
                         )
                         continue
                     record.status = "failed"
@@ -584,9 +588,16 @@ class TaskManager:
                             "progress": record.progress,
                             "attempt": record.attempt,
                             "max_attempts": total_attempts,
+                            "elapsed_ms": elapsed_ms,
                         },
                     )
-                    task_log.error("task failed after {}/{} attempts: {}", record.attempt, total_attempts, record.error)
+                    task_log.error(
+                        "task failed after {}/{} attempts elapsed_ms={}: {}",
+                        record.attempt,
+                        total_attempts,
+                        elapsed_ms,
+                        record.error,
+                    )
                 return
 
             with self._lock:
@@ -613,7 +624,12 @@ class TaskManager:
                         "max_attempts": total_attempts,
                     },
                 )
-                task_log.info("task succeeded on full extraction attempt {}/{}", record.attempt, total_attempts)
+                task_log.info(
+                    "task succeeded on full extraction attempt {}/{} elapsed_ms={}",
+                    record.attempt,
+                    total_attempts,
+                    round((time.perf_counter() - attempt_started) * 1000),
+                )
             return
 
     def _stage(self, task_id: str, stage: str) -> None:
@@ -644,7 +660,9 @@ class TaskManager:
                     "progress": record.progress,
                 },
             )
-            log_context(component="task", task_id=task_id, stage=record.stage).info("task stage")
+            log_context(component="task", task_id=task_id, stage=record.stage).info(
+                "task stage: {} progress={}", record.stage, record.progress
+            )
 
     def _finish_cancelled_locked(self, record: TaskRecord, detail: str = "") -> None:
         record.status = "cancelled"

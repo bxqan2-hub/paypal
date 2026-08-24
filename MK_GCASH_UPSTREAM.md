@@ -27,3 +27,10 @@ The browser workbench also follows the upstream single `proxy_pool` contract,
 layout. The upstream `web/assets/mikael-mail-logo.webp` is copied byte-for-byte.
 The payment-method selector is the intentional local entry-point difference;
 every selected method shares the same proxy pool.
+
+GCash account metadata now follows upstream `app.py`: explicit account
+`email`/`name` wins, then JWT profile claims; expired JWTs are rejected before
+checkout. No synthetic Philippine address is injected. The integration only
+adds runtime observability, shared-Chromium prewarming, and an 8-second proxy
+TCP connect cap; the vendored protocol files and their recorded hashes remain
+unchanged.

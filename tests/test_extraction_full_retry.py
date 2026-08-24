@@ -174,12 +174,16 @@ def test_route_config_accepts_manual_retry_count_and_proxy_attempt_plan() -> Non
             ],
             "country": "GB",
             "payment_method": "paypal",
+            "email": "explicit@example.com",
+            "name": "Explicit Name",
         }
     )
 
     assert config.retry_count == 2
     assert config.checkout_proxy_attempts[-1] == "http://checkout-ip-3.example:8080"
     assert config.update_proxy_attempts[-1] == "http://update-ip-3.example:8080"
+    assert config.account_email == "explicit@example.com"
+    assert config.account_name == "Explicit Name"
 
 
 @pytest.mark.parametrize("value", (-1, 11, True, "bad"))

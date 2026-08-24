@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,13 @@ from payment_link_extractor.models import ExtractionConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def jwt(payload: dict) -> str:
+    encode = lambda value: base64.urlsafe_b64encode(
+        json.dumps(value, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"{encode({'alg': 'none'})}.{encode(payload)}.signature"
 
 
 def gcash_config() -> ExtractionConfig:
@@ -58,6 +66,7 @@ def test_adapter_maps_mk_core_success(monkeypatch):
     class FakeChain:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self._session = SimpleNamespace(curl_options={})
             self.cid = "oaics_fixture"
             self.cpmt = "cpmt_fixture"
             self.adyen_url = "https://checkoutshopper-live.adyen.com/fixture"
@@ -89,6 +98,11 @@ def test_adapter_maps_mk_core_success(monkeypatch):
     assert result.currency == "PHP"
     assert result.provider_value.startswith("https://m.gcash.com/")
     assert result.extra["mk_gcash_source_commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+    assert result.extra["connect_timeout_ms"] == 8000
+    assert set(result.extra["stage_offsets_ms"]) == {
+        "proxy_test", "create_checkout", "configure_taxes",
+        "confirm_payment", "start_payment", "follow_redirect",
+    }
     assert stages == [
         "eligibility_check", "checkout", "taxes", "payment_confirmation",
         "redirect_resolution", "completed",
@@ -108,7 +122,7 @@ def test_adapter_propagates_failures(monkeypatch, result, cancelled, exception):
         checkout_amount = 0
 
         def __init__(self, **_kwargs):
-            pass
+            self._session = SimpleNamespace(curl_options={})
 
         def run(self):
             return result
@@ -117,3 +131,70 @@ def test_adapter_propagates_failures(monkeypatch, result, cancelled, exception):
     event = SimpleNamespace(is_set=lambda: cancelled)
     with pytest.raises(exception):
         extract_mk_gcash_payment_link(gcash_config(), cancel_event=event)
+
+
+def test_adapter_uses_upstream_account_billing_instead_of_site_fixture(monkeypatch):
+    captured = {}
+
+    class FakeChain:
+        cid = "oaics_fixture"
+        cpmt = "cpmt_fixture"
+        adyen_url = "https://checkoutshopper-live.adyen.com/fixture"
+        checkout_amount = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session = SimpleNamespace(curl_options={})
+
+        def run(self):
+            return {
+                "status": "success",
+                "gcash_url": "https://m.gcash.com/gcash-login-web/index.html?netAuthId=fixture",
+            }
+
+    monkeypatch.setattr("payment_link_extractor.mk_gcash.GCashChain", FakeChain)
+    config = ExtractionConfig(
+        access_token=jwt({
+            "https://api.openai.com/profile": {
+                "email": "jwt@example.com",
+                "name": "JWT Name",
+            },
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-jwt"},
+        }),
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        payment_method="gcash",
+        account_email="explicit@example.com",
+        account_name="Explicit Name",
+    )
+    result = extract_mk_gcash_payment_link(config)
+
+    assert captured["account_id"] == "acct-jwt"
+    assert captured["billing_email"] == "explicit@example.com"
+    assert captured["billing_name"] == "Explicit Name"
+    assert captured["client_account_id"].startswith("acct_")
+    assert result.billing.to_dict() == {
+        "name": "Explicit Name",
+        "email": "explicit@example.com",
+        "phone": "",
+        "country": "PH",
+        "line1": "",
+        "city": "",
+        "state": "",
+        "postal_code": "",
+    }
+
+
+def test_adapter_rejects_expired_token_before_starting_core(monkeypatch):
+    monkeypatch.setattr(
+        "payment_link_extractor.mk_gcash.GCashChain",
+        lambda **_kwargs: pytest.fail("expired account reached core"),
+    )
+    config = ExtractionConfig(
+        access_token=jwt({"exp": 1}),
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        payment_method="gcash",
+    )
+    with pytest.raises(ProtocolError, match="AT 已过期"):
+        extract_mk_gcash_payment_link(config)

@@ -1,0 +1,87 @@
+MK GCASH ALIGNMENT AND PERFORMANCE VERIFICATION
+
+CHANGED BRANCH/FIELD
+branch: main
+field: GCash upstream account/billing alignment and integration performance; vendored protocol core remains byte-identical.
+baseline_commit: d770a7404a946bcd250cb05406284415055b4c22
+upstream_reference_commit: 2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+
+FOUR ARTIFACT PATHS
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-alignment-performance-20260824\MODIFIED_FILE
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-alignment-performance-20260824\DIFF_FILE.patch
+VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-alignment-performance-20260824\VERIFICATION.txt
+ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-alignment-performance-20260824\ROLLBACK.sh
+
+BASELINE
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Users\Administrator\Desktop\提链 at commit d770a7404a946bcd250cb05406284415055b4c22
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+....                                                                     [100%]
+148 passed in 1.42s
+exit status: 0
+
+MODIFIED
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-gcash-alignment-performance-rollback-20260824-1924 after applying DIFF_FILE.patch
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 96%]
+......                                                                   [100%]
+150 passed in 1.72s
+exit status: 0
+
+UPSTREAM CORE INTEGRITY
+command/input: SHA-256 every path in C:\Users\Administrator\Desktop\提链\mk_gcash_core_manifest.json against the current working files
+literal output/result:
+upstream_core_hashes=6/6
+exit status: 0
+
+PREWARM OPTIMIZATION
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c "call prewarm_mk_gcash_runtime twice and measure perf_counter"
+input: Playwright Chromium 138.0.7204.23
+literal output/result:
+chromium=138.0.7204.23
+cold_prewarm_ms=415
+warm_reuse_ms=0
+exit status: 0
+
+SLOW-RUN DIAGNOSIS
+command/input: sanitized timestamp analysis of data\payment-link.log task 40f9d298e8d84040bca643d52859b6d4
+literal output/result:
+attempt_1=30.015s proxy_connection_timeout
+attempt_2=30.005s proxy_connection_timeout
+attempt_3=30.007s proxy_connection_timeout
+attempt_4=30.013s proxy_connection_timeout
+attempt_5=21.075s proxy_connect_failed
+wall_time=141.116s
+result=the proxy pool could not connect to chatgpt.com:443; billing and the payment adapter were not the blocking stage
+exit status: 0
+report: C:\Users\Administrator\Desktop\提链\GCASH_PERFORMANCE.md
+
+ROLLBACK
+command: "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-alignment-performance-20260824\ROLLBACK.sh" "C:\Temp\mk-gcash-alignment-performance-rollback-20260824-1924"
+input: modified disposable worktree created from baseline commit and DIFF_FILE.patch
+literal output/result:
+ROLLBACK_OK target=C:\Temp\mk-gcash-alignment-performance-rollback-20260824-1924 restored_commit=d770a7404a946bcd250cb05406284415055b4c22
+exit status: 0
+
+ROLLBACK RESTORED BEHAVIOR/STATUS
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-gcash-alignment-performance-rollback-20260824-1924 after ROLLBACK.sh
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+....                                                                     [100%]
+148 passed in 1.34s
+exit status: 0
+restored behavior/status: baseline suite restored to 148 passing tests; git status --short returned no output (clean).
+
+ALIGNED RESULT
+- Explicit email/name first, then JWT profile claims, matching upstream app.py.
+- Expired JWT is rejected before checkout.
+- GCash sends checkout_email, billing_name, PH and tax_id=None through the unchanged upstream core.
+- No synthetic local Philippine phone/address/postal profile is injected.
+- Shared Chromium is prewarmed; dead-proxy TCP connect is capped at 8000 ms by default.
+- Stage offsets and attempt elapsed_ms are now observable.
