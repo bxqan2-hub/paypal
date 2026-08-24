@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.har_capture import HARRecorder, Socks5HttpBridge, check_socks5_proxy
+from tools.har_capture import (
+    HARRecorder,
+    Socks5HttpBridge,
+    check_socks5_proxy,
+    infer_proxy_country,
+    locale_profile_for_proxy,
+)
 from tools.har_utils import analyze_har, entry_summary, markdown_report
 
 
@@ -101,6 +107,16 @@ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
 def test_socks5_bridge_rejects_malformed_proxy() -> None:
     with pytest.raises(ValueError):
         Socks5HttpBridge("not-a-proxy")
+
+
+def test_proxy_region_controls_locale_and_timezone_without_exposing_credentials() -> None:
+    assert infer_proxy_country("proxy.example:3000:user-region-PH-sid-abc:pass") == "PH"
+    country, profile = locale_profile_for_proxy("proxy.example:3000:user-region-PH-sid-abc:pass")
+    assert country == "PH"
+    assert profile == {"lang": "en-US", "accept_lang": "en-US,en", "timezone": "Asia/Manila"}
+    unknown_country, unknown_profile = locale_profile_for_proxy("proxy.example:3000:user:pass")
+    assert unknown_country == "UN"
+    assert unknown_profile["lang"] == "en-US"
 
 
 def test_proxy_check_uses_the_same_local_http_bridge(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,0 +1,50 @@
+HAR proxy stability and region-aware locale verification
+
+CHANGED_BRANCH=proxy repeated checks + region locale/timezone inference + Chrome language flags + tests
+BASELINE_COMMIT=328f3e8
+
+ORIGINAL_SHA256=tools/har_capture.py at baseline 328f3e8 (recorded in MODIFIED_FILE)
+MODIFIED_SHA256=tools/har_capture.py working copy (recorded in MODIFIED_FILE)
+
+BASELINE:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (clean worktree at 328f3e8)
+LITERAL_OUTPUT: 130 passed in 1.16s
+EXIT_STATUS: 0
+
+MODIFIED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+LITERAL_OUTPUT: 131 passed in 1.23s
+EXIT_STATUS: 0
+
+TARGETED:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests/test_har_tools.py
+LITERAL_OUTPUT: 9 passed in 0.55s
+EXIT_STATUS: 0
+
+STATIC:
+COMMAND: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q tools payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT: (empty)
+EXIT_STATUS: 0
+COMMAND: git diff --check
+LITERAL_OUTPUT: (warnings only for LF/CRLF; no whitespace errors)
+EXIT_STATUS: 0
+
+BAT_SMOKE:
+COMMAND: cmd /c 'set HAR_TOOLS_NO_PAUSE=1&&set OPLL_CAPTURE_SKIP_PROXY_PROMPT=1&&set OPLL_CAPTURE_HEADLESS=1&&set OPLL_CAPTURE_DURATION=1&&set OPLL_CAPTURE_SOCKS5=&&HAR_CAPTURE.bat data\bat-capture.har https://example.com'
+LITERAL_OUTPUT: CAPTURE_PROXY_COUNTRY=UN; CAPTURE_LANG=en-US; CAPTURE_TIMEZONE=America/New_York; CAPTURE_ENTRIES=1; CAPTURE_SHA256=F68F8AF7ED37BD9EBEE98BFF6DB64184101DEB337C4FF34CAD31383D30381373; Capture exit status: 0; BAT_CAPTURE_EXIT=0
+EXIT_STATUS: 0
+
+ROLLBACK:
+COMMAND: C:\Program Files\Git\bin\bash.exe artifacts\har-locale-stability-20260824\ROLLBACK.sh C:\Temp\har-locale-stability-rollback-20260824 328f3e8
+LITERAL_OUTPUT: ROLLBACK_RESTORED=C:\Temp\har-locale-stability-rollback-20260824@328f3e8; modified pytest=131 passed in 1.45s; restored pytest=130 passed in 1.16s; clean status
+EXIT_STATUS: 0
+
+RESTORED_BEHAVIOR: rollback copy returned to 328f3e8 and baseline test count; main working tree remains on the modified branch.
+PROXY_BEHAVIOR: BAT performs two consecutive checks against chatgpt.com and rejects failure or latency above the configured threshold before Chrome starts.
+LOCALE_BEHAVIOR: region-PH maps to en-US, en-US Accept-Language, and Asia/Manila; unknown region defaults to English en-US and America/New_York; explicit CLI flags override inference.
+
+ARTIFACTS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-locale-stability-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\har-locale-stability-20260824\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\har-locale-stability-20260824\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\har-locale-stability-20260824\ROLLBACK.sh

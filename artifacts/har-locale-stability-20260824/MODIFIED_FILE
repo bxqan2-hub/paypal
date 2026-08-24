@@ -1,0 +1,5 @@
+BASELINE_COMMIT=328f3e8
+CHANGED_BRANCH=proxy stability retries + region locale/timezone inference + Chrome language flags + tests
+ORIGINAL_SHA256_tools/har_capture.py=b444a1c8ebdd1fd4108d8cb7c8d76157352b1ef5de7c39fd04866a753306ba87
+MODIFIED_SHA256_tools/har_capture.py=5eb1db961e878c2bb90d1fba7aa3ddb531e73b53c805a04fee68bd07cf65f10b
+MODIFIED_FILE=tools/har_capture.py (working tree copy with region-aware locale and repeated proxy checks)

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import select
 import secrets
 import socket
@@ -20,6 +21,34 @@ from typing import Any
 from urllib.parse import urlsplit
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
+
+
+_COUNTRY_PROFILES: dict[str, dict[str, str]] = {
+    "PH": {"lang": "en-US", "accept_lang": "en-US,en", "timezone": "Asia/Manila"},
+    "US": {"lang": "en-US", "accept_lang": "en-US,en", "timezone": "America/New_York"},
+    "GB": {"lang": "en-GB", "accept_lang": "en-GB,en", "timezone": "Europe/London"},
+    "CA": {"lang": "en-CA", "accept_lang": "en-CA,en", "timezone": "America/Toronto"},
+    "AU": {"lang": "en-AU", "accept_lang": "en-AU,en", "timezone": "Australia/Sydney"},
+    "SG": {"lang": "en-SG", "accept_lang": "en-SG,en", "timezone": "Asia/Singapore"},
+    "MY": {"lang": "en-MY", "accept_lang": "en-MY,en", "timezone": "Asia/Kuala_Lumpur"},
+    "IN": {"lang": "en-IN", "accept_lang": "en-IN,en", "timezone": "Asia/Kolkata"},
+    "JP": {"lang": "ja-JP", "accept_lang": "ja-JP,ja,en", "timezone": "Asia/Tokyo"},
+    "KR": {"lang": "ko-KR", "accept_lang": "ko-KR,ko,en", "timezone": "Asia/Seoul"},
+    "CN": {"lang": "zh-CN", "accept_lang": "zh-CN,zh,en", "timezone": "Asia/Shanghai"},
+    "HK": {"lang": "en-HK", "accept_lang": "en-HK,en,zh-HK", "timezone": "Asia/Hong_Kong"},
+    "TW": {"lang": "zh-TW", "accept_lang": "zh-TW,zh,en", "timezone": "Asia/Taipei"},
+}
+
+
+def infer_proxy_country(value: str) -> str:
+    """Extract a two-letter region marker without exposing proxy credentials."""
+    markers = re.findall(r"(?:region|country)[-_:=]([a-z]{2})(?:[-_:.]|$)", value, flags=re.IGNORECASE)
+    return markers[-1].upper() if markers else "UN"
+
+
+def locale_profile_for_proxy(value: str) -> tuple[str, dict[str, str]]:
+    country = infer_proxy_country(value)
+    return country, dict(_COUNTRY_PROFILES.get(country, _COUNTRY_PROFILES["US"]))
 
 
 class CDPWebSocket:
@@ -540,7 +569,8 @@ def check_socks5_proxy(value: str, url: str = "https://example.com/", *, timeout
             if status is None:
                 status = response.getcode()
             latency_ms = round((time.perf_counter() - started) * 1000)
-            return True, str(status), latency_ms
+            status_code = int(status)
+            return status_code < 400, str(status_code), latency_ms
     finally:
         bridge.close()
 
@@ -573,6 +603,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-check-url", default="https://example.com/", help="URL used with --check-proxy")
     parser.add_argument("--proxy-check-timeout", type=float, default=15, help="proxy check timeout in seconds")
     parser.add_argument("--proxy-max-latency-ms", type=int, default=0, help="fail proxy check above this latency; 0 disables the threshold")
+    parser.add_argument("--proxy-check-attempts", type=int, default=1, help="number of consecutive proxy checks")
+    parser.add_argument("--lang", default="", help="Chrome UI language override; inferred from proxy region when omitted")
+    parser.add_argument("--accept-lang", default="", help="Accept-Language override; inferred from proxy region when omitted")
+    parser.add_argument("--timezone-id", default="", help="Chrome timezone override; inferred from proxy region when omitted")
     return parser
 
 
@@ -583,24 +617,31 @@ def main(argv: list[str] | None = None) -> int:
         if not socks5_value:
             print("PROXY_CHECK_ERROR=SOCKS5 proxy is required", file=sys.stderr)
             return 2
-        try:
-            status_ok, status, latency_ms = check_socks5_proxy(
-                socks5_value,
-                args.proxy_check_url,
-                timeout=max(args.proxy_check_timeout, 1),
-            )
-            if args.proxy_max_latency_ms > 0 and latency_ms > args.proxy_max_latency_ms:
-                print(
-                    f"PROXY_CHECK_ERROR=latency {latency_ms}ms exceeds {args.proxy_max_latency_ms}ms "
-                    f"(status={status})",
-                    file=sys.stderr,
+        attempts = max(args.proxy_check_attempts, 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                status_ok, status, latency_ms = check_socks5_proxy(
+                    socks5_value,
+                    args.proxy_check_url,
+                    timeout=max(args.proxy_check_timeout, 1),
                 )
-                return 2
-            print(f"PROXY_CHECK=ok status={status} latency_ms={latency_ms}")
-            return 0 if status_ok else 2
-        except (OSError, ValueError, RuntimeError, TimeoutError, URLError) as exc:
-            print(f"PROXY_CHECK_ERROR={exc}", file=sys.stderr)
-            return 2
+                print(f"PROXY_CHECK_ATTEMPT={attempt} status={status} latency_ms={latency_ms}")
+                if not status_ok:
+                    return 2
+                if args.proxy_max_latency_ms > 0 and latency_ms > args.proxy_max_latency_ms:
+                    print(
+                        f"PROXY_CHECK_ERROR=latency {latency_ms}ms exceeds {args.proxy_max_latency_ms}ms "
+                        f"(status={status})",
+                        file=sys.stderr,
+                    )
+                    return 2
+            except (OSError, ValueError, RuntimeError, TimeoutError, URLError) as exc:
+                print(f"PROXY_CHECK_ATTEMPT={attempt} error={exc}", file=sys.stderr)
+                if attempt == attempts:
+                    return 2
+                continue
+        print("PROXY_CHECK=ok")
+        return 0
     if args.output is None:
         print("CAPTURE_ERROR=--output/-o is required unless --check-proxy is used", file=sys.stderr)
         return 2
@@ -608,6 +649,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.proxy_server and socks5_value:
         print("CAPTURE_ERROR=use either --proxy-server or --socks5-proxy", file=sys.stderr)
         return 2
+    locale_country, inferred_locale = locale_profile_for_proxy(socks5_value)
+    capture_lang = args.lang or inferred_locale["lang"]
+    accept_lang = args.accept_lang or inferred_locale["accept_lang"]
+    timezone_id = args.timezone_id or inferred_locale["timezone"]
     bridge: Socks5HttpBridge | None = None
     if socks5_value:
         try:
@@ -627,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-popup-blocking",
+        f"--lang={capture_lang}",
+        f"--accept-lang={accept_lang}",
         "about:blank",
     ]
     if args.proxy_server:
@@ -647,11 +694,15 @@ def main(argv: list[str] | None = None) -> int:
         recorder = HARRecorder(cdp, max_body_bytes=max(args.max_body_bytes, 0))
         recorder.command("Page.enable")
         recorder.command("Network.enable", {"maxTotalBufferSize": max(args.max_body_bytes, 1024 * 1024)})
+        recorder.command("Emulation.setTimezoneOverride", {"timezoneId": timezone_id})
         recorder.command("Page.navigate", {"url": args.url})
         print(f"CAPTURE_BROWSER={browser}")
         print(f"CAPTURE_URL={args.url}")
         if socks5_value:
             print("CAPTURE_PROXY=local-http-bridge-for-authenticated-socks5")
+        print(f"CAPTURE_PROXY_COUNTRY={locale_country}")
+        print(f"CAPTURE_LANG={capture_lang}")
+        print(f"CAPTURE_TIMEZONE={timezone_id}")
         print(f"CAPTURE_OUTPUT={args.output}")
         print("CAPTURE_ACTION=complete the manual flow, then press Ctrl+C in this terminal to save the HAR")
         deadline = time.time() + args.duration if args.duration > 0 else None

@@ -28,7 +28,7 @@ if not defined PROXY_VALUE (
 )
 set "OPLL_CAPTURE_SOCKS5=%PROXY_VALUE%"
 echo Checking proxy connectivity and latency before opening Chrome...
-"%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5 --proxy-check-url "https://chatgpt.com/" --proxy-max-latency-ms %OPLL_CAPTURE_PROXY_MAX_LATENCY_MS%
+"%PYTHON%" tools\har_capture.py --check-proxy --socks5-proxy-env OPLL_CAPTURE_SOCKS5 --proxy-check-url "https://chatgpt.com/" --proxy-check-attempts 2 --proxy-max-latency-ms %OPLL_CAPTURE_PROXY_MAX_LATENCY_MS%
 if not errorlevel 1 goto PROXY_READY
 echo Proxy check failed or is too slow. Chrome was not started.
 set "RETRY="
