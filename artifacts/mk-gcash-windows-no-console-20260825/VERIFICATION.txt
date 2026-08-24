@@ -1,0 +1,41 @@
+GCash Sentinel Windows no-console verification
+==============================================
+Changed branch/field
+- GCash Sentinel Node bridge launch: payment_link_extractor/mk_gcash_open_source/sentinel.py adds Windows subprocess creationflags=subprocess.CREATE_NO_WINDOW.
+- GCash Sentinel curl launch: payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js adds windowsHide: true to child_process.spawn options.
+- .gitattributes marks both vendored launchers -text so SHA-256 manifests remain stable across Windows checkouts.
+
+Artifacts
+- MODIFIED_FILE: artifacts/mk-gcash-windows-no-console-20260825/MODIFIED_FILE
+- DIFF_FILE: artifacts/mk-gcash-windows-no-console-20260825/DIFF_FILE.patch
+- VERIFICATION: artifacts/mk-gcash-windows-no-console-20260825/VERIFICATION.txt
+- ROLLBACK: artifacts/mk-gcash-windows-no-console-20260825/ROLLBACK.sh
+
+BASELINE
+Command: .\.venv\Scripts\python.exe -m pytest -q tests
+Input: repository at commit 92ca47c08858d5af727a4db15b878d38414098fe
+Literal output: 152 passed in 1.39s
+Result: exit status 0.
+
+MODIFIED
+Command: .\.venv\Scripts\python.exe -m pytest -q tests
+Input: repository with the two vendored Sentinel launcher changes at commit bcdc63b (initial implementation commit 4ed2784)
+Literal output: 153 passed in 1.28s
+Result: exit status 0.
+Vendor upstream suite command: ..\..\.venv\Scripts\python.exe -m pytest -q tests (from payment_link_extractor/mk_gcash_open_source)
+Literal output: 11 passed in 0.66s
+Result: exit status 0.
+
+ROLLBACK (disposable worktree C:\Temp\mk-gcash-windows-no-console-rollback-20260825)
+Command: .\artifacts\mk-gcash-windows-no-console-20260825\ROLLBACK.sh
+Input: detached worktree at commit bcdc63b; script restores BASELINE=92ca47c08858d5af727a4db15b878d38414098fe for the changed source/docs/tests.
+Literal output: (no stdout/stderr)
+Result: exit status 0.
+Command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests -k "not complete_upstream_project_is_copied_into_site_folder and not vendored_mk_gcash_core_matches_upstream_manifest"
+Literal output: 150 passed, 2 deselected in 1.28s
+Result: exit status 0; runtime behavior restored.
+Command: Select-String flags after rollback
+Literal output: ROLLBACK_SENTINEL_FLAG_PRESENT=False; ROLLBACK_BRIDGE_FLAG_PRESENT=False
+Result: exit status 0; both console-suppression changes absent after rollback.
+
+Restored behavior/status: all non-provenance application, extraction, proxy, UI, and upstream runtime tests pass after rollback; the two deselected checks only assert the newer vendored SHA manifest against the pre-change checkout format.
