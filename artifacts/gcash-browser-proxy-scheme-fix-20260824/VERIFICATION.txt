@@ -1,0 +1,75 @@
+BRANCH_FIELD_RESULT=main / Chromium proxy scheme translation for GCash Sentinel
+BASE_COMMIT=d0e6aa696dbaff29af79ae01faccab9754f4cd99
+HEAD_COMMIT=ee5a52a10bdc15050920fb128fdd317eb85d792b
+REMOTE=https://github.com/bxqan2-hub/paypal.git
+CHANGED_BRANCH_FIELDS=socks5h:// -> socks5:// for browser only; curl transport remains socks5h
+CHANGED_PATHS=payment_link_extractor/transport.py;tests/test_gcash_support.py
+
+ARTIFACTS
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-browser-proxy-scheme-fix-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gcash-browser-proxy-scheme-fix-20260824\DIFF_FILE.patch
+VERIFICATION.txt=C:\Users\Administrator\Desktop\提链\artifacts\gcash-browser-proxy-scheme-fix-20260824\VERIFICATION.txt
+ROLLBACK.sh=C:\Users\Administrator\Desktop\提链\artifacts\gcash-browser-proxy-scheme-fix-20260824\ROLLBACK.sh
+
+DIAGNOSIS
+LATEST_LOG=agent-browser Navigation failed: net::ERR_NO_SUPPORTED_PROXIES
+CAUSE=Chromium rejects the curl-only socks5h scheme; the failing command never reached GCash or Sentinel
+
+BASELINE
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (clean archive at BASE_COMMIT)
+INPUT=BASE_COMMIT source without this scheme translation
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 52%]
+..................................................................       [100%]
+138 passed in 0.96s
+LITERAL_OUTPUT_END
+BASELINE_EXIT=0
+RESULT=original behavior passed
+
+MODIFIED
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q (clean archive with DIFF_FILE.patch)
+INPUT=browser-only socks5h-to-socks5 translation and regression test
+LITERAL_OUTPUT_BEGIN
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 0.89s
+LITERAL_OUTPUT_END
+MODIFIED_EXIT=0
+COMMAND=C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m compileall -q payment_link_extractor iprocket_chain_bridge.py oai_iprocket_chain_bridge.py tests
+LITERAL_OUTPUT=(empty)
+COMPILE_EXIT=0
+COMMAND=git diff --check
+LITERAL_OUTPUT=(empty; line-ending notices are informational)
+DIFF_CHECK_EXIT=0
+RESULT=browser receives a Chromium-compatible socks5 URL while curl keeps socks5h remote-DNS behavior
+
+PROBE
+COMMAND=agent-browser --proxy socks5h://<fixture-auth>@127.0.0.1:18796 open https://example.com --json
+INPUT=fixture proxy URL using the failing scheme
+LITERAL_OUTPUT={"success":false,"data":null,"error":"Navigation failed: net::ERR_NO_SUPPORTED_PROXIES"}
+EXIT_STATUS=1
+COMMAND=agent-browser --proxy socks5://<fixture-auth>@127.0.0.1:18796 open https://example.com --json
+INPUT=the same fixture URL after browser-only translation
+LITERAL_OUTPUT={"success":false,"data":null,"error":"Navigation failed: net::ERR_PROXY_CONNECTION_FAILED"}
+EXIT_STATUS=1
+RESULT=the unsupported-scheme error is removed; the second probe reaches proxy connection handling
+
+ROLLBACK
+COMMAND=C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\提链\artifacts\gcash-browser-proxy-scheme-fix-20260824\ROLLBACK.sh <another extracted copy>
+INPUT=modified archive copy with DIFF_FILE.patch applied
+LITERAL_OUTPUT_BEGIN
+ROLLBACK_APPLY_EXIT=0
+........................................................................ [ 52%]
+..................................................................       [100%]
+138 passed in 0.87s
+ROLLBACK_RESTORED_TEST_EXIT=0
+LITERAL_OUTPUT_END
+ROLLBACK_SCRIPT_EXIT=0
+RESULT=DIFF_FILE.patch reversed successfully; original 138-test behavior restored
+RESTORED_BEHAVIOR_STATUS=restored; MODIFIED_FILE remains changed on main
+
+GIT
+COMMAND=git push origin main
+INPUT=HEAD_COMMIT ee5a52a10bdc15050920fb128fdd317eb85d792b
+LITERAL_OUTPUT=To https://github.com/bxqan2-hub/paypal.git; d0e6aa6..ee5a52a ee5a52a main -> main
+EXIT_STATUS=0
