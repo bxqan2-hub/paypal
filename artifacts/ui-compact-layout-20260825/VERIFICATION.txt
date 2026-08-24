@@ -1,0 +1,56 @@
+OBJECT: 本站工作台 UI 紧凑布局
+BRANCH/FIELD: main / desktop workspace spacing and horizontal whitespace
+BASELINE_COMMIT: 4265dea9b7fcefcb729ab3cb4c48ac4752e9386a
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\web\static\styles.css
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-compact-layout-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-compact-layout-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-compact-layout-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at 4265dea9b7fcefcb729ab3cb4c48ac4752e9386a.
+BASELINE OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.29s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: compact desktop shell/workspace/panel/task spacing applied in
+  payment_link_extractor/web/static/styles.css.
+MODIFIED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.26s
+
+CSS CHECK COMMAND (exit 0):
+  git diff --check
+CSS CHECK OUTPUT: no whitespace errors.
+
+UI RESULT: shell side padding changed from 24px to 14px, workspace gap from
+  24px to 18px, panel padding from 24px to 18px, form/task gaps reduced, proxy
+  editor height reduced, and the empty task state reduced from 40px to 28px.
+  Existing controls, labels, payment routing, and responsive breakpoints remain
+  unchanged.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\ui-compact-layout-20260825\ROLLBACK.sh" "C:\Temp\ui-compact-layout-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\ui-compact-layout-rollback-20260825 restored_commit=4265dea9b7fcefcb729ab3cb4c48ac4752e9386a
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests
+RESTORED INPUT: working directory C:\Temp\ui-compact-layout-rollback-20260825 after ROLLBACK.sh.
+RESTORED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.27s
+
+RESTORED STATUS: disposable worktree HEAD equals BASELINE_COMMIT and `git status --short --branch` is clean;
+  main retains the compact UI change and preserves the user's existing dirty
+  paypal_agreement_protocol/data/used_local_card_hashes.txt.

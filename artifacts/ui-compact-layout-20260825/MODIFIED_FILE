@@ -1,0 +1,6 @@
+payment_link_extractor/web/static/styles.css
+
+Changed branch/field: desktop workbench spacing. The shell side padding,
+workspace column gap, panel padding, form gaps, proxy editor height, task list
+spacing, and empty-state height were reduced so the existing UI uses the
+viewport more efficiently without changing controls or behavior.
