@@ -71,6 +71,17 @@ def extract_payment_link(
             stage_callback(stage)
 
     config = _normalize_config(config)
+    # GCash is a direct integration of MK-GCash-Link-OpenSource.  Dispatch it
+    # before constructing any legacy checkout/Stripe transports so none of the
+    # site's previous GCash implementation participates in this branch.
+    if config.payment_method == "gcash":
+        from .mk_gcash import extract_mk_gcash_payment_link
+
+        return extract_mk_gcash_payment_link(
+            config,
+            cancel_event=cancel_event,
+            stage_callback=checkpoint,
+        )
     apply_checkout_update = _should_apply_checkout_update(config)
     log = stage_logger(config.verbose)
     billing = billing_for_country(config.country).to_dict()

@@ -1,0 +1,70 @@
+GCASH CORE REPLACEMENT VERIFICATION
+
+CHANGED BRANCH/FIELD
+branch: main
+field: GCash execution core
+result: payment_link_extractor.application dispatches GCash directly to the byte-identical MK-GCash-Link-OpenSource core at commit 2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5; the legacy site checkout/Stripe GCash route is bypassed before transport construction.
+baseline_commit: 7435d6d560fe37172b77e964b823c32dd7629af9
+
+FOUR ARTIFACT PATHS
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-core-replacement-20260824\MODIFIED_FILE
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-core-replacement-20260824\DIFF_FILE.patch
+VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-core-replacement-20260824\VERIFICATION.txt
+ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-core-replacement-20260824\ROLLBACK.sh
+
+BASELINE
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Users\Administrator\Desktop\提链 at commit 7435d6d560fe37172b77e964b823c32dd7629af9
+literal output/result:
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 1.45s
+exit status: 0
+
+MODIFIED
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-gcash-core-replacement-rollback-20260824-1730 after applying DIFF_FILE.patch
+literal output/result:
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 1.29s
+exit status: 0
+
+DEPENDENCY/BROWSER SMOKE
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); print('chromium='+b.version); b.close(); p.stop(); print('browser_smoke=ok')"
+cwd/input: C:\Users\Administrator\Desktop\提链 with playwright==1.53.0 and downloaded Chromium build v1179
+literal output/result:
+chromium=138.0.7204.23
+browser_smoke=ok
+exit status: 0
+
+NODE CORE SMOKE
+command: node --check sentinel_bridge.js && node --check sentinel_assets\sentinel_bootstrap.js && node --check sentinel_assets\sentinel_sdk.js
+cwd/input: C:\Users\Administrator\Desktop\提链 vendored JavaScript bridge/assets
+literal output/result:
+node_syntax=ok
+exit status: 0
+
+ROLLBACK
+command: "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\mk-gcash-core-replacement-20260824\ROLLBACK.sh" "C:\Temp\mk-gcash-core-replacement-rollback-20260824-1730"
+input: modified disposable worktree created from baseline commit and DIFF_FILE.patch
+literal output/result:
+ROLLBACK_OK target=C:\Temp\mk-gcash-core-replacement-rollback-20260824-1730 restored_commit=7435d6d560fe37172b77e964b823c32dd7629af9
+exit status: 0
+
+ROLLBACK RESTORED BEHAVIOR/STATUS
+command: C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+cwd/input: C:\Temp\mk-gcash-core-replacement-rollback-20260824-1730 after ROLLBACK.sh
+literal output/result:
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 1.29s
+exit status: 0
+restored behavior/status: baseline suite restored to 139 passing tests; git status --short returned no output (clean).
+
+SOURCE INTEGRITY
+manifest: C:\Users\Administrator\Desktop\提链\mk_gcash_core_manifest.json
+source: https://github.com/mika50000/MK-GCash-Link-OpenSource
+commit: 2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+result: six vendored core hashes match the source manifest; enforced by test_vendored_mk_gcash_core_matches_upstream_manifest.

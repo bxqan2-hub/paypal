@@ -6,3 +6,5 @@ curl-cffi>=0.7,<1
 loguru>=0.7,<1
 python-dotenv>=1.0,<2
 httpx[http2,socks]>=0.27,<1
+playwright==1.53.0
+qrcode==8.2

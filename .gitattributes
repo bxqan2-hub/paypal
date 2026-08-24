@@ -1,2 +1,9 @@
 *.sh text eol=lf
 artifacts/**/DIFF_FILE.patch -text -diff
+# Preserve the vendored upstream core byte-for-byte so its SHA-256 manifest is
+# stable across Windows and Unix checkouts.
+/gcash_chain.py -text -diff
+/payment_monitor.py -text -diff
+/sentinel.py -text -diff
+/sentinel_bridge.js -text -diff
+/sentinel_assets/*.js -text -diff

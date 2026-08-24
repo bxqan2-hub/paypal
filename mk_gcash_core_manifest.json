@@ -1,0 +1,12 @@
+{
+  "source": "https://github.com/mika50000/MK-GCash-Link-OpenSource",
+  "commit": "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5",
+  "sha256": {
+    "gcash_chain.py": "1ae7dfad417bf49199f4053e12bdafe1f89850aab7984ed6d1892d235434af38",
+    "payment_monitor.py": "2d183d7d42a52d9d5ca9e7d6c5d899a71bc2f51b49e3c7737440c68eae8c3088",
+    "sentinel.py": "558078c9264dde77e715f59173129394f6c7a8cbff33e224407babc3e72780d2",
+    "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
+    "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
+    "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8"
+  }
+}

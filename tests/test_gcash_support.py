@@ -186,15 +186,24 @@ def test_oaics_gcash_uses_custom_method_confirm_and_start() -> None:
     assert taxes[2]["json"]["billing_address"]["line2"] == ""
 
 
-def test_application_gcash_does_not_call_legacy_coupon_or_update() -> None:
-    chatgpt = _ChatGPTRouteData()
+def test_application_gcash_does_not_call_legacy_coupon_or_update(monkeypatch) -> None:
+    called = {}
+
+    def direct(config, **_kwargs):
+        called["config"] = config
+        return SimpleNamespace(payment_method="gcash")
+
+    monkeypatch.setattr(
+        "payment_link_extractor.mk_gcash.extract_mk_gcash_payment_link",
+        direct,
+    )
 
     class Factory:
         def chatgpt(self, config: ExtractionConfig, proxy: str) -> _ChatGPT:
-            return chatgpt
+            raise AssertionError("legacy GCash checkout transport was constructed")
 
         def stripe(self, config: ExtractionConfig) -> SimpleNamespace:
-            return SimpleNamespace()
+            raise AssertionError("legacy GCash Stripe transport was constructed")
 
     config = ExtractionConfig(
         access_token="token",
@@ -206,10 +215,7 @@ def test_application_gcash_does_not_call_legacy_coupon_or_update() -> None:
     )
     result = extract_payment_link(config, transport_factory=Factory())
     assert result.payment_method == "gcash"
-    paths = [call[1].split("chatgpt.com", 1)[-1] for call in chatgpt.calls]
-    assert "/backend-api/promo_campaign/check_coupon" not in " ".join(paths)
-    assert "/backend-api/payments/checkout/update" not in paths
-    assert chatgpt.calls[0][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert called["config"].country == "PH"
 
 
 def test_gcash_route_data_hydrates_method_before_tax_refresh() -> None:
