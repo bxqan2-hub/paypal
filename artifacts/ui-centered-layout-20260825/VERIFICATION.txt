@@ -1,0 +1,37 @@
+Centered UI layout verification
+================================
+Changed branch/field
+- Extractor desktop shell geometry in payment_link_extractor/web/static/styles.css.
+- `.shell` now uses `width: min(calc(100% - 56px), 1680px)`, `max-width: 1680px`, and `margin: 0 auto`.
+- The left submit panel and right task information panel retain their existing widths and move inward together, leaving balanced side whitespace. The mobile <=640px full-width override remains unchanged.
+
+Artifacts
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-centered-layout-20260825\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-centered-layout-20260825\DIFF_FILE.patch
+- VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\ui-centered-layout-20260825\VERIFICATION.txt
+- ROLLBACK: C:\Users\Administrator\Desktop\提链\artifacts\ui-centered-layout-20260825\ROLLBACK.sh
+
+BASELINE
+Command: .\.venv\Scripts\python.exe -m pytest -q tests
+Input: repository at commit ee23c87ba9641b5f374277901fb884bc2d160e8e
+Literal output: 153 passed in 1.28s
+Result: exit status 0.
+
+MODIFIED
+Command: .\.venv\Scripts\python.exe -m pytest -q tests
+Input: centered-shell CSS and layout regression assertion at commit f84127a
+Literal output: 154 passed in 1.60s
+Result: exit status 0.
+
+ROLLBACK (disposable worktree C:\Temp\ui-centered-layout-rollback-20260825)
+Command: .\artifacts\ui-centered-layout-20260825\ROLLBACK.sh
+Input: detached worktree at commit f84127a; script restores BASELINE=ee23c87ba9641b5f374277901fb884bc2d160e8e for styles.css and the UI test.
+Literal output: (no stdout/stderr)
+Result: exit status 0.
+Command: .\..\提链\.venv\Scripts\python.exe -m pytest -q tests
+Input: same disposable worktree after rollback.
+Literal output: 153 passed in 1.29s
+Result: exit status 0.
+Command: CSS baseline assertion after rollback
+Literal output: RESTORED_CSS_BASELINE=True
+Result: exit status 0; centered-shell declaration is absent and the prior layout is restored.
