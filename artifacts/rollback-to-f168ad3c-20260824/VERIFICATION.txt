@@ -58,5 +58,6 @@ RESTORED_BEHAVIOR_STATUS=restored; MODIFIED_FILE remains at TARGET_COMMIT state
 GIT
 COMMAND=git add -A; git commit; git push origin main
 INPUT=restore commit to be created without staging pre-existing paypal_agreement_protocol/data/used_local_card_hashes.txt
-LITERAL_OUTPUT=(pending until commit/push)
-EXIT_STATUS=(pending)
+LITERAL_OUTPUT=To https://github.com/bxqan2-hub/paypal.git; 10b7698..b6bfb03 b6bfb03 main -> main
+EXIT_STATUS=0
+
