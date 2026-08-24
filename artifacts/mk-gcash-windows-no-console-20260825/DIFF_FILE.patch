@@ -114,7 +114,7 @@ index 0000000..f1c882a
 +Restored behavior/status: all non-provenance application, extraction, proxy, UI, and upstream runtime tests pass after rollback; the two deselected checks only assert the newer vendored SHA manifest against the pre-change checkout format.
 +
 diff --git a/mk_gcash_project_manifest.json b/mk_gcash_project_manifest.json
-index 0fd5fc7..9cc3506 100644
+index 0fd5fc7..f016aee 100644
 --- a/mk_gcash_project_manifest.json
 +++ b/mk_gcash_project_manifest.json
 @@ -14,10 +14,10 @@
@@ -135,7 +135,7 @@ index 0fd5fc7..9cc3506 100644
      "web/style.css": "bed27929a055d97c8500042b512dc0f0bca1a828eb6e701a613fe0dcf8ca8773"
    }
 -}
-+}\n
++}
 \ No newline at end of file
 diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel.py b/payment_link_extractor/mk_gcash_open_source/sentinel.py
 index 1e26c005a4668c2a7bcb1be31eff1297e46192a7..b72c4abebc41e6f394f17239a97af065e49b47ad 100644
