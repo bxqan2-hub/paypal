@@ -1,0 +1,44 @@
+CHANGED_BRANCH=main / HAR response capture + completeness audit
+BASELINE_COMMIT=8295d96d40df610c8ef3e6ceb624e7c3a789b9f3
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-complete-capture-20260824\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-complete-capture-20260824\DIFF_FILE.patch
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-complete-capture-20260824\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\roxy-complete-capture-20260824\ROLLBACK.sh
+
+BASELINE_COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+BASELINE_INPUT=commit 8295d96d40df610c8ef3e6ceb624e7c3a789b9f3
+BASELINE_LITERAL_OUTPUT=134 passed in 1.36s
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q
+MODIFIED_INPUT=working tree with Fetch response interception, 10-second CDP command timeout, response retries, durable buffers, request-body fallback, and strict GCash completeness audit
+MODIFIED_LITERAL_OUTPUT=139 passed in 1.43s
+MODIFIED_EXIT_STATUS=0
+
+TARGETED_COMMAND=.\.venv\Scripts\python.exe -m pytest -q tests/test_har_tools.py tests/test_roxy_har_capture.py
+TARGETED_INPUT=HAR recorder and Roxy CLI regression tests
+TARGETED_LITERAL_OUTPUT=16 passed in 0.63s
+TARGETED_EXIT_STATUS=0
+
+REPEATED_LIVE_COMMAND=.\.venv\Scripts\python.exe -
+REPEATED_LIVE_INPUT=three independent headless Chrome CDP captures; each page issued 20 concurrent 40 KiB GET responses and one JSON POST request/response
+REPEATED_LIVE_LITERAL_OUTPUT_1=FETCH_LIVE_RUN=1 EXIT=0 API=20 FULL=20 SOURCES={'Fetch.getResponseBody': 19, 'Network.getResponseBody': 1} POST=1 POST_REQ=1 POST_RESP=1 MISSING=0
+REPEATED_LIVE_LITERAL_OUTPUT_2=FETCH_LIVE_RUN=2 EXIT=0 API=20 FULL=20 SOURCES={'Fetch.getResponseBody': 19, 'Network.getResponseBody': 1} POST=1 POST_REQ=1 POST_RESP=1 MISSING=0
+REPEATED_LIVE_LITERAL_OUTPUT_3=FETCH_LIVE_RUN=3 EXIT=0 API=20 FULL=20 SOURCES={'Network.getResponseBody': 2, 'Fetch.getResponseBody': 18} POST=1 POST_REQ=1 POST_RESP=1 MISSING=0
+REPEATED_LIVE_EXIT_STATUS=0
+
+STRESS_COMMAND=.\.venv\Scripts\python.exe -
+STRESS_INPUT=headless Chrome CDP capture of 24 concurrent 512 KiB responses (12 MiB total response bodies)
+STRESS_LITERAL_OUTPUT=STRESS_EXIT=0 LARGE=24 FULL_512K=24 TOTAL_BODY_BYTES=12582912 MISSING=0
+STRESS_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=C:\Program Files\Git\bin\bash.exe C:\Users\Administrator\Desktop\提链\artifacts\roxy-complete-capture-20260824\ROLLBACK.sh C:\Temp\roxy-complete-capture-rollback-20260824 8295d96d40df610c8ef3e6ceb624e7c3a789b9f3
+ROLLBACK_INPUT=detached baseline worktree after DIFF_FILE.patch was applied and modified tests returned 139 passed in 1.49s
+ROLLBACK_LITERAL_OUTPUT=ROLLBACK_RESTORED=C:\Temp\roxy-complete-capture-rollback-20260824@8295d96d40df610c8ef3e6ceb624e7c3a789b9f3; 134 passed in 1.18s; RESTORED_STATUS=clean
+ROLLBACK_EXIT_STATUS=0
+RESTORED_BEHAVIOR_STATUS=rollback copy returned to the 134-test baseline while the main working tree retained the modified response-capture behavior
+
+SOURCE_HAR_AUDIT_COMMAND=.\.venv\Scripts\python.exe - (audit_har_completeness on data\captures\roxy-1631-22788.har)
+SOURCE_HAR_AUDIT_INPUT=87-entry Roxy HAR supplied by the user
+SOURCE_HAR_AUDIT_LITERAL_RESULT=custom_payment_method_start:response_body_missing,authorisation_consult:response_body_missing
+SOURCE_HAR_AUDIT_EXIT_STATUS=0

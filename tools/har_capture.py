@@ -179,34 +179,65 @@ def _query_list(url: str) -> list[dict[str, str]]:
 
 
 class HARRecorder:
-    def __init__(self, cdp: CDPWebSocket, *, max_body_bytes: int = 8 * 1024 * 1024) -> None:
+    def __init__(
+        self,
+        cdp: CDPWebSocket,
+        *,
+        max_body_bytes: int = 8 * 1024 * 1024,
+        response_body_retries: int = 3,
+        stream_responses: bool = True,
+    ) -> None:
         self.cdp = cdp
         self.max_body_bytes = max_body_bytes
+        self.response_body_retries = max(1, response_body_retries)
+        self.stream_responses = stream_responses
         self.entries: list[dict[str, Any]] = []
         self.states: dict[str, dict[str, Any]] = {}
         self._commands: dict[int, dict[str, Any]] = {}
+        self._fetch_bodies: dict[str, dict[str, Any]] = {}
 
     def command(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.cdp.next_id += 1
         command_id = self.cdp.next_id
         self.cdp.send_json({"id": command_id, "method": method, "params": params or {}})
-        while True:
-            message = self.cdp.recv_json()
-            if message.get("id") == command_id:
-                if "error" in message:
-                    raise RuntimeError(f"CDP {method} failed: {message['error']}")
-                return message.get("result", {})
-            self.handle(message)
+        sock = getattr(self.cdp, "sock", None)
+        previous_timeout = sock.gettimeout() if sock is not None and hasattr(sock, "gettimeout") else None
+        if sock is not None and previous_timeout is not None and previous_timeout < 10:
+            sock.settimeout(10)
+        try:
+            while True:
+                message = self._commands.pop(command_id, None) or self.cdp.recv_json()
+                response_id = message.get("id")
+                if response_id is not None:
+                    if response_id != command_id:
+                        # A command can be issued while handling an event received by an
+                        # outer command. Preserve the outer response instead of dropping it.
+                        self._commands[int(response_id)] = message
+                        continue
+                    if "error" in message:
+                        raise RuntimeError(f"CDP {method} failed: {message['error']}")
+                    return message.get("result", {})
+                self.handle(message)
+        finally:
+            if sock is not None and previous_timeout is not None:
+                sock.settimeout(previous_timeout)
 
     def handle(self, message: dict[str, Any]) -> None:
         method = str(message.get("method") or "")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
-        if method == "Network.requestWillBeSent":
+        if method == "Fetch.requestPaused":
+            self._capture_paused_response(params)
+        elif method == "Network.requestWillBeSent":
             request_id = str(params.get("requestId") or "")
             if not request_id:
                 return
             if params.get("redirectResponse") and request_id in self.states:
                 previous = self.states.pop(request_id)
+                if not previous.get("body"):
+                    stream_body, stream_encoded = self._stream_fallback(previous)
+                    previous["body"] = stream_body
+                    previous["base64Encoded"] = stream_encoded
+                    previous["body_source"] = "Network.streamResourceContent" if stream_body else ""
                 self._finish(previous, response=params.get("redirectResponse"), timestamp=params.get("timestamp"))
             request = params.get("request") if isinstance(params.get("request"), dict) else {}
             self.states[request_id] = {
@@ -216,6 +247,12 @@ class HARRecorder:
                 "response": None,
                 "finish": None,
                 "error": "",
+                "stream_body": bytearray(),
+                "stream_tail": bytearray(),
+                "stream_starting": False,
+                "stream_truncated": False,
+                "stream_error": "",
+                "fetch_body": self._fetch_bodies.pop(request_id, None),
             }
         elif method == "Network.responseReceived":
             request_id = str(params.get("requestId") or "")
@@ -223,6 +260,17 @@ class HARRecorder:
             if state:
                 state["response"] = params.get("response") if isinstance(params.get("response"), dict) else {}
                 state["response_event"] = params
+                self._begin_response_stream(state)
+        elif method == "Network.dataReceived":
+            request_id = str(params.get("requestId") or "")
+            state = self.states.get(request_id)
+            data = params.get("data")
+            if state and isinstance(data, str) and data:
+                try:
+                    chunk = base64.b64decode(data, validate=True)
+                except Exception:
+                    chunk = b""
+                self._append_stream_bytes(state, chunk, tail=bool(state.get("stream_starting")))
         elif method == "Network.loadingFailed":
             request_id = str(params.get("requestId") or "")
             state = self.states.get(request_id)
@@ -232,21 +280,135 @@ class HARRecorder:
                 self.states.pop(request_id, None)
         elif method == "Network.loadingFinished":
             request_id = str(params.get("requestId") or "")
+            current = self.states.get(request_id)
+            if current and current.get("stream_starting"):
+                current["deferred_finish"] = params
+                return
             state = self.states.pop(request_id, None)
             if state:
                 state["finish"] = params
-                body = ""
-                encoded = False
                 self._fill_missing_request_body(state)
+                self._fill_response_body(state)
+                self._finish(state, timestamp=params.get("timestamp"))
+
+    def _capture_paused_response(self, params: dict[str, Any]) -> None:
+        fetch_id = str(params.get("requestId") or "")
+        network_id = str(params.get("networkId") or "")
+        if not fetch_id:
+            return
+        captured: dict[str, Any] = {"body": "", "base64Encoded": False, "errors": []}
+        try:
+            if params.get("responseStatusCode") is not None or params.get("responseErrorReason") is not None:
+                for attempt in range(self.response_body_retries):
+                    try:
+                        result = self.command("Fetch.getResponseBody", {"requestId": fetch_id})
+                        captured["body"] = str(result.get("body") or "")
+                        captured["base64Encoded"] = bool(result.get("base64Encoded"))
+                        if captured["body"]:
+                            break
+                    except Exception as exc:
+                        captured["errors"].append(str(exc))
+                    if attempt + 1 < self.response_body_retries:
+                        time.sleep(0.02 * (attempt + 1))
+        finally:
+            try:
+                self.command("Fetch.continueRequest", {"requestId": fetch_id})
+            except Exception as exc:
+                captured["errors"].append(str(exc))
+        if network_id:
+            state = self.states.get(network_id)
+            if state is not None:
+                state["fetch_body"] = captured
+            else:
+                self._fetch_bodies[network_id] = captured
+
+    def _append_stream_bytes(self, state: dict[str, Any], chunk: bytes, *, tail: bool = False) -> None:
+        if not chunk or self.max_body_bytes <= 0:
+            return
+        key = "stream_tail" if tail else "stream_body"
+        target = state.get(key)
+        if not isinstance(target, bytearray):
+            target = bytearray()
+            state[key] = target
+        current = state.get("stream_body")
+        other = state.get("stream_tail")
+        current_size = len(current) if isinstance(current, bytearray) else 0
+        other_size = len(other) if isinstance(other, bytearray) else 0
+        available = max(0, self.max_body_bytes - current_size - other_size)
+        target.extend(chunk[:available])
+        if len(chunk) > available:
+            state["stream_truncated"] = True
+
+    def _begin_response_stream(self, state: dict[str, Any]) -> None:
+        """Stream response bytes as a fallback when CDP later evicts the body."""
+        if not self.stream_responses or self.max_body_bytes <= 0:
+            return
+        request_id = str(state.get("request_id") or "")
+        if not request_id:
+            return
+        state["stream_starting"] = True
+        try:
+            result = self.command("Network.streamResourceContent", {"requestId": request_id})
+            buffered = str(result.get("bufferedData") or "") if isinstance(result, dict) else ""
+            prefix = base64.b64decode(buffered, validate=True) if buffered else b""
+            tail = state.get("stream_tail")
+            state["stream_tail"] = bytearray()
+            self._append_stream_bytes(state, prefix)
+            if isinstance(tail, bytearray):
+                self._append_stream_bytes(state, bytes(tail))
+        except Exception as exc:
+            state["stream_error"] = str(exc)
+        finally:
+            state["stream_starting"] = False
+        deferred = state.pop("deferred_finish", None)
+        request_id = str(state.get("request_id") or "")
+        if isinstance(deferred, dict) and request_id in self.states:
+            self.handle({"method": "Network.loadingFinished", "params": deferred})
+
+    def _stream_fallback(self, state: dict[str, Any]) -> tuple[str, bool]:
+        stream_body = state.get("stream_body")
+        stream_tail = state.get("stream_tail")
+        raw = bytes(stream_body) if isinstance(stream_body, bytearray) else b""
+        if isinstance(stream_tail, bytearray) and stream_tail:
+            raw += bytes(stream_tail)
+        if not raw:
+            return "", False
+        return base64.b64encode(raw).decode("ascii"), True
+
+    def _fill_response_body(self, state: dict[str, Any]) -> None:
+        request_id = str(state.get("request_id") or "")
+        fetch_body = state.get("fetch_body") if isinstance(state.get("fetch_body"), dict) else {}
+        body = str(fetch_body.get("body") or "")
+        encoded = bool(fetch_body.get("base64Encoded"))
+        errors: list[str] = []
+        errors.extend(str(item) for item in fetch_body.get("errors", []) if item)
+        attempts = 0
+        source = "Fetch.getResponseBody" if body else ""
+        if not body:
+            for attempt in range(self.response_body_retries):
+                attempts = attempt + 1
                 try:
                     result = self.command("Network.getResponseBody", {"requestId": request_id})
                     body = str(result.get("body") or "")
                     encoded = bool(result.get("base64Encoded"))
-                except Exception:
-                    pass
-                state["body"] = body
-                state["base64Encoded"] = encoded
-                self._finish(state, timestamp=params.get("timestamp"))
+                    if body:
+                        break
+                except Exception as exc:
+                    errors.append(str(exc))
+                if attempt + 1 < self.response_body_retries:
+                    time.sleep(0.02 * (attempt + 1))
+            if body:
+                source = "Network.getResponseBody"
+        if not body:
+            body, encoded = self._stream_fallback(state)
+            if body:
+                source = "Network.streamResourceContent"
+        state["body"] = body
+        state["base64Encoded"] = encoded
+        state["body_source"] = source
+        state["body_attempts"] = attempts
+        if errors:
+            state["body_errors"] = errors
 
     def _fill_missing_request_body(self, state: dict[str, Any]) -> None:
         """Ask CDP for POST data omitted from requestWillBeSent (seen in RoxyChrome)."""
@@ -271,7 +433,36 @@ class HARRecorder:
         pending = list(self.states.values())
         self.states.clear()
         for state in pending:
+            self._fill_missing_request_body(state)
+            if state.get("response"):
+                try:
+                    self._fill_response_body(state)
+                except Exception:
+                    pass
             self._finish(state)
+
+    @staticmethod
+    def _expects_response_body(request: dict[str, Any], response: dict[str, Any]) -> bool:
+        method = str(request.get("method") or "").upper()
+        status = int(response.get("status", 0) or 0)
+        if method == "HEAD" or status in {0, 101, 204, 205, 304}:
+            return False
+        headers = {
+            str(item.get("name", "")).lower(): str(item.get("value", ""))
+            for item in _header_list(response.get("headers"))
+        }
+        content_length = headers.get("content-length", "").strip()
+        if content_length == "0":
+            return False
+        try:
+            if int(content_length) > 0:
+                return True
+        except ValueError:
+            pass
+        mime_type = str(response.get("mimeType") or headers.get("content-type", "")).lower()
+        return status >= 200 and status < 300 and any(
+            marker in mime_type for marker in ("json", "text/", "javascript", "xml", "html")
+        )
 
     def _finish(self, state: dict[str, Any], *, response: dict[str, Any] | None = None, timestamp: Any = None) -> None:
         request = state.get("request") if isinstance(state.get("request"), dict) else {}
@@ -360,6 +551,19 @@ class HARRecorder:
             }
         if state.get("error"):
             entry["_error"] = state["error"]
+        capture_detail: dict[str, Any] = {
+            "responseBodySource": str(state.get("body_source") or "none"),
+            "responseBodyAttempts": int(state.get("body_attempts") or 0),
+        }
+        if state.get("stream_truncated"):
+            capture_detail["streamTruncated"] = True
+        if state.get("body_errors"):
+            capture_detail["responseBodyErrors"] = list(state["body_errors"])
+        if state.get("stream_error") and not body:
+            capture_detail["streamError"] = str(state["stream_error"])
+        if not body and self._expects_response_body(request, response):
+            capture_detail["responseBodyMissing"] = True
+        entry["_capture"] = capture_detail
         self.entries.append(entry)
 
     def as_har(self, *, title: str) -> dict[str, Any]:
@@ -373,6 +577,97 @@ class HARRecorder:
                 "_capture": {"title": title, "entryCount": len(entries)},
             }
         }
+
+
+def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
+    """Audit a GCash flow without exposing request or response payload values."""
+    log = har.get("log") if isinstance(har.get("log"), dict) else {}
+    entries = log.get("entries") if isinstance(log.get("entries"), list) else []
+
+    def request_text(entry: dict[str, Any]) -> str:
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+        return str(post_data.get("text") or "")
+
+    def response_text(entry: dict[str, Any]) -> str:
+        response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+        content = response.get("content") if isinstance(response.get("content"), dict) else {}
+        return str(content.get("text") or "")
+
+    def searchable(entry: dict[str, Any]) -> str:
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        return (str(request.get("url") or "") + "\n" + request_text(entry)).lower()
+
+    critical = [
+        ("checkout_taxes", "/backend-api/payments/checkout/taxes"),
+        ("checkout_confirm", "/backend-api/payments/checkout/confirm"),
+        ("custom_payment_method_start", "/backend-api/payments/checkout/custom_payment_method/start"),
+        ("sentinel_req", "/backend-api/sentinel/req"),
+        ("key_agreement", "/c4/v3/key-agreement/handshake"),
+        ("authorisation_consult", "ap.mobilewallet.gka.authorisation.stateless.consult"),
+        ("short_dynamic_link", "ap.mobilewallet.short.dynamic.link"),
+        ("query_result", "ap.mobilewallet.gka.query.result"),
+    ]
+    critical_results: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for name, marker in critical:
+        matches = [entry for entry in entries if isinstance(entry, dict) and marker in searchable(entry)]
+        request_body = any(bool(request_text(entry)) for entry in matches)
+        response_body = any(bool(response_text(entry)) for entry in matches)
+        result = {
+            "name": name,
+            "count": len(matches),
+            "requestBody": request_body,
+            "responseBody": response_body,
+        }
+        critical_results.append(result)
+        if not matches:
+            issues.append(f"{name}:entry_missing")
+        elif not request_body:
+            issues.append(f"{name}:request_body_missing")
+        elif not response_body:
+            issues.append(f"{name}:response_body_missing")
+
+    missing_responses: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        detail = entry.get("_capture") if isinstance(entry.get("_capture"), dict) else {}
+        if not detail.get("responseBodyMissing"):
+            continue
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        parsed = urlsplit(str(request.get("url") or ""))
+        missing_responses.append(
+            {
+                "index": index,
+                "method": str(request.get("method") or ""),
+                "host": str(parsed.hostname or ""),
+                "path": str(parsed.path or ""),
+            }
+        )
+
+    audit = {
+        "complete": not issues and not missing_responses,
+        "criticalComplete": not issues,
+        "entryCount": len(entries),
+        "critical": critical_results,
+        "issues": issues,
+        "missingExpectedResponses": missing_responses,
+    }
+    capture = log.get("_capture") if isinstance(log.get("_capture"), dict) else None
+    if capture is not None:
+        capture["completenessAudit"] = audit
+    return audit
+
+
+def network_enable_params(max_body_bytes: int) -> dict[str, Any]:
+    per_resource = max(max_body_bytes, 1024 * 1024)
+    return {
+        "maxTotalBufferSize": max(per_resource * 16, 16 * 1024 * 1024),
+        "maxResourceBufferSize": per_resource,
+        "maxPostDataSize": per_resource,
+        "enableDurableMessages": True,
+    }
 
 
 def _find_browser(explicit: str = "") -> str:
@@ -616,6 +911,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--socks5-proxy-env", default="", help="read the authenticated SOCKS5 entry from this environment variable")
     parser.add_argument("--duration", type=float, default=0, help="capture seconds; 0 means wait for Ctrl+C")
     parser.add_argument("--max-body-bytes", type=int, default=8 * 1024 * 1024)
+    parser.add_argument("--no-fetch-responses", action="store_true", help="disable Fetch-domain response-body interception")
     parser.add_argument("--headless", action="store_true", help="run headless; manual entry normally uses the visible window")
     parser.add_argument("--ignore-certificate-errors", action="store_true")
     parser.add_argument("--check-proxy", action="store_true", help="validate the SOCKS5 proxy and exit without opening Chrome")
@@ -710,11 +1006,18 @@ def main(argv: list[str] | None = None) -> int:
         if not page:
             raise RuntimeError("Chrome did not expose a debuggable page")
         cdp = CDPWebSocket(str(page["webSocketDebuggerUrl"]))
-        recorder = HARRecorder(cdp, max_body_bytes=max(args.max_body_bytes, 0))
+        recorder = HARRecorder(
+            cdp,
+            max_body_bytes=max(args.max_body_bytes, 0),
+            stream_responses=args.no_fetch_responses,
+        )
         recorder.command("Page.enable")
-        recorder.command("Network.enable", {"maxTotalBufferSize": max(args.max_body_bytes, 1024 * 1024)})
+        recorder.command("Network.enable", network_enable_params(max(args.max_body_bytes, 0)))
+        if not args.no_fetch_responses:
+            recorder.command("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]})
         recorder.command("Emulation.setTimezoneOverride", {"timezoneId": timezone_id})
         recorder.command("Page.navigate", {"url": args.url})
+        cdp.sock.settimeout(0.25)
         print(f"CAPTURE_BROWSER={browser}")
         print(f"CAPTURE_URL={args.url}")
         if socks5_value:
@@ -754,6 +1057,11 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     finally:
         if cdp:
+            if not args.no_fetch_responses:
+                try:
+                    recorder.command("Fetch.disable")  # type: ignore[name-defined]
+                except Exception:
+                    pass
             cdp.close()
         try:
             process.terminate()

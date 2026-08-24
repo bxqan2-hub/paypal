@@ -9,6 +9,7 @@ import pytest
 from tools.har_capture import (
     HARRecorder,
     Socks5HttpBridge,
+    audit_har_completeness,
     check_socks5_proxy,
     infer_proxy_country,
     locale_profile_for_proxy,
@@ -225,3 +226,157 @@ def test_capture_recovers_post_data_omitted_by_request_event() -> None:
     )
     recorder.handle({"method": "Network.loadingFinished", "params": {"requestId": "r1", "timestamp": 1.1}})
     assert recorder.entries[0]["request"]["postData"]["text"] == '{"checkout_session_id":"fixture"}'
+
+
+def test_nested_cdp_command_preserves_outer_command_response() -> None:
+    class FakeCDP:
+        next_id = 0
+
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+            self.messages = [
+                {"method": "Network.loadingFinished", "params": {"requestId": "r1", "timestamp": 1.1}},
+                {"id": 1, "result": {"outer": True}},
+                {"id": 2, "result": {"body": '{"nested":true}', "base64Encoded": False}},
+            ]
+
+        def send_json(self, value: dict) -> None:
+            self.sent.append(value)
+
+        def recv_json(self) -> dict:
+            return self.messages.pop(0)
+
+    cdp = FakeCDP()
+    recorder = HARRecorder(cdp, stream_responses=False)  # type: ignore[arg-type]
+    recorder.states["r1"] = {
+        "request_id": "r1",
+        "request_event": {"wallTime": 0, "timestamp": 1},
+        "request": {"method": "GET", "url": "https://example.com/data", "headers": {}},
+        "response": {"status": 200, "mimeType": "application/json", "headers": {}},
+        "error": "",
+    }
+    assert recorder.command("Outer.command") == {"outer": True}
+    assert recorder.entries[0]["response"]["content"]["text"] == '{"nested":true}'
+    assert [item["method"] for item in cdp.sent] == ["Outer.command", "Network.getResponseBody"]
+
+
+def test_streamed_response_is_used_when_get_response_body_is_empty() -> None:
+    recorder = HARRecorder(object(), response_body_retries=2)  # type: ignore[arg-type]
+    raw = b'{"consult":"complete"}'
+
+    def fake_command(method: str, params: dict | None = None) -> dict:
+        if method == "Network.streamResourceContent":
+            return {"bufferedData": base64.b64encode(raw).decode("ascii")}
+        if method == "Network.getResponseBody":
+            return {"body": "", "base64Encoded": False}
+        return {}
+
+    recorder.command = fake_command  # type: ignore[method-assign]
+    recorder.handle(
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "r1",
+                "timestamp": 1,
+                "wallTime": 0,
+                "request": {"method": "POST", "url": "https://example.com/mgw.htm", "headers": {}, "postData": "x=1"},
+            },
+        }
+    )
+    recorder.handle(
+        {
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": "r1",
+                "response": {
+                    "status": 200,
+                    "mimeType": "application/json",
+                    "headers": {"content-length": str(len(raw))},
+                },
+            },
+        }
+    )
+    recorder.handle({"method": "Network.loadingFinished", "params": {"requestId": "r1", "timestamp": 1.1}})
+    content = recorder.entries[0]["response"]["content"]
+    assert content["encoding"] == "base64"
+    assert base64.b64decode(content["text"]) == raw
+    assert recorder.entries[0]["_capture"]["responseBodySource"] == "Network.streamResourceContent"
+    assert "responseBodyMissing" not in recorder.entries[0]["_capture"]
+
+
+def test_fetch_interception_captures_body_before_continuing_response() -> None:
+    recorder = HARRecorder(object(), stream_responses=False)  # type: ignore[arg-type]
+    calls: list[str] = []
+
+    def fake_command(method: str, params: dict | None = None) -> dict:
+        calls.append(method)
+        if method == "Fetch.getResponseBody":
+            return {"body": '{"authorisation":"complete"}', "base64Encoded": False}
+        if method == "Network.getResponseBody":
+            raise AssertionError("Fetch body should avoid the Network fallback")
+        return {}
+
+    recorder.command = fake_command  # type: ignore[method-assign]
+    recorder.handle(
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "network-1",
+                "timestamp": 1,
+                "wallTime": 0,
+                "request": {"method": "POST", "url": "https://example.com/mgw.htm", "headers": {}, "postData": "x=1"},
+            },
+        }
+    )
+    recorder.handle(
+        {
+            "method": "Fetch.requestPaused",
+            "params": {"requestId": "fetch-1", "networkId": "network-1", "responseStatusCode": 200},
+        }
+    )
+    recorder.handle(
+        {
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": "network-1",
+                "response": {"status": 200, "mimeType": "application/json", "headers": {}},
+            },
+        }
+    )
+    recorder.handle(
+        {"method": "Network.loadingFinished", "params": {"requestId": "network-1", "timestamp": 1.1}}
+    )
+    assert calls == ["Fetch.getResponseBody", "Fetch.continueRequest"]
+    assert recorder.entries[0]["response"]["content"]["text"] == '{"authorisation":"complete"}'
+    assert recorder.entries[0]["_capture"]["responseBodySource"] == "Fetch.getResponseBody"
+
+
+def test_completeness_audit_reports_and_accepts_full_gcash_flow() -> None:
+    markers = [
+        "/backend-api/payments/checkout/taxes",
+        "/backend-api/payments/checkout/confirm",
+        "/backend-api/payments/checkout/custom_payment_method/start",
+        "/backend-api/sentinel/req",
+        "/c4/v3/key-agreement/handshake",
+        "ap.mobilewallet.gka.authorisation.stateless.consult",
+        "ap.mobilewallet.short.dynamic.link",
+        "ap.mobilewallet.gka.query.result",
+    ]
+    entries = []
+    for index, marker in enumerate(markers):
+        url = "https://example.com/mgw.htm" if marker.startswith("ap.mobilewallet") else "https://example.com" + marker
+        entries.append(
+            {
+                "request": {"method": "POST", "url": url, "postData": {"text": marker + "=fixture"}},
+                "response": {"status": 200, "content": {"text": '{"ok":true}'}, "headers": []},
+                "_capture": {"responseBodySource": "Network.getResponseBody"},
+            }
+        )
+    har = {"log": {"entries": entries, "_capture": {}}}
+    complete = audit_har_completeness(har)
+    assert complete["complete"] is True
+    entries[2]["response"]["content"] = {}
+    entries[2]["_capture"]["responseBodyMissing"] = True
+    incomplete = audit_har_completeness(har)
+    assert incomplete["complete"] is False
+    assert "custom_payment_method_start:response_body_missing" in incomplete["issues"]

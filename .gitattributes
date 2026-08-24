@@ -1,0 +1,2 @@
+*.sh text eol=lf
+artifacts/**/DIFF_FILE.patch -text -diff

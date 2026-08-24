@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.roxy_har_capture import discover_roxy_targets, read_devtools_port
+from tools.roxy_har_capture import RoxyTarget, discover_roxy_targets, main, read_devtools_port
 
 
 def test_read_devtools_port_and_discover_page(tmp_path: Path, monkeypatch) -> None:
@@ -38,3 +38,28 @@ def test_read_devtools_port_and_discover_page(tmp_path: Path, monkeypatch) -> No
     assert len(targets) == 1
     assert targets[0].profile_id == "profile-a"
     assert targets[0].page_id == "page-1"
+
+
+def test_require_complete_returns_three_for_incomplete_saved_har(tmp_path: Path, monkeypatch) -> None:
+    target = RoxyTarget("profile", 45678, "page-1", "fixture", "https://example.com", "ws://fixture")
+    output = tmp_path / "capture.har"
+    har = {
+        "log": {
+            "entries": [],
+            "_capture": {
+                "completenessAudit": {
+                    "complete": False,
+                    "criticalComplete": False,
+                    "issues": ["checkout_confirm:entry_missing"],
+                }
+            },
+        }
+    }
+
+    def fake_capture(_target, args):
+        output.write_text(json.dumps(har), encoding="utf-8")
+        return output, har
+
+    monkeypatch.setattr("tools.roxy_har_capture.discover_roxy_targets", lambda *_args, **_kwargs: [target])
+    monkeypatch.setattr("tools.roxy_har_capture.capture_target", fake_capture)
+    assert main(["--port", "45678", "--output", str(output), "--require-complete"]) == 3

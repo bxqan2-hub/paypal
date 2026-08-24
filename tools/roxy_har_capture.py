@@ -16,9 +16,9 @@ from typing import Any
 from urllib.request import urlopen
 
 try:
-    from .har_capture import CDPWebSocket, HARRecorder
+    from .har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
 except ImportError:  # direct ``python tools/roxy_har_capture.py`` invocation
-    from har_capture import CDPWebSocket, HARRecorder
+    from har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-immediately", action="store_true", help="do not wait for Enter before enabling Network")
     parser.add_argument("--duration", type=float, default=0, help="automatic capture seconds; 0 waits for Enter or stop BAT")
     parser.add_argument("--max-body-bytes", type=int, default=8 * 1024 * 1024)
+    parser.add_argument("--response-body-retries", type=int, default=3)
+    parser.add_argument("--no-fetch-responses", action="store_true", help="disable Fetch-domain response-body interception")
+    parser.add_argument("--no-stream-responses", action="store_true", help="disable CDP streamed response-body fallback")
+    parser.add_argument("--require-complete", action="store_true", help="exit 3 unless the complete GCash flow and all expected bodies were saved")
     return parser
 
 
@@ -139,11 +143,18 @@ def capture_target(target: RoxyTarget, args: argparse.Namespace) -> tuple[Path, 
         print("ROXY_CAPTURE_READY=navigate the selected Roxy page to the exact start node")
         input("Press Enter to START capture: ")
     cdp = CDPWebSocket(target.websocket_url)
-    recorder = HARRecorder(cdp, max_body_bytes=max(args.max_body_bytes, 0))
+    recorder = HARRecorder(
+        cdp,
+        max_body_bytes=max(args.max_body_bytes, 0),
+        response_body_retries=max(args.response_body_retries, 1),
+        stream_responses=args.no_fetch_responses and not args.no_stream_responses,
+    )
     started_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     stop_event = threading.Event()
     try:
-        recorder.command("Network.enable", {"maxTotalBufferSize": max(args.max_body_bytes, 1024 * 1024)})
+        recorder.command("Network.enable", network_enable_params(max(args.max_body_bytes, 0)))
+        if not args.no_fetch_responses:
+            recorder.command("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]})
         cdp.sock.settimeout(0.25)
         print(f"ROXY_CAPTURE_STARTED=port={target.port} page={target.page_id}")
         print("ROXY_CAPTURE_STOP=press Enter here or double-click ROXY_CAPTURE_STOP.bat")
@@ -159,6 +170,7 @@ def capture_target(target: RoxyTarget, args: argparse.Namespace) -> tuple[Path, 
                 continue
         recorder.flush_pending()
         har = recorder.as_har(title=target.title)
+        audit_har_completeness(har)
         har["log"]["_capture"].update(
             {
                 "mode": "attach-existing-roxy",
@@ -174,6 +186,11 @@ def capture_target(target: RoxyTarget, args: argparse.Namespace) -> tuple[Path, 
         return output, har
     finally:
         stop_file.unlink(missing_ok=True)
+        if not args.no_fetch_responses:
+            try:
+                recorder.command("Fetch.disable")
+            except Exception:
+                pass
         cdp.close()
 
 
@@ -193,6 +210,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ROXY_CAPTURE_SAVED={output}")
         print(f"ROXY_CAPTURE_ENTRIES={len(har['log']['entries'])}")
         print(f"ROXY_CAPTURE_SHA256={hashlib.sha256(output.read_bytes()).hexdigest().upper()}")
+        audit = har["log"]["_capture"].get("completenessAudit", {})
+        print(f"ROXY_CAPTURE_COMPLETE={str(bool(audit.get('complete'))).lower()}")
+        print(f"ROXY_CAPTURE_CRITICAL_COMPLETE={str(bool(audit.get('criticalComplete'))).lower()}")
+        if audit.get("issues"):
+            print("ROXY_CAPTURE_ISSUES=" + ",".join(str(item) for item in audit["issues"]))
+        if args.require_complete and not audit.get("complete"):
+            return 3
         return 0
     except (EOFError, OSError, RuntimeError, ValueError) as exc:
         print(f"ROXY_CAPTURE_ERROR={exc}", file=sys.stderr)

@@ -23,7 +23,7 @@ if errorlevel 1 (
 )
 echo Output: %OUTPUT%
 echo Select a page, navigate it to the exact start node, then press Enter.
-"%PYTHON%" tools\roxy_har_capture.py --output "%OUTPUT%" --stop-file "data\roxy-capture.stop"
+"%PYTHON%" tools\roxy_har_capture.py --output "%OUTPUT%" --stop-file "data\roxy-capture.stop" --require-complete
 set "EXIT_CODE=%ERRORLEVEL%"
 echo Roxy capture exit status: %EXIT_CODE%
 if not defined HAR_TOOLS_NO_PAUSE pause

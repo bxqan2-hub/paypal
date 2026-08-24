@@ -29,6 +29,15 @@ ROXY_CAPTURE_STOP.bat
 ROXY_CAPTURE_START.bat "data\captures\roxy-gcash.har"
 ```
 
+新版 Roxy 抓包默认使用两层响应体保护：Fetch 响应阶段预取，以及 `Network.getResponseBody` 延长超时并重试；关闭 Fetch 做兼容性诊断时还可使用 CDP 流式数据兜底。同时启用跨进程导航的 durable message 缓冲，并扩大总缓冲、单资源缓冲和 POST 数据缓冲。结束时会自动审计 taxes、confirm、支付方式 start、Sentinel、key agreement、authorisation consult、短链和 query result 的请求体与响应体。BAT 默认启用严格检查，只有看到以下两行均为 `true` 才表示完整交付包：
+
+```text
+ROXY_CAPTURE_COMPLETE=true
+ROXY_CAPTURE_CRITICAL_COMPLETE=true
+```
+
+如果显示 `false`，HAR 仍会保存，并通过 `ROXY_CAPTURE_ISSUES` 列出缺失节点或请求/响应体；BAT 返回状态 `3`，不要把该文件当作完整样本。每条 HAR entry 的 `_capture.responseBodySource` 会记录响应体来自 `Fetch.getResponseBody`、`Network.getResponseBody` 或流式兜底，`_capture.responseBodyMissing=true` 表示服务器声明存在正文但 CDP 未能保存。
+
 正常手动抓包时在 `Proxy:` 提示处输入 `HOST:PORT:USERNAME:PASSWORD`；脚本会通过 `chatgpt.com` 检查实际目标链路和延迟，默认超过 10000ms 就要求重新输入代理，不回显代理账号密码。也可以通过 `OPLL_CAPTURE_PROXY_MAX_LATENCY_MS` 调整阈值，或设置 `OPLL_CAPTURE_SOCKS5` 与 `OPLL_CAPTURE_SKIP_PROXY_PROMPT=1` 用于自动化运行。
 每次 BAT 启动默认使用新的 `data\har-capture-profile\run-随机值` 配置目录，因此 Cookie、Local Storage 和会话状态是新的；Chrome/Edge 可执行文件版本、User-Agent 等浏览器本身属性仍保持本机版本。设置 `OPLL_CAPTURE_REUSE_PROFILE=1` 才会复用 `data\har-capture-profile\default`。
 代理条目中的 `region-XX` 会自动选择语言、`Accept-Language` 和时区。例如 `region-PH` 使用 `en-US` 与 `Asia/Manila`；没有识别到地区时默认使用英文 `en-US`。需要覆盖时可传 `--lang`、`--accept-lang` 和 `--timezone-id`。
@@ -103,6 +112,7 @@ $env:OPLL_CAPTURE_SOCKS5 = 'HOST:PORT:USERNAME:PASSWORD'
 | `--user-data-dir PATH` | 指定可复用的浏览器配置目录 |
 | `--socks5-proxy-env NAME` | 从环境变量读取认证 SOCKS5 条目并临时桥接 |
 | `--max-body-bytes N` | 单个响应最多保存的字节数，默认 8 MiB |
+| `--no-fetch-responses` | 关闭 Fetch 响应阶段预取，仅用于兼容性诊断 |
 | `--headless` | 无界面运行，适合自动化 smoke test |
 | `--ignore-certificate-errors` | 测试环境忽略证书错误 |
 
