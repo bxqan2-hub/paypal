@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
 
 button { cursor: pointer; }
 
-.shell { width: 100%; max-width: 1680px; margin: 0 auto; padding: 16px 14px 40px; }
+.shell { width: 100%; max-width: none; margin: 0; padding: 16px 6px 40px; }
 
 .auth-gate {
   position: fixed;
@@ -38,7 +38,7 @@ button { cursor: pointer; }
 .auth-card > p:not(.eyebrow) { margin-bottom: 20px; color: #75808c; font-size: 13px; }
 .auth-card .primary { width: 100%; margin-top: 16px; }
 
-.workspace-grid { display: grid; grid-template-columns: minmax(330px, .78fr) minmax(0, 1.8fr); gap: 14px; align-items: start; }
+.workspace-grid { display: grid; grid-template-columns: minmax(330px, 412px) minmax(0, 1fr); gap: 14px; align-items: start; }
 
 .topbar, .panel-heading, .section-heading, .form-actions, .task-header, .task-footer, .result-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;

@@ -1,0 +1,6 @@
+payment_link_extractor/web/static/styles.css
+
+Changed branch/field: desktop shell and workspace anchoring. The shell no
+longer has a max-width cap or large side padding, while the left information
+panel keeps a fixed 412px column. Both information regions therefore move
+toward the viewport edges without widening the existing left box.

@@ -1,0 +1,49 @@
+diff --git a/artifacts/ui-edge-alignment-20260825/MODIFIED_FILE b/artifacts/ui-edge-alignment-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..f2613fb
+--- /dev/null
++++ b/artifacts/ui-edge-alignment-20260825/MODIFIED_FILE
+@@ -0,0 +1,6 @@
++payment_link_extractor/web/static/styles.css
++
++Changed branch/field: desktop shell and workspace anchoring. The shell no
++longer has a max-width cap or large side padding, while the left information
++panel keeps a fixed 412px column. Both information regions therefore move
++toward the viewport edges without widening the existing left box.
+diff --git a/artifacts/ui-edge-alignment-20260825/ROLLBACK.sh b/artifacts/ui-edge-alignment-20260825/ROLLBACK.sh
+new file mode 100755
+index 0000000..09c717f
+--- /dev/null
++++ b/artifacts/ui-edge-alignment-20260825/ROLLBACK.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++TARGET="${1:?usage: ROLLBACK.sh <git-worktree> }"
++BASELINE="6f8b8856b63c937c2a310feb38cca9112794dca2"
++git -C "$TARGET" reset --hard "$BASELINE"
++git -C "$TARGET" clean -fd
++test "$(git -C "$TARGET" rev-parse HEAD)" = "$BASELINE"
++echo "ROLLBACK_OK target=$TARGET restored_commit=$BASELINE"
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index 0339d23..2aee656 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
+ 
+ button { cursor: pointer; }
+ 
+-.shell { width: 100%; max-width: 1680px; margin: 0 auto; padding: 16px 14px 40px; }
++.shell { width: 100%; max-width: none; margin: 0; padding: 16px 6px 40px; }
+ 
+ .auth-gate {
+   position: fixed;
+@@ -38,7 +38,7 @@ button { cursor: pointer; }
+ .auth-card > p:not(.eyebrow) { margin-bottom: 20px; color: #75808c; font-size: 13px; }
+ .auth-card .primary { width: 100%; margin-top: 16px; }
+ 
+-.workspace-grid { display: grid; grid-template-columns: minmax(330px, .78fr) minmax(0, 1.8fr); gap: 14px; align-items: start; }
++.workspace-grid { display: grid; grid-template-columns: minmax(330px, 412px) minmax(0, 1fr); gap: 14px; align-items: start; }
+ 
+ .topbar, .panel-heading, .section-heading, .form-actions, .task-header, .task-footer, .result-row {
+   display: flex; align-items: center; justify-content: space-between; gap: 16px;

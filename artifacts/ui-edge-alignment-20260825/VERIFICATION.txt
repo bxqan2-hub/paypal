@@ -1,0 +1,55 @@
+OBJECT: 本站工作台两侧信息框边缘对齐
+BRANCH/FIELD: main / shell edge alignment and fixed left information-panel width
+BASELINE_COMMIT: 6f8b8856b63c937c2a310feb38cca9112794dca2
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\web\static\styles.css
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-alignment-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-alignment-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-alignment-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at 6f8b8856b63c937c2a310feb38cca9112794dca2.
+BASELINE OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.25s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: shell max-width removed, horizontal padding set to 6px, and
+  left information column fixed at 412px.
+MODIFIED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.28s
+
+CSS CHECK COMMAND (exit 0): git diff --check
+CSS CHECK OUTPUT: no whitespace errors.
+
+UI RESULT: the workbench now reaches the viewport edges with only 6px desktop
+  side padding. The left information box remains 412px wide instead of being
+  stretched; the right task region occupies only the remaining space. The
+  change moves the regions outward and removes max-width-induced side blank
+  space without changing controls or behavior.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-alignment-20260825\ROLLBACK.sh" "C:\Temp\ui-edge-alignment-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\ui-edge-alignment-rollback-20260825 restored_commit=6f8b8856b63c937c2a310feb38cca9112794dca2
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests
+RESTORED INPUT: working directory C:\Temp\ui-edge-alignment-rollback-20260825 after ROLLBACK.sh.
+RESTORED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.25s
+
+RESTORED STATUS: disposable worktree HEAD equals BASELINE_COMMIT and `git status --short --branch` is clean;
+  main retains the edge-alignment change and preserves the user's existing
+  dirty paypal_agreement_protocol/data/used_local_card_hashes.txt.
