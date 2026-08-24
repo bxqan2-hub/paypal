@@ -1,0 +1,52 @@
+OBJECT: 本站工作台边缘留白微调
+BRANCH/FIELD: main / desktop shell side padding
+BASELINE_COMMIT: a77b90c5c96d5a6432281de2595da9b94a5c40b9
+
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\payment_link_extractor\web\static\styles.css
+DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-breathing-room-20260825\DIFF_FILE.patch
+VERIFICATION_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-breathing-room-20260825\VERIFICATION.txt
+ROLLBACK_FILE: C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-breathing-room-20260825\ROLLBACK.sh
+
+BASELINE COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+BASELINE INPUT: checkout at a77b90c5c96d5a6432281de2595da9b94a5c40b9.
+BASELINE OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.32s
+
+MODIFIED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q
+MODIFIED INPUT: desktop shell horizontal padding changed from 6px to 12px.
+MODIFIED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.45s
+
+CSS CHECK COMMAND (exit 0): git diff --check
+CSS CHECK OUTPUT: no whitespace errors.
+
+UI RESULT: a small, consistent 12px blank margin is visible on both desktop
+  sides. The information boxes are not widened and the fixed 412px left panel,
+  viewport alignment, and 14px inter-panel gap are unchanged.
+
+ROLLBACK COMMAND (exit 0):
+  "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\ui-edge-breathing-room-20260825\ROLLBACK.sh" "C:\Temp\ui-edge-breathing-room-rollback-20260825"
+ROLLBACK INPUT: disposable worktree checked out at the modified commit.
+ROLLBACK OUTPUT:
+  ROLLBACK_OK target=C:\Temp\ui-edge-breathing-room-rollback-20260825 restored_commit=a77b90c5c96d5a6432281de2595da9b94a5c40b9
+
+RESTORED COMMAND (exit 0):
+  C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q tests
+RESTORED INPUT: working directory C:\Temp\ui-edge-breathing-room-rollback-20260825 after ROLLBACK.sh.
+RESTORED OUTPUT:
+  ........................................................................ [ 47%]
+  ........................................................................ [ 94%]
+  ........                                                                 [100%]
+  152 passed in 1.36s
+
+RESTORED STATUS: disposable worktree HEAD equals BASELINE_COMMIT and `git status --short --branch` is clean;
+  main retains the 12px breathing room and preserves the user's existing dirty
+  paypal_agreement_protocol/data/used_local_card_hashes.txt.

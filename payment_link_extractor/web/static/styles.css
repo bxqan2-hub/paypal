@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
 
 button { cursor: pointer; }
 
-.shell { width: 100%; max-width: none; margin: 0; padding: 16px 6px 40px; }
+.shell { width: 100%; max-width: none; margin: 0; padding: 16px 12px 40px; }
 
 .auth-gate {
   position: fixed;

@@ -1,0 +1,40 @@
+diff --git a/artifacts/ui-edge-breathing-room-20260825/MODIFIED_FILE b/artifacts/ui-edge-breathing-room-20260825/MODIFIED_FILE
+new file mode 100644
+index 0000000..bd4907e
+--- /dev/null
++++ b/artifacts/ui-edge-breathing-room-20260825/MODIFIED_FILE
+@@ -0,0 +1,6 @@
++payment_link_extractor/web/static/styles.css
++
++Changed branch/field: desktop shell side padding. The edge-aligned layout now
++keeps a deliberate 12px breathing room on both sides instead of touching the
++viewport edge, while the fixed 412px left information column and reduced
++inter-panel gap remain unchanged.
+diff --git a/artifacts/ui-edge-breathing-room-20260825/ROLLBACK.sh b/artifacts/ui-edge-breathing-room-20260825/ROLLBACK.sh
+new file mode 100755
+index 0000000..36bec52
+--- /dev/null
++++ b/artifacts/ui-edge-breathing-room-20260825/ROLLBACK.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++TARGET="${1:?usage: ROLLBACK.sh <git-worktree> }"
++BASELINE="a77b90c5c96d5a6432281de2595da9b94a5c40b9"
++git -C "$TARGET" reset --hard "$BASELINE"
++git -C "$TARGET" clean -fd
++test "$(git -C "$TARGET" rev-parse HEAD)" = "$BASELINE"
++echo "ROLLBACK_OK target=$TARGET restored_commit=$BASELINE"
+diff --git a/payment_link_extractor/web/static/styles.css b/payment_link_extractor/web/static/styles.css
+index 2aee656..e1969fe 100644
+--- a/payment_link_extractor/web/static/styles.css
++++ b/payment_link_extractor/web/static/styles.css
+@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
+ 
+ button { cursor: pointer; }
+ 
+-.shell { width: 100%; max-width: none; margin: 0; padding: 16px 6px 40px; }
++.shell { width: 100%; max-width: none; margin: 0; padding: 16px 12px 40px; }
+ 
+ .auth-gate {
+   position: fixed;

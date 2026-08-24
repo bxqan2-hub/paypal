@@ -1,0 +1,6 @@
+payment_link_extractor/web/static/styles.css
+
+Changed branch/field: desktop shell side padding. The edge-aligned layout now
+keeps a deliberate 12px breathing room on both sides instead of touching the
+viewport edge, while the fixed 412px left information column and reduced
+inter-panel gap remain unchanged.
