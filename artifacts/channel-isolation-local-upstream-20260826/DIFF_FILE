@@ -1,0 +1,543 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 1ad189b..c03a0e8 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -7,3 +7,17 @@
+ - 不得修改或覆盖 `https://github.com/bxqan2-hub/-pp-.git`；本项目的提交只能推送到 `paypal.git`。
+ - 推送失败时保留提交并重试；远程推送成功前不得把修改标记为完成。
+ - 除非用户明确要求，否则不得强制推送或改写远程历史。
++
++# GCash 本地上游规则
++
++- GCash 开源项目的唯一权威来源是本机完整 Git 工作树：`C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource`。
++- GCash 上游远程仓库已取消；以后读取、校验、同步 GCash 开源源码时只读取上述本地工作树，不再通过网络 fetch、pull、clone 或读取远程仓库。
++- 上述本地工作树是只读上游，不得修改。本站目录 `payment_link_extractor/mk_gcash_open_source` 必须与该本地工作树当前提交的 22 个跟踪文件逐字节一致；本站只允许在上游目录之外通过适配器接入和调用。
++- 同步前后必须记录本地上游提交并执行文件集合与 SHA-256 对比；出现差异时，以本地上游工作树为准修复本站副本，不得把本站改动反向写入本地上游。
++
++# 提链渠道隔离规则
++
++- PayPal、GoPay、GCash 以及以后新增的每一种提链方式必须拥有独立的渠道注册项、独立适配器/核心目录、固定国家与币种策略、独立结果字段和独立测试；禁止把一种渠道的核心调用、状态或结果字段复用到另一种渠道。
++- `application.py` 只负责配置规范化与按注册表分发，不承载任何具体渠道协议；具体协议修改只能进入对应渠道模块。
++- 新增渠道时必须先在渠道注册表声明唯一名称、适配器入口、结果字段、国家/币种和是否使用旧 Checkout 更新，再单独接入 UI 与测试；不得通过继续堆叠交叉条件分支混入已有渠道。
++- 每次修改渠道后必须验证：三个现有渠道指向不同适配器、结果字段互不相同、GoPay/GCash 不构造 PayPal 旧传输、UI 选项与渠道注册表一致。
+diff --git a/MK_GCASH_UPSTREAM.md b/MK_GCASH_UPSTREAM.md
+index 3c9eb61..4368946 100644
+--- a/MK_GCASH_UPSTREAM.md
++++ b/MK_GCASH_UPSTREAM.md
+@@ -1,15 +1,17 @@
+ # MK GCash upstream project provenance
+
+ The complete GCash extraction project is copied into
+-`payment_link_extractor/mk_gcash_open_source/` from
+-[mika50000/MK-GCash-Link-OpenSource](https://github.com/mika50000/MK-GCash-Link-OpenSource)
+-at commit `2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5`.
++`payment_link_extractor/mk_gcash_open_source/` from the read-only local Git
++working tree at
++`C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource`,
++commit `2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5`. The former remote repository is
++not used for reads or synchronization.
+
+ The copied directory contains all 22 tracked upstream files, including
+ `app.py`, `web/`, `tests/`, startup scripts, documentation, license, and the
+-complete GCash runtime. The site calls the copied `app.create_job()` and polls
+-the copied `app.public_job()` directly. It does not merge the upstream checkout
+-chain into the site's legacy provider modules.
++complete GCash runtime. The site calls the authoritative local
++`app.create_job()` and polls the local `app.public_job()` directly. It does not
++merge the upstream checkout chain into the site's legacy provider modules.
+
+ The six protocol files are additionally recorded byte-for-byte in the root
+ manifest for compatibility with the existing provenance checks:
+@@ -30,10 +32,10 @@ transport, so the previous site GCash implementation is not used.
+ The upstream MIT license is preserved at
+ `licenses/MK-GCash-Link-OpenSource.LICENSE`. Exact source hashes are recorded in
+ `mk_gcash_core_manifest.json` and enforced by the test suite for the protocol
+-source. The vendored `sentinel.py` and `sentinel_bridge.js` additionally carry
+-two local Windows process-launch flags (`CREATE_NO_WINDOW` and `windowsHide`) so
+-Node and curl never flash a console window; their Sentinel protocol behavior is
+-otherwise unchanged.
++source. All 22 copied files, including `sentinel.py` and
++`sentinel_bridge.js`, remain byte-for-byte identical to the authoritative local
++Git working tree. Runtime integration changes belong outside the copied
++directory.
+
+ The browser workbench also follows the upstream single `proxy_pool` contract,
+ 1–10 maximum-attempt semantics, purple MK visual system, and account/task
+@@ -45,5 +47,4 @@ GCash account metadata now follows the copied upstream `app.py`: explicit accoun
+ `email`/`name` wins, then JWT profile claims; expired JWTs are rejected before
+ checkout. No synthetic Philippine address is injected. The integration only
+ adds runtime observability, shared-Chromium prewarming, and an 8-second proxy
+-TCP connect cap; the two console-suppression flags are the only local changes
+-inside the copied Sentinel launchers.
++TCP connect cap from the external adapter.
+diff --git a/mk_gcash_project_manifest.json b/mk_gcash_project_manifest.json
+index f016aee..0fd5fc7 100644
+--- a/mk_gcash_project_manifest.json
++++ b/mk_gcash_project_manifest.json
+@@ -14,10 +14,10 @@
+     "gcash_chain.py": "1ae7dfad417bf49199f4053e12bdafe1f89850aab7984ed6d1892d235434af38",
+     "payment_monitor.py": "2d183d7d42a52d9d5ca9e7d6c5d899a71bc2f51b49e3c7737440c68eae8c3088",
+     "requirements.txt": "45ea08bcb0eec73531e2186b2b99e71d3cbc3d12aaa02131ed833a1919a1efe0",
+-    "sentinel.py": "1b7f0a1c6f64f0f662786ca9f91c58063eee091ba315fdcf1fe70a990d720489",
++    "sentinel.py": "558078c9264dde77e715f59173129394f6c7a8cbff33e224407babc3e72780d2",
+     "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
+     "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8",
+-    "sentinel_bridge.js": "dca45ad1e10191cd2eff30a417142506930e30dbbeb7d468c95af755f65c5976",
++    "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
+     "tests/test_app.py": "fff8b2d4feac87d9acce8e2c1d594cc2104219b901b86c6207a6e9c5cbd18109",
+     "tests/test_gcash_chain.py": "a9b58d8d815cdd2c80643f4af9ff15630a15cf004021f4b69d6df45de4130ca3",
+     "tests/ui_check.js": "eaeb60c7c749102c2611144fe3a066d196e10b4147fe5fa788971ec24e4701b3",
+@@ -27,4 +27,4 @@
+     "web/index.html": "964b9e664b3159ad9db7b6f7da45a258ce5082362c87ba532d1fd73ef760d449",
+     "web/style.css": "bed27929a055d97c8500042b512dc0f0bca1a828eb6e701a613fe0dcf8ca8773"
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/payment_link_extractor/application.py b/payment_link_extractor/application.py
+index 0d94e38..372cb96 100644
+--- a/payment_link_extractor/application.py
++++ b/payment_link_extractor/application.py
+@@ -1,25 +1,17 @@
+ from __future__ import annotations
+
++"""Normalize a task and dispatch it to one isolated payment channel."""
++
+ from dataclasses import replace
+ import threading
+-from typing import Any, Callable
++from typing import Callable
+
+-from .auth import account_email, normalize_access_token
+-from .checkout import check_coupon_eligibility, create_checkout, require_country_currency, update_checkout
+-from .config import (
+-    billing_for_country,
+-    country_config,
+-    country_for_payment_method,
+-    currency_minor_scale,
+-    normalize_payment_method,
+-)
+-from .errors import ConfigurationError, ExtractionCancelled
+-from .flows.cs_live import extract_cs_live_provider
+-from .flows.oaics import extract_oaics_provider
+-from .logging_utils import stage_logger
++from .auth import normalize_access_token
++from .channels import invoke_payment_channel, payment_channel
++from .config import country_config, country_for_payment_method, normalize_payment_method
++from .errors import ConfigurationError
+ from .models import ExtractionConfig, PaymentLinkResult
+-from .transport import DefaultTransportFactory, TransportFactory, safe_close
+-from .stripe_common import checkout_payable_amount
++from .transport import TransportFactory
+
+
+ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+@@ -29,13 +21,10 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+     if not str(config.checkout_proxy or "").strip():
+         raise ConfigurationError("checkout proxy is required")
+     payment_method = normalize_payment_method(config.payment_method)
+-    # GCash's current browser flow embeds the promo in the initial checkout
+-    # request and never calls the legacy coupon-check/checkout-update pair.
+-    # Do not reject a valid GCash task merely because that unused proxy field
+-    # is empty.
++    channel = payment_channel(payment_method)
+     if (
+         config.apply_checkout_update
+-        and payment_method not in {"gcash", "gopay"}
++        and channel.uses_checkout_update
+         and not str(config.update_proxy or "").strip()
+     ):
+         raise ConfigurationError("update proxy is required")
+@@ -66,11 +55,8 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+
+
+ def _should_apply_checkout_update(config: ExtractionConfig) -> bool:
+-    """Return whether the legacy promo update flow applies to this method."""
+-    return bool(
+-        config.apply_checkout_update
+-        and config.payment_method not in {"gcash", "gopay"}
+-    )
++    channel = payment_channel(config.payment_method)
++    return bool(config.apply_checkout_update and channel.uses_checkout_update)
+
+
+ def extract_payment_link(
+@@ -80,100 +66,12 @@ def extract_payment_link(
+     cancel_event: threading.Event | None = None,
+     stage_callback: Callable[[str], None] | None = None,
+ ) -> PaymentLinkResult:
+-    def checkpoint(stage: str) -> None:
+-        if cancel_event is not None and cancel_event.is_set():
+-            raise ExtractionCancelled("task cancellation requested")
+-        if stage_callback is not None:
+-            stage_callback(stage)
+-
+-    config = _normalize_config(config)
+-    # Payment methods stay isolated. GCash leaves the PayPal/legacy branch
+-    # here and enters the direct adapters, which call the complete copied
+-    # upstream projects. No legacy transport is constructed.
+-    if config.payment_method == "gcash":
+-        from .mk_gcash import extract_mk_gcash_payment_link
+-
+-        return extract_mk_gcash_payment_link(
+-            config,
+-            cancel_event=cancel_event,
+-            stage_callback=checkpoint,
+-        )
+-    if config.payment_method == "gopay":
+-        from .mk_gopay import extract_mk_gopay_payment_link
+-
+-        return extract_mk_gopay_payment_link(
+-            config,
+-            cancel_event=cancel_event,
+-            stage_callback=checkpoint,
+-        )
+-    apply_checkout_update = _should_apply_checkout_update(config)
+-    log = stage_logger(config.verbose)
+-    billing = billing_for_country(config.country).to_dict()
+-    factory = transport_factory or DefaultTransportFactory()
+-    chatgpt = factory.chatgpt(config, config.checkout_proxy)
+-    stripe = None
+-    try:
+-        if apply_checkout_update:
+-            checkpoint("eligibility_check")
+-            check_coupon_eligibility(config, chatgpt, log)
+-        checkpoint("checkout")
+-        checkout = create_checkout(config, chatgpt, log)
+-        checkpoint(f"checkout_kind:{checkout['session_kind']}")
+-        if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
+-            raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
+-        require_country_currency(checkout, config)
+-        if apply_checkout_update:
+-            checkpoint("checkout_update")
+-            update_checkout(config, chatgpt, checkout, log)
+-            require_country_currency(checkout, config)
+-        stripe = factory.stripe(config)
+-        if checkout["session_kind"] == "stripe_checkout":
+-            checkpoint("stripe_init")
+-            provider = extract_cs_live_provider(
+-                config,
+-                chatgpt,
+-                stripe,
+-                checkout,
+-                billing,
+-                log,
+-                stage_callback=checkpoint,
+-            )
+-        elif checkout["session_kind"] == "openai_custom_checkout":
+-            checkpoint("stripe_init")
+-            provider = extract_oaics_provider(
+-                config,
+-                chatgpt,
+-                stripe,
+-                checkout,
+-                billing,
+-                log,
+-                stage_callback=checkpoint,
+-            )
+-        else:
+-            raise ConfigurationError(f"unsupported checkout session: {checkout.get('cs_id')}")
+-        amount_due_minor, amount_currency = checkout_payable_amount(checkout)
+-        scale = currency_minor_scale(amount_currency)
+-        amount_due = amount_due_minor / (10**scale)
+-        provider_field = f"{config.payment_method}_url"
+-        provider_value = str(provider.get(provider_field) or provider.get("provider_url") or "")
+-        result = PaymentLinkResult(
+-            checkout_session_id=str(checkout["cs_id"]),
+-            session_kind=str(checkout["session_kind"]),
+-            payment_method=config.payment_method,
+-            billing_country=config.country,
+-            currency=amount_currency,
+-            amount_due=amount_due,
+-            amount_due_minor=amount_due_minor,
+-            billing=billing_for_country(config.country),
+-            account_email=account_email(config.access_token),
+-            payment_method_id=str(provider.get("payment_method_id") or ""),
+-            stripe_redirect_url=str(provider.get("stripe_redirect_url") or ""),
+-            provider_url=str(provider.get("provider_url") or provider_value),
+-            provider_field=provider_field,
+-            provider_value=provider_value,
+-        )
+-        checkpoint("completed")
+-        return result
+-    finally:
+-        safe_close(stripe)
+-        safe_close(chatgpt)
++    normalized = _normalize_config(config)
++    channel = payment_channel(normalized.payment_method)
++    return invoke_payment_channel(
++        channel,
++        normalized,
++        transport_factory=transport_factory,
++        cancel_event=cancel_event,
++        stage_callback=stage_callback,
++    )
+diff --git a/payment_link_extractor/cli.py b/payment_link_extractor/cli.py
+index eae19a9..db4a9b8 100644
+--- a/payment_link_extractor/cli.py
++++ b/payment_link_extractor/cli.py
+@@ -7,12 +7,13 @@ import os
+ import sys
+
+ from .application import extract_payment_link
++from .channels import PAYMENT_CHANNEL_NAMES
+ from .config import SUPPORTED_COUNTRIES
+ from .web.env import load_configured_env, load_env_file
+ from .logging_utils import configure_logging, safe_log_text
+ from .models import ExtractionConfig
+
+-SUPPORTED_PAYMENT_METHODS = ("paypal", "gopay", "gcash")
++SUPPORTED_PAYMENT_METHODS = PAYMENT_CHANNEL_NAMES
+
+
+ def parse_args() -> argparse.Namespace:
+diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
+index 41b0db5..e9e9303 100644
+--- a/payment_link_extractor/config.py
++++ b/payment_link_extractor/config.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+
+ from dataclasses import asdict
+
++from .channels import PAYMENT_CHANNELS, payment_channel
+ from .errors import ConfigurationError
+ from .models import BillingProfile
+
+@@ -64,8 +65,9 @@ SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
+ # worker all converge on the same country/currency pair even when an older
+ # browser sends a stale country value.
+ PAYMENT_METHOD_DEFAULT_COUNTRIES = {
+-    "gcash": "PH",
+-    "gopay": "ID",
++    name: channel.country
++    for name, channel in PAYMENT_CHANNELS.items()
++    if channel.country
+ }
+
+
+@@ -104,10 +106,7 @@ def currency_minor_scale(currency: str) -> int:
+
+
+ def normalize_payment_method(value: str) -> str:
+-    method = str(value or "paypal").strip().lower() or "paypal"
+-    if method not in {"paypal", "gopay", "gcash"}:
+-        raise ConfigurationError("payment_method must be one of paypal, gopay, gcash")
+-    return method
++    return payment_channel(value).name
+
+
+ def country_for_payment_method(payment_method: str, country: str) -> str:
+diff --git a/payment_link_extractor/mk_gcash.py b/payment_link_extractor/mk_gcash.py
+index c5990fb..2c7a19c 100644
+--- a/payment_link_extractor/mk_gcash.py
++++ b/payment_link_extractor/mk_gcash.py
+@@ -1,8 +1,9 @@
+ from __future__ import annotations
+
+-"""Direct bridge to the complete vendored MK-GCash-Link-OpenSource project.
++"""Direct bridge to the authoritative local MK-GCash-Link-OpenSource project.
+
+-The upstream project is copied unchanged under ``mk_gcash_open_source``. This
++The read-only Git checkout is the runtime source. The identical copy under
++``mk_gcash_open_source`` is retained for provenance and packaging checks. This
+ module only converts this site's task configuration into the upstream app.py
+ payload and converts the upstream task snapshot back into this site's result
+ model; it does not reimplement or merge the GCash checkout chain.
+@@ -27,8 +28,11 @@ from .web.socks5_bridge import http_proxy_for
+
+
+ MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
++MK_GCASH_UPSTREAM_DIR = Path(
++    r"C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource"
++)
+ MK_GCASH_PROJECT_DIR = Path(__file__).resolve().parent / "mk_gcash_open_source"
+-MK_GCASH_APP_PATH = MK_GCASH_PROJECT_DIR / "app.py"
++MK_GCASH_APP_PATH = MK_GCASH_UPSTREAM_DIR / "app.py"
+ MK_GCASH_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "mk_gcash_project_manifest.json"
+
+ _STAGE_MAP = {
+@@ -44,29 +48,35 @@ _UPSTREAM_APP: ModuleType | None = None
+
+
+ def _load_upstream_app() -> ModuleType:
+-    """Load the copied upstream app.py, with its project directory first."""
++    """Load app.py from the authoritative local upstream Git checkout."""
+     global _UPSTREAM_APP
+     with _APP_LOCK:
+         if _UPSTREAM_APP is not None:
+             return _UPSTREAM_APP
+         if not MK_GCASH_APP_PATH.is_file():
+-            raise ProtocolError(500, f"GCash 开源项目缺失: {MK_GCASH_APP_PATH}")
++            raise ProtocolError(500, f"GCash 本地上游项目缺失: {MK_GCASH_UPSTREAM_DIR}")
+         verify_upstream_project(
+-            project_dir=MK_GCASH_PROJECT_DIR,
++            project_dir=MK_GCASH_UPSTREAM_DIR,
+             manifest_path=MK_GCASH_MANIFEST_PATH,
+             expected_commit=MK_GCASH_SOURCE_COMMIT,
+             provider="GCash",
+         )
+-        project_path = str(MK_GCASH_PROJECT_DIR)
++        verify_upstream_project(
++            project_dir=MK_GCASH_PROJECT_DIR,
++            manifest_path=MK_GCASH_MANIFEST_PATH,
++            expected_commit=MK_GCASH_SOURCE_COMMIT,
++            provider="本站 GCash 副本",
++        )
++        project_path = str(MK_GCASH_UPSTREAM_DIR)
+         if project_path not in sys.path:
+             sys.path.insert(0, project_path)
+-        # The copied app imports these upstream top-level names. Remove a stale
+-        # module with the same name so the import comes from the copied project.
++        # The upstream app imports these top-level names. Remove stale modules
++        # so every runtime import comes from the authoritative local checkout.
+         for name in ("gcash_chain", "payment_monitor", "sentinel"):
+             sys.modules.pop(name, None)
+         spec = importlib.util.spec_from_file_location("_mk_gcash_open_source_app", MK_GCASH_APP_PATH)
+         if spec is None or spec.loader is None:
+-            raise ProtocolError(500, "GCash 开源 app.py 无法加载")
++            raise ProtocolError(500, "GCash 本地上游 app.py 无法加载")
+         module = importlib.util.module_from_spec(spec)
+         sys.modules[spec.name] = module
+         spec.loader.exec_module(module)
+@@ -177,7 +187,7 @@ def _valid_gcash_url(value: str) -> bool:
+
+
+ def prewarm_mk_gcash_runtime(timeout: float = 20.0) -> str:
+-    """Start the copied project's shared browser before the first task."""
++    """Start the authoritative local project's shared browser before a task."""
+     _load_upstream_app()
+     monitor = sys.modules.get("payment_monitor")
+     if monitor is None:
+@@ -207,7 +217,7 @@ def extract_mk_gcash_payment_link(
+     cancel_event: threading.Event | None = None,
+     stage_callback: Callable[[str], None] | None = None,
+ ) -> PaymentLinkResult:
+-    """Call the copied project's app.py create_job directly and await its task."""
++    """Call the local upstream app.py create_job directly and await its task."""
+     app = _load_upstream_app()
+     started_at = time.perf_counter()
+     stage_offsets_ms: dict[str, int] = {}
+@@ -291,7 +301,8 @@ def extract_mk_gcash_payment_link(
+         provider_value=gcash_url,
+         extra={
+             "mk_gcash_source_commit": MK_GCASH_SOURCE_COMMIT,
+-            "mk_gcash_project_dir": str(MK_GCASH_PROJECT_DIR),
++            "mk_gcash_project_dir": str(MK_GCASH_UPSTREAM_DIR),
++            "mk_gcash_site_copy_dir": str(MK_GCASH_PROJECT_DIR),
+             "payment_route": str(raw.get("payment_route") or ""),
+             "qr_text": str(raw.get("qr_text") or ""),
+             "qr_short": str(raw.get("qr_short") or ""),
+diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel.py b/payment_link_extractor/mk_gcash_open_source/sentinel.py
+index b72c4ab..94332ab 100644
+Binary files a/payment_link_extractor/mk_gcash_open_source/sentinel.py and b/payment_link_extractor/mk_gcash_open_source/sentinel.py differ
+diff --git a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js
+index f414306..40a181f 100644
+Binary files a/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js and b/payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js differ
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index d92a2a3..ccb1c4f 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
+
+ from flask import Flask, jsonify, request
+
++from ..channels import PAYMENT_CHANNELS, payment_channel, public_payment_channels
+ from ..config import (
+     SUPPORTED_COUNTRIES,
+     billing_dict_for_country,
+@@ -46,12 +47,12 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
+                 "country": os.getenv("OPLL_COUNTRY", "DE"),
+                 "force_country": "",
+                 "payment_method": "paypal",
+-                "payment_methods": [
+-                    {"value": "paypal", "label": "PayPal"},
+-                    {"value": "gopay", "label": "GoPay", "country": "ID", "currency": "IDR"},
+-                    {"value": "gcash", "label": "GCash", "country": "PH", "currency": "PHP"},
+-                ],
+-                "payment_method_countries": {"gopay": "ID", "gcash": "PH"},
++                "payment_methods": public_payment_channels(),
++                "payment_method_countries": {
++                    name: channel.country
++                    for name, channel in PAYMENT_CHANNELS.items()
++                    if channel.country
++                },
+                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
+                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
+                 "proxy_pool": proxy_pool,
+@@ -288,9 +289,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+     if not str(checkout_proxy or "").strip():
+         raise ConfigurationError("checkout proxy is required")
+     payment_method = normalize_payment_method(payment_method)
++    channel = payment_channel(payment_method)
+     if (
+         apply_update
+-        and payment_method not in {"gcash", "gopay"}
++        and channel.uses_checkout_update
+         and not str(update_proxy or "").strip()
+     ):
+         raise ConfigurationError("update proxy is required")
+diff --git a/tests/test_mk_gcash_replacement.py b/tests/test_mk_gcash_replacement.py
+index b65d774..bf50c2f 100644
+--- a/tests/test_mk_gcash_replacement.py
++++ b/tests/test_mk_gcash_replacement.py
+@@ -16,6 +16,9 @@ from payment_link_extractor.models import ExtractionConfig
+
+
+ ROOT = Path(__file__).resolve().parents[1]
++LOCAL_UPSTREAM = Path(
++    r"C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource"
++)
+
+
+ def jwt(payload: dict) -> str:
+@@ -46,6 +49,7 @@ def test_complete_upstream_project_is_copied_into_site_folder():
+     assert manifest["tracked_file_count"] == 22
+     for relative, expected in manifest["sha256"].items():
+         assert hashlib.sha256((project / relative).read_bytes()).hexdigest() == expected
++        assert (project / relative).read_bytes() == (LOCAL_UPSTREAM / relative).read_bytes()
+
+
+ def test_vendored_mk_gcash_core_matches_upstream_manifest():
+@@ -53,15 +57,12 @@ def test_vendored_mk_gcash_core_matches_upstream_manifest():
+     assert manifest["commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+     for relative, expected in manifest["sha256"].items():
+         assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == expected
+-        if relative not in {"sentinel.py", "sentinel_bridge.js"}:
+-            assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
++        assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
+
+
+-def test_gcash_sentinel_launches_hide_windows_console():
+-    sentinel = (mk.MK_GCASH_PROJECT_DIR / "sentinel.py").read_text(encoding="utf-8")
+-    bridge = (mk.MK_GCASH_PROJECT_DIR / "sentinel_bridge.js").read_text(encoding="utf-8")
+-    assert "CREATE_NO_WINDOW" in sentinel
+-    assert "windowsHide: true" in bridge
++def test_gcash_local_upstream_is_the_read_only_authority():
++    assert LOCAL_UPSTREAM.is_dir()
++    assert (LOCAL_UPSTREAM / ".git").is_dir()
+
+
+ def test_application_dispatches_gcash_before_legacy_transport(monkeypatch):
+@@ -151,7 +152,8 @@ def test_direct_upstream_app_call_maps_result_and_payload(monkeypatch):
+     assert result.payment_method_id == "cpmt_fixture"
+     assert result.provider_value.startswith("https://m.gcash.com/")
+     assert result.billing.to_dict()["name"] == "Explicit Name"
+-    assert result.extra["mk_gcash_project_dir"] == str(mk.MK_GCASH_PROJECT_DIR)
++    assert result.extra["mk_gcash_project_dir"] == str(mk.MK_GCASH_UPSTREAM_DIR)
++    assert result.extra["mk_gcash_site_copy_dir"] == str(mk.MK_GCASH_PROJECT_DIR)
+     assert stages == ["redirect_resolution", "completed"]
+
+
+@@ -171,11 +173,11 @@ def test_direct_upstream_cancellation_calls_cancel(monkeypatch):
+     assert fake.cancelled is True
+
+
+-def test_upstream_loader_points_at_copied_app(monkeypatch):
++def test_upstream_loader_points_at_authoritative_local_app(monkeypatch):
+     monkeypatch.setattr(mk, "_UPSTREAM_APP", None)
+     app = mk._load_upstream_app()
+-    assert Path(app.__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "app.py").resolve()
+-    assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "gcash_chain.py").resolve()
++    assert Path(app.__file__).resolve() == (mk.MK_GCASH_UPSTREAM_DIR / "app.py").resolve()
++    assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_UPSTREAM_DIR / "gcash_chain.py").resolve()
+     assert getattr(__import__("gcash_chain").GCashChain, "_site_timeout_hook", False) is True

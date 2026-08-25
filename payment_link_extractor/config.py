@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from .channels import PAYMENT_CHANNELS, payment_channel
 from .errors import ConfigurationError
 from .models import BillingProfile
 
@@ -64,8 +65,9 @@ SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
 # worker all converge on the same country/currency pair even when an older
 # browser sends a stale country value.
 PAYMENT_METHOD_DEFAULT_COUNTRIES = {
-    "gcash": "PH",
-    "gopay": "ID",
+    name: channel.country
+    for name, channel in PAYMENT_CHANNELS.items()
+    if channel.country
 }
 
 
@@ -104,10 +106,7 @@ def currency_minor_scale(currency: str) -> int:
 
 
 def normalize_payment_method(value: str) -> str:
-    method = str(value or "paypal").strip().lower() or "paypal"
-    if method not in {"paypal", "gopay", "gcash"}:
-        raise ConfigurationError("payment_method must be one of paypal, gopay, gcash")
-    return method
+    return payment_channel(value).name
 
 
 def country_for_payment_method(payment_method: str, country: str) -> str:

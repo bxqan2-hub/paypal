@@ -16,6 +16,9 @@ from payment_link_extractor.models import ExtractionConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_UPSTREAM = Path(
+    r"C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource"
+)
 
 
 def jwt(payload: dict) -> str:
@@ -46,6 +49,7 @@ def test_complete_upstream_project_is_copied_into_site_folder():
     assert manifest["tracked_file_count"] == 22
     for relative, expected in manifest["sha256"].items():
         assert hashlib.sha256((project / relative).read_bytes()).hexdigest() == expected
+        assert (project / relative).read_bytes() == (LOCAL_UPSTREAM / relative).read_bytes()
 
 
 def test_vendored_mk_gcash_core_matches_upstream_manifest():
@@ -53,15 +57,12 @@ def test_vendored_mk_gcash_core_matches_upstream_manifest():
     assert manifest["commit"] == "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
     for relative, expected in manifest["sha256"].items():
         assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == expected
-        if relative not in {"sentinel.py", "sentinel_bridge.js"}:
-            assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
+        assert hashlib.sha256((mk.MK_GCASH_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
 
 
-def test_gcash_sentinel_launches_hide_windows_console():
-    sentinel = (mk.MK_GCASH_PROJECT_DIR / "sentinel.py").read_text(encoding="utf-8")
-    bridge = (mk.MK_GCASH_PROJECT_DIR / "sentinel_bridge.js").read_text(encoding="utf-8")
-    assert "CREATE_NO_WINDOW" in sentinel
-    assert "windowsHide: true" in bridge
+def test_gcash_local_upstream_is_the_read_only_authority():
+    assert LOCAL_UPSTREAM.is_dir()
+    assert (LOCAL_UPSTREAM / ".git").is_dir()
 
 
 def test_application_dispatches_gcash_before_legacy_transport(monkeypatch):
@@ -151,7 +152,8 @@ def test_direct_upstream_app_call_maps_result_and_payload(monkeypatch):
     assert result.payment_method_id == "cpmt_fixture"
     assert result.provider_value.startswith("https://m.gcash.com/")
     assert result.billing.to_dict()["name"] == "Explicit Name"
-    assert result.extra["mk_gcash_project_dir"] == str(mk.MK_GCASH_PROJECT_DIR)
+    assert result.extra["mk_gcash_project_dir"] == str(mk.MK_GCASH_UPSTREAM_DIR)
+    assert result.extra["mk_gcash_site_copy_dir"] == str(mk.MK_GCASH_PROJECT_DIR)
     assert stages == ["redirect_resolution", "completed"]
 
 
@@ -171,11 +173,11 @@ def test_direct_upstream_cancellation_calls_cancel(monkeypatch):
     assert fake.cancelled is True
 
 
-def test_upstream_loader_points_at_copied_app(monkeypatch):
+def test_upstream_loader_points_at_authoritative_local_app(monkeypatch):
     monkeypatch.setattr(mk, "_UPSTREAM_APP", None)
     app = mk._load_upstream_app()
-    assert Path(app.__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "app.py").resolve()
-    assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "gcash_chain.py").resolve()
+    assert Path(app.__file__).resolve() == (mk.MK_GCASH_UPSTREAM_DIR / "app.py").resolve()
+    assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_UPSTREAM_DIR / "gcash_chain.py").resolve()
     assert getattr(__import__("gcash_chain").GCashChain, "_site_timeout_hook", False) is True
 
 

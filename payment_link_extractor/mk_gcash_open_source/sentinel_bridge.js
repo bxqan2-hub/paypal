@@ -206,7 +206,6 @@ function makeCurlFetch(proxy) {
       args.push("-w", marker + "%{http_code}", String(url));
       const child = spawn(process.env.SENTINEL_CURL || "curl", args, {
         stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
       });
       const stdout = [];
       const stderr = [];

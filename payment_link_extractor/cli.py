@@ -7,12 +7,13 @@ import os
 import sys
 
 from .application import extract_payment_link
+from .channels import PAYMENT_CHANNEL_NAMES
 from .config import SUPPORTED_COUNTRIES
 from .web.env import load_configured_env, load_env_file
 from .logging_utils import configure_logging, safe_log_text
 from .models import ExtractionConfig
 
-SUPPORTED_PAYMENT_METHODS = ("paypal", "gopay", "gcash")
+SUPPORTED_PAYMENT_METHODS = PAYMENT_CHANNEL_NAMES
 
 
 def parse_args() -> argparse.Namespace:

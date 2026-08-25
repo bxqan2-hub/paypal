@@ -1,0 +1,61 @@
+对象：GCash 本地上游来源固定、本站副本一致性、三渠道隔离
+分支：main
+基线提交：afdce3656999518205e9edab825dce49626317b4
+
+改变的分支/字段：
+- GCash 运行时源码读取位置固定为 C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource；原始远程仓库不再读取。
+- payment_link_extractor/mk_gcash_open_source 保留为逐字节一致的本站副本，仅用于清单、打包和一致性验证；适配器不修改上游目录。
+- application.py 只规范化配置并通过 payment_link_extractor/channels.py 分发。
+- PayPal、GoPay、GCash 各自拥有唯一适配器模块、结果字段、国家/币种策略和测试。
+
+四个工件路径：
+1. C:\Users\Administrator\Desktop\提链\artifacts\channel-isolation-local-upstream-20260826\MODIFIED_FILE
+2. C:\Users\Administrator\Desktop\提链\artifacts\channel-isolation-local-upstream-20260826\DIFF_FILE
+3. C:\Users\Administrator\Desktop\提链\artifacts\channel-isolation-local-upstream-20260826\VERIFICATION.txt
+4. C:\Users\Administrator\Desktop\提链\artifacts\channel-isolation-local-upstream-20260826\ROLLBACK.sh
+
+BASELINE
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：
+........................................................................ [ 43%]
+........................................................................ [ 87%]
+.................                                                        [100%]
+161 passed in 1.42s
+退出状态：0
+结果：现有功能在隔离改造前通过。
+
+MODIFIED
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：
+........................................................................ [ 43%]
+........................................................................ [ 87%]
+....................                                                     [100%]
+164 passed in 1.44s
+退出状态：0
+
+命令：本地上游加载、提交、文件集合和 SHA-256 对比脚本
+输入：C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource 与 payment_link_extractor/mk_gcash_open_source
+字面输出：
+RUNTIME_APP=C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource\app.py
+RUNTIME_CORE=C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource\gcash_chain.py
+LOCAL_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+FILES=22 MISMATCHES=[]
+退出状态：0
+结果：本站实际运行加载本地原始 Git 工作树；22/22 文件集合一致，逐字节无差异；本地上游工作树 clean。
+
+命令：& .\.venv\Scripts\python.exe -m py_compile payment_link_extractor/application.py payment_link_extractor/channels.py payment_link_extractor/paypal_channel.py payment_link_extractor/mk_gcash.py payment_link_extractor/config.py payment_link_extractor/web/routes.py
+输入：<none>
+字面输出：COMPILE_EXIT=0
+退出状态：0
+
+ROLLBACK
+命令：$artifact=(Resolve-Path 'artifacts/channel-isolation-local-upstream-20260826').Path; $target=Join-Path (Resolve-Path 'artifacts-local').Path ('channel-isolation-rollback-test-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $target | Out-Null; & 'C:\Program Files\Git\bin\bash.exe' "$artifact/ROLLBACK.sh" (Resolve-Path '.').Path $target; <baseline assertions>
+输入：<none>
+字面输出：
+ROLLBACK_OK target=C:\Users\Administrator\Desktop\提链\artifacts-local\channel-isolation-rollback-test-1332b1faed0c46b8b3482a78a5054a26 commit=afdce3656999518205e9edab825dce49626317b4 files=14
+ROLLBACK_RESTORED_BASELINE=True
+ROLLBACK_NEW_CHANNEL_FILE_PRESENT=False
+退出状态：0
+恢复行为/状态：测试副本恢复到改造前提交；实际工作区和 MODIFIED_FILE 仍保持修改后状态。

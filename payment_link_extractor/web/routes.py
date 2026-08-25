@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request
 
+from ..channels import PAYMENT_CHANNELS, payment_channel, public_payment_channels
 from ..config import (
     SUPPORTED_COUNTRIES,
     billing_dict_for_country,
@@ -46,12 +47,12 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "country": os.getenv("OPLL_COUNTRY", "DE"),
                 "force_country": "",
                 "payment_method": "paypal",
-                "payment_methods": [
-                    {"value": "paypal", "label": "PayPal"},
-                    {"value": "gopay", "label": "GoPay", "country": "ID", "currency": "IDR"},
-                    {"value": "gcash", "label": "GCash", "country": "PH", "currency": "PHP"},
-                ],
-                "payment_method_countries": {"gopay": "ID", "gcash": "PH"},
+                "payment_methods": public_payment_channels(),
+                "payment_method_countries": {
+                    name: channel.country
+                    for name, channel in PAYMENT_CHANNELS.items()
+                    if channel.country
+                },
                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
                 "proxy_pool": proxy_pool,
@@ -288,9 +289,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     if not str(checkout_proxy or "").strip():
         raise ConfigurationError("checkout proxy is required")
     payment_method = normalize_payment_method(payment_method)
+    channel = payment_channel(payment_method)
     if (
         apply_update
-        and payment_method not in {"gcash", "gopay"}
+        and channel.uses_checkout_update
         and not str(update_proxy or "").strip()
     ):
         raise ConfigurationError("update proxy is required")
