@@ -130,6 +130,7 @@ class FakeUpstreamApp:
 
 
 def test_direct_upstream_app_call_maps_result_and_payload(monkeypatch):
+    mk._load_upstream_app()
     fake = FakeUpstreamApp()
     monkeypatch.setattr(mk, "_UPSTREAM_APP", fake)
     stages = []
@@ -176,3 +177,12 @@ def test_upstream_loader_points_at_copied_app(monkeypatch):
     assert Path(app.__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "app.py").resolve()
     assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "gcash_chain.py").resolve()
     assert getattr(__import__("gcash_chain").GCashChain, "_site_timeout_hook", False) is True
+
+
+def test_gcash_rejects_non_contract_success_url(monkeypatch):
+    mk._load_upstream_app()
+    fake = FakeUpstreamApp()
+    fake.raw["gcash_url"] = "https://example.com/not-gcash"
+    monkeypatch.setattr(mk, "_UPSTREAM_APP", fake)
+    with pytest.raises(ProtocolError, match="不符合契约"):
+        extract_mk_gcash_payment_link(gcash_config())

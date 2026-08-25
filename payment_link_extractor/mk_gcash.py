@@ -10,6 +10,7 @@ model; it does not reimplement or merge the GCash checkout chain.
 
 import asyncio
 import importlib.util
+import inspect
 import sys
 import threading
 import time
@@ -21,12 +22,14 @@ from curl_cffi import CurlOpt
 
 from .errors import ExtractionCancelled, ProtocolError
 from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
+from .upstream_contract import verify_upstream_project
 from .web.socks5_bridge import http_proxy_for
 
 
 MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
 MK_GCASH_PROJECT_DIR = Path(__file__).resolve().parent / "mk_gcash_open_source"
 MK_GCASH_APP_PATH = MK_GCASH_PROJECT_DIR / "app.py"
+MK_GCASH_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "mk_gcash_project_manifest.json"
 
 _STAGE_MAP = {
     "proxy_test": "eligibility_check",
@@ -48,6 +51,12 @@ def _load_upstream_app() -> ModuleType:
             return _UPSTREAM_APP
         if not MK_GCASH_APP_PATH.is_file():
             raise ProtocolError(500, f"GCash 开源项目缺失: {MK_GCASH_APP_PATH}")
+        verify_upstream_project(
+            project_dir=MK_GCASH_PROJECT_DIR,
+            manifest_path=MK_GCASH_MANIFEST_PATH,
+            expected_commit=MK_GCASH_SOURCE_COMMIT,
+            provider="GCash",
+        )
         project_path = str(MK_GCASH_PROJECT_DIR)
         if project_path not in sys.path:
             sys.path.insert(0, project_path)
@@ -61,6 +70,19 @@ def _load_upstream_app() -> ModuleType:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        for name, expected_parameters in {
+            "create_job": ("payload",),
+            "public_job": ("job_id",),
+            "cancel_job": ("job_id",),
+        }.items():
+            function = getattr(module, name, None)
+            if not callable(function):
+                raise ProtocolError(500, f"GCash 上游核心缺少 {name}")
+            parameters = tuple(inspect.signature(function).parameters)
+            if parameters[: len(expected_parameters)] != expected_parameters:
+                raise ProtocolError(500, f"GCash 上游核心调用契约不匹配: {name}")
+        if not callable(getattr(getattr(module, "CHAIN_MANAGER", None), "get_tasks", None)):
+            raise ProtocolError(500, "GCash 上游核心缺少 CHAIN_MANAGER.get_tasks")
         _install_connect_timeout_hook()
         _UPSTREAM_APP = module
         return module
@@ -145,6 +167,13 @@ def _retry_decision(result: dict[str, Any]) -> tuple[bool, str]:
         return upstream_retry_decision(result)
     except Exception:
         return False, ""
+
+
+def _valid_gcash_url(value: str) -> bool:
+    """Delegate result validation to the loaded upstream GCash core."""
+    chain_module = sys.modules.get("gcash_chain")
+    validator = getattr(chain_module, "_is_gcash_url", None)
+    return bool(callable(validator) and validator(value))
 
 
 def prewarm_mk_gcash_runtime(timeout: float = 20.0) -> str:
@@ -238,6 +267,8 @@ def extract_mk_gcash_payment_link(
     gcash_url = str(account.get("link") or raw.get("gcash_url") or "")
     if not gcash_url:
         raise ProtocolError(502, "GCash 开源项目返回成功但没有 gcash_url")
+    if not _valid_gcash_url(gcash_url):
+        raise ProtocolError(502, "GCash 开源项目返回了不符合契约的 gcash_url")
     email = str(account.get("email") or payload["accounts"][0]["email"] or "")
     name = str(account.get("name") or payload["accounts"][0]["name"] or "")
     if stage_callback is not None:

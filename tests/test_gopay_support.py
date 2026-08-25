@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from payment_link_extractor.application import (
     _normalize_config,
@@ -8,6 +11,7 @@ from payment_link_extractor.application import (
     extract_payment_link,
 )
 from payment_link_extractor.models import ExtractionConfig
+from payment_link_extractor.errors import ProtocolError
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.routes import _config_from_payload
 import payment_link_extractor.mk_gopay as mk
@@ -96,3 +100,20 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
     assert result.billing_country == "ID"
     assert result.extra["mk_gopay_source_commit"] == mk.MK_GOPAY_SOURCE_COMMIT
     assert stages == ["checkout", "redirect_resolution", "completed"]
+
+
+def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
+    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", None)
+    module = mk._load_upstream_gopay()
+    assert Path(module.__file__).resolve() == mk.MK_GOPAY_MODULE_PATH.resolve()
+    assert callable(module.run_gopay_flow)
+
+
+def test_gopay_rejects_non_contract_success_url(monkeypatch) -> None:
+    fake = SimpleNamespace(
+        indonesia_billing_profile=lambda email: {"email": email},
+        run_gopay_flow=lambda *_args: "https://example.com/not-gopay",
+    )
+    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)
+    with pytest.raises(ProtocolError, match="不符合契约"):
+        mk.extract_mk_gopay_payment_link(gopay_config())

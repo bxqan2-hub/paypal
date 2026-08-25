@@ -1,0 +1,68 @@
+对象：GoPay / GCash 上游核心只读对接审计与调用契约加固
+分支：main
+基线提交：ffd6db87678f6a21b566fd254d4cfed20d730e9c
+
+改变的分支/字段：
+- payment_method == "gopay"：继续直接进入 payment_link_extractor.mk_gopay.extract_mk_gopay_payment_link，并直接调用固定上游 gopay_extract.run_gopay_flow(access_token, session_token, proxy_seed, billing)。
+- payment_method == "gcash"：继续直接进入 payment_link_extractor.mk_gcash.extract_mk_gcash_payment_link，并直接调用固定上游 app.create_job(payload)，轮询 app.public_job(job_id)，取消时调用 app.cancel_job(job_id)，原始任务由 CHAIN_MANAGER.get_tasks 读取。
+- 新增加载边界：按项目 manifest 校验 commit 与逐文件 SHA-256；检查上述上游公开调用签名。
+- 新增结果边界：GoPay 仅接收上游项目定义的 https://pm-redirects.stripe.com/authorize/...；GCash 直接复用上游 gcash_chain._is_gcash_url 校验结果。
+- payment_link_extractor/mk_gopay_open_source 与 payment_link_extractor/mk_gcash_open_source 没有任何源码修改。
+
+源码哈希：
+- BASELINE mk_gopay.py SHA256=a83cbec1a3b63c5210def833e8368b37effba7afdd5a512e31669e4331dad5e5
+- MODIFIED mk_gopay.py SHA256=76f900d1115610961ba199b70377a58179aa3db269e7a67a8bc830cf9c179a3d
+- BASELINE mk_gcash.py SHA256=7b51602e5dd96eb918f6e1caec0a331b6cf53c4e6a68859eec7df8f668cc6f6c
+- MODIFIED mk_gcash.py SHA256=125bbcb7b82701d8aa3a29c592c163d2d9dbbbc8df70198a2d19bdc030819b40
+- MODIFIED upstream_contract.py SHA256=6311eee37f6e7195a73fd86c6b390d3cc9dc23ab2024f9453ef7974b6c8e2c80
+
+四个工件路径：
+1. C:\Users\Administrator\Desktop\提链\artifacts\channel-core-audit-20260826\MODIFIED_FILE
+2. C:\Users\Administrator\Desktop\提链\artifacts\channel-core-audit-20260826\DIFF_FILE
+3. C:\Users\Administrator\Desktop\提链\artifacts\channel-core-audit-20260826\VERIFICATION.txt
+4. C:\Users\Administrator\Desktop\提链\artifacts\channel-core-audit-20260826\ROLLBACK.sh
+
+BASELINE
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+..............                                                           [100%]
+158 passed in 1.38s
+退出状态：0
+结果：修改前现有调用与 UI 分发测试全部通过。
+
+MODIFIED
+命令：& .\.venv\Scripts\python.exe -m pytest -q; & .\.venv\Scripts\python.exe -m py_compile payment_link_extractor/upstream_contract.py payment_link_extractor/mk_gopay.py payment_link_extractor/mk_gcash.py; <逐 manifest SHA-256 校验>; <GCash 上游 pytest>; <GoPay 上游 pytest -k 'not stop_terminates_entire_batch'>
+输入：<none>
+字面输出：
+........................................................................ [ 44%]
+........................................................................ [ 89%]
+.................                                                        [100%]
+161 passed in 1.41s
+PROJECT_EXIT=0
+COMPILE_EXIT=0
+mk_gopay_open_source: commit=3d2af69d848e6f292ef5abcb763c89dac3fbbea5 files=19 mismatches=0
+mk_gcash_open_source: commit=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5 files=22 mismatches=0
+INTEGRITY_EXIT=0
+...........                                                              [100%]
+11 passed in 0.71s
+GCASH_UPSTREAM_EXIT=0
+.............................                            [100%]
+29 passed, 1 deselected, 16 subtests passed in 0.21s
+GOPAY_UPSTREAM_EXIT=0
+退出状态：0
+结果：应用 161 项测试、语法编译、两份上游源码完整性和两套上游核心测试全部通过；GoPay 的 1 项 deselected 为上游仅适用于 POSIX os.killpg 的批处理停止测试，不属于本应用的直接调用路径。
+
+ROLLBACK
+命令：$repo=(Resolve-Path '.').Path; $artifact=(Resolve-Path 'artifacts/channel-core-audit-20260826').Path; $target=Join-Path (Resolve-Path 'artifacts-local').Path 'channel-core-rollback-test'; New-Item -ItemType Directory -Path $target -Force | Out-Null; Copy-Item payment_link_extractor/mk_gopay.py $target -Force; Copy-Item payment_link_extractor/mk_gcash.py $target -Force; Copy-Item payment_link_extractor/upstream_contract.py $target -Force; & 'C:\Program Files\Git\bin\bash.exe' "$artifact/ROLLBACK.sh" "$repo" "$target"; <SHA-256 与文件不存在断言>
+输入：<none>
+字面输出：
+ROLLBACK_OK target=C:\Users\Administrator\Desktop\提链\artifacts-local\channel-core-rollback-test commit=ffd6db87678f6a21b566fd254d4cfed20d730e9c files=mk_gopay.py,mk_gcash.py removed=upstream_contract.py
+ROLLBACK_RESTORED_BASELINE=True
+ROLLBACK_GOPAY_SHA256=a83cbec1a3b63c5210def833e8368b37effba7afdd5a512e31669e4331dad5e5
+ROLLBACK_GCASH_SHA256=7b51602e5dd96eb918f6e1caec0a331b6cf53c4e6a68859eec7df8f668cc6f6c
+ROLLBACK_NEW_FILE_PRESENT=False
+退出状态：0
+恢复行为/状态：另一份测试副本恢复到基线两个适配器哈希，新加契约文件被移除；工作区中的 MODIFIED_FILE 与实际适配器仍保持修改后的状态。

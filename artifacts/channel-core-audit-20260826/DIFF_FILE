@@ -1,0 +1,286 @@
+diff --git a/payment_link_extractor/mk_gcash.py b/payment_link_extractor/mk_gcash.py
+index 3ff85d1..c5990fb 100644
+--- a/payment_link_extractor/mk_gcash.py
++++ b/payment_link_extractor/mk_gcash.py
+@@ -10,6 +10,7 @@ model; it does not reimplement or merge the GCash checkout chain.
+
+ import asyncio
+ import importlib.util
++import inspect
+ import sys
+ import threading
+ import time
+@@ -21,12 +22,14 @@ from curl_cffi import CurlOpt
+
+ from .errors import ExtractionCancelled, ProtocolError
+ from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
++from .upstream_contract import verify_upstream_project
+ from .web.socks5_bridge import http_proxy_for
+
+
+ MK_GCASH_SOURCE_COMMIT = "2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5"
+ MK_GCASH_PROJECT_DIR = Path(__file__).resolve().parent / "mk_gcash_open_source"
+ MK_GCASH_APP_PATH = MK_GCASH_PROJECT_DIR / "app.py"
++MK_GCASH_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "mk_gcash_project_manifest.json"
+
+ _STAGE_MAP = {
+     "proxy_test": "eligibility_check",
+@@ -48,6 +51,12 @@ def _load_upstream_app() -> ModuleType:
+             return _UPSTREAM_APP
+         if not MK_GCASH_APP_PATH.is_file():
+             raise ProtocolError(500, f"GCash 开源项目缺失: {MK_GCASH_APP_PATH}")
++        verify_upstream_project(
++            project_dir=MK_GCASH_PROJECT_DIR,
++            manifest_path=MK_GCASH_MANIFEST_PATH,
++            expected_commit=MK_GCASH_SOURCE_COMMIT,
++            provider="GCash",
++        )
+         project_path = str(MK_GCASH_PROJECT_DIR)
+         if project_path not in sys.path:
+             sys.path.insert(0, project_path)
+@@ -61,6 +70,19 @@ def _load_upstream_app() -> ModuleType:
+         module = importlib.util.module_from_spec(spec)
+         sys.modules[spec.name] = module
+         spec.loader.exec_module(module)
++        for name, expected_parameters in {
++            "create_job": ("payload",),
++            "public_job": ("job_id",),
++            "cancel_job": ("job_id",),
++        }.items():
++            function = getattr(module, name, None)
++            if not callable(function):
++                raise ProtocolError(500, f"GCash 上游核心缺少 {name}")
++            parameters = tuple(inspect.signature(function).parameters)
++            if parameters[: len(expected_parameters)] != expected_parameters:
++                raise ProtocolError(500, f"GCash 上游核心调用契约不匹配: {name}")
++        if not callable(getattr(getattr(module, "CHAIN_MANAGER", None), "get_tasks", None)):
++            raise ProtocolError(500, "GCash 上游核心缺少 CHAIN_MANAGER.get_tasks")
+         _install_connect_timeout_hook()
+         _UPSTREAM_APP = module
+         return module
+@@ -147,6 +169,13 @@ def _retry_decision(result: dict[str, Any]) -> tuple[bool, str]:
+         return False, ""
+
+
++def _valid_gcash_url(value: str) -> bool:
++    """Delegate result validation to the loaded upstream GCash core."""
++    chain_module = sys.modules.get("gcash_chain")
++    validator = getattr(chain_module, "_is_gcash_url", None)
++    return bool(callable(validator) and validator(value))
++
++
+ def prewarm_mk_gcash_runtime(timeout: float = 20.0) -> str:
+     """Start the copied project's shared browser before the first task."""
+     _load_upstream_app()
+@@ -238,6 +267,8 @@ def extract_mk_gcash_payment_link(
+     gcash_url = str(account.get("link") or raw.get("gcash_url") or "")
+     if not gcash_url:
+         raise ProtocolError(502, "GCash 开源项目返回成功但没有 gcash_url")
++    if not _valid_gcash_url(gcash_url):
++        raise ProtocolError(502, "GCash 开源项目返回了不符合契约的 gcash_url")
+     email = str(account.get("email") or payload["accounts"][0]["email"] or "")
+     name = str(account.get("name") or payload["accounts"][0]["name"] or "")
+     if stage_callback is not None:
+diff --git a/payment_link_extractor/mk_gopay.py b/payment_link_extractor/mk_gopay.py
+index 81539bf..8509fcf 100644
+--- a/payment_link_extractor/mk_gopay.py
++++ b/payment_link_extractor/mk_gopay.py
+@@ -9,21 +9,25 @@ is translated for the existing UI.
+ """
+
+ import importlib.util
++import inspect
+ import sys
+ import threading
+ import types
+ from pathlib import Path
+ from types import ModuleType
+ from typing import Any, Callable
++from urllib.parse import urlsplit
+
+ from .auth import account_email
+ from .errors import ExtractionCancelled, ProtocolError
+ from .models import BillingProfile, ExtractionConfig, PaymentLinkResult
++from .upstream_contract import verify_upstream_project
+
+
+ MK_GOPAY_SOURCE_COMMIT = "3d2af69d848e6f292ef5abcb763c89dac3fbbea5"
+ MK_GOPAY_PROJECT_DIR = Path(__file__).resolve().parent / "mk_gopay_open_source"
+ MK_GOPAY_MODULE_PATH = MK_GOPAY_PROJECT_DIR / "gopay" / "gopay_extract.py"
++MK_GOPAY_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "mk_gopay_project_manifest.json"
+ _APP_LOCK = threading.RLock()
+ _UPSTREAM_GOPAY: ModuleType | None = None
+
+@@ -83,6 +87,12 @@ def _load_upstream_gopay() -> ModuleType:
+             return _UPSTREAM_GOPAY
+         if not MK_GOPAY_MODULE_PATH.is_file():
+             raise ProtocolError(500, f"GoPay 开源项目缺失: {MK_GOPAY_MODULE_PATH}")
++        verify_upstream_project(
++            project_dir=MK_GOPAY_PROJECT_DIR,
++            manifest_path=MK_GOPAY_MANIFEST_PATH,
++            expected_commit=MK_GOPAY_SOURCE_COMMIT,
++            provider="GoPay",
++        )
+         project_path = str(MK_GOPAY_PROJECT_DIR)
+         if project_path not in sys.path:
+             sys.path.insert(0, project_path)
+@@ -95,10 +105,30 @@ def _load_upstream_gopay() -> ModuleType:
+         module = importlib.util.module_from_spec(spec)
+         sys.modules[spec.name] = module
+         spec.loader.exec_module(module)
++        run_flow = getattr(module, "run_gopay_flow", None)
++        if not callable(run_flow):
++            raise ProtocolError(500, "GoPay 上游核心缺少 run_gopay_flow")
++        parameters = tuple(inspect.signature(run_flow).parameters)
++        if parameters[:4] != ("access_token", "session_token", "proxy_seed", "billing"):
++            raise ProtocolError(500, "GoPay 上游核心调用契约不匹配")
+         _UPSTREAM_GOPAY = module
+         return module
+
+
++def _valid_gopay_redirect(value: str) -> bool:
++    """Apply the copied project's public result contract at the UI boundary."""
++    try:
++        parsed = urlsplit(str(value or "").strip())
++    except ValueError:
++        return False
++    return bool(
++        parsed.scheme == "https"
++        and parsed.hostname == "pm-redirects.stripe.com"
++        and parsed.path.startswith("/authorize/")
++        and "oaics_" not in str(value).lower()
++    )
++
++
+ def _billing(module: ModuleType, config: ExtractionConfig) -> BillingProfile:
+     email = str(config.account_email or account_email(config.access_token) or "").strip()
+     try:
+@@ -157,6 +187,8 @@ def extract_mk_gopay_payment_link(
+     url = str(redirect_url or "").strip()
+     if not url:
+         raise ProtocolError(502, "GoPay 开源项目返回成功但没有授权链接")
++    if not _valid_gopay_redirect(url):
++        raise ProtocolError(502, "GoPay 开源项目返回了不符合契约的授权链接")
+     if stage_callback is not None:
+         stage_callback("redirect_resolution")
+         stage_callback("completed")
+diff --git a/payment_link_extractor/upstream_contract.py b/payment_link_extractor/upstream_contract.py
+new file mode 100644
+index 0000000..d1f101e
+--- /dev/null
++++ b/payment_link_extractor/upstream_contract.py
+@@ -0,0 +1,46 @@
++from __future__ import annotations
++
++"""Read-only integrity checks for directly called upstream projects."""
++
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++from .errors import ProtocolError
++
++
++def verify_upstream_project(
++    *,
++    project_dir: Path,
++    manifest_path: Path,
++    expected_commit: str,
++    provider: str,
++) -> None:
++    """Verify the vendored files without changing or wrapping upstream logic."""
++    try:
++        manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
++    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
++        raise ProtocolError(500, f"{provider} 上游源码清单无法读取: {manifest_path}") from exc
++
++    commit = str(manifest.get("commit") or "")
++    hashes = manifest.get("sha256")
++    if commit != expected_commit or not isinstance(hashes, dict) or not hashes:
++        raise ProtocolError(500, f"{provider} 上游源码清单与固定版本不匹配")
++
++    mismatches: list[str] = []
++    for relative, expected_hash in hashes.items():
++        relative_path = Path(str(relative))
++        if relative_path.is_absolute() or ".." in relative_path.parts:
++            mismatches.append(str(relative))
++            continue
++        source_path = project_dir / relative_path
++        try:
++            actual_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
++        except OSError:
++            actual_hash = "missing"
++        if actual_hash != str(expected_hash).lower():
++            mismatches.append(str(relative))
++    if mismatches:
++        preview = ", ".join(mismatches[:5])
++        raise ProtocolError(500, f"{provider} 上游源码完整性校验失败: {preview}")
+diff --git a/tests/test_gopay_support.py b/tests/test_gopay_support.py
+index 69d5a68..359ae26 100644
+--- a/tests/test_gopay_support.py
++++ b/tests/test_gopay_support.py
+@@ -1,13 +1,17 @@
+ from __future__ import annotations
+
++from pathlib import Path
+ from types import SimpleNamespace
+
++import pytest
++
+ from payment_link_extractor.application import (
+     _normalize_config,
+     _should_apply_checkout_update,
+     extract_payment_link,
+ )
+ from payment_link_extractor.models import ExtractionConfig
++from payment_link_extractor.errors import ProtocolError
+ from payment_link_extractor.web.app import create_app
+ from payment_link_extractor.web.routes import _config_from_payload
+ import payment_link_extractor.mk_gopay as mk
+@@ -96,3 +100,20 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
+     assert result.billing_country == "ID"
+     assert result.extra["mk_gopay_source_commit"] == mk.MK_GOPAY_SOURCE_COMMIT
+     assert stages == ["checkout", "redirect_resolution", "completed"]
++
++
++def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
++    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", None)
++    module = mk._load_upstream_gopay()
++    assert Path(module.__file__).resolve() == mk.MK_GOPAY_MODULE_PATH.resolve()
++    assert callable(module.run_gopay_flow)
++
++
++def test_gopay_rejects_non_contract_success_url(monkeypatch) -> None:
++    fake = SimpleNamespace(
++        indonesia_billing_profile=lambda email: {"email": email},
++        run_gopay_flow=lambda *_args: "https://example.com/not-gopay",
++    )
++    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)
++    with pytest.raises(ProtocolError, match="不符合契约"):
++        mk.extract_mk_gopay_payment_link(gopay_config())
+diff --git a/tests/test_mk_gcash_replacement.py b/tests/test_mk_gcash_replacement.py
+index 95e3fbc..b65d774 100644
+--- a/tests/test_mk_gcash_replacement.py
++++ b/tests/test_mk_gcash_replacement.py
+@@ -130,6 +130,7 @@ class FakeUpstreamApp:
+
+
+ def test_direct_upstream_app_call_maps_result_and_payload(monkeypatch):
++    mk._load_upstream_app()
+     fake = FakeUpstreamApp()
+     monkeypatch.setattr(mk, "_UPSTREAM_APP", fake)
+     stages = []
+@@ -176,3 +177,12 @@ def test_upstream_loader_points_at_copied_app(monkeypatch):
+     assert Path(app.__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "app.py").resolve()
+     assert Path(__import__("gcash_chain").__file__).resolve() == (mk.MK_GCASH_PROJECT_DIR / "gcash_chain.py").resolve()
+     assert getattr(__import__("gcash_chain").GCashChain, "_site_timeout_hook", False) is True
++
++
++def test_gcash_rejects_non_contract_success_url(monkeypatch):
++    mk._load_upstream_app()
++    fake = FakeUpstreamApp()
++    fake.raw["gcash_url"] = "https://example.com/not-gcash"
++    monkeypatch.setattr(mk, "_UPSTREAM_APP", fake)
++    with pytest.raises(ProtocolError, match="不符合契约"):
++        extract_mk_gcash_payment_link(gcash_config())
