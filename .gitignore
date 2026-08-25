@@ -11,3 +11,4 @@ data/captures/
 data/har-capture-profile/
 artifacts/screenshots/
 artifacts-local/
+payment_link_extractor/mk_gopay_open_source/upi/.stripe_bundles/
