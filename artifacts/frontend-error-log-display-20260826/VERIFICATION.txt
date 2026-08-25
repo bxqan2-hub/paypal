@@ -1,0 +1,29 @@
+对象：仅优化前端任务日志显示，不修改 PayPal/GoPay/GCash 核心源码
+分支：main
+改变字段：前端 taskFailureInfo/renderTaskError 与对应 CSS；原始后端错误保持不变并可折叠查看。
+四个工件：
+C:\Users\Administrator\Desktop\提链\artifacts\frontend-error-log-display-20260826\MODIFIED_FILE
+C:\Users\Administrator\Desktop\提链\artifacts\frontend-error-log-display-20260826\DIFF_FILE
+C:\Users\Administrator\Desktop\提链\artifacts\frontend-error-log-display-20260826\VERIFICATION.txt
+C:\Users\Administrator\Desktop\提链\artifacts\frontend-error-log-display-20260826\ROLLBACK.sh
+
+BASELINE
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：165 passed in 1.46s
+退出状态：0
+
+MODIFIED
+命令：& .\.venv\Scripts\python.exe -m pytest -q tests/test_frontend_error_display.py; node --check payment_link_extractor/web/static/app.js; & .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：2 passed in 0.01s; NODE_CHECK_EXIT=0; 167 passed in 1.51s
+退出状态：0
+结果：零元优惠、代理连接、代理格式和一般错误拥有独立前端说明；原始日志可展开。
+
+ROLLBACK
+命令：ROLLBACK.sh REPO_ROOT TARGET_DIR
+输入：另一份测试目录
+字面输出：ROLLBACK_OK target=C:\Users\Administrator\Desktop\提链\artifacts-local\frontend-error-rollback-1d77a72b0e574257aa52a5b423dc18f5 commit=c0da4682b6c445d6be417bfa903d4c0d8d27a0da files=app.js,styles.css removed=test_frontend_error_display.py
+ROLLBACK_RESTORED_BASELINE=True
+退出状态：0
+恢复行为：测试副本恢复旧前端；工作区 MODIFIED_FILE 保持新显示。

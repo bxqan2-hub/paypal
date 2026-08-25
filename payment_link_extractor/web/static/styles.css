@@ -161,7 +161,10 @@ h2 { margin-bottom: 4px; font-size: 18px; }
 .task-row-result button { flex-shrink: 0; padding: 5px 8px; font-size: 11px; }
 .task-row-result-empty { color: #8a949f; font-size: 12px; }
 .task-row-error-field { align-self: stretch; }
-.task-row-error { display: block; min-width: 0; max-width: 100%; overflow: hidden; color: #a33b3b; font-size: 13px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.task-row-error { display: flex; min-width: 0; max-width: 100%; flex-direction: column; gap: 2px; overflow: hidden; color: #a33b3b; font-size: 12px; line-height: 1.35; }
+.task-row-error strong { overflow: hidden; color: #9b3e3e; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.task-row-error small { overflow: hidden; color: #7f6b6b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.task-row-error-promo-ineligible strong, .task-row-error-proxy-input strong { color: #896516; }
 .task-row-actions { min-width: max-content; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
 .task-row-actions .task-actions { gap: 6px; }
 .task-header { align-items: flex-start; }
@@ -185,6 +188,20 @@ h2 { margin-bottom: 4px; font-size: 18px; }
 .progress-success .task-progress-bar { background: #28a76a; }
 .progress-error .task-progress-bar { background: #d85b5b; }
 .error-text { max-height: 9em; overflow-y: auto; overflow-wrap: anywhere; word-break: break-word; padding: 8px 10px; border-left: 3px solid #d85b5b; background: #fff7f7; color: #a33b3b; }
+.task-error-panel { margin-top: 14px; padding: 12px 13px; border: 1px solid #e6c7c7; border-left: 4px solid #d85b5b; border-radius: 10px; background: #fff8f8; }
+.task-error-promo-ineligible { border-color: #ead8ae; border-left-color: #c58b24; background: #fffaf0; }
+.task-error-network { border-color: #e6c7c7; border-left-color: #c85a5a; }
+.task-error-proxy-input { border-color: #e0c9aa; border-left-color: #b47722; background: #fffaf3; }
+.task-error-heading { display: flex; align-items: center; gap: 8px; color: #8f3535; font-size: 13px; }
+.task-error-promo-ineligible .task-error-heading, .task-error-proxy-input .task-error-heading { color: #8b6418; }
+.task-error-icon { display: inline-flex; width: 19px; height: 19px; align-items: center; justify-content: center; border-radius: 50%; background: currentColor; color: #fff; font-size: 12px; font-weight: 800; }
+.task-error-detail, .task-error-hint { margin: 7px 0 0; font-size: 12px; line-height: 1.55; }
+.task-error-detail { color: #4e3e3e; }
+.task-error-hint { color: #8a6b6b; }
+.task-error-promo-ineligible .task-error-detail, .task-error-promo-ineligible .task-error-hint, .task-error-proxy-input .task-error-detail, .task-error-proxy-input .task-error-hint { color: #77602b; }
+.task-error-raw { margin-top: 8px; color: #8a949f; font-size: 11px; }
+.task-error-raw summary { cursor: pointer; user-select: none; }
+.task-error-raw code { display: block; max-height: 7em; margin-top: 6px; overflow: auto; padding: 7px 8px; border-radius: 6px; background: rgba(255,255,255,.75); color: #7b4d4d; font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .task-footer { margin-top: 15px; align-items: flex-end; }
 .task-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .retry-option { display: inline-flex; align-items: center; gap: 5px; color: #75808c; font-size: 12px; white-space: nowrap; }
