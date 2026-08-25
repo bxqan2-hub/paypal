@@ -25,6 +25,9 @@ class ExtractionConfig:
     # object. GCash uses these before falling back to JWT profile claims.
     account_name: str = ""
     account_email: str = ""
+    # Optional browser session cookie used by the directly-called GoPay flow.
+    # Existing providers ignore this field.
+    session_token: str = ""
 
 
 @dataclass(frozen=True)

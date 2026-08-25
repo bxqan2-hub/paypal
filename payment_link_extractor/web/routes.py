@@ -17,7 +17,7 @@ from ..config import (
     normalize_payment_method,
 )
 from ..errors import ConfigurationError
-from ..auth import extract_access_token
+from ..auth import extract_access_token, extract_session_token
 from ..models import ExtractionConfig
 from .proxy_probe import ProxyProbeError, probe_proxy
 from .tasks import TaskManager, TaskNotFoundError, TaskStateError
@@ -48,9 +48,10 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
                 "payment_method": "paypal",
                 "payment_methods": [
                     {"value": "paypal", "label": "PayPal"},
+                    {"value": "gopay", "label": "GoPay", "country": "ID", "currency": "IDR"},
                     {"value": "gcash", "label": "GCash", "country": "PH", "currency": "PHP"},
                 ],
-                "payment_method_countries": {"gcash": "PH"},
+                "payment_method_countries": {"gopay": "ID", "gcash": "PH"},
                 "checkout_proxy": proxy_pool or os.getenv("OPLL_CHECKOUT_PROXY", ""),
                 "update_proxy": proxy_pool or os.getenv("OPLL_UPDATE_PROXY", ""),
                 "proxy_pool": proxy_pool,
@@ -287,7 +288,11 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
     if not str(checkout_proxy or "").strip():
         raise ConfigurationError("checkout proxy is required")
     payment_method = normalize_payment_method(payment_method)
-    if apply_update and payment_method != "gcash" and not str(update_proxy or "").strip():
+    if (
+        apply_update
+        and payment_method not in {"gcash", "gopay"}
+        and not str(update_proxy or "").strip()
+    ):
         raise ConfigurationError("update proxy is required")
     country = country_for_payment_method(payment_method, country)
     if country not in SUPPORTED_COUNTRIES:
@@ -326,6 +331,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         proxy_pool=submitted_pool,
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
+        session_token=extract_session_token(payload),
     )
 
 

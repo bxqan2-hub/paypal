@@ -71,16 +71,17 @@ def test_gcash_embedded_promo_skips_legacy_update_requirement() -> None:
     assert route_config.country == "PH"
 
 
-def test_defaults_expose_paypal_and_gcash_payment_choices() -> None:
+def test_defaults_expose_all_payment_choices() -> None:
     app = create_app({"TESTING": True})
     response = app.test_client().get("/api/defaults", headers={"X-Workbench-Password": "test-password"})
     assert response.status_code == 200
     data = response.get_json()
     assert [(item["value"], item["label"]) for item in data["payment_methods"]] == [
         ("paypal", "PayPal"),
+        ("gopay", "GoPay"),
         ("gcash", "GCash"),
     ]
-    assert data["payment_method_countries"] == {"gcash": "PH"}
+    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH"}
 
 
 class _Response:

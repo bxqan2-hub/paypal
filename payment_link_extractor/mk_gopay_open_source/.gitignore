@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Credentials and proxy pools
+proxy_seeds.txt
+*/proxy_seeds.txt
+token.txt
+*/token.txt
+proxy_state.json
+*/proxy_state.json
+removed_proxies.jsonl
+*/removed_proxies.jsonl
+batch_tokens.txt
+*/batch_tokens.txt
+
+# Runtime output
+data/
+*/data/
+logs/
+*/logs/
+dumps/
+*/dumps/
+*_batch_results.json
+*.log
+ui-server.log
+
+# Generated inspection data
+payment_methods*.json

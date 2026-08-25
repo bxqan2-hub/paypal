@@ -337,7 +337,7 @@
   function saveFormPreferences() {
     syncSingleProxyPool();
     const paymentMethod = byId("payment-method").value;
-    if (paymentMethod !== "gcash" && byId("country").value) {
+    if (!new Set(["gcash", "gopay"]).has(paymentMethod) && byId("country").value) {
       paypalCountryPreference = byId("country").value;
     }
     const preferences = {
@@ -410,20 +410,26 @@
   function syncPaymentMethodFields() {
     const method = byId("payment-method").value;
     const isGcash = method === "gcash";
+    const isGopay = method === "gopay";
+    const isFixedCountry = isGcash || isGopay;
+    const fixedCountry = isGopay ? "ID" : "PH";
     const country = byId("country");
     const countryField = byId("country-field");
-    const note = byId("gcash-country-note");
-    if (!isGcash && country.value && country.value !== "PH") {
+    const gcashNote = byId("gcash-country-note");
+    const gopayNote = byId("gopay-country-note");
+    if (!isFixedCountry && country.value) {
       paypalCountryPreference = country.value;
     }
-    if (isGcash) {
-      if (country.value && country.value !== "PH") paypalCountryPreference = country.value;
-      country.value = "PH";
-    } else if (paypalCountryPreference && country.value === "PH") {
+    if (isFixedCountry) {
+      if (country.value && country.value !== fixedCountry) paypalCountryPreference = country.value;
+      if (isGopay) country.value = "ID";
+      else country.value = "PH";
+    } else if (paypalCountryPreference && ["PH", "ID"].includes(country.value)) {
       country.value = paypalCountryPreference;
     }
-    if (countryField) countryField.hidden = isGcash;
-    if (note) note.hidden = !isGcash;
+    if (countryField) countryField.hidden = isFixedCountry;
+    if (gcashNote) gcashNote.hidden = !isGcash;
+    if (gopayNote) gopayNote.hidden = !isGopay;
     renderBillingPreview();
   }
 
@@ -587,7 +593,7 @@
       oaics_only: byId("oaics-only").checked,
     };
     const values = [
-      ["country", paymentMethod === "gcash" ? "PH" : byId("country").value],
+      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : byId("country").value],
       ["payment_method", paymentMethod],
     ];
     values.forEach(([key, value]) => {
@@ -1815,7 +1821,7 @@
       field.addEventListener("input", saveFormPreferences);
     });
     byId("country").addEventListener("change", () => {
-      if (byId("payment-method").value !== "gcash") paypalCountryPreference = byId("country").value;
+      if (!["gcash", "gopay"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
       renderBillingPreview();
     });
     byId("payment-method").addEventListener("change", () => {

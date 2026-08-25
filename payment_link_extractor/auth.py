@@ -7,6 +7,15 @@ from typing import Any
 
 
 _TOKEN_KEYS = {"at", "token", "access_token", "accesstoken"}
+_SESSION_TOKEN_KEYS = {
+    "sessiontoken",
+    "session_token",
+    "nextauthsessiontoken",
+    "next_auth_session_token",
+    "__secure_next_auth_session_token",
+    "__secure_next_auth.session_token",
+    "securenextauthsessiontoken",
+}
 _TOKEN_CHARS_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 
 
@@ -89,6 +98,44 @@ def extract_access_token(raw: Any) -> str:
                 return _extract_from_text(value)
             return _find_token(value)
     return _extract_from_text(text)
+
+
+def _find_session_token(value: Any) -> str:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = str(key or "").replace("-", "_").lower()
+            compact_key = normalized_key.replace("_", "")
+            if (
+                normalized_key in _SESSION_TOKEN_KEYS
+                or compact_key in {key.replace("_", "") for key in _SESSION_TOKEN_KEYS}
+            ) and isinstance(nested, str):
+                candidate = str(nested).strip()
+                if candidate:
+                    return candidate
+        for nested in value.values():
+            candidate = _find_session_token(nested)
+            if candidate:
+                return candidate
+    elif isinstance(value, list):
+        for nested in value:
+            candidate = _find_session_token(nested)
+            if candidate:
+                return candidate
+    return ""
+
+
+def extract_session_token(raw: Any) -> str:
+    """Extract an optional NextAuth session token from an import envelope."""
+    if isinstance(raw, (dict, list)):
+        return _find_session_token(raw)
+    text = str(raw or "").strip()
+    if not text.startswith(("{", "[")):
+        return ""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    return _find_session_token(value)
 
 
 def normalize_access_token(raw: str) -> str:

@@ -10,3 +10,4 @@ data/*.log
 data/captures/
 data/har-capture-profile/
 artifacts/screenshots/
+artifacts-local/

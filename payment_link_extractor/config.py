@@ -65,6 +65,7 @@ SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
 # browser sends a stale country value.
 PAYMENT_METHOD_DEFAULT_COUNTRIES = {
     "gcash": "PH",
+    "gopay": "ID",
 }
 
 
