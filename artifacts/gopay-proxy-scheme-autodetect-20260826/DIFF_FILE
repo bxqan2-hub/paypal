@@ -1,0 +1,89 @@
+diff --git a/payment_link_extractor/mk_gopay.py b/payment_link_extractor/mk_gopay.py
+index 8509fcf..361fb7e 100644
+--- a/payment_link_extractor/mk_gopay.py
++++ b/payment_link_extractor/mk_gopay.py
+@@ -108,6 +108,8 @@ def _load_upstream_gopay() -> ModuleType:
+         run_flow = getattr(module, "run_gopay_flow", None)
+         if not callable(run_flow):
+             raise ProtocolError(500, "GoPay 上游核心缺少 run_gopay_flow")
++        if not callable(getattr(module, "resolve_proxy_url", None)):
++            raise ProtocolError(500, "GoPay 上游核心缺少 resolve_proxy_url")
+         parameters = tuple(inspect.signature(run_flow).parameters)
+         if parameters[:4] != ("access_token", "session_token", "proxy_seed", "billing"):
+             raise ProtocolError(500, "GoPay 上游核心调用契约不匹配")
+@@ -166,10 +168,20 @@ def extract_mk_gopay_payment_link(
+         raise ExtractionCancelled("task cancellation requested")
+     module = _load_upstream_gopay()
+     billing = _billing(module, config)
+-    if stage_callback is not None:
+-        stage_callback("checkout")
+     proxy = str(config.checkout_proxy or "").strip()
+     try:
++        # The upstream standalone UI sets GOPAY_PROXY_DEFAULT_SCHEME=auto.
++        # The site's UI accepts scheme-less host:port:user:password seeds, so
++        # resolve them through the unchanged upstream probe before calling the
++        # core. This prevents the default HTTP guess from breaking SOCKS5H
++        # residential proxies at the first ChatGPT CONNECT request.
++        if stage_callback is not None:
++            stage_callback("eligibility_check")
++        proxy = str(module.resolve_proxy_url(proxy) or "").strip()
++        if not proxy:
++            raise ProtocolError(502, "GoPay 代理协议自动探测未返回可用代理")
++        if stage_callback is not None:
++            stage_callback("checkout")
+         redirect_url = module.run_gopay_flow(
+             str(config.access_token),
+             str(config.session_token or ""),
+@@ -209,6 +221,7 @@ def extract_mk_gopay_payment_link(
+         extra={
+             "mk_gopay_source_commit": MK_GOPAY_SOURCE_COMMIT,
+             "mk_gopay_project_dir": str(MK_GOPAY_PROJECT_DIR),
++            "mk_gopay_proxy_scheme": urlsplit(proxy).scheme,
+             "payment_route": "gopay",
+         },
+     )
+diff --git a/tests/test_gopay_support.py b/tests/test_gopay_support.py
+index 359ae26..bbff7be 100644
+--- a/tests/test_gopay_support.py
++++ b/tests/test_gopay_support.py
+@@ -88,6 +88,7 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
+             "state": "DKI Jakarta",
+             "postal_code": "10220",
+         },
++        resolve_proxy_url=lambda proxy: "socks5h://id-user:id-pass@proxy.example:8080",
+         run_gopay_flow=lambda access, session, proxy, billing: (
+             "https://pm-redirects.stripe.com/authorize/acct_fixture/nonce_fixture"
+         ),
+@@ -99,7 +100,23 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
+     assert result.provider_value.startswith("https://pm-redirects.stripe.com/authorize/")
+     assert result.billing_country == "ID"
+     assert result.extra["mk_gopay_source_commit"] == mk.MK_GOPAY_SOURCE_COMMIT
+-    assert stages == ["checkout", "redirect_resolution", "completed"]
++    assert stages == ["eligibility_check", "checkout", "redirect_resolution", "completed"]
++    assert result.extra["mk_gopay_proxy_scheme"] == "socks5h"
++
++
++def test_gopay_adapter_resolves_scheme_less_proxy_before_core(monkeypatch) -> None:
++    calls = []
++    fake = SimpleNamespace(
++        indonesia_billing_profile=lambda email: {"email": email},
++        resolve_proxy_url=lambda proxy: calls.append(("resolve", proxy)) or "socks5h://user:pass@proxy.example:8080",
++        run_gopay_flow=lambda access, session, proxy, billing: calls.append(("run", proxy)) or "https://pm-redirects.stripe.com/authorize/fixture",
++    )
++    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)
++    mk.extract_mk_gopay_payment_link(gopay_config())
++    assert calls == [
++        ("resolve", gopay_config().checkout_proxy),
++        ("run", "socks5h://user:pass@proxy.example:8080"),
++    ]
+
+
+ def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
+@@ -112,6 +129,7 @@ def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
+ def test_gopay_rejects_non_contract_success_url(monkeypatch) -> None:
+     fake = SimpleNamespace(
+         indonesia_billing_profile=lambda email: {"email": email},
++        resolve_proxy_url=lambda proxy: proxy,
+         run_gopay_flow=lambda *_args: "https://example.com/not-gopay",
+     )
+     monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)

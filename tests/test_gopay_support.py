@@ -88,6 +88,7 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
             "state": "DKI Jakarta",
             "postal_code": "10220",
         },
+        resolve_proxy_url=lambda proxy: "socks5h://id-user:id-pass@proxy.example:8080",
         run_gopay_flow=lambda access, session, proxy, billing: (
             "https://pm-redirects.stripe.com/authorize/acct_fixture/nonce_fixture"
         ),
@@ -99,7 +100,23 @@ def test_direct_upstream_gopay_result_mapping(monkeypatch) -> None:
     assert result.provider_value.startswith("https://pm-redirects.stripe.com/authorize/")
     assert result.billing_country == "ID"
     assert result.extra["mk_gopay_source_commit"] == mk.MK_GOPAY_SOURCE_COMMIT
-    assert stages == ["checkout", "redirect_resolution", "completed"]
+    assert stages == ["eligibility_check", "checkout", "redirect_resolution", "completed"]
+    assert result.extra["mk_gopay_proxy_scheme"] == "socks5h"
+
+
+def test_gopay_adapter_resolves_scheme_less_proxy_before_core(monkeypatch) -> None:
+    calls = []
+    fake = SimpleNamespace(
+        indonesia_billing_profile=lambda email: {"email": email},
+        resolve_proxy_url=lambda proxy: calls.append(("resolve", proxy)) or "socks5h://user:pass@proxy.example:8080",
+        run_gopay_flow=lambda access, session, proxy, billing: calls.append(("run", proxy)) or "https://pm-redirects.stripe.com/authorize/fixture",
+    )
+    monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)
+    mk.extract_mk_gopay_payment_link(gopay_config())
+    assert calls == [
+        ("resolve", gopay_config().checkout_proxy),
+        ("run", "socks5h://user:pass@proxy.example:8080"),
+    ]
 
 
 def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
@@ -112,6 +129,7 @@ def test_gopay_loader_binds_the_unchanged_upstream_core(monkeypatch) -> None:
 def test_gopay_rejects_non_contract_success_url(monkeypatch) -> None:
     fake = SimpleNamespace(
         indonesia_billing_profile=lambda email: {"email": email},
+        resolve_proxy_url=lambda proxy: proxy,
         run_gopay_flow=lambda *_args: "https://example.com/not-gopay",
     )
     monkeypatch.setattr(mk, "_UPSTREAM_GOPAY", fake)

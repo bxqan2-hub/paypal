@@ -1,0 +1,9 @@
+Baseline: & .\.venv\Scripts\python.exe -m pytest -q
+Baseline output: 164 passed in 1.45s
+Baseline exit: 0
+Modified: & .\.venv\Scripts\python.exe -m pytest -q
+Modified output: 165 passed in 1.45s
+Modified exit: 0
+Probe: upstream resolve_proxy_url on 10 provided seeds selected socks5h with HTTP 200 (previous verified run)
+Probe exit: 0
+Rollback: see ROLLBACK.sh output above; restored baseline adapter and test source in another copy.
