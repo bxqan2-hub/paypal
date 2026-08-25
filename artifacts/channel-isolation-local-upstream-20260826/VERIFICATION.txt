@@ -51,7 +51,7 @@ FILES=22 MISMATCHES=[]
 退出状态：0
 
 ROLLBACK
-命令：$artifact=(Resolve-Path 'artifacts/channel-isolation-local-upstream-20260826').Path; $target=Join-Path (Resolve-Path 'artifacts-local').Path ('channel-isolation-rollback-test-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $target | Out-Null; & 'C:\Program Files\Git\bin\bash.exe' "$artifact/ROLLBACK.sh" (Resolve-Path '.').Path $target; <baseline assertions>
+命令：$artifact=(Resolve-Path 'artifacts/channel-isolation-local-upstream-20260826').Path; $target='C:\Users\Administrator\Desktop\提链\artifacts-local\channel-isolation-rollback-test-1332b1faed0c46b8b3482a78a5054a26'; New-Item -ItemType Directory -Path $target -Force | Out-Null; & 'C:\Program Files\Git\bin\bash.exe' "$artifact/ROLLBACK.sh" (Resolve-Path '.').Path $target; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $app=(Get-Content -Raw (Join-Path $target 'payment_link_extractor/application.py')); $new=(Test-Path (Join-Path $target 'payment_link_extractor/channels.py')); $restored=(-not $new -and -not ($app -match 'invoke_payment_channel')); Write-Output "ROLLBACK_RESTORED_BASELINE=$restored"; Write-Output "ROLLBACK_NEW_CHANNEL_FILE_PRESENT=$new"
 输入：<none>
 字面输出：
 ROLLBACK_OK target=C:\Users\Administrator\Desktop\提链\artifacts-local\channel-isolation-rollback-test-1332b1faed0c46b8b3482a78a5054a26 commit=afdce3656999518205e9edab825dce49626317b4 files=14
