@@ -323,3 +323,27 @@ api.stripe.com: 0
 ```
 
 下一次开始抓包时继续使用浏览器级多 target 模式；实时监测重点为 `CAPTURE_TARGET_ATTACHED` 输出、记录器进程存活和页面 `readyState`。
+
+## 10. 60943 浏览器级修复后抓包复核
+
+本次使用修复后的 `browser-auto-attach-flatten` 记录器，原始 HAR 位于本机 `artifacts-local`：
+
+```text
+artifacts-local/gopay-cdp-capture-browser-targets-20260830-60943-fixed.har
+entries=401
+size=16155304 bytes
+sha256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
+```
+
+本次已捕获真实正文：
+
+- ChatGPT Checkout：请求 151 bytes、响应 1812 bytes。
+- ChatGPT taxes：2 次 200，响应各 4687 bytes，`amount_total=34900000`、`payment_method_types=[card,gopay]`。
+- ChatGPT snapshot：2 次 204，请求正文存在、响应按 204 为空。
+- ChatGPT approve：请求 124 bytes，响应 `{"result":"approved"}`。
+- Sentinel：`chatgpt_checkout` 2 次、`checkout_session_approval` 2 次；proof 长度 6421、6858。
+- Midtrans transaction：200，`gross_amount=349000`、`currency=IDR`、推荐 `gopay`、启用 `gopay/qris`。
+
+完整性结论仍为**协议层未完整**：主机统计中 `api.stripe.com=0`、`js.stripe.com=12`，所以 Stripe init、Elements、tax_region、confirm 及 Stripe 响应正文没有进入这次 HAR。`audit_har_completeness` 的关键缺口为 `gopay_stripe_init/element/confirm:entry_missing`；这不是页面卡死，页面已到达 Midtrans 且停止记录器后 `readyState=complete`、`pending=0`。
+
+本次脱敏摘要由 [`har_cdp_gopay_summary.py`](../tools/har_cdp_gopay_summary.py) 生成；下一次如需 Stripe API 全量，应继续确认 API 请求是否由独立浏览器上下文或服务端路径产生，并同时保留 browser target 与代理层记录。

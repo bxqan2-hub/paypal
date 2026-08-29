@@ -1,0 +1,68 @@
+GoPay CDP full-flow capture verification
+========================================
+
+Changed branch/field:
+127.0.0.1:60943 browser-auto-attach-flatten capture -> redacted body summary
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-full-capture-60943-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-full-capture-60943-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-full-capture-60943-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-full-capture-60943-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe tools\har_analyze.py artifacts-local\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har --format markdown --host chatgpt.com --limit 200
+Input: saved browser-level HAR
+Literal output/result: SHA-256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1; Entries=401 (selected 64); Client build=10012890; proof lengths=6421,6858
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe tools\har_cdp_gopay_summary.py artifacts-local\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har --output artifacts\gopay-cdp-capture-20260830\FINAL_REDACTED_SUMMARY.md
+Input: same HAR processed by the body-aware redacted summarizer
+Literal output/result: Checkout request/response bodies present; taxes x2 present; snapshots x2 HTTP 204; approve result=approved; Midtrans gross_amount=349000 IDR; api.stripe.com entries=0
+Exit status: 0
+
+PY_COMPILE command:
+.\.venv\Scripts\python.exe -m py_compile tools\har_cdp_gopay_summary.py
+Literal output/result: no output; syntax check passed
+Exit status: 0
+
+SUMMARY_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_har_cdp_gopay_summary.py tests/test_har_capture_browser_attach.py
+Literal output/result:
+...                                                                      [100%]
+3 passed in 0.05s
+Exit status: 0
+
+FULL_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: repository after capture summary tool
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+....................................                                     [100%]
+180 passed in 1.52s
+Exit status: 0
+
+RUNTIME command:
+CDP Runtime.evaluate after recorder stop
+Input: browser page on 127.0.0.1:60943
+Literal output/result: url=app.midtrans.com/snap/v4/redirection/<UUID>; readyState=complete; pending=0; ariaBusy=0; progress=0
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-cdp-full-capture-60943-20260830/ROLLBACK.sh && artifacts/gopay-cdp-full-capture-60943-20260830/ROLLBACK.sh artifacts-local/gopay-cdp-full-capture-rollback-test.md artifacts/gopay-cdp-full-capture-60943-20260830/MODIFIED_FILE"
+Input: another temporary copy after intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-cdp-full-capture-rollback-test.md
+BEFORE_SHA256=e9235c4e5e09c9c7402441198980f88ce890b6294e774f75099b5a672030667c
+RESTORED_SHA256=94395354805c1769f2fc602b7368bf78fbc9a2f6721fb6484256d01379a9df93
+EXPECTED_SHA256=94395354805c1769f2fc602b7368bf78fbc9a2f6721fb6484256d01379a9df93
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Restored behavior/status:
+ChatGPT and Midtrans bodies are preserved only in the local raw HAR; committed artifacts are redacted. Stripe API target coverage remains open.
+
+MODIFIED_FILE SHA-256:
+94395354805c1769f2fc602b7368bf78fbc9a2f6721fb6484256d01379a9df93

@@ -1,0 +1,31 @@
+GoPay CDP full-flow capture result
+==================================
+
+Capture:
+- CDP port=127.0.0.1:60943
+- recorder=browser-auto-attach-flatten with Fetch pause routing fix
+- entries=401
+- raw size=16155304 bytes
+- raw sha256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
+
+Captured bodies:
+- ChatGPT checkout request/response
+- ChatGPT taxes x2 request/response
+- ChatGPT snapshot x2 request; HTTP 204 empty responses
+- ChatGPT approve request/response
+- Sentinel req/ping request/response
+- Midtrans redirection/transaction/promo/experiment
+
+Observed business values:
+- checkout provider=stripe, processor=openai_llc, market=ID/IDR
+- taxes amount_total=34900000, methods=[card,gopay], automatic_tax=complete
+- approve result=approved
+- Midtrans gross_amount=349000 IDR, recommended=gopay, enabled=[gopay,qris]
+
+Coverage gap:
+- api.stripe.com entries=0
+- only js.stripe.com static resources=12
+- Stripe init/elements/tax_region/confirm bodies are absent from this capture
+- likely source is another browser context or server-side Stripe leg; next run should also collect proxy/browser target traffic
+
+No raw token, cookie, customer, order or redirect nonce is included in this diff file.
