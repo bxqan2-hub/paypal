@@ -1,0 +1,62 @@
+对象：导入并解析《半自动支付编排系统：从账号结账到支付结果确认（紧凑版）》参考文档
+分支：main
+基线提交：d7ddee5645b0f803aee7379c2aa8dcddcc4c3d84
+
+改变的字段/内容：
+- 新增 docs/reference/payment-orchestration/，保存原始 DOCX 副本、完整顺序化 Markdown、结构化 JSON 和索引 README。
+- 新增 tools/extract_reference_docx.py，供后续从同一 DOCX 重新生成解析资料。
+- 新增 tests/test_reference_docx.py，锁定源文件 SHA-256、段落/表格数量、OOXML 批注/修订状态和关键标题/表格。
+- 文档正文作为参考资料处理；文档里的代码、流程和建议没有被自动改写成项目运行规则。
+- 没有修改 PayPal、GoPay、GCash 核心源码，也没有修改本地 GCash 上游工作树。
+
+四个工件路径：
+1. C:\Users\Administrator\Desktop\提链\artifacts\reference-docx-ingestion-20260829\MODIFIED_FILE
+2. C:\Users\Administrator\Desktop\提链\artifacts\reference-docx-ingestion-20260829\DIFF_FILE
+3. C:\Users\Administrator\Desktop\提链\artifacts\reference-docx-ingestion-20260829\VERIFICATION.txt
+4. C:\Users\Administrator\Desktop\提链\artifacts\reference-docx-ingestion-20260829\ROLLBACK.sh
+
+BASELINE
+命令：$source = & git show HEAD:docs/reference/payment-orchestration/半自动支付编排系统_从账号结账到支付结果确认_紧凑版.md 2>$null; if ($LASTEXITCODE -eq 0) { Write-Output 'BASELINE_REFERENCE_PRESENT=True'; exit 1 } else { Write-Output 'BASELINE_REFERENCE_PRESENT=False'; exit 0 }
+输入：<none>
+字面输出：BASELINE_REFERENCE_PRESENT=False
+退出状态：0
+
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：167 passed in 1.53s
+退出状态：0
+
+MODIFIED
+命令：& .\.venv\Scripts\python.exe -m pytest -q tests/test_reference_docx.py
+输入：<none>
+字面输出：.. [100%] / 2 passed in 0.02s
+退出状态：0
+命令：& .\.venv\Scripts\python.exe -m pytest -q
+输入：<none>
+字面输出：173 passed in 1.48s
+退出状态：0
+命令：bundled-python tools/extract_reference_docx.py C:\Users\Administrator\Downloads\半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx docs/reference/payment-orchestration
+输入：源 DOCX
+字面输出：DOCX_SHA256=fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506 / PARSED_SHA256=fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506 / PARSED_COUNTS paragraphs=220 nonempty=197 tables=12 blocks=209 / OOXML comments=False insertions=0 deletions=0 media=0 / PARSE_VERIFY=PASS
+退出状态：0
+命令：bundled-python render_docx.py C:\Users\Administrator\Downloads\半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx --output_dir artifacts-local/docx-render-20260829 --emit_pdf
+输入：源 DOCX
+字面输出：FileNotFoundError: [WinError 2] 系统找不到指定的文件；RENDER_EXIT=1
+退出状态：1
+结果：结构解析成功；页面渲染未完成，因为当前环境缺少 LibreOffice/soffice。原始 DOCX 未修改。
+命令：& bundled-python -m py_compile tools/extract_reference_docx.py
+输入：<none>
+字面输出：COMPILE_EXIT=0
+退出状态：0
+
+ROLLBACK
+命令：$artifact=(Resolve-Path 'artifacts/reference-docx-ingestion-20260829').Path; $target=Join-Path (Resolve-Path 'artifacts-local').Path 'reference-rollback-2cdc280bbeea4143bee3a68121cc21ff'; New-Item -ItemType Directory -Force -Path (Join-Path $target 'docs/reference/payment-orchestration'),(Join-Path $target 'tools'),(Join-Path $target 'tests') | Out-Null; Copy-Item docs/reference/payment-orchestration/README.md (Join-Path $target 'docs/reference/payment-orchestration/README.md'); Copy-Item tools/extract_reference_docx.py (Join-Path $target 'tools/extract_reference_docx.py'); Copy-Item tests/test_reference_docx.py (Join-Path $target 'tests/test_reference_docx.py'); & 'C:\Program Files\Git\bin\bash.exe' (Join-Path $artifact 'ROLLBACK.sh') (Resolve-Path '.').Path $target; <assert all three paths absent>
+输入：另一份测试副本
+字面输出：ROLLBACK_OK target=C:\Users\Administrator\Desktop\提链\artifacts-local\reference-rollback-2cdc280bbeea4143bee3a68121cc21ff commit=d7ddee5645b0f803aee7379c2aa8dcddcc4c3d84 removed=docs/reference/payment-orchestration,tools/extract_reference_docx.py,tests/test_reference_docx.py / ROLLBACK_RESTORED_BASELINE=True / ROLLBACK_REMAINING docs=False tool=False test=False
+退出状态：0
+恢复行为：测试副本移除本轮新增参考资料、提取脚本和测试；项目实际资料保持修改后状态。
+
+源文档：
+C:\Users\Administrator\Downloads\半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx
+SHA-256：fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506
+解析结果：220 段落、197 非空段落、12 表格、209 顺序块；无图片、批注、修订插入、修订删除。

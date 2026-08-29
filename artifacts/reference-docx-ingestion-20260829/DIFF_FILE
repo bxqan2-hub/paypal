@@ -1,0 +1,4868 @@
+diff --git a/docs/reference/payment-orchestration/README.md b/docs/reference/payment-orchestration/README.md
+new file mode 100644
+index 0000000..16e85e8
+--- /dev/null
++++ b/docs/reference/payment-orchestration/README.md
+@@ -0,0 +1,45 @@
++# 半自动支付编排系统参考资料
++
++本目录保存用户提供的《半自动支付编排系统：从账号结账到支付结果确认（紧凑版）》的原始文件、完整解析和项目对照摘要。
++
++## 文件
++
++- `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx`：原始 DOCX 副本。
++- `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.md`：按正文顺序展开的可检索文本，包含标题、段落、代码样式文本和 12 个表格。
++- `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.json`：结构化解析，包含元数据、标题索引、正文块、表格、页眉页脚和 OOXML 检查结果。
++- `README.md`：本索引和当前项目对照说明。
++
++## 内容摘要
++
++这份文档描述一个由账号结账/提链、支付方式路由、协议支付、人工介入和结果确认组成的半自动编排架构。核心概念是：
++
++1. 账号结账层创建带地区/币种的 Checkout Session，并维护登录态、税务地址和会话字段。
++2. 路由层读取 `payment_method_types`，把支付方式分到自动通道或人工通道。
++3. 自动通道处理 Stripe Elements、ConfirmationToken、PaymentIntent、Approve、挑战和结果确认。
++4. 人工通道输出本地支付链接/二维码，等待外部付款后轮询确认。
++5. 统一状态机管理任务生命周期、重试、幂等、超时、订阅激活和审计。
++6. 风控基础设施覆盖 TLS/UA 配对、设备指纹、代理固定、请求节奏和 Cookie 隔离。
++
++文档还包含端到端时序、支付方式可行性矩阵、异常矩阵、耗时阈值、代理类型比较、日志字段和官方方案对照表。
++
++## 与当前项目的对照
++
++文档是架构参考，不是本项目的自动执行配置。当前项目只将其中与现有三个渠道相关的边界落到代码：
++
++- PayPal：现有旧 Checkout/Stripe 通道。
++- GoPay：独立适配器和独立上游核心，固定 ID/IDR。
++- GCash：独立适配器，运行时读取本地完整 Git 上游：`C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource`。
++
++当前项目的渠道注册与隔离入口：`payment_link_extractor/channels.py`；总分发入口：`payment_link_extractor/application.py`。文档中提到的其他支付方式（例如 UPI、PIX、iDEAL、Kakao Pay、MoMo、BLIK、TWINT）只在资料中出现，不能据此视为当前项目已支持。
++
++## 解析状态
++
++根据 DOCX OOXML 检查：220 个段落、197 个非空段落、12 个表格、1 个节；无嵌入图片、批注、修订插入或修订删除。原始文件 SHA-256：
++
++`fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506`
++
++Markdown 与 JSON 由 `tools/extract_reference_docx.py` 生成。后续读取本资料时，优先查阅 Markdown；需要精确结构、表格或来源校验时查阅 JSON；需要原始排版时打开 DOCX。
++
++## 渲染检查
++
++已调用文档技能的 `render_docx.py`。当前环境缺少 LibreOffice/`soffice`，因此未生成页面 PNG；正文、表格和 OOXML 结构解析已完成，未对原始文档做任何修改。
+diff --git "a/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.docx" "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.docx"
+new file mode 100644
+index 0000000..36d581b
+--- /dev/null
++++ "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.docx"
+@@ -0,0 +1,585 @@
++                    半自动支付编排系统技术设计
++ --  --  结合提链（Paylink Extraction）与 Stripe 协议支付自动化  --  --
++  在 SaaS 订阅支付领域，存在两条技术路线：一条是「提链」（Paylink Extraction），通过修改地区和币种参数，从 Stripe Checkout Session 中提取 UPI、PIX、iDEAL 等本地支付方式的跳转链接，让用户手动扫码付款；另一条是「协议支付自动化」，通过 HAR 抓包逆向 Stripe 内部接口，用纯 HTTP 请求模拟浏览器行为，全自动完成信用卡扣款。
++  这两条路线各有不可替代的价值，也各有无法逾越的边界：
++  提链能激活各国本地支付通道，但原生流程止步于「输出跳转链接」，后续付款和结果确认必须由人工完成，无法规模化批量处理。
++  协议支付能全自动完成扣款，但原生只支持银行卡（card）支付方式，无法直接调用 UPI、PIX、MoMo 等强依赖客户端交互的本地支付。
++  本文设计的「半自动支付编排系统」，正是将两者结合：用提链技术完成账号侧结账和跨区会话创建，用协议支付技术完成 Stripe 侧的自动化执行，对支持全自动的支付方式（信用卡、Stripe Link）走无人值守通道，对必须人工介入的支付方式（UPI、PIX、Kakao Pay 等）输出链接并在人工完成后自动轮询确认结果。整个系统从账号结账到支付结果确认形成闭环。
++ 【免责声明】本文为技术架构设计与原理分析，所有接口细节基于 Stripe Checkout 协议逆向研究。逆向调用厂商未公开接口可能违反服务条款，实际使用存在账号封禁、资金损失等风险，仅供学习研究。
++
++一、系统整体架构与设计理念
++1.1 设计目标
++半自动支付编排系统的核心设计目标是「能自动的全自动，不能自动的最小化人工介入」：
++  统一入口：所有支付请求从同一个编排器进入，不管最终走卡支付还是本地支付
++  智能路由：根据支付方式类型自动判断走全自动通道还是人工介入通道
++  闭环确认：无论哪条通道，最终都由系统统一确认支付结果并更新订阅状态
++  可观测性：每一步状态可追踪、可重试、可审计
++1.2 五大核心模块
++系统由五个核心模块组成，各司其职又紧密协作：
++                                    模块
++                                    职责
++                                 技术来源
++A. 账号结账层
++登录态管理、创建跨区 Checkout Session、税务地址更新
++提链技术
++B. 支付路由引擎
++根据 payment_method_types 决策走全自动还是人工通道
++编排层新增
++C. 协议支付执行器
++ConfirmationToken 创建、PaymentIntent 确认、3DS 处理
++协议支付技术
++D. 人工介入通道
++生成支付链接/二维码、通知用户、等待回调
++提链技术 + 编排层
++E. 结果确认状态机
++统一轮询/回调确认、状态流转、失败重试
++两者结合
++
++1.3 架构总览
++ ┌─────────────────────────────────────────────────────────────┐│                    支付编排器 (Orchestrator)                  ││                                                              ││  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   ││  │ A.账号结账 │───▶│ B.支付路由引擎 │───▶│ C.协议支付执行器  │   ││  │  (提链层)  │    │              │    │  (卡类全自动)    │   ││  └──────────┘    └──────┬───────┘    └────────┬─────────┘   ││                         │                     │             ││                         │              ┌──────▼──────┐      ││                         │              │ 3DS/hCaptcha │      ││                         │              │   挑战处理    │      ││                         │              └──────┬──────┘      ││                         ▼                     │             ││                  ┌──────────────┐             │             ││                  │ D.人工介入通道 │             │             ││                  │ (本地支付扫码) │             │             ││                  └──────┬───────┘             │             ││                         │                     │             ││                         ▼                     ▼             ││                  ┌──────────────────────────────────┐       ││                  │     E. 结果确认状态机 (统一)       │       ││                  │  轮询 / 回调 / 重试 / 订阅激活     │       ││                  └──────────────────────────────────┘       │└─────────────────────────────────────────────────────────────┘         ▲                                    ▲         │                                    │  ┌──────┴──────┐                     ┌──────┴──────┐  │  代理池管理  │                     │  指纹管理    │  │ (双池+IP钉住)│                     │ (TLS+设备)  │  └─────────────┘                     └─────────────┘
++ 【架构要点】关键设计：模块 B（支付路由引擎）是整个系统的「大脑」。它在模块 A 创建完 Checkout Session 后，读取返回的 payment_method_types 字段，根据支付方式的自动化可行性做出路由决策 --  -- 这是半自动系统区别于纯提链或纯协议支付的核心。
++1.4 半自动的含义
++「半自动」不是「一半自动一半手动」的模糊概念，而是有明确定义的分流机制：
++                              支付方式类型
++                                 处理模式
++                                人工介入点
++                              结果确认方式
++信用卡 (card)
++全自动
++无
++PaymentIntent 状态 = succeeded
++Stripe Link 钱包
++全自动
++无
++PaymentIntent 状态 = succeeded
++iDEAL / BLIK / GCash
++半自动
++用户打开链接完成银行/App确认
++轮询 PaymentIntent / Stripe 回调
++UPI / PIX / TWINT
++半自动
++用户扫码或输入VPA完成支付
++轮询 PaymentIntent / Stripe 回调
++Kakao Pay / MoMo
++半自动(需pre_confirm)
++用户在App内确认
++轮询 + pre_confirm 状态跟踪
++
++
++二、模块 A：账号结账与会话创建（提链层）
++模块 A 负责从账号登录态出发，创建一个带有目标地区和币种的 Stripe Checkout Session。这是整个支付流程的起点，也是提链技术的核心价值所在 --  -- 绕过平台前端限制，激活 Stripe 原生支持的本地支付方式。
++2.1 登录态与 Access Token 获取
++系统首先需要有效的平台账号登录态。以 ChatGPT 为例：
++ # 方式1：从已登录浏览器的 session cookie 换取GET https://chatgpt.com/api/auth/session--> {"accessToken": "eyJhbGciOiJSUzI1NiIs...", "user": {...}}# 方式2：直接使用 __Secure-next-auth.session-token cookie# 系统内部维护 cookie jar，自动刷新 access token（有效期5~10分钟）
++编排系统需要维护一个账号池，每个账号独立存储 session token，并在 token 即将过期时自动刷新。
++2.2 创建跨区 Checkout Session
++使用 Access Token 调用平台结账 API，关键是通过 billing_details 指定目标国家和币种：
++ POST https://chatgpt.com/backend-api/payments/checkoutAuthorization: Bearer {access_token}{  "entry_point": "all_plans_pricing_modal",  "plan_name": "chatgptplusplan",  "billing_details": {    "country": "NL",       // 目标国家：NL=荷兰, IN=印度, BR=巴西...    "currency": "EUR"      // 目标币种：EUR, INR, BRL...  },  "checkout_ui_mode": "custom"}
++响应中的关键字段：
++ {  "checkout_session_id": "oaics_xxxxxxxxxxxx",  "publishable_key": "pk_live_xxxxxxxxxxxx",  "payment_method_types": ["card", "ideal"]   // <-- 路由引擎的决策依据}
++ 【架构要点】payment_method_types 是模块 B 路由决策的核心输入。传 NL+EUR 返回 ["card", "ideal"]，传 IN+INR 返回 ["card", "upi"]，传 BR+BRL 返回 ["card", "pix"]。不同的国家/币种组合激活不同的本地支付方式。
++2.3 税务地址优化
++创建 Session 后，需要更新税务地址。使用美国免税州（Oregon、Montana、Delaware、New Hampshire、Alaska）地址可以消除 VAT 消费税：
++ POST /api/v1/payments/checkout/taxes{  "checkout_session_id": "oaics_xxx",  "billing_details": {    "name": "John Doe",    "address": {      "country": "US", "state": "OR",      "city": "Portland", "postal_code": "97201",      "line1": "123 Main St"    }  }}--> {"snapshot": {"amount_total": 2000, "currency": "eur"}}
++ 【关键】taxes 响应中的 amount_total 是后续 Confirm 请求 expected_amount 的准确来源。如果用 Init 步骤的金额去 Confirm，可能因税后金额不一致而失败。税务地址必须与后续 ConfirmationToken 中的地址保持一致。
++2.4 Stripe Session 初始化与状态管理
++提链的完整协议流程包含 12 步，编排系统需要严格按顺序执行并维护会话状态：
++ 1.  Session Refresh       --  cookie 换新的 Access Token2.  Create Checkout       --  创建 oaics_ / cs_live_ session3.  Stripe Init           --  POST payment_pages/{id}/init，获取 ppage_token4.  Update OAI Taxes      --  通知平台更新税务地址5.  Stripe Tax Region     --  更新 Stripe 侧税务区域6.  Stripe Customer Data  --  更新客户信息7.  Checkout Snapshot     --  保存 checkout 快照（获取 amount_total）8.  Pre-Confirm           --  Kakao Pay / MoMo 必须（其他支付方式跳过）9.  Create Payment Method --  创建 PM，类型 = card/ideal/upi/pix...10. Confirm               --  确认支付，触发重定向或扣款11. Approve               --  Hosted 模式需要（Sentinel Token）12. Extract Result        --  提取 redirect_url 或 PaymentIntent 状态
++每一步响应中都会更新 eid（element ID）、mrid（merchant reference ID）等会话状态字段，下一步必须携带最新值。这意味着 12 步必须严格串行，不能并行。
++2.5 提链层的五个经典坑
++                                    坑点
++                                    现象
++                                 解决方案
++IP 一致性
++创建和确认用不同IP --> invalid_request_error
++整个12步绑定同一个出口IP，HTTP client 不切换
++expected_amount
++Confirm金额与Session不一致 --> 拒绝
++从 taxes 响应的 snapshot.amount_total 取值
++Session State
++跳过步骤或用旧eid/mrid --> 后续报错
++严格按顺序执行，每步更新状态字段
++Accept-Language / guid
++缺header或guid格式错 --> 非预期响应
++必传 Accept-Language，guid用UUID+6位hex=42字符
++超时
++Confirm后无redirect_url --> 卡住
++轮询init接口，最多等90秒，超时标记失败
++
++
++三、模块 B：支付方式路由与决策引擎
++模块 B 是半自动编排系统的核心决策层。它在模块 A 完成 Checkout Session 创建后，根据 payment_method_types 和系统配置，决定当前交易走哪条执行通道。
++3.1 路由决策逻辑
++ def route_payment(checkout_session, config):    pm_types = checkout_session["payment_method_types"]    preferred = config.get("preferred_method", "card")    # 优先级1：用户指定的支付方式    if preferred in pm_types:        selected = preferred    # 优先级2：优先选可全自动的卡支付    elif "card" in pm_types and config.allow_card_auto:        selected = "card"    # 优先级3：回退到第一个本地支付方式    else:        selected = pm_types[-1]  # 最后一个通常是本地支付    # 决策：是否可全自动    if selected in ("card", "link"):        return {"channel": "auto", "method": selected}    else:        return {"channel": "manual", "method": selected}
++3.2 八种支付方式的自动化可行性
++                                 支付方式
++                                    PM Type
++                                    国家
++                              自动化可行性
++                                需pre_confirm
++                                 人工操作
++信用卡
++card
++全球
++全自动
++否
++无
++Stripe Link
++link
++全球
++全自动
++否
++无
++iDEAL
++ideal
++荷兰
++半自动
++否
++银行选择页确认
++UPI
++upi
++印度
++半自动
++否
++VPA输入/扫码确认
++PIX
++pix
++巴西
++半自动
++否
++扫码支付
++TWINT
++twint
++瑞士
++半自动
++否
++App跳转确认
++Kakao Pay
++kakao_pay
++韩国
++半自动
++是
++Kakao App确认
++BLIK
++blik
++波兰
++半自动
++否
++6位码输入
++MoMo
++momo
++越南
++半自动
++是
++MoMo App确认
++GCash
++gcash
++菲律宾
++半自动
++否
++GCash确认页
++
++3.3 路由策略配置
++编排系统支持多种路由策略，适应不同业务场景：
++  成本优先：优先选择费率最低的支付方式（通常本地支付费率低于信用卡）
++  速度优先：优先选择全自动通道（card/link），跳过人工等待
++  地区优先：根据账号注册地或代理IP所在地自动匹配对应本地支付
++  手动指定：运营人员在任务创建时明确指定支付方式
++ 【架构要点】路由引擎的输出是一个标准化的 PaymentTask 对象，包含 channel（auto/manual）、method（支付方式类型）、session_id、publishable_key、expected_amount 等字段。后续模块 C 和 D 都基于这个对象执行，不需要关心上游是怎么创建 Session 的。
++
++四、模块 C：协议支付自动执行器（卡类全自动通道）
++当路由引擎判定走 auto 通道时，模块 C 接管后续流程。它基于 Stripe 协议支付自动化技术，用纯 HTTP 请求模拟浏览器完整操作链路，在无 GUI 环境下完成从卡号令牌化到扣款成功的全流程。
++4.1 Custom 模式执行流程（oaics_）
++Custom 模式是最干净的全自动路径，共 4 个核心步骤：
++ Step 1: 获取 Elements Session 配置GET /v1/elements/sessions?deferred_intent[mode]=subscription  &deferred_intent[amount]={amount}&deferred_intent[currency]={currency}  &type=deferred_intent&key={pk_live}&_stripe_version=2025-03-31.basil--> elements_session_id, customer_session_client_secret, pmc_xxxStep 2: 创建 ConfirmationToken（卡号 --> ctoken_）POST /v1/confirmation_tokens  type=card  payment_method_data[card][number]=...  payment_method_data[card][exp_month]=...  payment_method_data[card][exp_year]=...  payment_method_data[card][cvc]=...  payment_method_data[billing_details][address][country]=US  key={pk_live}&_stripe_version=2025-03-31.basil  + guid/muid/sid 指纹参数（42字符格式）--> {"id": "ctoken_1xxx"}Step 3: 平台侧确认POST /api/v1/payments/checkout/confirm  {"checkout_session_id": "oaics_xxx", "confirmation_token": "ctoken_1xxx"}--> {"client_secret": "pi_xxx_secret_xxx"}Step 4: Stripe 侧扣款POST /v1/payment_intents/{pi_id}/confirm  confirmation_token=ctoken_xxx  client_secret=pi_xxx_secret_xxx  return_url=...  key={pk_live}&_stripe_version=2025-03-31.basil  client_attribution_metadata[merchant_integration_source]=l1--> {"status": "succeeded"} 或 {"status": "requires_action"}
++4.2 Hosted 模式执行流程（cs_live_）
++Hosted 模式流程更长，涉及 Payment Page 初始化和 Approve 机制：
++ Step 1: Payment Page 初始化GET /api/payment-page/{cs_live_xxx}/init--> {"ppage_token": "ppage_xxx"}Step 2: Elements Session（带 Hosted 特殊字段）POST /v1/elements/sessions  checkout_session_id=cs_live_xxx  elements_init_source=custom_checkout  _stripe_version=2025-03-31.basil; checkout_server_update_beta=v1; ...--> passive_captcha.rqdata（hCaptcha Enterprise 参数）Step 3: 创建 ConfirmationToken（同 Custom）Step 4: Payment Pages ConfirmPOST /v1/payment_pages/{cs_live_xxx}/confirm  elements_session_client[...] = ...（8个子字段）  init_checksum / js_checksum / rv_timestamp（动态提取）  expected_amount = {amount}--> {"status": "open", "requires_approval": true}Step 5: 等待平台自动 Approve（fall-through）  或手动 Approve（需 Sentinel Token + Turnstile 验证）Step 6: 轮询 Payment Page 状态POST /v1/payment_pages/{cs_live_xxx}/poll--> payment_object_status: open / requires_action / succeeded
++4.3 3DS / hCaptcha 挑战处理
++当 PaymentIntent 进入 requires_action 状态时，需要处理 Stripe 自有的 hCaptcha Enterprise 挑战：
++ POST /v1/payment_intents/{pi_id}/verify_challenge  captcha_response={hcaptcha_token}      # P0开头的长字符串  captcha_vendor_name=hcaptcha  captcha_sitekey={sitekey}              # 从 elements_session 提取  expected_amount={amount}  expected_currency={currency}  key={pk_live}  client_secret={pi_secret}
++hCaptcha Enterprise 的特殊性：
++  必须携带 rqdata 参数（从 elements_session.passive_captcha 提取）
++  sitekey 是 Stripe 专有，不是通用 hCaptcha sitekey
++  invisible 模式，浏览器中看不到验证码图片
++  token 时效性强（浏览器 ~4 秒解出有效，远程打码需 30-120 秒）
++ 【重要澄清】重要澄清：Stripe 的 verify_with_challenge 并非传统银行 3DS 验证。它是 Stripe 自有的风控挑战，使用 hCaptcha 作为人机验证手段。真正的银行 3DS（Visa Secure）会打开银行页面要求 OTP，纯协议无法绕过。但虚拟信用卡通常只触发 Stripe hCaptcha，不触发银行 3DS。
++4.4 Fast-Path 优化
++有时 confirm 返回 requires_action，但 PI 实际上已经扣款成功。正确做法是先查询 PI 状态：
++ pi = stripe.get(f"/v1/payment_intents/{pi_id}", key=pk_live)if pi["status"] == "succeeded":    return SUCCESS  # 已扣款成功，跳过 captchaelif pi["status"] == "requires_action":    solve_hcaptcha(pi)  # 确实需要验证
++4.5 拒卡分类与重试
++                                   错误码
++                                    分类
++                                 处理策略
++generic_decline
++可重试
++换卡重建 ConfirmationToken，同一PI重试
++insufficient_funds
++可重试
++充值或换卡后重试
++processing_error
++可重试
++Stripe侧临时错误，直接重试
++stolen_card / lost_card
++不可重试
++卡已标记，从卡池移除，放弃session
++card_not_supported
++不可重试
++卡类型不支持，换卡
++currency_not_supported
++不可重试
++卡不支持目标币种，换卡或换地区
++incorrect_cvc
++特殊处理
++检查CVC是否传错
++expired_card
++特殊处理
++卡过期，从卡池移除
++card_velocity_exceeded
++特殊处理
++交易频率超限，冷却后重试
++
++ 【架构要点】同一个 PaymentIntent 被拒卡后，可以用新的 ConfirmationToken 重试，不需要重建整个 Checkout Session。这大幅提升了批量支付的效率 --  -- 换卡只需要重新执行 Step 2 和 Step 4。
++
++五、模块 D：人工介入通道（本地支付扫码）
++当路由引擎判定走 manual 通道时，模块 D 接管。它的职责是：从提链流程的 Confirm 响应中提取支付跳转链接，以可操作的形式（URL/二维码）交付给用户，并在用户完成支付后将控制权交回模块 E 进行结果确认。
++5.1 提取支付链接
++提链流程的第 10 步 Confirm 之后，对于重定向类型的支付方式，Stripe 返回：
++ {  "status": "requires_action",  "next_action": {    "type": "redirect_to_url",    "redirect_to_url": {      "url": "https://hooks.stripe.com/redirect/authenticate/src_xxx?client_secret=..."    }  }}
++这个 redirect_url 就是最终支付链接。不同支付方式打开后的页面不同：
++  iDEAL --> 银行选择页，用户选银行后跳转网银确认
++  UPI --> VPA 输入页或二维码，用户在 UPI App 中确认
++  PIX --> 二维码页面，用户用巴西银行App扫码
++  Kakao Pay --> Kakao 确认页，用户在 KakaoTalk 中确认
++  MoMo --> MoMo App 跳转，用户在 App 内确认支付
++5.2 Kakao Pay / MoMo 的 pre_confirm 特殊处理
++Kakao Pay 和 MoMo 需要额外的 pre_confirm 调用，否则 Confirm 返回 incomplete 状态，拿不到 redirect_url：
++ POST /v1/payment_pages/{oaics_xxx}/pre_confirmContent-Type: application/x-www-form-urlencodedexpected_payment_method_type=kakao_pay
++ 【容易踩坑】如果不知道有 pre_confirm 这一步，Kakao Pay 和 MoMo 的提链会卡在最后一步 --  -- 所有参数都对，就是拿不到链接。这类细节只有通过 HAR 抓包完整结账流程才能发现。
++5.3 链接交付与用户通知
++编排系统需要将支付链接以用户可操作的方式交付：
++ PaymentLink {  task_id: "pay_20260829_001",  method: "upi",  redirect_url: "https://hooks.stripe.com/redirect/authenticate/src_xxx?...",  qr_code: <base64_png>,           // 系统自动生成二维码  amount: "₹1,950",  currency: "INR",  expires_in: 900,                 // 链接有效期（秒）  created_at: "2026-08-29T12:00:00Z"}
++交付方式可以是：Web 管理面板展示、API 回调通知、消息推送等。系统同时生成二维码，方便手机扫码支付。
++5.4 人工支付超时管理
++本地支付链接通常有有效期（一般 15 分钟），系统需要管理超时：
++  链接生成后启动倒计时，默认 15 分钟
++  超时未支付 --> 标记任务为 TIMEOUT，释放卡池/代理资源
++  用户支付后但系统未检测到 --> 延长轮询窗口（最多 30 分钟），防止网络延迟导致误判
++  超时后用户仍完成了支付 --> 通过 Stripe 对账机制补单（webhook 回调）
++5.5 半自动通道的人工介入最小化
++虽然叫「人工介入通道」，但系统设计目标是将人工操作压缩到极致：
++  用户只需做一件事：打开链接（或扫码）--> 在支付App中点确认
++  不需要用户填写任何信息（金额、收款方都已由系统预设）
++  支付完成后不需要用户通知系统，系统自动轮询检测结果
++  用户甚至不需要知道背后是 Stripe，只看到一个支付页面
++
++六、模块 E：支付结果确认与统一状态机
++模块 E 是整个系统的闭环保障。无论走 auto 通道还是 manual 通道，最终都由模块 E 统一确认支付结果、更新订阅状态、处理异常。
++6.1 统一支付状态模型
++                                    状态
++                                    含义
++                                 触发条件
++                                 后续动作
++PENDING
++任务已创建，等待执行
++路由引擎分配通道
++进入模块C或D
++PROCESSING
++支付执行中
++协议执行器/提链流程运行中
++等待Confirm结果
++AWAITING_PAYMENT
++等待用户付款
++manual通道已输出链接
++启动轮询+超时计时
++REQUIRES_ACTION
++需要验证挑战
++auto通道触发hCaptcha/3DS
++打码处理或转人工
++SUCCEEDED
++支付成功
++PI状态=succeeded
++激活订阅，记录结果
++FAILED
++支付失败
++拒卡/超时/异常
++分类重试或标记终态
++TIMEOUT
++支付超时
++manual通道超期未付
++释放资源，可重新创建
++REFUNDED
++已退款
++Stripe退款回调
++取消订阅，记录
++
++6.2 Auto 通道的结果确认
++全自动通道的结果确认相对直接：
++ # Step 4 (payment_intents/confirm) 响应if response["status"] == "succeeded":    --> SUCCEEDED，激活订阅elif response["status"] == "requires_action":    --> 先查PI真实状态（Fast-Path优化）    --> 若已succeeded --> SUCCEEDED    --> 若确实requires_action --> 解hCaptcha --> 重新confirmelif response["status"] == "requires_payment_method":    --> 拒卡，分类处理（换卡重试/放弃）
++6.3 Manual 通道的结果确认
++人工通道的结果确认是半自动系统最关键的环节。用户在外部完成支付后，系统需要主动检测到支付成功：
++ # 轮询策略（推荐）def poll_payment_result(pi_id, max_wait=1800):    # 每3秒轮询一次PaymentIntent状态，最多等30分钟    for elapsed in range(0, max_wait, 3):        pi = stripe.get(f"/v1/payment_intents/{pi_id}", key=pk_live)        if pi["status"] == "succeeded":            return SUCCEEDED        elif pi["status"] == "canceled":            return FAILED        elif pi["status"] == "requires_payment_method":            return FAILED  # 用户取消了支付        sleep(3)    return TIMEOUT
++除了主动轮询，系统还应支持 Stripe Webhook 回调作为补充确认渠道：
++  payment_intent.succeeded --> 支付成功，激活订阅
++  payment_intent.payment_failed --> 支付失败，记录原因
++  charge.refunded --> 已退款，取消订阅
++ 【架构要点】轮询 + Webhook 双保险：轮询保证系统主动感知状态变化，Webhook 保证轮询间隔内的事件不丢失。两者通过 payment_intent id 去重，避免重复处理。
++6.4 订阅激活确认
++Stripe 侧支付成功不等于平台订阅已激活。系统还需要确认平台侧的订阅状态：
++ # 支付成功后，验证平台侧订阅状态GET /api/v1/me/subscription--> {"subscription": {"plan": "plus", "status": "active", "renews_at": "..."}}# 如果平台侧未激活（Stripe回调延迟），继续轮询平台API# 最多等 60 秒，通常 Stripe webhook 会在几秒内通知平台
++6.5 状态流转图
++                     ┌──────────┐                    │ PENDING  │                    └────┬─────┘                         │ 路由分配                         ▼                  ┌──────────────┐                  │ PROCESSING   │                  └──┬───────┬───┘            auto通道 │       │ manual通道                     ▼       ▼            ┌────────────┐  ┌──────────────────┐            │REQUIRES_   │  │ AWAITING_PAYMENT │            │ACTION      │  │ (链接已输出)      │            └──┬─────┬───┘  └──┬───────────┬───┘          成功│     │失败      │用户支付成功│超时/取消               ▼     ▼          ▼           ▼         ┌──────────┐     ┌──────────┐  ┌─────────┐         │SUCCEEDED │     │ FAILED   │  │ TIMEOUT │         └────┬─────┘     └────┬─────┘  └────┬────┘              │                │              │              ▼                ▼              ▼         激活订阅          分类重试/放弃    可重新创建              │              ▼         平台侧确认 --> 最终完成
++
++七、完整端到端流程时序
++以下以一个典型任务为例，展示从账号结账到支付结果确认的完整时序。场景：印度区账号，优先使用 UPI 本地支付，UPI 失败后回退到信用卡全自动。
++7.1 时序总览
++ 用户/运营          编排器           模块A(提链)      模块B(路由)     模块D(人工)     模块E(确认)   │                │                 │                │               │               │   │──创建任务─────▶│                 │                │               │               │   │                │──获取登录态────▶│                │               │               │   │                │                 │──创建Session──▶│               │               │   │                │                 │──更新税务──────▶│               │               │   │                │                 │◀──session+pm──│               │               │   │                │                 │                │               │               │   │                │◀────────────────│──路由决策──────▶│               │               │   │                │                 │                │ manual=upi    │               │   │                │                 │                │               │               │   │                │──执行manual通道─────────────────────────────────▶│               │   │                │                 │  Stripe协议12步                │               │   │                │                 │  Confirm-->redirect_url          │               │   │                │◀────────────────────────────────────────────────│──支付链接─────│   │◀──支付链接/QR──│                 │                                │               │   │                │                 │                                │               │   │──用户UPI付款──▶│                 │                                │               │   │   (在UPI App)  │                 │                                │               │   │                │──轮询PI状态────────────────────────────────────────────────────▶│   │                │                 │                                │               │──succeeded?   │                │◀────────────────────────────────────────────────────────────────│   │                │                 │                                │               │   │                │──确认平台订阅──▶│                │               │               │   │◀──订阅已激活──│                 │                │               │               │   │                │                 │                │               │               │   │  (若UPI超时)   │──回退card通道──▶│                │──auto=card──▶│(模块C接管)     │   │                │                 │  创建ctoken-->confirm-->扣款       │               │   │                │◀────────────────────────────────────────────────────────────────│   │◀──订阅已激活──│                 │                │               │               │
++7.2 关键时序参数
++                                    环节
++                                 耗时范围
++                                 超时阈值
++                                    说明
++Session 创建+税务
++2-5秒
++30秒
++提链12步中的前7步
++Stripe Confirm（卡类）
++1-3秒
++15秒
++协议支付Step 2-4
++hCaptcha 解验证
++5-120秒
++180秒
++本地headless<5s，远程打码~15s
++manual链接生成
++3-10秒
++30秒
++含pre_confirm（Kakao/MoMo）
++用户支付等待
++10秒-15分钟
++15分钟
++用户在外部App操作
++结果轮询检测
++3-30秒
++30分钟
++支付后Stripe状态更新延迟
++平台订阅激活
++1-10秒
++60秒
++Stripe webhook通知平台
++
++7.3 并发批量处理
++编排系统支持批量任务处理，通过信号量控制并发：
++ # 并发控制配置MAX_CONCURRENT_AUTO = 3      # 最多3个全自动支付同时进行MAX_CONCURRENT_MANUAL = 10   # manual通道可更多（只占IO，不占计算）MAX_PER_PROXY = 2            # 每个代理IP上同时最多2个支付流程RATE_LIMIT_PER_KEY = 100     # 每个publishable_key每分钟最多100次confirm
++批量任务的执行顺序建议：
++  优先执行 auto 通道任务（速度快，资源占用高）
++  manual 通道任务批量输出链接后，进入等待轮询阶段（资源占用低）
++  manual 任务的结果确认与 auto 任务的执行并行进行
++
++八、风控基础设施
++无论是提链还是协议支付，都面临 Stripe Radar 和平台侧的风控检测。编排系统需要一套统一的风控基础设施，为所有通道提供指纹伪装、代理管理和行为模拟。
++8.1 TLS 指纹管理
++Stripe 和 Cloudflare 会检查 TLS Client Hello 指纹（JA3/JA4），不匹配浏览器特征直接返回 403/429。
++ # Python 使用 curl_cffi 模拟浏览器 TLS 指纹from curl_cffi import requestsPROFILES = [    {"tls": "chrome131", "ua": "Mozilla/5.0 ... Chrome/131.0.0.0",     "sec_ch_ua": '"Not=A?Brand";v="99", "Chromium";v="131"'},    {"tls": "safari18", "ua": "Mozilla/5.0 ... Safari/605.1.15",     "sec_ch_ua": None},    {"tls": "firefox117", "ua": "Mozilla/5.0 ... Firefox/117.0",     "sec_ch_ua": None},]# 遇到403/429时自动轮换指纹，最多重试3次
++ 【一致性要求】TLS 指纹必须与 User-Agent 成对匹配。用 Chrome 131 的 TLS 指纹但 UA 写 Chrome 124，会被 Cloudflare bot detection 立即发现。
++8.2 Stripe.js 设备指纹
++所有 Stripe API 请求需要携带设备指纹参数：
++                                    参数
++                                    格式
++                                    作用
++guid
++UUID + 6位hex = 42字符
++全局唯一标识
++muid
++同 guid 格式
++设备标识
++sid
++同 guid 格式
++会话标识
++time_on_page
++随机8-30秒
++模拟真实用户停留时间
++_stripe_version
++从deploy_status动态提取
++API版本号
++
++此外，建议在业务请求前向 m.stripe.com/6 发送至少一次指纹注册（stripejs-init-complete），降低 Radar 异常检测风险。r.stripe.com/b 遥测上报为纯可选。
++8.3 双代理池架构
++ ┌─────────────────────────────────────┐│           代理池管理器               ││                                     ││  ┌──────────────┐  ┌──────────────┐ ││  │ 平台代理池    │  │ Stripe代理池  │ ││  │ (匹配账号地区) │  │ (住宅IP优先)  │ ││  └──────┬───────┘  └──────┬───────┘ ││         │                 │         ││         ▼                 ▼         ││  ┌──────────────┐  ┌──────────────┐ ││  │ 健康检查      │  │ 健康检查      │ ││  │ 国家匹配验证  │  │ IP信誉检查    │ ││  └──────────────┘  └──────────────┘ ││                                     ││  支付流程中「钉住」同一个代理节点     ││  禁止负载均衡在单次支付中切换IP      │└─────────────────────────────────────┘
++                                 代理类型
++                                 适用场景
++                                 风险等级
++住宅代理 (Residential)
++Stripe API / 平台 API
++最低，推荐生产
++ISP静态住宅代理
++长期固定使用
++中等，部分已被标记
++移动代理 (Mobile)
++高价值交易
++最低，但成本最高
++数据中心代理 (Datacenter)
++仅测试/开发
++高，Radar易标记
++
++ 【铁律】出口 IP 一致性是铁律：创建 Checkout Session 和确认支付必须使用同一个出口 IP。Stripe 会比对两次请求的 IP，不一致直接拒绝交易。整个支付流程（提链12步 + 协议支付）必须绑定同一个代理出口。
++8.4 请求节奏模拟
++纯协议支付的风险是请求速度太快。浏览器用户从打开支付页面到点击确认通常需要 15-60 秒，自动化 2 秒完成会被 Radar 标记。
++ # 关键步骤间加入随机延迟await sleep(random.uniform(1.5, 3.0))   # 创建 session 后await sleep(random.uniform(0.8, 2.0))   # 更新税务后await sleep(random.uniform(1.0, 2.5))   # 创建 token 后await sleep(random.uniform(0.5, 1.5))   # confirm 前# 总时间控制在 8-30 秒之间比较自然
++8.5 Cookie 隔离
++使用两个独立的 HTTP 客户端，严格隔离平台 Cookie 和 Stripe Cookie：
++  平台客户端：带 session token cookie，用于调用平台 API
++  Stripe 客户端：不带任何 cookie，用于调用 api.stripe.com
++  绝不允许 Stripe 客户端发送平台 Cookie，反之亦然
++
++九、异常处理与重试策略
++支付流程中任何一步都可能失败。编排系统需要一套完善的异常分类和重试机制，确保可恢复的错误自动恢复，不可恢复的错误清晰上报。
++9.1 异常分类矩阵
++                                 异常类型
++                                 典型表现
++                                   可重试
++                                 处理策略
++网络瞬断
++ConnectionError / Timeout
++是
++退避重试，最多3次
++限流 (429)
++Too Many Requests
++是
++指纹轮换+指数退避
++TLS指纹被封 (403)
++Forbidden
++是
++切换TLS profile+代理
++IP不一致
++invalid_request_error
++否(本session)
++检查代理钉住，重建session
++拒卡 (generic_decline)
++卡被拒绝
++是(换卡)
++换卡重建token，同PI重试
++余额不足
++insufficient_funds
++是(换卡)
++换卡或充值后重试
++卡被盗标记
++stolen_card
++否
++移除卡池，放弃session
++hCaptcha超时
++auth_failure
++是
++换新captcha token重试
++manual超时
++用户未支付
++可重建
++标记timeout，可重新创建任务
++Session过期
++session expired
++可重建
++回到模块A重建session
++Sentinel token无效
++approve返回blocked
++否(本session)
++重新生成Turnstile token
++
++9.2 退避重试策略
++ def with_retry(func, max_retries=3, base_delay=1.0):    for attempt in range(max_retries):        try:            return func()        except RateLimitError:            # 429: 轮换指纹 + 指数退避            tls_manager.rotate()            sleep(base_delay * (2 ** attempt) + random.uniform(0, 1))        except NetworkError:            # 网络错误: 纯退避            sleep(base_delay * (2 ** attempt))        except TLSFingerprintBlocked:            # 403: 换指纹 + 换代理            tls_manager.rotate()            proxy_pool.rotate()            sleep(base_delay)    raise MaxRetriesExceeded()
++9.3 幂等性保证
++重试机制必须保证幂等性，避免重复扣款：
++  每个支付任务有唯一 task_id，所有状态更新基于 task_id 做乐观锁
++  PaymentIntent 确认使用 Idempotency-Key（Stripe 原生支持）
++  manual 通道的链接生成是幂等的 --  -- 同一 session 多次 confirm 返回相同的 redirect_url
++  订阅激活检查是幂等的 --  -- 已激活的账号再次检查返回相同状态
++9.4 死信队列与人工兜底
++超过最大重试次数的任务进入死信队列（DLQ），由运营人员人工介入：
++  DLQ 任务保留完整的执行日志、最后错误信息、已完成的步骤
++  运营可选择：重试、换支付方式、换账号、标记放弃
++  对于「钱已扣但订阅未激活」的异常状态，优先通过 Stripe 对账确认，避免误判
++
++十、安全边界与最佳实践
++10.1 Session 隔离
++  每次支付使用独立的 Checkout Session，不复用已失败的 Session
++  Hosted 模式下 approve 操作后的 Session 不可再次使用
++  每个账号的支付任务独立运行，不共享 HTTP client、cookie jar、代理
++10.2 Dry-Run 调试模式
++所有实现应支持 Dry-Run 模式 --  -- 执行完整流程但不提交最终的 confirm：
++ if config.commit_payments:    result = stripe.confirm_payment_intent(pi_id, token)else:    logger.info("Dry-run: skipping confirm")    result = {"status": "dry_run", "pi_id": pi_id}
++Dry-Run 可以验证整个流程（创建 session、生成 token、税务计算、路由决策）都正确，而不实际扣钱。这对于调试新支付方式接入、新地区配置尤为重要。
++10.3 敏感数据保护
++  信用卡号仅在内存中使用，支付完成后立即清除，不写入磁盘或日志
++  Session token 在日志中用 *** 替代
++  代理凭据使用环境变量或加密存储，不硬编码
++  Stripe Publishable Key 可写入代码（本来就是公开的），但 Secret Key 绝不能出现在客户端
++  支付链接中的 client_secret 有时效性，过期后自动失效
++10.4 可观测性与审计
++编排系统应记录完整的支付审计日志：
++                                 日志字段
++                                    说明
++                                   保留期
++task_id
++支付任务唯一标识
++永久
++account_id
++账号标识（脱敏）
++永久
++channel
++auto / manual
++永久
++payment_method
++card / upi / pix / ...
++永久
++amount / currency
++金额和币种
++永久
++pi_id
++Stripe PaymentIntent ID
++永久
++status_history
++状态流转时间线
++永久
++error_code / message
++失败原因（如有）
++永久
++proxy_id
++使用的代理节点标识
++30天
++tls_profile
++使用的TLS指纹配置
++30天
++request_log
++完整HTTP请求记录
++7天（脱敏）
++
++10.5 与官方合规方案的边界
++最后需要明确本系统与 Stripe 官方合规方案的边界：
++                                    维度
++                       本编排系统（逆向协议）
++                           Stripe 官方合规方案
++接口性质
++逆向 Stripe 内部私有 API
++官方公开 API + SDK
++支付方式
++可激活前端隐藏的本地支付
++仅商户后台配置的支付方式
++跨区定价
++可通过 country/currency 参数切换
++受商户配置限制
++风控对抗
++需要 TLS 指纹、代理、行为模拟
++不需要，官方 SDK 自带
++稳定性
++依赖接口不变化，随时可能失效
++有版本保障和迁移路径
++合规性
++可能违反 Stripe 服务条款
++完全合规
++适用场景
++技术研究、特定场景自动化
++生产环境商业支付
++
++核心思路是：用提链激活跨区本地支付能力，用协议支付实现卡类全自动扣款，通过路由引擎分流，通过统一状态机关环。系统的价值不在于「绕过」什么，而在于将两种技术各自的优势组合起来，覆盖更广泛的支付场景，同时将人工介入压缩到最低限度。
++ 【最终声明】本系统的设计基于对 Stripe Checkout 协议的逆向分析。Stripe 可能随时更新接口、版本号、风控策略，导致系统部分或全部失效。生产环境商业支付应使用 Stripe 官方 API 和 SDK。本文仅用于技术学习与架构设计参考。
++
++ --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+diff --git "a/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.json" "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.json"
+new file mode 100644
+index 0000000..7597722
+--- /dev/null
++++ "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.json"
+@@ -0,0 +1,3110 @@
++{
++  "metadata": {
++    "source_filename": "半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx",
++    "source_sha256": "fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506",
++    "source_size_bytes": 58502,
++    "source_modified_at": "2026-08-29T08:11:00.122319+00:00",
++    "parsed_at": "2026-08-29T08:28:54.644111+00:00",
++    "paragraph_count": 220,
++    "nonempty_paragraph_count": 197,
++    "table_count": 12,
++    "section_count": 1,
++    "inline_shape_count": 0,
++    "media_files": [],
++    "comments_present": false,
++    "tracked_insertions": 0,
++    "tracked_deletions": 0,
++    "comment_range_starts": 0,
++    "track_revisions_enabled": false,
++    "title": "",
++    "subject": "",
++    "author": "python-docx"
++  },
++  "headers": [
++    ""
++  ],
++  "footers": [
++    ""
++  ],
++  "headings": [
++    {
++      "type": "paragraph",
++      "index": 9,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "一、系统整体架构与设计理念"
++    },
++    {
++      "type": "paragraph",
++      "index": 10,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.1 设计目标"
++    },
++    {
++      "type": "paragraph",
++      "index": 16,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.2 五大核心模块"
++    },
++    {
++      "type": "paragraph",
++      "index": 19,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.3 架构总览"
++    },
++    {
++      "type": "paragraph",
++      "index": 22,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.4 半自动的含义"
++    },
++    {
++      "type": "paragraph",
++      "index": 26,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "二、模块 A：账号结账与会话创建（提链层）"
++    },
++    {
++      "type": "paragraph",
++      "index": 28,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.1 登录态与 Access Token 获取"
++    },
++    {
++      "type": "paragraph",
++      "index": 32,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.2 创建跨区 Checkout Session"
++    },
++    {
++      "type": "paragraph",
++      "index": 38,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.3 税务地址优化"
++    },
++    {
++      "type": "paragraph",
++      "index": 42,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.4 Stripe Session 初始化与状态管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 46,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.5 提链层的五个经典坑"
++    },
++    {
++      "type": "paragraph",
++      "index": 49,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "三、模块 B：支付方式路由与决策引擎"
++    },
++    {
++      "type": "paragraph",
++      "index": 51,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.1 路由决策逻辑"
++    },
++    {
++      "type": "paragraph",
++      "index": 53,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.2 八种支付方式的自动化可行性"
++    },
++    {
++      "type": "paragraph",
++      "index": 55,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.3 路由策略配置"
++    },
++    {
++      "type": "paragraph",
++      "index": 63,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "四、模块 C：协议支付自动执行器（卡类全自动通道）"
++    },
++    {
++      "type": "paragraph",
++      "index": 65,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.1 Custom 模式执行流程（oaics_）"
++    },
++    {
++      "type": "paragraph",
++      "index": 68,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.2 Hosted 模式执行流程（cs_live_）"
++    },
++    {
++      "type": "paragraph",
++      "index": 71,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.3 3DS / hCaptcha 挑战处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 80,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.4 Fast-Path 优化"
++    },
++    {
++      "type": "paragraph",
++      "index": 83,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.5 拒卡分类与重试"
++    },
++    {
++      "type": "paragraph",
++      "index": 87,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "五、模块 D：人工介入通道（本地支付扫码）"
++    },
++    {
++      "type": "paragraph",
++      "index": 89,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.1 提取支付链接"
++    },
++    {
++      "type": "paragraph",
++      "index": 98,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.2 Kakao Pay / MoMo 的 pre_confirm 特殊处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 102,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.3 链接交付与用户通知"
++    },
++    {
++      "type": "paragraph",
++      "index": 106,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.4 人工支付超时管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 112,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.5 半自动通道的人工介入最小化"
++    },
++    {
++      "type": "paragraph",
++      "index": 119,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "六、模块 E：支付结果确认与统一状态机"
++    },
++    {
++      "type": "paragraph",
++      "index": 121,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.1 统一支付状态模型"
++    },
++    {
++      "type": "paragraph",
++      "index": 123,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.2 Auto 通道的结果确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 126,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.3 Manual 通道的结果确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 134,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.4 订阅激活确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 137,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.5 状态流转图"
++    },
++    {
++      "type": "paragraph",
++      "index": 140,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "七、完整端到端流程时序"
++    },
++    {
++      "type": "paragraph",
++      "index": 142,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.1 时序总览"
++    },
++    {
++      "type": "paragraph",
++      "index": 144,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.2 关键时序参数"
++    },
++    {
++      "type": "paragraph",
++      "index": 146,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.3 并发批量处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 154,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "八、风控基础设施"
++    },
++    {
++      "type": "paragraph",
++      "index": 156,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.1 TLS 指纹管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 160,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.2 Stripe.js 设备指纹"
++    },
++    {
++      "type": "paragraph",
++      "index": 164,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.3 双代理池架构"
++    },
++    {
++      "type": "paragraph",
++      "index": 168,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.4 请求节奏模拟"
++    },
++    {
++      "type": "paragraph",
++      "index": 171,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.5 Cookie 隔离"
++    },
++    {
++      "type": "paragraph",
++      "index": 177,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "九、异常处理与重试策略"
++    },
++    {
++      "type": "paragraph",
++      "index": 179,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.1 异常分类矩阵"
++    },
++    {
++      "type": "paragraph",
++      "index": 181,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.2 退避重试策略"
++    },
++    {
++      "type": "paragraph",
++      "index": 183,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.3 幂等性保证"
++    },
++    {
++      "type": "paragraph",
++      "index": 189,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.4 死信队列与人工兜底"
++    },
++    {
++      "type": "paragraph",
++      "index": 195,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "十、安全边界与最佳实践"
++    },
++    {
++      "type": "paragraph",
++      "index": 196,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.1 Session 隔离"
++    },
++    {
++      "type": "paragraph",
++      "index": 200,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.2 Dry-Run 调试模式"
++    },
++    {
++      "type": "paragraph",
++      "index": 204,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.3 敏感数据保护"
++    },
++    {
++      "type": "paragraph",
++      "index": 210,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.4 可观测性与审计"
++    },
++    {
++      "type": "paragraph",
++      "index": 213,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.5 与官方合规方案的边界"
++    }
++  ],
++  "blocks": [
++    {
++      "type": "paragraph",
++      "index": 0,
++      "style_id": "",
++      "style": "Normal",
++      "text": "半自动支付编排系统技术设计"
++    },
++    {
++      "type": "paragraph",
++      "index": 1,
++      "style_id": "",
++      "style": "Normal",
++      "text": "—— 结合提链（Paylink Extraction）与 Stripe 协议支付自动化 ——"
++    },
++    {
++      "type": "paragraph",
++      "index": 2,
++      "style_id": "",
++      "style": "Normal",
++      "text": "在 SaaS 订阅支付领域，存在两条技术路线：一条是「提链」（Paylink Extraction），通过修改地区和币种参数，从 Stripe Checkout Session 中提取 UPI、PIX、iDEAL 等本地支付方式的跳转链接，让用户手动扫码付款；另一条是「协议支付自动化」，通过 HAR 抓包逆向 Stripe 内部接口，用纯 HTTP 请求模拟浏览器行为，全自动完成信用卡扣款。"
++    },
++    {
++      "type": "paragraph",
++      "index": 3,
++      "style_id": "",
++      "style": "Normal",
++      "text": "这两条路线各有不可替代的价值，也各有无法逾越的边界："
++    },
++    {
++      "type": "paragraph",
++      "index": 4,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "提链能激活各国本地支付通道，但原生流程止步于「输出跳转链接」，后续付款和结果确认必须由人工完成，无法规模化批量处理。"
++    },
++    {
++      "type": "paragraph",
++      "index": 5,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "协议支付能全自动完成扣款，但原生只支持银行卡（card）支付方式，无法直接调用 UPI、PIX、MoMo 等强依赖客户端交互的本地支付。"
++    },
++    {
++      "type": "paragraph",
++      "index": 6,
++      "style_id": "",
++      "style": "Normal",
++      "text": "本文设计的「半自动支付编排系统」，正是将两者结合：用提链技术完成账号侧结账和跨区会话创建，用协议支付技术完成 Stripe 侧的自动化执行，对支持全自动的支付方式（信用卡、Stripe Link）走无人值守通道，对必须人工介入的支付方式（UPI、PIX、Kakao Pay 等）输出链接并在人工完成后自动轮询确认结果。整个系统从账号结账到支付结果确认形成闭环。"
++    },
++    {
++      "type": "paragraph",
++      "index": 7,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【免责声明】本文为技术架构设计与原理分析，所有接口细节基于 Stripe Checkout 协议逆向研究。逆向调用厂商未公开接口可能违反服务条款，实际使用存在账号封禁、资金损失等风险，仅供学习研究。"
++    },
++    {
++      "type": "paragraph",
++      "index": 9,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "一、系统整体架构与设计理念"
++    },
++    {
++      "type": "paragraph",
++      "index": 10,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.1 设计目标"
++    },
++    {
++      "type": "paragraph",
++      "index": 11,
++      "style_id": "",
++      "style": "Normal",
++      "text": "半自动支付编排系统的核心设计目标是「能自动的全自动，不能自动的最小化人工介入」："
++    },
++    {
++      "type": "paragraph",
++      "index": 12,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "统一入口：所有支付请求从同一个编排器进入，不管最终走卡支付还是本地支付"
++    },
++    {
++      "type": "paragraph",
++      "index": 13,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "智能路由：根据支付方式类型自动判断走全自动通道还是人工介入通道"
++    },
++    {
++      "type": "paragraph",
++      "index": 14,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "闭环确认：无论哪条通道，最终都由系统统一确认支付结果并更新订阅状态"
++    },
++    {
++      "type": "paragraph",
++      "index": 15,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "可观测性：每一步状态可追踪、可重试、可审计"
++    },
++    {
++      "type": "paragraph",
++      "index": 16,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.2 五大核心模块"
++    },
++    {
++      "type": "paragraph",
++      "index": 17,
++      "style_id": "",
++      "style": "Normal",
++      "text": "系统由五个核心模块组成，各司其职又紧密协作："
++    },
++    {
++      "type": "table",
++      "index": 0,
++      "rows": [
++        [
++          "模块",
++          "职责",
++          "技术来源"
++        ],
++        [
++          "A. 账号结账层",
++          "登录态管理、创建跨区 Checkout Session、税务地址更新",
++          "提链技术"
++        ],
++        [
++          "B. 支付路由引擎",
++          "根据 payment_method_types 决策走全自动还是人工通道",
++          "编排层新增"
++        ],
++        [
++          "C. 协议支付执行器",
++          "ConfirmationToken 创建、PaymentIntent 确认、3DS 处理",
++          "协议支付技术"
++        ],
++        [
++          "D. 人工介入通道",
++          "生成支付链接/二维码、通知用户、等待回调",
++          "提链技术 + 编排层"
++        ],
++        [
++          "E. 结果确认状态机",
++          "统一轮询/回调确认、状态流转、失败重试",
++          "两者结合"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 19,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.3 架构总览"
++    },
++    {
++      "type": "paragraph",
++      "index": 20,
++      "style_id": "",
++      "style": "Normal",
++      "text": "┌─────────────────────────────────────────────────────────────┐\n│                    支付编排器 (Orchestrator)                  │\n│                                                              │\n│  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │\n│  │ A.账号结账 │───▶│ B.支付路由引擎 │───▶│ C.协议支付执行器  │   │\n│  │  (提链层)  │    │              │    │  (卡类全自动)    │   │\n│  └──────────┘    └──────┬───────┘    └────────┬─────────┘   │\n│                         │                     │             │\n│                         │              ┌──────▼──────┐      │\n│                         │              │ 3DS/hCaptcha │      │\n│                         │              │   挑战处理    │      │\n│                         │              └──────┬──────┘      │\n│                         ▼                     │             │\n│                  ┌──────────────┐             │             │\n│                  │ D.人工介入通道 │             │             │\n│                  │ (本地支付扫码) │             │             │\n│                  └──────┬───────┘             │             │\n│                         │                     │             │\n│                         ▼                     ▼             │\n│                  ┌──────────────────────────────────┐       │\n│                  │     E. 结果确认状态机 (统一)       │       │\n│                  │  轮询 / 回调 / 重试 / 订阅激活     │       │\n│                  └──────────────────────────────────┘       │\n└─────────────────────────────────────────────────────────────┘\n         ▲                                    ▲\n         │                                    │\n  ┌──────┴──────┐                     ┌──────┴──────┐\n  │  代理池管理  │                     │  指纹管理    │\n  │ (双池+IP钉住)│                     │ (TLS+设备)  │\n  └─────────────┘                     └─────────────┘"
++    },
++    {
++      "type": "paragraph",
++      "index": 21,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【架构要点】关键设计：模块 B（支付路由引擎）是整个系统的「大脑」。它在模块 A 创建完 Checkout Session 后，读取返回的 payment_method_types 字段，根据支付方式的自动化可行性做出路由决策——这是半自动系统区别于纯提链或纯协议支付的核心。"
++    },
++    {
++      "type": "paragraph",
++      "index": 22,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "1.4 半自动的含义"
++    },
++    {
++      "type": "paragraph",
++      "index": 23,
++      "style_id": "",
++      "style": "Normal",
++      "text": "「半自动」不是「一半自动一半手动」的模糊概念，而是有明确定义的分流机制："
++    },
++    {
++      "type": "table",
++      "index": 1,
++      "rows": [
++        [
++          "支付方式类型",
++          "处理模式",
++          "人工介入点",
++          "结果确认方式"
++        ],
++        [
++          "信用卡 (card)",
++          "全自动",
++          "无",
++          "PaymentIntent 状态 = succeeded"
++        ],
++        [
++          "Stripe Link 钱包",
++          "全自动",
++          "无",
++          "PaymentIntent 状态 = succeeded"
++        ],
++        [
++          "iDEAL / BLIK / GCash",
++          "半自动",
++          "用户打开链接完成银行/App确认",
++          "轮询 PaymentIntent / Stripe 回调"
++        ],
++        [
++          "UPI / PIX / TWINT",
++          "半自动",
++          "用户扫码或输入VPA完成支付",
++          "轮询 PaymentIntent / Stripe 回调"
++        ],
++        [
++          "Kakao Pay / MoMo",
++          "半自动(需pre_confirm)",
++          "用户在App内确认",
++          "轮询 + pre_confirm 状态跟踪"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 4
++    },
++    {
++      "type": "paragraph",
++      "index": 26,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "二、模块 A：账号结账与会话创建（提链层）"
++    },
++    {
++      "type": "paragraph",
++      "index": 27,
++      "style_id": "",
++      "style": "Normal",
++      "text": "模块 A 负责从账号登录态出发，创建一个带有目标地区和币种的 Stripe Checkout Session。这是整个支付流程的起点，也是提链技术的核心价值所在——绕过平台前端限制，激活 Stripe 原生支持的本地支付方式。"
++    },
++    {
++      "type": "paragraph",
++      "index": 28,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.1 登录态与 Access Token 获取"
++    },
++    {
++      "type": "paragraph",
++      "index": 29,
++      "style_id": "",
++      "style": "Normal",
++      "text": "系统首先需要有效的平台账号登录态。以 ChatGPT 为例："
++    },
++    {
++      "type": "paragraph",
++      "index": 30,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# 方式1：从已登录浏览器的 session cookie 换取\nGET https://chatgpt.com/api/auth/session\n→ {\"accessToken\": \"eyJhbGciOiJSUzI1NiIs...\", \"user\": {...}}\n\n# 方式2：直接使用 __Secure-next-auth.session-token cookie\n# 系统内部维护 cookie jar，自动刷新 access token（有效期5~10分钟）"
++    },
++    {
++      "type": "paragraph",
++      "index": 31,
++      "style_id": "",
++      "style": "Normal",
++      "text": "编排系统需要维护一个账号池，每个账号独立存储 session token，并在 token 即将过期时自动刷新。"
++    },
++    {
++      "type": "paragraph",
++      "index": 32,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.2 创建跨区 Checkout Session"
++    },
++    {
++      "type": "paragraph",
++      "index": 33,
++      "style_id": "",
++      "style": "Normal",
++      "text": "使用 Access Token 调用平台结账 API，关键是通过 billing_details 指定目标国家和币种："
++    },
++    {
++      "type": "paragraph",
++      "index": 34,
++      "style_id": "",
++      "style": "Normal",
++      "text": "POST https://chatgpt.com/backend-api/payments/checkout\nAuthorization: Bearer {access_token}\n\n{\n  \"entry_point\": \"all_plans_pricing_modal\",\n  \"plan_name\": \"chatgptplusplan\",\n  \"billing_details\": {\n    \"country\": \"NL\",       // 目标国家：NL=荷兰, IN=印度, BR=巴西...\n    \"currency\": \"EUR\"      // 目标币种：EUR, INR, BRL...\n  },\n  \"checkout_ui_mode\": \"custom\"\n}"
++    },
++    {
++      "type": "paragraph",
++      "index": 35,
++      "style_id": "",
++      "style": "Normal",
++      "text": "响应中的关键字段："
++    },
++    {
++      "type": "paragraph",
++      "index": 36,
++      "style_id": "",
++      "style": "Normal",
++      "text": "{\n  \"checkout_session_id\": \"oaics_xxxxxxxxxxxx\",\n  \"publishable_key\": \"pk_live_xxxxxxxxxxxx\",\n  \"payment_method_types\": [\"card\", \"ideal\"]   // ← 路由引擎的决策依据\n}"
++    },
++    {
++      "type": "paragraph",
++      "index": 37,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【架构要点】payment_method_types 是模块 B 路由决策的核心输入。传 NL+EUR 返回 [\"card\", \"ideal\"]，传 IN+INR 返回 [\"card\", \"upi\"]，传 BR+BRL 返回 [\"card\", \"pix\"]。不同的国家/币种组合激活不同的本地支付方式。"
++    },
++    {
++      "type": "paragraph",
++      "index": 38,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.3 税务地址优化"
++    },
++    {
++      "type": "paragraph",
++      "index": 39,
++      "style_id": "",
++      "style": "Normal",
++      "text": "创建 Session 后，需要更新税务地址。使用美国免税州（Oregon、Montana、Delaware、New Hampshire、Alaska）地址可以消除 VAT 消费税："
++    },
++    {
++      "type": "paragraph",
++      "index": 40,
++      "style_id": "",
++      "style": "Normal",
++      "text": "POST /api/v1/payments/checkout/taxes\n{\n  \"checkout_session_id\": \"oaics_xxx\",\n  \"billing_details\": {\n    \"name\": \"John Doe\",\n    \"address\": {\n      \"country\": \"US\", \"state\": \"OR\",\n      \"city\": \"Portland\", \"postal_code\": \"97201\",\n      \"line1\": \"123 Main St\"\n    }\n  }\n}\n→ {\"snapshot\": {\"amount_total\": 2000, \"currency\": \"eur\"}}"
++    },
++    {
++      "type": "paragraph",
++      "index": 41,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【关键】taxes 响应中的 amount_total 是后续 Confirm 请求 expected_amount 的准确来源。如果用 Init 步骤的金额去 Confirm，可能因税后金额不一致而失败。税务地址必须与后续 ConfirmationToken 中的地址保持一致。"
++    },
++    {
++      "type": "paragraph",
++      "index": 42,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.4 Stripe Session 初始化与状态管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 43,
++      "style_id": "",
++      "style": "Normal",
++      "text": "提链的完整协议流程包含 12 步，编排系统需要严格按顺序执行并维护会话状态："
++    },
++    {
++      "type": "paragraph",
++      "index": 44,
++      "style_id": "",
++      "style": "Normal",
++      "text": "1.  Session Refresh      — cookie 换新的 Access Token\n2.  Create Checkout      — 创建 oaics_ / cs_live_ session\n3.  Stripe Init          — POST payment_pages/{id}/init，获取 ppage_token\n4.  Update OAI Taxes     — 通知平台更新税务地址\n5.  Stripe Tax Region    — 更新 Stripe 侧税务区域\n6.  Stripe Customer Data — 更新客户信息\n7.  Checkout Snapshot    — 保存 checkout 快照（获取 amount_total）\n8.  Pre-Confirm          — Kakao Pay / MoMo 必须（其他支付方式跳过）\n9.  Create Payment Method— 创建 PM，类型 = card/ideal/upi/pix...\n10. Confirm              — 确认支付，触发重定向或扣款\n11. Approve              — Hosted 模式需要（Sentinel Token）\n12. Extract Result       — 提取 redirect_url 或 PaymentIntent 状态"
++    },
++    {
++      "type": "paragraph",
++      "index": 45,
++      "style_id": "",
++      "style": "Normal",
++      "text": "每一步响应中都会更新 eid（element ID）、mrid（merchant reference ID）等会话状态字段，下一步必须携带最新值。这意味着 12 步必须严格串行，不能并行。"
++    },
++    {
++      "type": "paragraph",
++      "index": 46,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "2.5 提链层的五个经典坑"
++    },
++    {
++      "type": "table",
++      "index": 2,
++      "rows": [
++        [
++          "坑点",
++          "现象",
++          "解决方案"
++        ],
++        [
++          "IP 一致性",
++          "创建和确认用不同IP → invalid_request_error",
++          "整个12步绑定同一个出口IP，HTTP client 不切换"
++        ],
++        [
++          "expected_amount",
++          "Confirm金额与Session不一致 → 拒绝",
++          "从 taxes 响应的 snapshot.amount_total 取值"
++        ],
++        [
++          "Session State",
++          "跳过步骤或用旧eid/mrid → 后续报错",
++          "严格按顺序执行，每步更新状态字段"
++        ],
++        [
++          "Accept-Language / guid",
++          "缺header或guid格式错 → 非预期响应",
++          "必传 Accept-Language，guid用UUID+6位hex=42字符"
++        ],
++        [
++          "超时",
++          "Confirm后无redirect_url → 卡住",
++          "轮询init接口，最多等90秒，超时标记失败"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 49,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "三、模块 B：支付方式路由与决策引擎"
++    },
++    {
++      "type": "paragraph",
++      "index": 50,
++      "style_id": "",
++      "style": "Normal",
++      "text": "模块 B 是半自动编排系统的核心决策层。它在模块 A 完成 Checkout Session 创建后，根据 payment_method_types 和系统配置，决定当前交易走哪条执行通道。"
++    },
++    {
++      "type": "paragraph",
++      "index": 51,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.1 路由决策逻辑"
++    },
++    {
++      "type": "paragraph",
++      "index": 52,
++      "style_id": "",
++      "style": "Normal",
++      "text": "def route_payment(checkout_session, config):\n    pm_types = checkout_session[\"payment_method_types\"]\n    preferred = config.get(\"preferred_method\", \"card\")\n\n    # 优先级1：用户指定的支付方式\n    if preferred in pm_types:\n        selected = preferred\n    # 优先级2：优先选可全自动的卡支付\n    elif \"card\" in pm_types and config.allow_card_auto:\n        selected = \"card\"\n    # 优先级3：回退到第一个本地支付方式\n    else:\n        selected = pm_types[-1]  # 最后一个通常是本地支付\n\n    # 决策：是否可全自动\n    if selected in (\"card\", \"link\"):\n        return {\"channel\": \"auto\", \"method\": selected}\n    else:\n        return {\"channel\": \"manual\", \"method\": selected}"
++    },
++    {
++      "type": "paragraph",
++      "index": 53,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.2 八种支付方式的自动化可行性"
++    },
++    {
++      "type": "table",
++      "index": 3,
++      "rows": [
++        [
++          "支付方式",
++          "PM Type",
++          "国家",
++          "自动化可行性",
++          "需pre_confirm",
++          "人工操作"
++        ],
++        [
++          "信用卡",
++          "card",
++          "全球",
++          "全自动",
++          "否",
++          "无"
++        ],
++        [
++          "Stripe Link",
++          "link",
++          "全球",
++          "全自动",
++          "否",
++          "无"
++        ],
++        [
++          "iDEAL",
++          "ideal",
++          "荷兰",
++          "半自动",
++          "否",
++          "银行选择页确认"
++        ],
++        [
++          "UPI",
++          "upi",
++          "印度",
++          "半自动",
++          "否",
++          "VPA输入/扫码确认"
++        ],
++        [
++          "PIX",
++          "pix",
++          "巴西",
++          "半自动",
++          "否",
++          "扫码支付"
++        ],
++        [
++          "TWINT",
++          "twint",
++          "瑞士",
++          "半自动",
++          "否",
++          "App跳转确认"
++        ],
++        [
++          "Kakao Pay",
++          "kakao_pay",
++          "韩国",
++          "半自动",
++          "是",
++          "Kakao App确认"
++        ],
++        [
++          "BLIK",
++          "blik",
++          "波兰",
++          "半自动",
++          "否",
++          "6位码输入"
++        ],
++        [
++          "MoMo",
++          "momo",
++          "越南",
++          "半自动",
++          "是",
++          "MoMo App确认"
++        ],
++        [
++          "GCash",
++          "gcash",
++          "菲律宾",
++          "半自动",
++          "否",
++          "GCash确认页"
++        ]
++      ],
++      "row_count": 11,
++      "column_count": 6
++    },
++    {
++      "type": "paragraph",
++      "index": 55,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "3.3 路由策略配置"
++    },
++    {
++      "type": "paragraph",
++      "index": 56,
++      "style_id": "",
++      "style": "Normal",
++      "text": "编排系统支持多种路由策略，适应不同业务场景："
++    },
++    {
++      "type": "paragraph",
++      "index": 57,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "成本优先：优先选择费率最低的支付方式（通常本地支付费率低于信用卡）"
++    },
++    {
++      "type": "paragraph",
++      "index": 58,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "速度优先：优先选择全自动通道（card/link），跳过人工等待"
++    },
++    {
++      "type": "paragraph",
++      "index": 59,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "地区优先：根据账号注册地或代理IP所在地自动匹配对应本地支付"
++    },
++    {
++      "type": "paragraph",
++      "index": 60,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "手动指定：运营人员在任务创建时明确指定支付方式"
++    },
++    {
++      "type": "paragraph",
++      "index": 61,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【架构要点】路由引擎的输出是一个标准化的 PaymentTask 对象，包含 channel（auto/manual）、method（支付方式类型）、session_id、publishable_key、expected_amount 等字段。后续模块 C 和 D 都基于这个对象执行，不需要关心上游是怎么创建 Session 的。"
++    },
++    {
++      "type": "paragraph",
++      "index": 63,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "四、模块 C：协议支付自动执行器（卡类全自动通道）"
++    },
++    {
++      "type": "paragraph",
++      "index": 64,
++      "style_id": "",
++      "style": "Normal",
++      "text": "当路由引擎判定走 auto 通道时，模块 C 接管后续流程。它基于 Stripe 协议支付自动化技术，用纯 HTTP 请求模拟浏览器完整操作链路，在无 GUI 环境下完成从卡号令牌化到扣款成功的全流程。"
++    },
++    {
++      "type": "paragraph",
++      "index": 65,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.1 Custom 模式执行流程（oaics_）"
++    },
++    {
++      "type": "paragraph",
++      "index": 66,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Custom 模式是最干净的全自动路径，共 4 个核心步骤："
++    },
++    {
++      "type": "paragraph",
++      "index": 67,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Step 1: 获取 Elements Session 配置\nGET /v1/elements/sessions?deferred_intent[mode]=subscription\n  &deferred_intent[amount]={amount}&deferred_intent[currency]={currency}\n  &type=deferred_intent&key={pk_live}&_stripe_version=2025-03-31.basil\n→ elements_session_id, customer_session_client_secret, pmc_xxx\n\nStep 2: 创建 ConfirmationToken（卡号 → ctoken_）\nPOST /v1/confirmation_tokens\n  type=card\n  payment_method_data[card][number]=...\n  payment_method_data[card][exp_month]=...\n  payment_method_data[card][exp_year]=...\n  payment_method_data[card][cvc]=...\n  payment_method_data[billing_details][address][country]=US\n  key={pk_live}&_stripe_version=2025-03-31.basil\n  + guid/muid/sid 指纹参数（42字符格式）\n→ {\"id\": \"ctoken_1xxx\"}\n\nStep 3: 平台侧确认\nPOST /api/v1/payments/checkout/confirm\n  {\"checkout_session_id\": \"oaics_xxx\", \"confirmation_token\": \"ctoken_1xxx\"}\n→ {\"client_secret\": \"pi_xxx_secret_xxx\"}\n\nStep 4: Stripe 侧扣款\nPOST /v1/payment_intents/{pi_id}/confirm\n  confirmation_token=ctoken_xxx\n  client_secret=pi_xxx_secret_xxx\n  return_url=...\n  key={pk_live}&_stripe_version=2025-03-31.basil\n  client_attribution_metadata[merchant_integration_source]=l1\n→ {\"status\": \"succeeded\"} 或 {\"status\": \"requires_action\"}"
++    },
++    {
++      "type": "paragraph",
++      "index": 68,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.2 Hosted 模式执行流程（cs_live_）"
++    },
++    {
++      "type": "paragraph",
++      "index": 69,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Hosted 模式流程更长，涉及 Payment Page 初始化和 Approve 机制："
++    },
++    {
++      "type": "paragraph",
++      "index": 70,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Step 1: Payment Page 初始化\nGET /api/payment-page/{cs_live_xxx}/init\n→ {\"ppage_token\": \"ppage_xxx\"}\n\nStep 2: Elements Session（带 Hosted 特殊字段）\nPOST /v1/elements/sessions\n  checkout_session_id=cs_live_xxx\n  elements_init_source=custom_checkout\n  _stripe_version=2025-03-31.basil; checkout_server_update_beta=v1; ...\n→ passive_captcha.rqdata（hCaptcha Enterprise 参数）\n\nStep 3: 创建 ConfirmationToken（同 Custom）\n\nStep 4: Payment Pages Confirm\nPOST /v1/payment_pages/{cs_live_xxx}/confirm\n  elements_session_client[...] = ...（8个子字段）\n  init_checksum / js_checksum / rv_timestamp（动态提取）\n  expected_amount = {amount}\n→ {\"status\": \"open\", \"requires_approval\": true}\n\nStep 5: 等待平台自动 Approve（fall-through）\n  或手动 Approve（需 Sentinel Token + Turnstile 验证）\n\nStep 6: 轮询 Payment Page 状态\nPOST /v1/payment_pages/{cs_live_xxx}/poll\n→ payment_object_status: open / requires_action / succeeded"
++    },
++    {
++      "type": "paragraph",
++      "index": 71,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.3 3DS / hCaptcha 挑战处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 72,
++      "style_id": "",
++      "style": "Normal",
++      "text": "当 PaymentIntent 进入 requires_action 状态时，需要处理 Stripe 自有的 hCaptcha Enterprise 挑战："
++    },
++    {
++      "type": "paragraph",
++      "index": 73,
++      "style_id": "",
++      "style": "Normal",
++      "text": "POST /v1/payment_intents/{pi_id}/verify_challenge\n  captcha_response={hcaptcha_token}      # P0开头的长字符串\n  captcha_vendor_name=hcaptcha\n  captcha_sitekey={sitekey}              # 从 elements_session 提取\n  expected_amount={amount}\n  expected_currency={currency}\n  key={pk_live}\n  client_secret={pi_secret}"
++    },
++    {
++      "type": "paragraph",
++      "index": 74,
++      "style_id": "",
++      "style": "Normal",
++      "text": "hCaptcha Enterprise 的特殊性："
++    },
++    {
++      "type": "paragraph",
++      "index": 75,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "必须携带 rqdata 参数（从 elements_session.passive_captcha 提取）"
++    },
++    {
++      "type": "paragraph",
++      "index": 76,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "sitekey 是 Stripe 专有，不是通用 hCaptcha sitekey"
++    },
++    {
++      "type": "paragraph",
++      "index": 77,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "invisible 模式，浏览器中看不到验证码图片"
++    },
++    {
++      "type": "paragraph",
++      "index": 78,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "token 时效性强（浏览器 ~4 秒解出有效，远程打码需 30-120 秒）"
++    },
++    {
++      "type": "paragraph",
++      "index": 79,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【重要澄清】重要澄清：Stripe 的 verify_with_challenge 并非传统银行 3DS 验证。它是 Stripe 自有的风控挑战，使用 hCaptcha 作为人机验证手段。真正的银行 3DS（Visa Secure）会打开银行页面要求 OTP，纯协议无法绕过。但虚拟信用卡通常只触发 Stripe hCaptcha，不触发银行 3DS。"
++    },
++    {
++      "type": "paragraph",
++      "index": 80,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.4 Fast-Path 优化"
++    },
++    {
++      "type": "paragraph",
++      "index": 81,
++      "style_id": "",
++      "style": "Normal",
++      "text": "有时 confirm 返回 requires_action，但 PI 实际上已经扣款成功。正确做法是先查询 PI 状态："
++    },
++    {
++      "type": "paragraph",
++      "index": 82,
++      "style_id": "",
++      "style": "Normal",
++      "text": "pi = stripe.get(f\"/v1/payment_intents/{pi_id}\", key=pk_live)\nif pi[\"status\"] == \"succeeded\":\n    return SUCCESS  # 已扣款成功，跳过 captcha\nelif pi[\"status\"] == \"requires_action\":\n    solve_hcaptcha(pi)  # 确实需要验证"
++    },
++    {
++      "type": "paragraph",
++      "index": 83,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "4.5 拒卡分类与重试"
++    },
++    {
++      "type": "table",
++      "index": 4,
++      "rows": [
++        [
++          "错误码",
++          "分类",
++          "处理策略"
++        ],
++        [
++          "generic_decline",
++          "可重试",
++          "换卡重建 ConfirmationToken，同一PI重试"
++        ],
++        [
++          "insufficient_funds",
++          "可重试",
++          "充值或换卡后重试"
++        ],
++        [
++          "processing_error",
++          "可重试",
++          "Stripe侧临时错误，直接重试"
++        ],
++        [
++          "stolen_card / lost_card",
++          "不可重试",
++          "卡已标记，从卡池移除，放弃session"
++        ],
++        [
++          "card_not_supported",
++          "不可重试",
++          "卡类型不支持，换卡"
++        ],
++        [
++          "currency_not_supported",
++          "不可重试",
++          "卡不支持目标币种，换卡或换地区"
++        ],
++        [
++          "incorrect_cvc",
++          "特殊处理",
++          "检查CVC是否传错"
++        ],
++        [
++          "expired_card",
++          "特殊处理",
++          "卡过期，从卡池移除"
++        ],
++        [
++          "card_velocity_exceeded",
++          "特殊处理",
++          "交易频率超限，冷却后重试"
++        ]
++      ],
++      "row_count": 10,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 85,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【架构要点】同一个 PaymentIntent 被拒卡后，可以用新的 ConfirmationToken 重试，不需要重建整个 Checkout Session。这大幅提升了批量支付的效率——换卡只需要重新执行 Step 2 和 Step 4。"
++    },
++    {
++      "type": "paragraph",
++      "index": 87,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "五、模块 D：人工介入通道（本地支付扫码）"
++    },
++    {
++      "type": "paragraph",
++      "index": 88,
++      "style_id": "",
++      "style": "Normal",
++      "text": "当路由引擎判定走 manual 通道时，模块 D 接管。它的职责是：从提链流程的 Confirm 响应中提取支付跳转链接，以可操作的形式（URL/二维码）交付给用户，并在用户完成支付后将控制权交回模块 E 进行结果确认。"
++    },
++    {
++      "type": "paragraph",
++      "index": 89,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.1 提取支付链接"
++    },
++    {
++      "type": "paragraph",
++      "index": 90,
++      "style_id": "",
++      "style": "Normal",
++      "text": "提链流程的第 10 步 Confirm 之后，对于重定向类型的支付方式，Stripe 返回："
++    },
++    {
++      "type": "paragraph",
++      "index": 91,
++      "style_id": "",
++      "style": "Normal",
++      "text": "{\n  \"status\": \"requires_action\",\n  \"next_action\": {\n    \"type\": \"redirect_to_url\",\n    \"redirect_to_url\": {\n      \"url\": \"https://hooks.stripe.com/redirect/authenticate/src_xxx?client_secret=...\"\n    }\n  }\n}"
++    },
++    {
++      "type": "paragraph",
++      "index": 92,
++      "style_id": "",
++      "style": "Normal",
++      "text": "这个 redirect_url 就是最终支付链接。不同支付方式打开后的页面不同："
++    },
++    {
++      "type": "paragraph",
++      "index": 93,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "iDEAL → 银行选择页，用户选银行后跳转网银确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 94,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "UPI → VPA 输入页或二维码，用户在 UPI App 中确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 95,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "PIX → 二维码页面，用户用巴西银行App扫码"
++    },
++    {
++      "type": "paragraph",
++      "index": 96,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "Kakao Pay → Kakao 确认页，用户在 KakaoTalk 中确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 97,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "MoMo → MoMo App 跳转，用户在 App 内确认支付"
++    },
++    {
++      "type": "paragraph",
++      "index": 98,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.2 Kakao Pay / MoMo 的 pre_confirm 特殊处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 99,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Kakao Pay 和 MoMo 需要额外的 pre_confirm 调用，否则 Confirm 返回 incomplete 状态，拿不到 redirect_url："
++    },
++    {
++      "type": "paragraph",
++      "index": 100,
++      "style_id": "",
++      "style": "Normal",
++      "text": "POST /v1/payment_pages/{oaics_xxx}/pre_confirm\nContent-Type: application/x-www-form-urlencoded\nexpected_payment_method_type=kakao_pay"
++    },
++    {
++      "type": "paragraph",
++      "index": 101,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【容易踩坑】如果不知道有 pre_confirm 这一步，Kakao Pay 和 MoMo 的提链会卡在最后一步——所有参数都对，就是拿不到链接。这类细节只有通过 HAR 抓包完整结账流程才能发现。"
++    },
++    {
++      "type": "paragraph",
++      "index": 102,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.3 链接交付与用户通知"
++    },
++    {
++      "type": "paragraph",
++      "index": 103,
++      "style_id": "",
++      "style": "Normal",
++      "text": "编排系统需要将支付链接以用户可操作的方式交付："
++    },
++    {
++      "type": "paragraph",
++      "index": 104,
++      "style_id": "",
++      "style": "Normal",
++      "text": "PaymentLink {\n  task_id: \"pay_20260829_001\",\n  method: \"upi\",\n  redirect_url: \"https://hooks.stripe.com/redirect/authenticate/src_xxx?...\",\n  qr_code: <base64_png>,           // 系统自动生成二维码\n  amount: \"₹1,950\",\n  currency: \"INR\",\n  expires_in: 900,                 // 链接有效期（秒）\n  created_at: \"2026-08-29T12:00:00Z\"\n}"
++    },
++    {
++      "type": "paragraph",
++      "index": 105,
++      "style_id": "",
++      "style": "Normal",
++      "text": "交付方式可以是：Web 管理面板展示、API 回调通知、消息推送等。系统同时生成二维码，方便手机扫码支付。"
++    },
++    {
++      "type": "paragraph",
++      "index": 106,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.4 人工支付超时管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 107,
++      "style_id": "",
++      "style": "Normal",
++      "text": "本地支付链接通常有有效期（一般 15 分钟），系统需要管理超时："
++    },
++    {
++      "type": "paragraph",
++      "index": 108,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "链接生成后启动倒计时，默认 15 分钟"
++    },
++    {
++      "type": "paragraph",
++      "index": 109,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "超时未支付 → 标记任务为 TIMEOUT，释放卡池/代理资源"
++    },
++    {
++      "type": "paragraph",
++      "index": 110,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "用户支付后但系统未检测到 → 延长轮询窗口（最多 30 分钟），防止网络延迟导致误判"
++    },
++    {
++      "type": "paragraph",
++      "index": 111,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "超时后用户仍完成了支付 → 通过 Stripe 对账机制补单（webhook 回调）"
++    },
++    {
++      "type": "paragraph",
++      "index": 112,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "5.5 半自动通道的人工介入最小化"
++    },
++    {
++      "type": "paragraph",
++      "index": 113,
++      "style_id": "",
++      "style": "Normal",
++      "text": "虽然叫「人工介入通道」，但系统设计目标是将人工操作压缩到极致："
++    },
++    {
++      "type": "paragraph",
++      "index": 114,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "用户只需做一件事：打开链接（或扫码）→ 在支付App中点确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 115,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "不需要用户填写任何信息（金额、收款方都已由系统预设）"
++    },
++    {
++      "type": "paragraph",
++      "index": 116,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "支付完成后不需要用户通知系统，系统自动轮询检测结果"
++    },
++    {
++      "type": "paragraph",
++      "index": 117,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "用户甚至不需要知道背后是 Stripe，只看到一个支付页面"
++    },
++    {
++      "type": "paragraph",
++      "index": 119,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "六、模块 E：支付结果确认与统一状态机"
++    },
++    {
++      "type": "paragraph",
++      "index": 120,
++      "style_id": "",
++      "style": "Normal",
++      "text": "模块 E 是整个系统的闭环保障。无论走 auto 通道还是 manual 通道，最终都由模块 E 统一确认支付结果、更新订阅状态、处理异常。"
++    },
++    {
++      "type": "paragraph",
++      "index": 121,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.1 统一支付状态模型"
++    },
++    {
++      "type": "table",
++      "index": 5,
++      "rows": [
++        [
++          "状态",
++          "含义",
++          "触发条件",
++          "后续动作"
++        ],
++        [
++          "PENDING",
++          "任务已创建，等待执行",
++          "路由引擎分配通道",
++          "进入模块C或D"
++        ],
++        [
++          "PROCESSING",
++          "支付执行中",
++          "协议执行器/提链流程运行中",
++          "等待Confirm结果"
++        ],
++        [
++          "AWAITING_PAYMENT",
++          "等待用户付款",
++          "manual通道已输出链接",
++          "启动轮询+超时计时"
++        ],
++        [
++          "REQUIRES_ACTION",
++          "需要验证挑战",
++          "auto通道触发hCaptcha/3DS",
++          "打码处理或转人工"
++        ],
++        [
++          "SUCCEEDED",
++          "支付成功",
++          "PI状态=succeeded",
++          "激活订阅，记录结果"
++        ],
++        [
++          "FAILED",
++          "支付失败",
++          "拒卡/超时/异常",
++          "分类重试或标记终态"
++        ],
++        [
++          "TIMEOUT",
++          "支付超时",
++          "manual通道超期未付",
++          "释放资源，可重新创建"
++        ],
++        [
++          "REFUNDED",
++          "已退款",
++          "Stripe退款回调",
++          "取消订阅，记录"
++        ]
++      ],
++      "row_count": 9,
++      "column_count": 4
++    },
++    {
++      "type": "paragraph",
++      "index": 123,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.2 Auto 通道的结果确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 124,
++      "style_id": "",
++      "style": "Normal",
++      "text": "全自动通道的结果确认相对直接："
++    },
++    {
++      "type": "paragraph",
++      "index": 125,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# Step 4 (payment_intents/confirm) 响应\nif response[\"status\"] == \"succeeded\":\n    → SUCCEEDED，激活订阅\nelif response[\"status\"] == \"requires_action\":\n    → 先查PI真实状态（Fast-Path优化）\n    → 若已succeeded → SUCCEEDED\n    → 若确实requires_action → 解hCaptcha → 重新confirm\nelif response[\"status\"] == \"requires_payment_method\":\n    → 拒卡，分类处理（换卡重试/放弃）"
++    },
++    {
++      "type": "paragraph",
++      "index": 126,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.3 Manual 通道的结果确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 127,
++      "style_id": "",
++      "style": "Normal",
++      "text": "人工通道的结果确认是半自动系统最关键的环节。用户在外部完成支付后，系统需要主动检测到支付成功："
++    },
++    {
++      "type": "paragraph",
++      "index": 128,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# 轮询策略（推荐）\ndef poll_payment_result(pi_id, max_wait=1800):\n    # 每3秒轮询一次PaymentIntent状态，最多等30分钟\n    for elapsed in range(0, max_wait, 3):\n        pi = stripe.get(f\"/v1/payment_intents/{pi_id}\", key=pk_live)\n        if pi[\"status\"] == \"succeeded\":\n            return SUCCEEDED\n        elif pi[\"status\"] == \"canceled\":\n            return FAILED\n        elif pi[\"status\"] == \"requires_payment_method\":\n            return FAILED  # 用户取消了支付\n        sleep(3)\n    return TIMEOUT"
++    },
++    {
++      "type": "paragraph",
++      "index": 129,
++      "style_id": "",
++      "style": "Normal",
++      "text": "除了主动轮询，系统还应支持 Stripe Webhook 回调作为补充确认渠道："
++    },
++    {
++      "type": "paragraph",
++      "index": 130,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "payment_intent.succeeded → 支付成功，激活订阅"
++    },
++    {
++      "type": "paragraph",
++      "index": 131,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "payment_intent.payment_failed → 支付失败，记录原因"
++    },
++    {
++      "type": "paragraph",
++      "index": 132,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "charge.refunded → 已退款，取消订阅"
++    },
++    {
++      "type": "paragraph",
++      "index": 133,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【架构要点】轮询 + Webhook 双保险：轮询保证系统主动感知状态变化，Webhook 保证轮询间隔内的事件不丢失。两者通过 payment_intent id 去重，避免重复处理。"
++    },
++    {
++      "type": "paragraph",
++      "index": 134,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.4 订阅激活确认"
++    },
++    {
++      "type": "paragraph",
++      "index": 135,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Stripe 侧支付成功不等于平台订阅已激活。系统还需要确认平台侧的订阅状态："
++    },
++    {
++      "type": "paragraph",
++      "index": 136,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# 支付成功后，验证平台侧订阅状态\nGET /api/v1/me/subscription\n→ {\"subscription\": {\"plan\": \"plus\", \"status\": \"active\", \"renews_at\": \"...\"}}\n\n# 如果平台侧未激活（Stripe回调延迟），继续轮询平台API\n# 最多等 60 秒，通常 Stripe webhook 会在几秒内通知平台"
++    },
++    {
++      "type": "paragraph",
++      "index": 137,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "6.5 状态流转图"
++    },
++    {
++      "type": "paragraph",
++      "index": 138,
++      "style_id": "",
++      "style": "Normal",
++      "text": "┌──────────┐\n                    │ PENDING  │\n                    └────┬─────┘\n                         │ 路由分配\n                         ▼\n                  ┌──────────────┐\n                  │ PROCESSING   │\n                  └──┬───────┬───┘\n            auto通道 │       │ manual通道\n                     ▼       ▼\n            ┌────────────┐  ┌──────────────────┐\n            │REQUIRES_   │  │ AWAITING_PAYMENT │\n            │ACTION      │  │ (链接已输出)      │\n            └──┬─────┬───┘  └──┬───────────┬───┘\n          成功│     │失败      │用户支付成功│超时/取消\n               ▼     ▼          ▼           ▼\n         ┌──────────┐     ┌──────────┐  ┌─────────┐\n         │SUCCEEDED │     │ FAILED   │  │ TIMEOUT │\n         └────┬─────┘     └────┬─────┘  └────┬────┘\n              │                │              │\n              ▼                ▼              ▼\n         激活订阅          分类重试/放弃    可重新创建\n              │\n              ▼\n         平台侧确认 → 最终完成"
++    },
++    {
++      "type": "paragraph",
++      "index": 140,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "七、完整端到端流程时序"
++    },
++    {
++      "type": "paragraph",
++      "index": 141,
++      "style_id": "",
++      "style": "Normal",
++      "text": "以下以一个典型任务为例，展示从账号结账到支付结果确认的完整时序。场景：印度区账号，优先使用 UPI 本地支付，UPI 失败后回退到信用卡全自动。"
++    },
++    {
++      "type": "paragraph",
++      "index": 142,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.1 时序总览"
++    },
++    {
++      "type": "paragraph",
++      "index": 143,
++      "style_id": "",
++      "style": "Normal",
++      "text": "用户/运营          编排器           模块A(提链)      模块B(路由)     模块D(人工)     模块E(确认)\n   │                │                 │                │               │               │\n   │──创建任务─────▶│                 │                │               │               │\n   │                │──获取登录态────▶│                │               │               │\n   │                │                 │──创建Session──▶│               │               │\n   │                │                 │──更新税务──────▶│               │               │\n   │                │                 │◀──session+pm──│               │               │\n   │                │                 │                │               │               │\n   │                │◀────────────────│──路由决策──────▶│               │               │\n   │                │                 │                │ manual=upi    │               │\n   │                │                 │                │               │               │\n   │                │──执行manual通道─────────────────────────────────▶│               │\n   │                │                 │  Stripe协议12步                │               │\n   │                │                 │  Confirm→redirect_url          │               │\n   │                │◀────────────────────────────────────────────────│──支付链接─────│\n   │◀──支付链接/QR──│                 │                                │               │\n   │                │                 │                                │               │\n   │──用户UPI付款──▶│                 │                                │               │\n   │   (在UPI App)  │                 │                                │               │\n   │                │──轮询PI状态────────────────────────────────────────────────────▶│\n   │                │                 │                                │               │──succeeded?\n   │                │◀────────────────────────────────────────────────────────────────│\n   │                │                 │                                │               │\n   │                │──确认平台订阅──▶│                │               │               │\n   │◀──订阅已激活──│                 │                │               │               │\n   │                │                 │                │               │               │\n   │  (若UPI超时)   │──回退card通道──▶│                │──auto=card──▶│(模块C接管)     │\n   │                │                 │  创建ctoken→confirm→扣款       │               │\n   │                │◀────────────────────────────────────────────────────────────────│\n   │◀──订阅已激活──│                 │                │               │               │"
++    },
++    {
++      "type": "paragraph",
++      "index": 144,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.2 关键时序参数"
++    },
++    {
++      "type": "table",
++      "index": 6,
++      "rows": [
++        [
++          "环节",
++          "耗时范围",
++          "超时阈值",
++          "说明"
++        ],
++        [
++          "Session 创建+税务",
++          "2-5秒",
++          "30秒",
++          "提链12步中的前7步"
++        ],
++        [
++          "Stripe Confirm（卡类）",
++          "1-3秒",
++          "15秒",
++          "协议支付Step 2-4"
++        ],
++        [
++          "hCaptcha 解验证",
++          "5-120秒",
++          "180秒",
++          "本地headless<5s，远程打码~15s"
++        ],
++        [
++          "manual链接生成",
++          "3-10秒",
++          "30秒",
++          "含pre_confirm（Kakao/MoMo）"
++        ],
++        [
++          "用户支付等待",
++          "10秒-15分钟",
++          "15分钟",
++          "用户在外部App操作"
++        ],
++        [
++          "结果轮询检测",
++          "3-30秒",
++          "30分钟",
++          "支付后Stripe状态更新延迟"
++        ],
++        [
++          "平台订阅激活",
++          "1-10秒",
++          "60秒",
++          "Stripe webhook通知平台"
++        ]
++      ],
++      "row_count": 8,
++      "column_count": 4
++    },
++    {
++      "type": "paragraph",
++      "index": 146,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "7.3 并发批量处理"
++    },
++    {
++      "type": "paragraph",
++      "index": 147,
++      "style_id": "",
++      "style": "Normal",
++      "text": "编排系统支持批量任务处理，通过信号量控制并发："
++    },
++    {
++      "type": "paragraph",
++      "index": 148,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# 并发控制配置\nMAX_CONCURRENT_AUTO = 3      # 最多3个全自动支付同时进行\nMAX_CONCURRENT_MANUAL = 10   # manual通道可更多（只占IO，不占计算）\nMAX_PER_PROXY = 2            # 每个代理IP上同时最多2个支付流程\nRATE_LIMIT_PER_KEY = 100     # 每个publishable_key每分钟最多100次confirm"
++    },
++    {
++      "type": "paragraph",
++      "index": 149,
++      "style_id": "",
++      "style": "Normal",
++      "text": "批量任务的执行顺序建议："
++    },
++    {
++      "type": "paragraph",
++      "index": 150,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "优先执行 auto 通道任务（速度快，资源占用高）"
++    },
++    {
++      "type": "paragraph",
++      "index": 151,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "manual 通道任务批量输出链接后，进入等待轮询阶段（资源占用低）"
++    },
++    {
++      "type": "paragraph",
++      "index": 152,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "manual 任务的结果确认与 auto 任务的执行并行进行"
++    },
++    {
++      "type": "paragraph",
++      "index": 154,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "八、风控基础设施"
++    },
++    {
++      "type": "paragraph",
++      "index": 155,
++      "style_id": "",
++      "style": "Normal",
++      "text": "无论是提链还是协议支付，都面临 Stripe Radar 和平台侧的风控检测。编排系统需要一套统一的风控基础设施，为所有通道提供指纹伪装、代理管理和行为模拟。"
++    },
++    {
++      "type": "paragraph",
++      "index": 156,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.1 TLS 指纹管理"
++    },
++    {
++      "type": "paragraph",
++      "index": 157,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Stripe 和 Cloudflare 会检查 TLS Client Hello 指纹（JA3/JA4），不匹配浏览器特征直接返回 403/429。"
++    },
++    {
++      "type": "paragraph",
++      "index": 158,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# Python 使用 curl_cffi 模拟浏览器 TLS 指纹\nfrom curl_cffi import requests\n\nPROFILES = [\n    {\"tls\": \"chrome131\", \"ua\": \"Mozilla/5.0 ... Chrome/131.0.0.0\",\n     \"sec_ch_ua\": '\"Not=A?Brand\";v=\"99\", \"Chromium\";v=\"131\"'},\n    {\"tls\": \"safari18\", \"ua\": \"Mozilla/5.0 ... Safari/605.1.15\",\n     \"sec_ch_ua\": None},\n    {\"tls\": \"firefox117\", \"ua\": \"Mozilla/5.0 ... Firefox/117.0\",\n     \"sec_ch_ua\": None},\n]\n\n# 遇到403/429时自动轮换指纹，最多重试3次"
++    },
++    {
++      "type": "paragraph",
++      "index": 159,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【一致性要求】TLS 指纹必须与 User-Agent 成对匹配。用 Chrome 131 的 TLS 指纹但 UA 写 Chrome 124，会被 Cloudflare bot detection 立即发现。"
++    },
++    {
++      "type": "paragraph",
++      "index": 160,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.2 Stripe.js 设备指纹"
++    },
++    {
++      "type": "paragraph",
++      "index": 161,
++      "style_id": "",
++      "style": "Normal",
++      "text": "所有 Stripe API 请求需要携带设备指纹参数："
++    },
++    {
++      "type": "table",
++      "index": 7,
++      "rows": [
++        [
++          "参数",
++          "格式",
++          "作用"
++        ],
++        [
++          "guid",
++          "UUID + 6位hex = 42字符",
++          "全局唯一标识"
++        ],
++        [
++          "muid",
++          "同 guid 格式",
++          "设备标识"
++        ],
++        [
++          "sid",
++          "同 guid 格式",
++          "会话标识"
++        ],
++        [
++          "time_on_page",
++          "随机8-30秒",
++          "模拟真实用户停留时间"
++        ],
++        [
++          "_stripe_version",
++          "从deploy_status动态提取",
++          "API版本号"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 163,
++      "style_id": "",
++      "style": "Normal",
++      "text": "此外，建议在业务请求前向 m.stripe.com/6 发送至少一次指纹注册（stripejs-init-complete），降低 Radar 异常检测风险。r.stripe.com/b 遥测上报为纯可选。"
++    },
++    {
++      "type": "paragraph",
++      "index": 164,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.3 双代理池架构"
++    },
++    {
++      "type": "paragraph",
++      "index": 165,
++      "style_id": "",
++      "style": "Normal",
++      "text": "┌─────────────────────────────────────┐\n│           代理池管理器               │\n│                                     │\n│  ┌──────────────┐  ┌──────────────┐ │\n│  │ 平台代理池    │  │ Stripe代理池  │ │\n│  │ (匹配账号地区) │  │ (住宅IP优先)  │ │\n│  └──────┬───────┘  └──────┬───────┘ │\n│         │                 │         │\n│         ▼                 ▼         │\n│  ┌──────────────┐  ┌──────────────┐ │\n│  │ 健康检查      │  │ 健康检查      │ │\n│  │ 国家匹配验证  │  │ IP信誉检查    │ │\n│  └──────────────┘  └──────────────┘ │\n│                                     │\n│  支付流程中「钉住」同一个代理节点     │\n│  禁止负载均衡在单次支付中切换IP      │\n└─────────────────────────────────────┘"
++    },
++    {
++      "type": "table",
++      "index": 8,
++      "rows": [
++        [
++          "代理类型",
++          "适用场景",
++          "风险等级"
++        ],
++        [
++          "住宅代理 (Residential)",
++          "Stripe API / 平台 API",
++          "最低，推荐生产"
++        ],
++        [
++          "ISP静态住宅代理",
++          "长期固定使用",
++          "中等，部分已被标记"
++        ],
++        [
++          "移动代理 (Mobile)",
++          "高价值交易",
++          "最低，但成本最高"
++        ],
++        [
++          "数据中心代理 (Datacenter)",
++          "仅测试/开发",
++          "高，Radar易标记"
++        ]
++      ],
++      "row_count": 5,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 167,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【铁律】出口 IP 一致性是铁律：创建 Checkout Session 和确认支付必须使用同一个出口 IP。Stripe 会比对两次请求的 IP，不一致直接拒绝交易。整个支付流程（提链12步 + 协议支付）必须绑定同一个代理出口。"
++    },
++    {
++      "type": "paragraph",
++      "index": 168,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.4 请求节奏模拟"
++    },
++    {
++      "type": "paragraph",
++      "index": 169,
++      "style_id": "",
++      "style": "Normal",
++      "text": "纯协议支付的风险是请求速度太快。浏览器用户从打开支付页面到点击确认通常需要 15-60 秒，自动化 2 秒完成会被 Radar 标记。"
++    },
++    {
++      "type": "paragraph",
++      "index": 170,
++      "style_id": "",
++      "style": "Normal",
++      "text": "# 关键步骤间加入随机延迟\nawait sleep(random.uniform(1.5, 3.0))   # 创建 session 后\nawait sleep(random.uniform(0.8, 2.0))   # 更新税务后\nawait sleep(random.uniform(1.0, 2.5))   # 创建 token 后\nawait sleep(random.uniform(0.5, 1.5))   # confirm 前\n# 总时间控制在 8-30 秒之间比较自然"
++    },
++    {
++      "type": "paragraph",
++      "index": 171,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "8.5 Cookie 隔离"
++    },
++    {
++      "type": "paragraph",
++      "index": 172,
++      "style_id": "",
++      "style": "Normal",
++      "text": "使用两个独立的 HTTP 客户端，严格隔离平台 Cookie 和 Stripe Cookie："
++    },
++    {
++      "type": "paragraph",
++      "index": 173,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "平台客户端：带 session token cookie，用于调用平台 API"
++    },
++    {
++      "type": "paragraph",
++      "index": 174,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "Stripe 客户端：不带任何 cookie，用于调用 api.stripe.com"
++    },
++    {
++      "type": "paragraph",
++      "index": 175,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "绝不允许 Stripe 客户端发送平台 Cookie，反之亦然"
++    },
++    {
++      "type": "paragraph",
++      "index": 177,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "九、异常处理与重试策略"
++    },
++    {
++      "type": "paragraph",
++      "index": 178,
++      "style_id": "",
++      "style": "Normal",
++      "text": "支付流程中任何一步都可能失败。编排系统需要一套完善的异常分类和重试机制，确保可恢复的错误自动恢复，不可恢复的错误清晰上报。"
++    },
++    {
++      "type": "paragraph",
++      "index": 179,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.1 异常分类矩阵"
++    },
++    {
++      "type": "table",
++      "index": 9,
++      "rows": [
++        [
++          "异常类型",
++          "典型表现",
++          "可重试",
++          "处理策略"
++        ],
++        [
++          "网络瞬断",
++          "ConnectionError / Timeout",
++          "是",
++          "退避重试，最多3次"
++        ],
++        [
++          "限流 (429)",
++          "Too Many Requests",
++          "是",
++          "指纹轮换+指数退避"
++        ],
++        [
++          "TLS指纹被封 (403)",
++          "Forbidden",
++          "是",
++          "切换TLS profile+代理"
++        ],
++        [
++          "IP不一致",
++          "invalid_request_error",
++          "否(本session)",
++          "检查代理钉住，重建session"
++        ],
++        [
++          "拒卡 (generic_decline)",
++          "卡被拒绝",
++          "是(换卡)",
++          "换卡重建token，同PI重试"
++        ],
++        [
++          "余额不足",
++          "insufficient_funds",
++          "是(换卡)",
++          "换卡或充值后重试"
++        ],
++        [
++          "卡被盗标记",
++          "stolen_card",
++          "否",
++          "移除卡池，放弃session"
++        ],
++        [
++          "hCaptcha超时",
++          "auth_failure",
++          "是",
++          "换新captcha token重试"
++        ],
++        [
++          "manual超时",
++          "用户未支付",
++          "可重建",
++          "标记timeout，可重新创建任务"
++        ],
++        [
++          "Session过期",
++          "session expired",
++          "可重建",
++          "回到模块A重建session"
++        ],
++        [
++          "Sentinel token无效",
++          "approve返回blocked",
++          "否(本session)",
++          "重新生成Turnstile token"
++        ]
++      ],
++      "row_count": 12,
++      "column_count": 4
++    },
++    {
++      "type": "paragraph",
++      "index": 181,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.2 退避重试策略"
++    },
++    {
++      "type": "paragraph",
++      "index": 182,
++      "style_id": "",
++      "style": "Normal",
++      "text": "def with_retry(func, max_retries=3, base_delay=1.0):\n    for attempt in range(max_retries):\n        try:\n            return func()\n        except RateLimitError:\n            # 429: 轮换指纹 + 指数退避\n            tls_manager.rotate()\n            sleep(base_delay * (2 ** attempt) + random.uniform(0, 1))\n        except NetworkError:\n            # 网络错误: 纯退避\n            sleep(base_delay * (2 ** attempt))\n        except TLSFingerprintBlocked:\n            # 403: 换指纹 + 换代理\n            tls_manager.rotate()\n            proxy_pool.rotate()\n            sleep(base_delay)\n    raise MaxRetriesExceeded()"
++    },
++    {
++      "type": "paragraph",
++      "index": 183,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.3 幂等性保证"
++    },
++    {
++      "type": "paragraph",
++      "index": 184,
++      "style_id": "",
++      "style": "Normal",
++      "text": "重试机制必须保证幂等性，避免重复扣款："
++    },
++    {
++      "type": "paragraph",
++      "index": 185,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "每个支付任务有唯一 task_id，所有状态更新基于 task_id 做乐观锁"
++    },
++    {
++      "type": "paragraph",
++      "index": 186,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "PaymentIntent 确认使用 Idempotency-Key（Stripe 原生支持）"
++    },
++    {
++      "type": "paragraph",
++      "index": 187,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "manual 通道的链接生成是幂等的——同一 session 多次 confirm 返回相同的 redirect_url"
++    },
++    {
++      "type": "paragraph",
++      "index": 188,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "订阅激活检查是幂等的——已激活的账号再次检查返回相同状态"
++    },
++    {
++      "type": "paragraph",
++      "index": 189,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "9.4 死信队列与人工兜底"
++    },
++    {
++      "type": "paragraph",
++      "index": 190,
++      "style_id": "",
++      "style": "Normal",
++      "text": "超过最大重试次数的任务进入死信队列（DLQ），由运营人员人工介入："
++    },
++    {
++      "type": "paragraph",
++      "index": 191,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "DLQ 任务保留完整的执行日志、最后错误信息、已完成的步骤"
++    },
++    {
++      "type": "paragraph",
++      "index": 192,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "运营可选择：重试、换支付方式、换账号、标记放弃"
++    },
++    {
++      "type": "paragraph",
++      "index": 193,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "对于「钱已扣但订阅未激活」的异常状态，优先通过 Stripe 对账确认，避免误判"
++    },
++    {
++      "type": "paragraph",
++      "index": 195,
++      "style_id": "3",
++      "style": "Heading 1",
++      "text": "十、安全边界与最佳实践"
++    },
++    {
++      "type": "paragraph",
++      "index": 196,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.1 Session 隔离"
++    },
++    {
++      "type": "paragraph",
++      "index": 197,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "每次支付使用独立的 Checkout Session，不复用已失败的 Session"
++    },
++    {
++      "type": "paragraph",
++      "index": 198,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "Hosted 模式下 approve 操作后的 Session 不可再次使用"
++    },
++    {
++      "type": "paragraph",
++      "index": 199,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "每个账号的支付任务独立运行，不共享 HTTP client、cookie jar、代理"
++    },
++    {
++      "type": "paragraph",
++      "index": 200,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.2 Dry-Run 调试模式"
++    },
++    {
++      "type": "paragraph",
++      "index": 201,
++      "style_id": "",
++      "style": "Normal",
++      "text": "所有实现应支持 Dry-Run 模式——执行完整流程但不提交最终的 confirm："
++    },
++    {
++      "type": "paragraph",
++      "index": 202,
++      "style_id": "",
++      "style": "Normal",
++      "text": "if config.commit_payments:\n    result = stripe.confirm_payment_intent(pi_id, token)\nelse:\n    logger.info(\"Dry-run: skipping confirm\")\n    result = {\"status\": \"dry_run\", \"pi_id\": pi_id}"
++    },
++    {
++      "type": "paragraph",
++      "index": 203,
++      "style_id": "",
++      "style": "Normal",
++      "text": "Dry-Run 可以验证整个流程（创建 session、生成 token、税务计算、路由决策）都正确，而不实际扣钱。这对于调试新支付方式接入、新地区配置尤为重要。"
++    },
++    {
++      "type": "paragraph",
++      "index": 204,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.3 敏感数据保护"
++    },
++    {
++      "type": "paragraph",
++      "index": 205,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "信用卡号仅在内存中使用，支付完成后立即清除，不写入磁盘或日志"
++    },
++    {
++      "type": "paragraph",
++      "index": 206,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "Session token 在日志中用 *** 替代"
++    },
++    {
++      "type": "paragraph",
++      "index": 207,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "代理凭据使用环境变量或加密存储，不硬编码"
++    },
++    {
++      "type": "paragraph",
++      "index": 208,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "Stripe Publishable Key 可写入代码（本来就是公开的），但 Secret Key 绝不能出现在客户端"
++    },
++    {
++      "type": "paragraph",
++      "index": 209,
++      "style_id": "16",
++      "style": "List Bullet",
++      "text": "支付链接中的 client_secret 有时效性，过期后自动失效"
++    },
++    {
++      "type": "paragraph",
++      "index": 210,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.4 可观测性与审计"
++    },
++    {
++      "type": "paragraph",
++      "index": 211,
++      "style_id": "",
++      "style": "Normal",
++      "text": "编排系统应记录完整的支付审计日志："
++    },
++    {
++      "type": "table",
++      "index": 10,
++      "rows": [
++        [
++          "日志字段",
++          "说明",
++          "保留期"
++        ],
++        [
++          "task_id",
++          "支付任务唯一标识",
++          "永久"
++        ],
++        [
++          "account_id",
++          "账号标识（脱敏）",
++          "永久"
++        ],
++        [
++          "channel",
++          "auto / manual",
++          "永久"
++        ],
++        [
++          "payment_method",
++          "card / upi / pix / ...",
++          "永久"
++        ],
++        [
++          "amount / currency",
++          "金额和币种",
++          "永久"
++        ],
++        [
++          "pi_id",
++          "Stripe PaymentIntent ID",
++          "永久"
++        ],
++        [
++          "status_history",
++          "状态流转时间线",
++          "永久"
++        ],
++        [
++          "error_code / message",
++          "失败原因（如有）",
++          "永久"
++        ],
++        [
++          "proxy_id",
++          "使用的代理节点标识",
++          "30天"
++        ],
++        [
++          "tls_profile",
++          "使用的TLS指纹配置",
++          "30天"
++        ],
++        [
++          "request_log",
++          "完整HTTP请求记录",
++          "7天（脱敏）"
++        ]
++      ],
++      "row_count": 12,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 213,
++      "style_id": "4",
++      "style": "Heading 2",
++      "text": "10.5 与官方合规方案的边界"
++    },
++    {
++      "type": "paragraph",
++      "index": 214,
++      "style_id": "",
++      "style": "Normal",
++      "text": "最后需要明确本系统与 Stripe 官方合规方案的边界："
++    },
++    {
++      "type": "table",
++      "index": 11,
++      "rows": [
++        [
++          "维度",
++          "本编排系统（逆向协议）",
++          "Stripe 官方合规方案"
++        ],
++        [
++          "接口性质",
++          "逆向 Stripe 内部私有 API",
++          "官方公开 API + SDK"
++        ],
++        [
++          "支付方式",
++          "可激活前端隐藏的本地支付",
++          "仅商户后台配置的支付方式"
++        ],
++        [
++          "跨区定价",
++          "可通过 country/currency 参数切换",
++          "受商户配置限制"
++        ],
++        [
++          "风控对抗",
++          "需要 TLS 指纹、代理、行为模拟",
++          "不需要，官方 SDK 自带"
++        ],
++        [
++          "稳定性",
++          "依赖接口不变化，随时可能失效",
++          "有版本保障和迁移路径"
++        ],
++        [
++          "合规性",
++          "可能违反 Stripe 服务条款",
++          "完全合规"
++        ],
++        [
++          "适用场景",
++          "技术研究、特定场景自动化",
++          "生产环境商业支付"
++        ]
++      ],
++      "row_count": 8,
++      "column_count": 3
++    },
++    {
++      "type": "paragraph",
++      "index": 216,
++      "style_id": "",
++      "style": "Normal",
++      "text": "核心思路是：用提链激活跨区本地支付能力，用协议支付实现卡类全自动扣款，通过路由引擎分流，通过统一状态机关环。系统的价值不在于「绕过」什么，而在于将两种技术各自的优势组合起来，覆盖更广泛的支付场景，同时将人工介入压缩到最低限度。"
++    },
++    {
++      "type": "paragraph",
++      "index": 217,
++      "style_id": "",
++      "style": "Normal",
++      "text": "【最终声明】本系统的设计基于对 Stripe Checkout 协议的逆向分析。Stripe 可能随时更新接口、版本号、风控策略，导致系统部分或全部失效。生产环境商业支付应使用 Stripe 官方 API 和 SDK。本文仅用于技术学习与架构设计参考。"
++    },
++    {
++      "type": "paragraph",
++      "index": 219,
++      "style_id": "",
++      "style": "Normal",
++      "text": "——————————————————————————————"
++    }
++  ],
++  "tables": [
++    {
++      "type": "table",
++      "index": 0,
++      "rows": [
++        [
++          "模块",
++          "职责",
++          "技术来源"
++        ],
++        [
++          "A. 账号结账层",
++          "登录态管理、创建跨区 Checkout Session、税务地址更新",
++          "提链技术"
++        ],
++        [
++          "B. 支付路由引擎",
++          "根据 payment_method_types 决策走全自动还是人工通道",
++          "编排层新增"
++        ],
++        [
++          "C. 协议支付执行器",
++          "ConfirmationToken 创建、PaymentIntent 确认、3DS 处理",
++          "协议支付技术"
++        ],
++        [
++          "D. 人工介入通道",
++          "生成支付链接/二维码、通知用户、等待回调",
++          "提链技术 + 编排层"
++        ],
++        [
++          "E. 结果确认状态机",
++          "统一轮询/回调确认、状态流转、失败重试",
++          "两者结合"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 1,
++      "rows": [
++        [
++          "支付方式类型",
++          "处理模式",
++          "人工介入点",
++          "结果确认方式"
++        ],
++        [
++          "信用卡 (card)",
++          "全自动",
++          "无",
++          "PaymentIntent 状态 = succeeded"
++        ],
++        [
++          "Stripe Link 钱包",
++          "全自动",
++          "无",
++          "PaymentIntent 状态 = succeeded"
++        ],
++        [
++          "iDEAL / BLIK / GCash",
++          "半自动",
++          "用户打开链接完成银行/App确认",
++          "轮询 PaymentIntent / Stripe 回调"
++        ],
++        [
++          "UPI / PIX / TWINT",
++          "半自动",
++          "用户扫码或输入VPA完成支付",
++          "轮询 PaymentIntent / Stripe 回调"
++        ],
++        [
++          "Kakao Pay / MoMo",
++          "半自动(需pre_confirm)",
++          "用户在App内确认",
++          "轮询 + pre_confirm 状态跟踪"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 4
++    },
++    {
++      "type": "table",
++      "index": 2,
++      "rows": [
++        [
++          "坑点",
++          "现象",
++          "解决方案"
++        ],
++        [
++          "IP 一致性",
++          "创建和确认用不同IP → invalid_request_error",
++          "整个12步绑定同一个出口IP，HTTP client 不切换"
++        ],
++        [
++          "expected_amount",
++          "Confirm金额与Session不一致 → 拒绝",
++          "从 taxes 响应的 snapshot.amount_total 取值"
++        ],
++        [
++          "Session State",
++          "跳过步骤或用旧eid/mrid → 后续报错",
++          "严格按顺序执行，每步更新状态字段"
++        ],
++        [
++          "Accept-Language / guid",
++          "缺header或guid格式错 → 非预期响应",
++          "必传 Accept-Language，guid用UUID+6位hex=42字符"
++        ],
++        [
++          "超时",
++          "Confirm后无redirect_url → 卡住",
++          "轮询init接口，最多等90秒，超时标记失败"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 3,
++      "rows": [
++        [
++          "支付方式",
++          "PM Type",
++          "国家",
++          "自动化可行性",
++          "需pre_confirm",
++          "人工操作"
++        ],
++        [
++          "信用卡",
++          "card",
++          "全球",
++          "全自动",
++          "否",
++          "无"
++        ],
++        [
++          "Stripe Link",
++          "link",
++          "全球",
++          "全自动",
++          "否",
++          "无"
++        ],
++        [
++          "iDEAL",
++          "ideal",
++          "荷兰",
++          "半自动",
++          "否",
++          "银行选择页确认"
++        ],
++        [
++          "UPI",
++          "upi",
++          "印度",
++          "半自动",
++          "否",
++          "VPA输入/扫码确认"
++        ],
++        [
++          "PIX",
++          "pix",
++          "巴西",
++          "半自动",
++          "否",
++          "扫码支付"
++        ],
++        [
++          "TWINT",
++          "twint",
++          "瑞士",
++          "半自动",
++          "否",
++          "App跳转确认"
++        ],
++        [
++          "Kakao Pay",
++          "kakao_pay",
++          "韩国",
++          "半自动",
++          "是",
++          "Kakao App确认"
++        ],
++        [
++          "BLIK",
++          "blik",
++          "波兰",
++          "半自动",
++          "否",
++          "6位码输入"
++        ],
++        [
++          "MoMo",
++          "momo",
++          "越南",
++          "半自动",
++          "是",
++          "MoMo App确认"
++        ],
++        [
++          "GCash",
++          "gcash",
++          "菲律宾",
++          "半自动",
++          "否",
++          "GCash确认页"
++        ]
++      ],
++      "row_count": 11,
++      "column_count": 6
++    },
++    {
++      "type": "table",
++      "index": 4,
++      "rows": [
++        [
++          "错误码",
++          "分类",
++          "处理策略"
++        ],
++        [
++          "generic_decline",
++          "可重试",
++          "换卡重建 ConfirmationToken，同一PI重试"
++        ],
++        [
++          "insufficient_funds",
++          "可重试",
++          "充值或换卡后重试"
++        ],
++        [
++          "processing_error",
++          "可重试",
++          "Stripe侧临时错误，直接重试"
++        ],
++        [
++          "stolen_card / lost_card",
++          "不可重试",
++          "卡已标记，从卡池移除，放弃session"
++        ],
++        [
++          "card_not_supported",
++          "不可重试",
++          "卡类型不支持，换卡"
++        ],
++        [
++          "currency_not_supported",
++          "不可重试",
++          "卡不支持目标币种，换卡或换地区"
++        ],
++        [
++          "incorrect_cvc",
++          "特殊处理",
++          "检查CVC是否传错"
++        ],
++        [
++          "expired_card",
++          "特殊处理",
++          "卡过期，从卡池移除"
++        ],
++        [
++          "card_velocity_exceeded",
++          "特殊处理",
++          "交易频率超限，冷却后重试"
++        ]
++      ],
++      "row_count": 10,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 5,
++      "rows": [
++        [
++          "状态",
++          "含义",
++          "触发条件",
++          "后续动作"
++        ],
++        [
++          "PENDING",
++          "任务已创建，等待执行",
++          "路由引擎分配通道",
++          "进入模块C或D"
++        ],
++        [
++          "PROCESSING",
++          "支付执行中",
++          "协议执行器/提链流程运行中",
++          "等待Confirm结果"
++        ],
++        [
++          "AWAITING_PAYMENT",
++          "等待用户付款",
++          "manual通道已输出链接",
++          "启动轮询+超时计时"
++        ],
++        [
++          "REQUIRES_ACTION",
++          "需要验证挑战",
++          "auto通道触发hCaptcha/3DS",
++          "打码处理或转人工"
++        ],
++        [
++          "SUCCEEDED",
++          "支付成功",
++          "PI状态=succeeded",
++          "激活订阅，记录结果"
++        ],
++        [
++          "FAILED",
++          "支付失败",
++          "拒卡/超时/异常",
++          "分类重试或标记终态"
++        ],
++        [
++          "TIMEOUT",
++          "支付超时",
++          "manual通道超期未付",
++          "释放资源，可重新创建"
++        ],
++        [
++          "REFUNDED",
++          "已退款",
++          "Stripe退款回调",
++          "取消订阅，记录"
++        ]
++      ],
++      "row_count": 9,
++      "column_count": 4
++    },
++    {
++      "type": "table",
++      "index": 6,
++      "rows": [
++        [
++          "环节",
++          "耗时范围",
++          "超时阈值",
++          "说明"
++        ],
++        [
++          "Session 创建+税务",
++          "2-5秒",
++          "30秒",
++          "提链12步中的前7步"
++        ],
++        [
++          "Stripe Confirm（卡类）",
++          "1-3秒",
++          "15秒",
++          "协议支付Step 2-4"
++        ],
++        [
++          "hCaptcha 解验证",
++          "5-120秒",
++          "180秒",
++          "本地headless<5s，远程打码~15s"
++        ],
++        [
++          "manual链接生成",
++          "3-10秒",
++          "30秒",
++          "含pre_confirm（Kakao/MoMo）"
++        ],
++        [
++          "用户支付等待",
++          "10秒-15分钟",
++          "15分钟",
++          "用户在外部App操作"
++        ],
++        [
++          "结果轮询检测",
++          "3-30秒",
++          "30分钟",
++          "支付后Stripe状态更新延迟"
++        ],
++        [
++          "平台订阅激活",
++          "1-10秒",
++          "60秒",
++          "Stripe webhook通知平台"
++        ]
++      ],
++      "row_count": 8,
++      "column_count": 4
++    },
++    {
++      "type": "table",
++      "index": 7,
++      "rows": [
++        [
++          "参数",
++          "格式",
++          "作用"
++        ],
++        [
++          "guid",
++          "UUID + 6位hex = 42字符",
++          "全局唯一标识"
++        ],
++        [
++          "muid",
++          "同 guid 格式",
++          "设备标识"
++        ],
++        [
++          "sid",
++          "同 guid 格式",
++          "会话标识"
++        ],
++        [
++          "time_on_page",
++          "随机8-30秒",
++          "模拟真实用户停留时间"
++        ],
++        [
++          "_stripe_version",
++          "从deploy_status动态提取",
++          "API版本号"
++        ]
++      ],
++      "row_count": 6,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 8,
++      "rows": [
++        [
++          "代理类型",
++          "适用场景",
++          "风险等级"
++        ],
++        [
++          "住宅代理 (Residential)",
++          "Stripe API / 平台 API",
++          "最低，推荐生产"
++        ],
++        [
++          "ISP静态住宅代理",
++          "长期固定使用",
++          "中等，部分已被标记"
++        ],
++        [
++          "移动代理 (Mobile)",
++          "高价值交易",
++          "最低，但成本最高"
++        ],
++        [
++          "数据中心代理 (Datacenter)",
++          "仅测试/开发",
++          "高，Radar易标记"
++        ]
++      ],
++      "row_count": 5,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 9,
++      "rows": [
++        [
++          "异常类型",
++          "典型表现",
++          "可重试",
++          "处理策略"
++        ],
++        [
++          "网络瞬断",
++          "ConnectionError / Timeout",
++          "是",
++          "退避重试，最多3次"
++        ],
++        [
++          "限流 (429)",
++          "Too Many Requests",
++          "是",
++          "指纹轮换+指数退避"
++        ],
++        [
++          "TLS指纹被封 (403)",
++          "Forbidden",
++          "是",
++          "切换TLS profile+代理"
++        ],
++        [
++          "IP不一致",
++          "invalid_request_error",
++          "否(本session)",
++          "检查代理钉住，重建session"
++        ],
++        [
++          "拒卡 (generic_decline)",
++          "卡被拒绝",
++          "是(换卡)",
++          "换卡重建token，同PI重试"
++        ],
++        [
++          "余额不足",
++          "insufficient_funds",
++          "是(换卡)",
++          "换卡或充值后重试"
++        ],
++        [
++          "卡被盗标记",
++          "stolen_card",
++          "否",
++          "移除卡池，放弃session"
++        ],
++        [
++          "hCaptcha超时",
++          "auth_failure",
++          "是",
++          "换新captcha token重试"
++        ],
++        [
++          "manual超时",
++          "用户未支付",
++          "可重建",
++          "标记timeout，可重新创建任务"
++        ],
++        [
++          "Session过期",
++          "session expired",
++          "可重建",
++          "回到模块A重建session"
++        ],
++        [
++          "Sentinel token无效",
++          "approve返回blocked",
++          "否(本session)",
++          "重新生成Turnstile token"
++        ]
++      ],
++      "row_count": 12,
++      "column_count": 4
++    },
++    {
++      "type": "table",
++      "index": 10,
++      "rows": [
++        [
++          "日志字段",
++          "说明",
++          "保留期"
++        ],
++        [
++          "task_id",
++          "支付任务唯一标识",
++          "永久"
++        ],
++        [
++          "account_id",
++          "账号标识（脱敏）",
++          "永久"
++        ],
++        [
++          "channel",
++          "auto / manual",
++          "永久"
++        ],
++        [
++          "payment_method",
++          "card / upi / pix / ...",
++          "永久"
++        ],
++        [
++          "amount / currency",
++          "金额和币种",
++          "永久"
++        ],
++        [
++          "pi_id",
++          "Stripe PaymentIntent ID",
++          "永久"
++        ],
++        [
++          "status_history",
++          "状态流转时间线",
++          "永久"
++        ],
++        [
++          "error_code / message",
++          "失败原因（如有）",
++          "永久"
++        ],
++        [
++          "proxy_id",
++          "使用的代理节点标识",
++          "30天"
++        ],
++        [
++          "tls_profile",
++          "使用的TLS指纹配置",
++          "30天"
++        ],
++        [
++          "request_log",
++          "完整HTTP请求记录",
++          "7天（脱敏）"
++        ]
++      ],
++      "row_count": 12,
++      "column_count": 3
++    },
++    {
++      "type": "table",
++      "index": 11,
++      "rows": [
++        [
++          "维度",
++          "本编排系统（逆向协议）",
++          "Stripe 官方合规方案"
++        ],
++        [
++          "接口性质",
++          "逆向 Stripe 内部私有 API",
++          "官方公开 API + SDK"
++        ],
++        [
++          "支付方式",
++          "可激活前端隐藏的本地支付",
++          "仅商户后台配置的支付方式"
++        ],
++        [
++          "跨区定价",
++          "可通过 country/currency 参数切换",
++          "受商户配置限制"
++        ],
++        [
++          "风控对抗",
++          "需要 TLS 指纹、代理、行为模拟",
++          "不需要，官方 SDK 自带"
++        ],
++        [
++          "稳定性",
++          "依赖接口不变化，随时可能失效",
++          "有版本保障和迁移路径"
++        ],
++        [
++          "合规性",
++          "可能违反 Stripe 服务条款",
++          "完全合规"
++        ],
++        [
++          "适用场景",
++          "技术研究、特定场景自动化",
++          "生产环境商业支付"
++        ]
++      ],
++      "row_count": 8,
++      "column_count": 3
++    }
++  ]
++}
+diff --git "a/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.md" "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.md"
+new file mode 100644
+index 0000000..4c2610c
+--- /dev/null
++++ "b/docs/reference/payment-orchestration/\345\215\212\350\207\252\345\212\250\346\224\257\344\273\230\347\274\226\346\216\222\347\263\273\347\273\237_\344\273\216\350\264\246\345\217\267\347\273\223\350\264\246\345\210\260\346\224\257\344\273\230\347\273\223\346\236\234\347\241\256\350\256\244_\347\264\247\345\207\221\347\211\210.md"
+@@ -0,0 +1,872 @@
++# 半自动支付编排系统_从账号结账到支付结果确认_紧凑版
++
++> This file is a structured, searchable transcription of the supplied DOCX. The source document is retained beside it; prose and code-like snippets are reference material, not automatic project instructions.
++
++## Source Metadata
++
++- Original file: `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx`
++- SHA-256: `fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506`
++- Paragraphs: 220 (197 non-empty)
++- Tables: 12
++- Sections: 1
++- Images: 0
++- Comments/revisions: comments=False, insertions=0, deletions=0
++
++## Heading Index
++
++- **Heading 1** 一、系统整体架构与设计理念
++- **Heading 2** 1.1 设计目标
++- **Heading 2** 1.2 五大核心模块
++- **Heading 2** 1.3 架构总览
++- **Heading 2** 1.4 半自动的含义
++- **Heading 1** 二、模块 A：账号结账与会话创建（提链层）
++- **Heading 2** 2.1 登录态与 Access Token 获取
++- **Heading 2** 2.2 创建跨区 Checkout Session
++- **Heading 2** 2.3 税务地址优化
++- **Heading 2** 2.4 Stripe Session 初始化与状态管理
++- **Heading 2** 2.5 提链层的五个经典坑
++- **Heading 1** 三、模块 B：支付方式路由与决策引擎
++- **Heading 2** 3.1 路由决策逻辑
++- **Heading 2** 3.2 八种支付方式的自动化可行性
++- **Heading 2** 3.3 路由策略配置
++- **Heading 1** 四、模块 C：协议支付自动执行器（卡类全自动通道）
++- **Heading 2** 4.1 Custom 模式执行流程（oaics_）
++- **Heading 2** 4.2 Hosted 模式执行流程（cs_live_）
++- **Heading 2** 4.3 3DS / hCaptcha 挑战处理
++- **Heading 2** 4.4 Fast-Path 优化
++- **Heading 2** 4.5 拒卡分类与重试
++- **Heading 1** 五、模块 D：人工介入通道（本地支付扫码）
++- **Heading 2** 5.1 提取支付链接
++- **Heading 2** 5.2 Kakao Pay / MoMo 的 pre_confirm 特殊处理
++- **Heading 2** 5.3 链接交付与用户通知
++- **Heading 2** 5.4 人工支付超时管理
++- **Heading 2** 5.5 半自动通道的人工介入最小化
++- **Heading 1** 六、模块 E：支付结果确认与统一状态机
++- **Heading 2** 6.1 统一支付状态模型
++- **Heading 2** 6.2 Auto 通道的结果确认
++- **Heading 2** 6.3 Manual 通道的结果确认
++- **Heading 2** 6.4 订阅激活确认
++- **Heading 2** 6.5 状态流转图
++- **Heading 1** 七、完整端到端流程时序
++- **Heading 2** 7.1 时序总览
++- **Heading 2** 7.2 关键时序参数
++- **Heading 2** 7.3 并发批量处理
++- **Heading 1** 八、风控基础设施
++- **Heading 2** 8.1 TLS 指纹管理
++- **Heading 2** 8.2 Stripe.js 设备指纹
++- **Heading 2** 8.3 双代理池架构
++- **Heading 2** 8.4 请求节奏模拟
++- **Heading 2** 8.5 Cookie 隔离
++- **Heading 1** 九、异常处理与重试策略
++- **Heading 2** 9.1 异常分类矩阵
++- **Heading 2** 9.2 退避重试策略
++- **Heading 2** 9.3 幂等性保证
++- **Heading 2** 9.4 死信队列与人工兜底
++- **Heading 1** 十、安全边界与最佳实践
++- **Heading 2** 10.1 Session 隔离
++- **Heading 2** 10.2 Dry-Run 调试模式
++- **Heading 2** 10.3 敏感数据保护
++- **Heading 2** 10.4 可观测性与审计
++- **Heading 2** 10.5 与官方合规方案的边界
++
++## Full Ordered Content
++
++半自动支付编排系统技术设计
++
++—— 结合提链（Paylink Extraction）与 Stripe 协议支付自动化 ——
++
++在 SaaS 订阅支付领域，存在两条技术路线：一条是「提链」（Paylink Extraction），通过修改地区和币种参数，从 Stripe Checkout Session 中提取 UPI、PIX、iDEAL 等本地支付方式的跳转链接，让用户手动扫码付款；另一条是「协议支付自动化」，通过 HAR 抓包逆向 Stripe 内部接口，用纯 HTTP 请求模拟浏览器行为，全自动完成信用卡扣款。
++
++这两条路线各有不可替代的价值，也各有无法逾越的边界：
++
++- 提链能激活各国本地支付通道，但原生流程止步于「输出跳转链接」，后续付款和结果确认必须由人工完成，无法规模化批量处理。
++- 协议支付能全自动完成扣款，但原生只支持银行卡（card）支付方式，无法直接调用 UPI、PIX、MoMo 等强依赖客户端交互的本地支付。
++本文设计的「半自动支付编排系统」，正是将两者结合：用提链技术完成账号侧结账和跨区会话创建，用协议支付技术完成 Stripe 侧的自动化执行，对支持全自动的支付方式（信用卡、Stripe Link）走无人值守通道，对必须人工介入的支付方式（UPI、PIX、Kakao Pay 等）输出链接并在人工完成后自动轮询确认结果。整个系统从账号结账到支付结果确认形成闭环。
++
++【免责声明】本文为技术架构设计与原理分析，所有接口细节基于 Stripe Checkout 协议逆向研究。逆向调用厂商未公开接口可能违反服务条款，实际使用存在账号封禁、资金损失等风险，仅供学习研究。
++
++## 一、系统整体架构与设计理念
++
++### 1.1 设计目标
++
++半自动支付编排系统的核心设计目标是「能自动的全自动，不能自动的最小化人工介入」：
++
++- 统一入口：所有支付请求从同一个编排器进入，不管最终走卡支付还是本地支付
++- 智能路由：根据支付方式类型自动判断走全自动通道还是人工介入通道
++- 闭环确认：无论哪条通道，最终都由系统统一确认支付结果并更新订阅状态
++- 可观测性：每一步状态可追踪、可重试、可审计
++### 1.2 五大核心模块
++
++系统由五个核心模块组成，各司其职又紧密协作：
++
++### Table 0
++
++| 模块 | 职责 | 技术来源 |
++| --- | --- | --- |
++| A. 账号结账层 | 登录态管理、创建跨区 Checkout Session、税务地址更新 | 提链技术 |
++| B. 支付路由引擎 | 根据 payment_method_types 决策走全自动还是人工通道 | 编排层新增 |
++| C. 协议支付执行器 | ConfirmationToken 创建、PaymentIntent 确认、3DS 处理 | 协议支付技术 |
++| D. 人工介入通道 | 生成支付链接/二维码、通知用户、等待回调 | 提链技术 + 编排层 |
++| E. 结果确认状态机 | 统一轮询/回调确认、状态流转、失败重试 | 两者结合 |
++
++### 1.3 架构总览
++
++┌─────────────────────────────────────────────────────────────┐
++│                    支付编排器 (Orchestrator)                  │
++│                                                              │
++│  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │
++│  │ A.账号结账 │───▶│ B.支付路由引擎 │───▶│ C.协议支付执行器  │   │
++│  │  (提链层)  │    │              │    │  (卡类全自动)    │   │
++│  └──────────┘    └──────┬───────┘    └────────┬─────────┘   │
++│                         │                     │             │
++│                         │              ┌──────▼──────┐      │
++│                         │              │ 3DS/hCaptcha │      │
++│                         │              │   挑战处理    │      │
++│                         │              └──────┬──────┘      │
++│                         ▼                     │             │
++│                  ┌──────────────┐             │             │
++│                  │ D.人工介入通道 │             │             │
++│                  │ (本地支付扫码) │             │             │
++│                  └──────┬───────┘             │             │
++│                         │                     │             │
++│                         ▼                     ▼             │
++│                  ┌──────────────────────────────────┐       │
++│                  │     E. 结果确认状态机 (统一)       │       │
++│                  │  轮询 / 回调 / 重试 / 订阅激活     │       │
++│                  └──────────────────────────────────┘       │
++└─────────────────────────────────────────────────────────────┘
++         ▲                                    ▲
++         │                                    │
++  ┌──────┴──────┐                     ┌──────┴──────┐
++  │  代理池管理  │                     │  指纹管理    │
++  │ (双池+IP钉住)│                     │ (TLS+设备)  │
++  └─────────────┘                     └─────────────┘
++
++【架构要点】关键设计：模块 B（支付路由引擎）是整个系统的「大脑」。它在模块 A 创建完 Checkout Session 后，读取返回的 payment_method_types 字段，根据支付方式的自动化可行性做出路由决策——这是半自动系统区别于纯提链或纯协议支付的核心。
++
++### 1.4 半自动的含义
++
++「半自动」不是「一半自动一半手动」的模糊概念，而是有明确定义的分流机制：
++
++### Table 1
++
++| 支付方式类型 | 处理模式 | 人工介入点 | 结果确认方式 |
++| --- | --- | --- | --- |
++| 信用卡 (card) | 全自动 | 无 | PaymentIntent 状态 = succeeded |
++| Stripe Link 钱包 | 全自动 | 无 | PaymentIntent 状态 = succeeded |
++| iDEAL / BLIK / GCash | 半自动 | 用户打开链接完成银行/App确认 | 轮询 PaymentIntent / Stripe 回调 |
++| UPI / PIX / TWINT | 半自动 | 用户扫码或输入VPA完成支付 | 轮询 PaymentIntent / Stripe 回调 |
++| Kakao Pay / MoMo | 半自动(需pre_confirm) | 用户在App内确认 | 轮询 + pre_confirm 状态跟踪 |
++
++## 二、模块 A：账号结账与会话创建（提链层）
++
++模块 A 负责从账号登录态出发，创建一个带有目标地区和币种的 Stripe Checkout Session。这是整个支付流程的起点，也是提链技术的核心价值所在——绕过平台前端限制，激活 Stripe 原生支持的本地支付方式。
++
++### 2.1 登录态与 Access Token 获取
++
++系统首先需要有效的平台账号登录态。以 ChatGPT 为例：
++
++# 方式1：从已登录浏览器的 session cookie 换取
++GET https://chatgpt.com/api/auth/session
++→ {"accessToken": "eyJhbGciOiJSUzI1NiIs...", "user": {...}}
++
++# 方式2：直接使用 __Secure-next-auth.session-token cookie
++# 系统内部维护 cookie jar，自动刷新 access token（有效期5~10分钟）
++
++编排系统需要维护一个账号池，每个账号独立存储 session token，并在 token 即将过期时自动刷新。
++
++### 2.2 创建跨区 Checkout Session
++
++使用 Access Token 调用平台结账 API，关键是通过 billing_details 指定目标国家和币种：
++
++POST https://chatgpt.com/backend-api/payments/checkout
++Authorization: Bearer {access_token}
++
++{
++  "entry_point": "all_plans_pricing_modal",
++  "plan_name": "chatgptplusplan",
++  "billing_details": {
++    "country": "NL",       // 目标国家：NL=荷兰, IN=印度, BR=巴西...
++    "currency": "EUR"      // 目标币种：EUR, INR, BRL...
++  },
++  "checkout_ui_mode": "custom"
++}
++
++响应中的关键字段：
++
++{
++  "checkout_session_id": "oaics_xxxxxxxxxxxx",
++  "publishable_key": "pk_live_xxxxxxxxxxxx",
++  "payment_method_types": ["card", "ideal"]   // ← 路由引擎的决策依据
++}
++
++【架构要点】payment_method_types 是模块 B 路由决策的核心输入。传 NL+EUR 返回 ["card", "ideal"]，传 IN+INR 返回 ["card", "upi"]，传 BR+BRL 返回 ["card", "pix"]。不同的国家/币种组合激活不同的本地支付方式。
++
++### 2.3 税务地址优化
++
++创建 Session 后，需要更新税务地址。使用美国免税州（Oregon、Montana、Delaware、New Hampshire、Alaska）地址可以消除 VAT 消费税：
++
++POST /api/v1/payments/checkout/taxes
++{
++  "checkout_session_id": "oaics_xxx",
++  "billing_details": {
++    "name": "John Doe",
++    "address": {
++      "country": "US", "state": "OR",
++      "city": "Portland", "postal_code": "97201",
++      "line1": "123 Main St"
++    }
++  }
++}
++→ {"snapshot": {"amount_total": 2000, "currency": "eur"}}
++
++【关键】taxes 响应中的 amount_total 是后续 Confirm 请求 expected_amount 的准确来源。如果用 Init 步骤的金额去 Confirm，可能因税后金额不一致而失败。税务地址必须与后续 ConfirmationToken 中的地址保持一致。
++
++### 2.4 Stripe Session 初始化与状态管理
++
++提链的完整协议流程包含 12 步，编排系统需要严格按顺序执行并维护会话状态：
++
++1.  Session Refresh      — cookie 换新的 Access Token
++2.  Create Checkout      — 创建 oaics_ / cs_live_ session
++3.  Stripe Init          — POST payment_pages/{id}/init，获取 ppage_token
++4.  Update OAI Taxes     — 通知平台更新税务地址
++5.  Stripe Tax Region    — 更新 Stripe 侧税务区域
++6.  Stripe Customer Data — 更新客户信息
++7.  Checkout Snapshot    — 保存 checkout 快照（获取 amount_total）
++8.  Pre-Confirm          — Kakao Pay / MoMo 必须（其他支付方式跳过）
++9.  Create Payment Method— 创建 PM，类型 = card/ideal/upi/pix...
++10. Confirm              — 确认支付，触发重定向或扣款
++11. Approve              — Hosted 模式需要（Sentinel Token）
++12. Extract Result       — 提取 redirect_url 或 PaymentIntent 状态
++
++每一步响应中都会更新 eid（element ID）、mrid（merchant reference ID）等会话状态字段，下一步必须携带最新值。这意味着 12 步必须严格串行，不能并行。
++
++### 2.5 提链层的五个经典坑
++
++### Table 2
++
++| 坑点 | 现象 | 解决方案 |
++| --- | --- | --- |
++| IP 一致性 | 创建和确认用不同IP → invalid_request_error | 整个12步绑定同一个出口IP，HTTP client 不切换 |
++| expected_amount | Confirm金额与Session不一致 → 拒绝 | 从 taxes 响应的 snapshot.amount_total 取值 |
++| Session State | 跳过步骤或用旧eid/mrid → 后续报错 | 严格按顺序执行，每步更新状态字段 |
++| Accept-Language / guid | 缺header或guid格式错 → 非预期响应 | 必传 Accept-Language，guid用UUID+6位hex=42字符 |
++| 超时 | Confirm后无redirect_url → 卡住 | 轮询init接口，最多等90秒，超时标记失败 |
++
++## 三、模块 B：支付方式路由与决策引擎
++
++模块 B 是半自动编排系统的核心决策层。它在模块 A 完成 Checkout Session 创建后，根据 payment_method_types 和系统配置，决定当前交易走哪条执行通道。
++
++### 3.1 路由决策逻辑
++
++def route_payment(checkout_session, config):
++    pm_types = checkout_session["payment_method_types"]
++    preferred = config.get("preferred_method", "card")
++
++    # 优先级1：用户指定的支付方式
++    if preferred in pm_types:
++        selected = preferred
++    # 优先级2：优先选可全自动的卡支付
++    elif "card" in pm_types and config.allow_card_auto:
++        selected = "card"
++    # 优先级3：回退到第一个本地支付方式
++    else:
++        selected = pm_types[-1]  # 最后一个通常是本地支付
++
++    # 决策：是否可全自动
++    if selected in ("card", "link"):
++        return {"channel": "auto", "method": selected}
++    else:
++        return {"channel": "manual", "method": selected}
++
++### 3.2 八种支付方式的自动化可行性
++
++### Table 3
++
++| 支付方式 | PM Type | 国家 | 自动化可行性 | 需pre_confirm | 人工操作 |
++| --- | --- | --- | --- | --- | --- |
++| 信用卡 | card | 全球 | 全自动 | 否 | 无 |
++| Stripe Link | link | 全球 | 全自动 | 否 | 无 |
++| iDEAL | ideal | 荷兰 | 半自动 | 否 | 银行选择页确认 |
++| UPI | upi | 印度 | 半自动 | 否 | VPA输入/扫码确认 |
++| PIX | pix | 巴西 | 半自动 | 否 | 扫码支付 |
++| TWINT | twint | 瑞士 | 半自动 | 否 | App跳转确认 |
++| Kakao Pay | kakao_pay | 韩国 | 半自动 | 是 | Kakao App确认 |
++| BLIK | blik | 波兰 | 半自动 | 否 | 6位码输入 |
++| MoMo | momo | 越南 | 半自动 | 是 | MoMo App确认 |
++| GCash | gcash | 菲律宾 | 半自动 | 否 | GCash确认页 |
++
++### 3.3 路由策略配置
++
++编排系统支持多种路由策略，适应不同业务场景：
++
++- 成本优先：优先选择费率最低的支付方式（通常本地支付费率低于信用卡）
++- 速度优先：优先选择全自动通道（card/link），跳过人工等待
++- 地区优先：根据账号注册地或代理IP所在地自动匹配对应本地支付
++- 手动指定：运营人员在任务创建时明确指定支付方式
++【架构要点】路由引擎的输出是一个标准化的 PaymentTask 对象，包含 channel（auto/manual）、method（支付方式类型）、session_id、publishable_key、expected_amount 等字段。后续模块 C 和 D 都基于这个对象执行，不需要关心上游是怎么创建 Session 的。
++
++## 四、模块 C：协议支付自动执行器（卡类全自动通道）
++
++当路由引擎判定走 auto 通道时，模块 C 接管后续流程。它基于 Stripe 协议支付自动化技术，用纯 HTTP 请求模拟浏览器完整操作链路，在无 GUI 环境下完成从卡号令牌化到扣款成功的全流程。
++
++### 4.1 Custom 模式执行流程（oaics_）
++
++Custom 模式是最干净的全自动路径，共 4 个核心步骤：
++
++Step 1: 获取 Elements Session 配置
++GET /v1/elements/sessions?deferred_intent[mode]=subscription
++  &deferred_intent[amount]={amount}&deferred_intent[currency]={currency}
++  &type=deferred_intent&key={pk_live}&_stripe_version=2025-03-31.basil
++→ elements_session_id, customer_session_client_secret, pmc_xxx
++
++Step 2: 创建 ConfirmationToken（卡号 → ctoken_）
++POST /v1/confirmation_tokens
++  type=card
++  payment_method_data[card][number]=...
++  payment_method_data[card][exp_month]=...
++  payment_method_data[card][exp_year]=...
++  payment_method_data[card][cvc]=...
++  payment_method_data[billing_details][address][country]=US
++  key={pk_live}&_stripe_version=2025-03-31.basil
++  + guid/muid/sid 指纹参数（42字符格式）
++→ {"id": "ctoken_1xxx"}
++
++Step 3: 平台侧确认
++POST /api/v1/payments/checkout/confirm
++  {"checkout_session_id": "oaics_xxx", "confirmation_token": "ctoken_1xxx"}
++→ {"client_secret": "pi_xxx_secret_xxx"}
++
++Step 4: Stripe 侧扣款
++POST /v1/payment_intents/{pi_id}/confirm
++  confirmation_token=ctoken_xxx
++  client_secret=pi_xxx_secret_xxx
++  return_url=...
++  key={pk_live}&_stripe_version=2025-03-31.basil
++  client_attribution_metadata[merchant_integration_source]=l1
++→ {"status": "succeeded"} 或 {"status": "requires_action"}
++
++### 4.2 Hosted 模式执行流程（cs_live_）
++
++Hosted 模式流程更长，涉及 Payment Page 初始化和 Approve 机制：
++
++Step 1: Payment Page 初始化
++GET /api/payment-page/{cs_live_xxx}/init
++→ {"ppage_token": "ppage_xxx"}
++
++Step 2: Elements Session（带 Hosted 特殊字段）
++POST /v1/elements/sessions
++  checkout_session_id=cs_live_xxx
++  elements_init_source=custom_checkout
++  _stripe_version=2025-03-31.basil; checkout_server_update_beta=v1; ...
++→ passive_captcha.rqdata（hCaptcha Enterprise 参数）
++
++Step 3: 创建 ConfirmationToken（同 Custom）
++
++Step 4: Payment Pages Confirm
++POST /v1/payment_pages/{cs_live_xxx}/confirm
++  elements_session_client[...] = ...（8个子字段）
++  init_checksum / js_checksum / rv_timestamp（动态提取）
++  expected_amount = {amount}
++→ {"status": "open", "requires_approval": true}
++
++Step 5: 等待平台自动 Approve（fall-through）
++  或手动 Approve（需 Sentinel Token + Turnstile 验证）
++
++Step 6: 轮询 Payment Page 状态
++POST /v1/payment_pages/{cs_live_xxx}/poll
++→ payment_object_status: open / requires_action / succeeded
++
++### 4.3 3DS / hCaptcha 挑战处理
++
++当 PaymentIntent 进入 requires_action 状态时，需要处理 Stripe 自有的 hCaptcha Enterprise 挑战：
++
++POST /v1/payment_intents/{pi_id}/verify_challenge
++  captcha_response={hcaptcha_token}      # P0开头的长字符串
++  captcha_vendor_name=hcaptcha
++  captcha_sitekey={sitekey}              # 从 elements_session 提取
++  expected_amount={amount}
++  expected_currency={currency}
++  key={pk_live}
++  client_secret={pi_secret}
++
++hCaptcha Enterprise 的特殊性：
++
++- 必须携带 rqdata 参数（从 elements_session.passive_captcha 提取）
++- sitekey 是 Stripe 专有，不是通用 hCaptcha sitekey
++- invisible 模式，浏览器中看不到验证码图片
++- token 时效性强（浏览器 ~4 秒解出有效，远程打码需 30-120 秒）
++【重要澄清】重要澄清：Stripe 的 verify_with_challenge 并非传统银行 3DS 验证。它是 Stripe 自有的风控挑战，使用 hCaptcha 作为人机验证手段。真正的银行 3DS（Visa Secure）会打开银行页面要求 OTP，纯协议无法绕过。但虚拟信用卡通常只触发 Stripe hCaptcha，不触发银行 3DS。
++
++### 4.4 Fast-Path 优化
++
++有时 confirm 返回 requires_action，但 PI 实际上已经扣款成功。正确做法是先查询 PI 状态：
++
++pi = stripe.get(f"/v1/payment_intents/{pi_id}", key=pk_live)
++if pi["status"] == "succeeded":
++    return SUCCESS  # 已扣款成功，跳过 captcha
++elif pi["status"] == "requires_action":
++    solve_hcaptcha(pi)  # 确实需要验证
++
++### 4.5 拒卡分类与重试
++
++### Table 4
++
++| 错误码 | 分类 | 处理策略 |
++| --- | --- | --- |
++| generic_decline | 可重试 | 换卡重建 ConfirmationToken，同一PI重试 |
++| insufficient_funds | 可重试 | 充值或换卡后重试 |
++| processing_error | 可重试 | Stripe侧临时错误，直接重试 |
++| stolen_card / lost_card | 不可重试 | 卡已标记，从卡池移除，放弃session |
++| card_not_supported | 不可重试 | 卡类型不支持，换卡 |
++| currency_not_supported | 不可重试 | 卡不支持目标币种，换卡或换地区 |
++| incorrect_cvc | 特殊处理 | 检查CVC是否传错 |
++| expired_card | 特殊处理 | 卡过期，从卡池移除 |
++| card_velocity_exceeded | 特殊处理 | 交易频率超限，冷却后重试 |
++
++【架构要点】同一个 PaymentIntent 被拒卡后，可以用新的 ConfirmationToken 重试，不需要重建整个 Checkout Session。这大幅提升了批量支付的效率——换卡只需要重新执行 Step 2 和 Step 4。
++
++## 五、模块 D：人工介入通道（本地支付扫码）
++
++当路由引擎判定走 manual 通道时，模块 D 接管。它的职责是：从提链流程的 Confirm 响应中提取支付跳转链接，以可操作的形式（URL/二维码）交付给用户，并在用户完成支付后将控制权交回模块 E 进行结果确认。
++
++### 5.1 提取支付链接
++
++提链流程的第 10 步 Confirm 之后，对于重定向类型的支付方式，Stripe 返回：
++
++{
++  "status": "requires_action",
++  "next_action": {
++    "type": "redirect_to_url",
++    "redirect_to_url": {
++      "url": "https://hooks.stripe.com/redirect/authenticate/src_xxx?client_secret=..."
++    }
++  }
++}
++
++这个 redirect_url 就是最终支付链接。不同支付方式打开后的页面不同：
++
++- iDEAL → 银行选择页，用户选银行后跳转网银确认
++- UPI → VPA 输入页或二维码，用户在 UPI App 中确认
++- PIX → 二维码页面，用户用巴西银行App扫码
++- Kakao Pay → Kakao 确认页，用户在 KakaoTalk 中确认
++- MoMo → MoMo App 跳转，用户在 App 内确认支付
++### 5.2 Kakao Pay / MoMo 的 pre_confirm 特殊处理
++
++Kakao Pay 和 MoMo 需要额外的 pre_confirm 调用，否则 Confirm 返回 incomplete 状态，拿不到 redirect_url：
++
++POST /v1/payment_pages/{oaics_xxx}/pre_confirm
++Content-Type: application/x-www-form-urlencoded
++expected_payment_method_type=kakao_pay
++
++【容易踩坑】如果不知道有 pre_confirm 这一步，Kakao Pay 和 MoMo 的提链会卡在最后一步——所有参数都对，就是拿不到链接。这类细节只有通过 HAR 抓包完整结账流程才能发现。
++
++### 5.3 链接交付与用户通知
++
++编排系统需要将支付链接以用户可操作的方式交付：
++
++PaymentLink {
++  task_id: "pay_20260829_001",
++  method: "upi",
++  redirect_url: "https://hooks.stripe.com/redirect/authenticate/src_xxx?...",
++  qr_code: <base64_png>,           // 系统自动生成二维码
++  amount: "₹1,950",
++  currency: "INR",
++  expires_in: 900,                 // 链接有效期（秒）
++  created_at: "2026-08-29T12:00:00Z"
++}
++
++交付方式可以是：Web 管理面板展示、API 回调通知、消息推送等。系统同时生成二维码，方便手机扫码支付。
++
++### 5.4 人工支付超时管理
++
++本地支付链接通常有有效期（一般 15 分钟），系统需要管理超时：
++
++- 链接生成后启动倒计时，默认 15 分钟
++- 超时未支付 → 标记任务为 TIMEOUT，释放卡池/代理资源
++- 用户支付后但系统未检测到 → 延长轮询窗口（最多 30 分钟），防止网络延迟导致误判
++- 超时后用户仍完成了支付 → 通过 Stripe 对账机制补单（webhook 回调）
++### 5.5 半自动通道的人工介入最小化
++
++虽然叫「人工介入通道」，但系统设计目标是将人工操作压缩到极致：
++
++- 用户只需做一件事：打开链接（或扫码）→ 在支付App中点确认
++- 不需要用户填写任何信息（金额、收款方都已由系统预设）
++- 支付完成后不需要用户通知系统，系统自动轮询检测结果
++- 用户甚至不需要知道背后是 Stripe，只看到一个支付页面
++## 六、模块 E：支付结果确认与统一状态机
++
++模块 E 是整个系统的闭环保障。无论走 auto 通道还是 manual 通道，最终都由模块 E 统一确认支付结果、更新订阅状态、处理异常。
++
++### 6.1 统一支付状态模型
++
++### Table 5
++
++| 状态 | 含义 | 触发条件 | 后续动作 |
++| --- | --- | --- | --- |
++| PENDING | 任务已创建，等待执行 | 路由引擎分配通道 | 进入模块C或D |
++| PROCESSING | 支付执行中 | 协议执行器/提链流程运行中 | 等待Confirm结果 |
++| AWAITING_PAYMENT | 等待用户付款 | manual通道已输出链接 | 启动轮询+超时计时 |
++| REQUIRES_ACTION | 需要验证挑战 | auto通道触发hCaptcha/3DS | 打码处理或转人工 |
++| SUCCEEDED | 支付成功 | PI状态=succeeded | 激活订阅，记录结果 |
++| FAILED | 支付失败 | 拒卡/超时/异常 | 分类重试或标记终态 |
++| TIMEOUT | 支付超时 | manual通道超期未付 | 释放资源，可重新创建 |
++| REFUNDED | 已退款 | Stripe退款回调 | 取消订阅，记录 |
++
++### 6.2 Auto 通道的结果确认
++
++全自动通道的结果确认相对直接：
++
++# Step 4 (payment_intents/confirm) 响应
++if response["status"] == "succeeded":
++    → SUCCEEDED，激活订阅
++elif response["status"] == "requires_action":
++    → 先查PI真实状态（Fast-Path优化）
++    → 若已succeeded → SUCCEEDED
++    → 若确实requires_action → 解hCaptcha → 重新confirm
++elif response["status"] == "requires_payment_method":
++    → 拒卡，分类处理（换卡重试/放弃）
++
++### 6.3 Manual 通道的结果确认
++
++人工通道的结果确认是半自动系统最关键的环节。用户在外部完成支付后，系统需要主动检测到支付成功：
++
++# 轮询策略（推荐）
++def poll_payment_result(pi_id, max_wait=1800):
++    # 每3秒轮询一次PaymentIntent状态，最多等30分钟
++    for elapsed in range(0, max_wait, 3):
++        pi = stripe.get(f"/v1/payment_intents/{pi_id}", key=pk_live)
++        if pi["status"] == "succeeded":
++            return SUCCEEDED
++        elif pi["status"] == "canceled":
++            return FAILED
++        elif pi["status"] == "requires_payment_method":
++            return FAILED  # 用户取消了支付
++        sleep(3)
++    return TIMEOUT
++
++除了主动轮询，系统还应支持 Stripe Webhook 回调作为补充确认渠道：
++
++- payment_intent.succeeded → 支付成功，激活订阅
++- payment_intent.payment_failed → 支付失败，记录原因
++- charge.refunded → 已退款，取消订阅
++【架构要点】轮询 + Webhook 双保险：轮询保证系统主动感知状态变化，Webhook 保证轮询间隔内的事件不丢失。两者通过 payment_intent id 去重，避免重复处理。
++
++### 6.4 订阅激活确认
++
++Stripe 侧支付成功不等于平台订阅已激活。系统还需要确认平台侧的订阅状态：
++
++# 支付成功后，验证平台侧订阅状态
++GET /api/v1/me/subscription
++→ {"subscription": {"plan": "plus", "status": "active", "renews_at": "..."}}
++
++# 如果平台侧未激活（Stripe回调延迟），继续轮询平台API
++# 最多等 60 秒，通常 Stripe webhook 会在几秒内通知平台
++
++### 6.5 状态流转图
++
++┌──────────┐
++                    │ PENDING  │
++                    └────┬─────┘
++                         │ 路由分配
++                         ▼
++                  ┌──────────────┐
++                  │ PROCESSING   │
++                  └──┬───────┬───┘
++            auto通道 │       │ manual通道
++                     ▼       ▼
++            ┌────────────┐  ┌──────────────────┐
++            │REQUIRES_   │  │ AWAITING_PAYMENT │
++            │ACTION      │  │ (链接已输出)      │
++            └──┬─────┬───┘  └──┬───────────┬───┘
++          成功│     │失败      │用户支付成功│超时/取消
++               ▼     ▼          ▼           ▼
++         ┌──────────┐     ┌──────────┐  ┌─────────┐
++         │SUCCEEDED │     │ FAILED   │  │ TIMEOUT │
++         └────┬─────┘     └────┬─────┘  └────┬────┘
++              │                │              │
++              ▼                ▼              ▼
++         激活订阅          分类重试/放弃    可重新创建
++              │
++              ▼
++         平台侧确认 → 最终完成
++
++## 七、完整端到端流程时序
++
++以下以一个典型任务为例，展示从账号结账到支付结果确认的完整时序。场景：印度区账号，优先使用 UPI 本地支付，UPI 失败后回退到信用卡全自动。
++
++### 7.1 时序总览
++
++用户/运营          编排器           模块A(提链)      模块B(路由)     模块D(人工)     模块E(确认)
++   │                │                 │                │               │               │
++   │──创建任务─────▶│                 │                │               │               │
++   │                │──获取登录态────▶│                │               │               │
++   │                │                 │──创建Session──▶│               │               │
++   │                │                 │──更新税务──────▶│               │               │
++   │                │                 │◀──session+pm──│               │               │
++   │                │                 │                │               │               │
++   │                │◀────────────────│──路由决策──────▶│               │               │
++   │                │                 │                │ manual=upi    │               │
++   │                │                 │                │               │               │
++   │                │──执行manual通道─────────────────────────────────▶│               │
++   │                │                 │  Stripe协议12步                │               │
++   │                │                 │  Confirm→redirect_url          │               │
++   │                │◀────────────────────────────────────────────────│──支付链接─────│
++   │◀──支付链接/QR──│                 │                                │               │
++   │                │                 │                                │               │
++   │──用户UPI付款──▶│                 │                                │               │
++   │   (在UPI App)  │                 │                                │               │
++   │                │──轮询PI状态────────────────────────────────────────────────────▶│
++   │                │                 │                                │               │──succeeded?
++   │                │◀────────────────────────────────────────────────────────────────│
++   │                │                 │                                │               │
++   │                │──确认平台订阅──▶│                │               │               │
++   │◀──订阅已激活──│                 │                │               │               │
++   │                │                 │                │               │               │
++   │  (若UPI超时)   │──回退card通道──▶│                │──auto=card──▶│(模块C接管)     │
++   │                │                 │  创建ctoken→confirm→扣款       │               │
++   │                │◀────────────────────────────────────────────────────────────────│
++   │◀──订阅已激活──│                 │                │               │               │
++
++### 7.2 关键时序参数
++
++### Table 6
++
++| 环节 | 耗时范围 | 超时阈值 | 说明 |
++| --- | --- | --- | --- |
++| Session 创建+税务 | 2-5秒 | 30秒 | 提链12步中的前7步 |
++| Stripe Confirm（卡类） | 1-3秒 | 15秒 | 协议支付Step 2-4 |
++| hCaptcha 解验证 | 5-120秒 | 180秒 | 本地headless<5s，远程打码~15s |
++| manual链接生成 | 3-10秒 | 30秒 | 含pre_confirm（Kakao/MoMo） |
++| 用户支付等待 | 10秒-15分钟 | 15分钟 | 用户在外部App操作 |
++| 结果轮询检测 | 3-30秒 | 30分钟 | 支付后Stripe状态更新延迟 |
++| 平台订阅激活 | 1-10秒 | 60秒 | Stripe webhook通知平台 |
++
++### 7.3 并发批量处理
++
++编排系统支持批量任务处理，通过信号量控制并发：
++
++# 并发控制配置
++MAX_CONCURRENT_AUTO = 3      # 最多3个全自动支付同时进行
++MAX_CONCURRENT_MANUAL = 10   # manual通道可更多（只占IO，不占计算）
++MAX_PER_PROXY = 2            # 每个代理IP上同时最多2个支付流程
++RATE_LIMIT_PER_KEY = 100     # 每个publishable_key每分钟最多100次confirm
++
++批量任务的执行顺序建议：
++
++- 优先执行 auto 通道任务（速度快，资源占用高）
++- manual 通道任务批量输出链接后，进入等待轮询阶段（资源占用低）
++- manual 任务的结果确认与 auto 任务的执行并行进行
++## 八、风控基础设施
++
++无论是提链还是协议支付，都面临 Stripe Radar 和平台侧的风控检测。编排系统需要一套统一的风控基础设施，为所有通道提供指纹伪装、代理管理和行为模拟。
++
++### 8.1 TLS 指纹管理
++
++Stripe 和 Cloudflare 会检查 TLS Client Hello 指纹（JA3/JA4），不匹配浏览器特征直接返回 403/429。
++
++# Python 使用 curl_cffi 模拟浏览器 TLS 指纹
++from curl_cffi import requests
++
++PROFILES = [
++    {"tls": "chrome131", "ua": "Mozilla/5.0 ... Chrome/131.0.0.0",
++     "sec_ch_ua": '"Not=A?Brand";v="99", "Chromium";v="131"'},
++    {"tls": "safari18", "ua": "Mozilla/5.0 ... Safari/605.1.15",
++     "sec_ch_ua": None},
++    {"tls": "firefox117", "ua": "Mozilla/5.0 ... Firefox/117.0",
++     "sec_ch_ua": None},
++]
++
++# 遇到403/429时自动轮换指纹，最多重试3次
++
++【一致性要求】TLS 指纹必须与 User-Agent 成对匹配。用 Chrome 131 的 TLS 指纹但 UA 写 Chrome 124，会被 Cloudflare bot detection 立即发现。
++
++### 8.2 Stripe.js 设备指纹
++
++所有 Stripe API 请求需要携带设备指纹参数：
++
++### Table 7
++
++| 参数 | 格式 | 作用 |
++| --- | --- | --- |
++| guid | UUID + 6位hex = 42字符 | 全局唯一标识 |
++| muid | 同 guid 格式 | 设备标识 |
++| sid | 同 guid 格式 | 会话标识 |
++| time_on_page | 随机8-30秒 | 模拟真实用户停留时间 |
++| _stripe_version | 从deploy_status动态提取 | API版本号 |
++
++此外，建议在业务请求前向 m.stripe.com/6 发送至少一次指纹注册（stripejs-init-complete），降低 Radar 异常检测风险。r.stripe.com/b 遥测上报为纯可选。
++
++### 8.3 双代理池架构
++
++┌─────────────────────────────────────┐
++│           代理池管理器               │
++│                                     │
++│  ┌──────────────┐  ┌──────────────┐ │
++│  │ 平台代理池    │  │ Stripe代理池  │ │
++│  │ (匹配账号地区) │  │ (住宅IP优先)  │ │
++│  └──────┬───────┘  └──────┬───────┘ │
++│         │                 │         │
++│         ▼                 ▼         │
++│  ┌──────────────┐  ┌──────────────┐ │
++│  │ 健康检查      │  │ 健康检查      │ │
++│  │ 国家匹配验证  │  │ IP信誉检查    │ │
++│  └──────────────┘  └──────────────┘ │
++│                                     │
++│  支付流程中「钉住」同一个代理节点     │
++│  禁止负载均衡在单次支付中切换IP      │
++└─────────────────────────────────────┘
++
++### Table 8
++
++| 代理类型 | 适用场景 | 风险等级 |
++| --- | --- | --- |
++| 住宅代理 (Residential) | Stripe API / 平台 API | 最低，推荐生产 |
++| ISP静态住宅代理 | 长期固定使用 | 中等，部分已被标记 |
++| 移动代理 (Mobile) | 高价值交易 | 最低，但成本最高 |
++| 数据中心代理 (Datacenter) | 仅测试/开发 | 高，Radar易标记 |
++
++【铁律】出口 IP 一致性是铁律：创建 Checkout Session 和确认支付必须使用同一个出口 IP。Stripe 会比对两次请求的 IP，不一致直接拒绝交易。整个支付流程（提链12步 + 协议支付）必须绑定同一个代理出口。
++
++### 8.4 请求节奏模拟
++
++纯协议支付的风险是请求速度太快。浏览器用户从打开支付页面到点击确认通常需要 15-60 秒，自动化 2 秒完成会被 Radar 标记。
++
++# 关键步骤间加入随机延迟
++await sleep(random.uniform(1.5, 3.0))   # 创建 session 后
++await sleep(random.uniform(0.8, 2.0))   # 更新税务后
++await sleep(random.uniform(1.0, 2.5))   # 创建 token 后
++await sleep(random.uniform(0.5, 1.5))   # confirm 前
++# 总时间控制在 8-30 秒之间比较自然
++
++### 8.5 Cookie 隔离
++
++使用两个独立的 HTTP 客户端，严格隔离平台 Cookie 和 Stripe Cookie：
++
++- 平台客户端：带 session token cookie，用于调用平台 API
++- Stripe 客户端：不带任何 cookie，用于调用 api.stripe.com
++- 绝不允许 Stripe 客户端发送平台 Cookie，反之亦然
++## 九、异常处理与重试策略
++
++支付流程中任何一步都可能失败。编排系统需要一套完善的异常分类和重试机制，确保可恢复的错误自动恢复，不可恢复的错误清晰上报。
++
++### 9.1 异常分类矩阵
++
++### Table 9
++
++| 异常类型 | 典型表现 | 可重试 | 处理策略 |
++| --- | --- | --- | --- |
++| 网络瞬断 | ConnectionError / Timeout | 是 | 退避重试，最多3次 |
++| 限流 (429) | Too Many Requests | 是 | 指纹轮换+指数退避 |
++| TLS指纹被封 (403) | Forbidden | 是 | 切换TLS profile+代理 |
++| IP不一致 | invalid_request_error | 否(本session) | 检查代理钉住，重建session |
++| 拒卡 (generic_decline) | 卡被拒绝 | 是(换卡) | 换卡重建token，同PI重试 |
++| 余额不足 | insufficient_funds | 是(换卡) | 换卡或充值后重试 |
++| 卡被盗标记 | stolen_card | 否 | 移除卡池，放弃session |
++| hCaptcha超时 | auth_failure | 是 | 换新captcha token重试 |
++| manual超时 | 用户未支付 | 可重建 | 标记timeout，可重新创建任务 |
++| Session过期 | session expired | 可重建 | 回到模块A重建session |
++| Sentinel token无效 | approve返回blocked | 否(本session) | 重新生成Turnstile token |
++
++### 9.2 退避重试策略
++
++def with_retry(func, max_retries=3, base_delay=1.0):
++    for attempt in range(max_retries):
++        try:
++            return func()
++        except RateLimitError:
++            # 429: 轮换指纹 + 指数退避
++            tls_manager.rotate()
++            sleep(base_delay * (2 ** attempt) + random.uniform(0, 1))
++        except NetworkError:
++            # 网络错误: 纯退避
++            sleep(base_delay * (2 ** attempt))
++        except TLSFingerprintBlocked:
++            # 403: 换指纹 + 换代理
++            tls_manager.rotate()
++            proxy_pool.rotate()
++            sleep(base_delay)
++    raise MaxRetriesExceeded()
++
++### 9.3 幂等性保证
++
++重试机制必须保证幂等性，避免重复扣款：
++
++- 每个支付任务有唯一 task_id，所有状态更新基于 task_id 做乐观锁
++- PaymentIntent 确认使用 Idempotency-Key（Stripe 原生支持）
++- manual 通道的链接生成是幂等的——同一 session 多次 confirm 返回相同的 redirect_url
++- 订阅激活检查是幂等的——已激活的账号再次检查返回相同状态
++### 9.4 死信队列与人工兜底
++
++超过最大重试次数的任务进入死信队列（DLQ），由运营人员人工介入：
++
++- DLQ 任务保留完整的执行日志、最后错误信息、已完成的步骤
++- 运营可选择：重试、换支付方式、换账号、标记放弃
++- 对于「钱已扣但订阅未激活」的异常状态，优先通过 Stripe 对账确认，避免误判
++## 十、安全边界与最佳实践
++
++### 10.1 Session 隔离
++
++- 每次支付使用独立的 Checkout Session，不复用已失败的 Session
++- Hosted 模式下 approve 操作后的 Session 不可再次使用
++- 每个账号的支付任务独立运行，不共享 HTTP client、cookie jar、代理
++### 10.2 Dry-Run 调试模式
++
++所有实现应支持 Dry-Run 模式——执行完整流程但不提交最终的 confirm：
++
++if config.commit_payments:
++    result = stripe.confirm_payment_intent(pi_id, token)
++else:
++    logger.info("Dry-run: skipping confirm")
++    result = {"status": "dry_run", "pi_id": pi_id}
++
++Dry-Run 可以验证整个流程（创建 session、生成 token、税务计算、路由决策）都正确，而不实际扣钱。这对于调试新支付方式接入、新地区配置尤为重要。
++
++### 10.3 敏感数据保护
++
++- 信用卡号仅在内存中使用，支付完成后立即清除，不写入磁盘或日志
++- Session token 在日志中用 *** 替代
++- 代理凭据使用环境变量或加密存储，不硬编码
++- Stripe Publishable Key 可写入代码（本来就是公开的），但 Secret Key 绝不能出现在客户端
++- 支付链接中的 client_secret 有时效性，过期后自动失效
++### 10.4 可观测性与审计
++
++编排系统应记录完整的支付审计日志：
++
++### Table 10
++
++| 日志字段 | 说明 | 保留期 |
++| --- | --- | --- |
++| task_id | 支付任务唯一标识 | 永久 |
++| account_id | 账号标识（脱敏） | 永久 |
++| channel | auto / manual | 永久 |
++| payment_method | card / upi / pix / ... | 永久 |
++| amount / currency | 金额和币种 | 永久 |
++| pi_id | Stripe PaymentIntent ID | 永久 |
++| status_history | 状态流转时间线 | 永久 |
++| error_code / message | 失败原因（如有） | 永久 |
++| proxy_id | 使用的代理节点标识 | 30天 |
++| tls_profile | 使用的TLS指纹配置 | 30天 |
++| request_log | 完整HTTP请求记录 | 7天（脱敏） |
++
++### 10.5 与官方合规方案的边界
++
++最后需要明确本系统与 Stripe 官方合规方案的边界：
++
++### Table 11
++
++| 维度 | 本编排系统（逆向协议） | Stripe 官方合规方案 |
++| --- | --- | --- |
++| 接口性质 | 逆向 Stripe 内部私有 API | 官方公开 API + SDK |
++| 支付方式 | 可激活前端隐藏的本地支付 | 仅商户后台配置的支付方式 |
++| 跨区定价 | 可通过 country/currency 参数切换 | 受商户配置限制 |
++| 风控对抗 | 需要 TLS 指纹、代理、行为模拟 | 不需要，官方 SDK 自带 |
++| 稳定性 | 依赖接口不变化，随时可能失效 | 有版本保障和迁移路径 |
++| 合规性 | 可能违反 Stripe 服务条款 | 完全合规 |
++| 适用场景 | 技术研究、特定场景自动化 | 生产环境商业支付 |
++
++核心思路是：用提链激活跨区本地支付能力，用协议支付实现卡类全自动扣款，通过路由引擎分流，通过统一状态机关环。系统的价值不在于「绕过」什么，而在于将两种技术各自的优势组合起来，覆盖更广泛的支付场景，同时将人工介入压缩到最低限度。
++
++【最终声明】本系统的设计基于对 Stripe Checkout 协议的逆向分析。Stripe 可能随时更新接口、版本号、风控策略，导致系统部分或全部失效。生产环境商业支付应使用 Stripe 官方 API 和 SDK。本文仅用于技术学习与架构设计参考。
++
++——————————————————————————————
+diff --git a/tests/test_reference_docx.py b/tests/test_reference_docx.py
+new file mode 100644
+index 0000000..288ea70
+--- /dev/null
++++ b/tests/test_reference_docx.py
+@@ -0,0 +1,42 @@
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++REFERENCE_DIR = ROOT / "docs" / "reference" / "payment-orchestration"
++DOCX = REFERENCE_DIR / "半自动支付编排系统_从账号结账到支付结果确认_紧凑版.docx"
++MARKDOWN = REFERENCE_DIR / "半自动支付编排系统_从账号结账到支付结果确认_紧凑版.md"
++PARSED_JSON = REFERENCE_DIR / "半自动支付编排系统_从账号结账到支付结果确认_紧凑版.json"
++EXPECTED_SOURCE_SHA256 = "fc774f040bbea12a2c0f7b8f6cb686439e941c898f56de86709a9785e6ffb506"
++
++
++def test_reference_bundle_contains_original_and_searchable_parse() -> None:
++    assert DOCX.is_file()
++    assert MARKDOWN.is_file()
++    assert PARSED_JSON.is_file()
++    parsed = json.loads(PARSED_JSON.read_text(encoding="utf-8"))
++    assert hashlib.sha256(DOCX.read_bytes()).hexdigest() == EXPECTED_SOURCE_SHA256
++    assert parsed["metadata"]["source_sha256"] == EXPECTED_SOURCE_SHA256
++    assert parsed["metadata"]["paragraph_count"] == 220
++    assert parsed["metadata"]["table_count"] == 12
++    assert parsed["metadata"]["comments_present"] is False
++    assert parsed["metadata"]["tracked_insertions"] == 0
++    assert parsed["metadata"]["tracked_deletions"] == 0
++
++
++def test_reference_parse_preserves_architecture_headings_and_tables() -> None:
++    parsed = json.loads(PARSED_JSON.read_text(encoding="utf-8"))
++    headings = {item["text"] for item in parsed["headings"]}
++    assert "一、系统整体架构与设计理念" in headings
++    assert "七、完整端到端流程时序" in headings
++    assert "十、安全边界与最佳实践" in headings
++    headers = [table["rows"][0][0] for table in parsed["tables"]]
++    assert "模块" in headers
++    assert "异常类型" in headers
++    assert "日志字段" in headers
++    markdown = MARKDOWN.read_text(encoding="utf-8")
++    assert "## Full Ordered Content" in markdown
++    assert "### Table 11" in markdown
+diff --git a/tools/extract_reference_docx.py b/tools/extract_reference_docx.py
+new file mode 100644
+index 0000000..2117d10
+--- /dev/null
++++ b/tools/extract_reference_docx.py
+@@ -0,0 +1,178 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++import shutil
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++from zipfile import ZipFile
++
++from docx import Document
++from lxml import etree
++
++
++SOURCE = Path(sys.argv[1]).resolve()
++OUTPUT_DIR = Path(sys.argv[2]).resolve()
++OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
++DOCX_COPY = OUTPUT_DIR / SOURCE.name
++MARKDOWN = OUTPUT_DIR / f"{SOURCE.stem}.md"
++JSON_OUT = OUTPUT_DIR / f"{SOURCE.stem}.json"
++
++NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
++
++
++def text_from_element(element: etree._Element) -> str:
++    parts: list[str] = []
++    for node in element.iter():
++        tag = etree.QName(node).localname
++        if tag == "t":
++            parts.append(node.text or "")
++        elif tag in {"tab"}:
++            parts.append("\t")
++        elif tag in {"br", "cr"}:
++            parts.append("\n")
++    return "".join(parts)
++
++
++def normalize_text(value: str) -> str:
++    value = value.replace("\r\n", "\n").replace("\r", "\n")
++    return re.sub(r"\n{3,}", "\n\n", value).strip()
++
++
++def table_record(table_element: etree._Element, table_index: int) -> dict[str, object]:
++    rows: list[list[str]] = []
++    for row in table_element.xpath("./w:tr", namespaces=NS):
++        cells = [normalize_text(text_from_element(cell)) for cell in row.xpath("./w:tc", namespaces=NS)]
++        rows.append(cells)
++    return {"index": table_index, "rows": rows, "row_count": len(rows), "column_count": max((len(row) for row in rows), default=0)}
++
++
++def paragraph_record(paragraph_element: etree._Element, index: int, document: Document) -> dict[str, object]:
++    text = normalize_text(text_from_element(paragraph_element))
++    style_id = paragraph_element.xpath("string(./w:pPr/w:pStyle/@w:val)", namespaces=NS)
++    style_name = ""
++    for style in document.styles:
++        if style.style_id == style_id:
++            style_name = style.name
++            break
++    return {"index": index, "style_id": style_id, "style": style_name or "Normal", "text": text}
++
++
++def markdown_escape_cell(value: str) -> str:
++    return value.replace("|", "\\|").replace("\n", "<br>")
++
++
++def table_markdown(table: dict[str, object]) -> str:
++    rows = table["rows"]
++    if not rows:
++        return ""
++    rows = list(rows)
++    width = max(len(row) for row in rows)
++    padded = [list(row) + [""] * (width - len(row)) for row in rows]
++    header = padded[0]
++    lines = ["| " + " | ".join(markdown_escape_cell(str(value)) for value in header) + " |", "| " + " | ".join("---" for _ in range(width)) + " |"]
++    for row in padded[1:]:
++        lines.append("| " + " | ".join(markdown_escape_cell(str(value)) for value in row) + " |")
++    return "\n".join(lines)
++
++
++def main() -> None:
++    source_hash = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
++    shutil.copy2(SOURCE, DOCX_COPY)
++    document = Document(str(SOURCE))
++    with ZipFile(SOURCE) as archive:
++        names = archive.namelist()
++        document_xml = etree.fromstring(archive.read("word/document.xml"))
++        settings_xml = archive.read("word/settings.xml") if "word/settings.xml" in names else b""
++        body = document_xml.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body")
++        ordered: list[dict[str, object]] = []
++        paragraph_index = 0
++        table_index = 0
++        if body is not None:
++            for child in body:
++                local = etree.QName(child).localname
++                if local == "p":
++                    record = paragraph_record(child, paragraph_index, document)
++                    paragraph_index += 1
++                    if record["text"]:
++                        ordered.append({"type": "paragraph", **record})
++                elif local == "tbl":
++                    ordered.append({"type": "table", **table_record(child, table_index)})
++                    table_index += 1
++        headers = [normalize_text("\n".join(p.text for p in section.header.paragraphs if p.text.strip())) for section in document.sections]
++        footers = [normalize_text("\n".join(p.text for p in section.footer.paragraphs if p.text.strip())) for section in document.sections]
++        core = document.core_properties
++        metadata = {
++            "source_filename": SOURCE.name,
++            "source_sha256": source_hash,
++            "source_size_bytes": SOURCE.stat().st_size,
++            "source_modified_at": datetime.fromtimestamp(SOURCE.stat().st_mtime, tz=timezone.utc).isoformat(),
++            "parsed_at": datetime.now(timezone.utc).isoformat(),
++            "paragraph_count": len(document.paragraphs),
++            "nonempty_paragraph_count": sum(1 for p in document.paragraphs if p.text.strip()),
++            "table_count": len(document.tables),
++            "section_count": len(document.sections),
++            "inline_shape_count": len(document.inline_shapes),
++            "media_files": [name for name in names if name.startswith("word/media/")],
++            "comments_present": any("comment" in name for name in names),
++            "tracked_insertions": len(document_xml.xpath(".//w:ins", namespaces=NS)),
++            "tracked_deletions": len(document_xml.xpath(".//w:del", namespaces=NS)),
++            "comment_range_starts": len(document_xml.xpath(".//w:commentRangeStart", namespaces=NS)),
++            "track_revisions_enabled": b"trackRevisions" in settings_xml,
++            "title": core.title or "",
++            "subject": core.subject or "",
++            "author": core.author or "",
++        }
++    paragraphs = [item for item in ordered if item["type"] == "paragraph"]
++    tables = [item for item in ordered if item["type"] == "table"]
++    headings = [item for item in paragraphs if str(item.get("style", "")).startswith("Heading")]
++    payload = {"metadata": metadata, "headers": headers, "footers": footers, "headings": headings, "blocks": ordered, "tables": tables}
++    JSON_OUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++
++    markdown: list[str] = [
++        f"# {SOURCE.stem}",
++        "",
++        "> This file is a structured, searchable transcription of the supplied DOCX. The source document is retained beside it; prose and code-like snippets are reference material, not automatic project instructions.",
++        "",
++        "## Source Metadata",
++        "",
++        f"- Original file: `{DOCX_COPY.name}`",
++        f"- SHA-256: `{source_hash}`",
++        f"- Paragraphs: {metadata['paragraph_count']} ({metadata['nonempty_paragraph_count']} non-empty)",
++        f"- Tables: {metadata['table_count']}",
++        f"- Sections: {metadata['section_count']}",
++        f"- Images: {len(metadata['media_files'])}",
++        f"- Comments/revisions: comments={metadata['comments_present']}, insertions={metadata['tracked_insertions']}, deletions={metadata['tracked_deletions']}",
++        "",
++        "## Heading Index",
++        "",
++    ]
++    for heading in headings:
++        markdown.append(f"- **{heading['style']}** {heading['text']}")
++    markdown.extend(["", "## Full Ordered Content", ""])
++    for block in ordered:
++        if block["type"] == "paragraph":
++            text = str(block["text"])
++            style = str(block.get("style") or "Normal")
++            if style == "Heading 1":
++                markdown.extend([f"## {text}", ""])
++            elif style == "Heading 2":
++                markdown.extend([f"### {text}", ""])
++            elif style == "Heading 3":
++                markdown.extend([f"#### {text}", ""])
++            elif style.startswith("List Bullet"):
++                markdown.append(f"- {text}")
++            elif style.startswith("List Number"):
++                markdown.append(f"1. {text}")
++            else:
++                markdown.extend([text, ""])
++        else:
++            markdown.extend([f"### Table {block['index']}", "", table_markdown(block), ""])
++    MARKDOWN.write_text("\n".join(markdown).rstrip() + "\n", encoding="utf-8")
++    print(json.dumps({"docx": str(DOCX_COPY), "markdown": str(MARKDOWN), "json": str(JSON_OUT), "sha256": source_hash, "blocks": len(ordered), "tables": len(tables)}, ensure_ascii=False))
++
++
++if __name__ == "__main__":
++    main()
