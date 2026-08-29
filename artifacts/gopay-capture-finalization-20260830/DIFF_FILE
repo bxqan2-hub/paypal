@@ -1,0 +1,9 @@
+--- baseline
+- previous canonical HAR: 401 entries, api.stripe.com=0, completeness partial
+- sha256: 7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
++++ final
++ canonical HAR: artifacts-local/gopay-cdp-capture-browser-targets-20260830-next.har
++ sha256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
++ entries: 483; response bodies: 368; api.stripe.com entries: 12
++ completenessAudit.complete=true; criticalComplete=true; issues=[]
++ previous HAR removed; only final GoPay HAR retained+ summary renderer now reports Stripe coverage as present when api.stripe.com entries exist

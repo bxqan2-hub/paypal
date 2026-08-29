@@ -370,3 +370,21 @@ sha256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
 ```
 
 看到 `CAPTURE_READY=1` 后再操作完整 GoPay 流程；结束后先读取 `CAPTURE_COMPLETENESS` 和 `CAPTURE_MISSING`，再按 HAR 中的 `log._capture.completenessAudit` 修改提链核心。
+
+## 12. 最终保留抓包（停止抓包后）
+
+停止优化抓包工具后，浏览器级 `browser-auto-attach-flatten` HAR 已完成关键完整性审计：
+
+```text
+source: artifacts-local/gopay-cdp-capture-browser-targets-20260830-next.har
+entries: 483
+size: 16491140 bytes
+sha256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
+targets: 14 (page + iframe)
+api.stripe.com entries: 12
+completenessAudit.complete: true
+criticalComplete: true
+issues: []
+```
+
+该文件已替代早先的 401-entry 抓包；`artifacts-local` 中只保留这一份 GoPay 原始 HAR。脱敏摘要位于 `artifacts/gopay-cdp-capture-20260830/FINAL_REDACTED_SUMMARY.md`。

@@ -1,0 +1,49 @@
+GoPay capture finalization verification
+=======================================
+
+Changed branch/field:
+Canonical GoPay capture selection -> final browser-level HAR with complete critical audit and corrected redacted coverage summary.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\ROLLBACK.sh
+
+BASELINE command:
+Get-FileHash artifacts-local\\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har -Algorithm SHA256
+Input: previous canonical GoPay HAR before replacement
+Literal output/result: SHA256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1; entries=401; api.stripe.com=0; completeness=partial
+Exit status: 0 (source hash recorded before removal)
+
+MODIFIED command:
+.\\.venv\\Scripts\\python.exe tools\\har_cdp_gopay_summary.py artifacts-local\\gopay-cdp-capture-browser-targets-20260830-next.har --output artifacts\\gopay-cdp-capture-20260830\\FINAL_REDACTED_SUMMARY.md
+Input: final browser-level HAR
+Literal output/result: HAR_CDP_SUMMARY=C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\gopay-cdp-capture-20260830\\FINAL_REDACTED_SUMMARY.md; entries=483; api.stripe.com=12; completenessAudit.complete=true; criticalComplete=true; issues=[]
+Exit status: 0
+
+TEST command:
+.\\.venv\\Scripts\\python.exe -m pytest -q
+Input: repository after final capture selection
+Literal output/result: 185 passed in 1.53s
+Exit status: 0
+
+SUMMARY_TEST command:
+.\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_har_cdp_gopay_summary.py
+Input: conditional Stripe coverage rendering test
+Literal output/result: 2 passed in 0.04s
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "cp artifacts/gopay-capture-finalization-20260830/MODIFIED_FILE artifacts-local/gopay-capture-finalization-rollback-test.json; printf '\\nMUTATION' >> artifacts-local/gopay-capture-finalization-rollback-test.json; chmod +x artifacts/gopay-capture-finalization-20260830/ROLLBACK.sh; artifacts/gopay-capture-finalization-20260830/ROLLBACK.sh artifacts-local/gopay-capture-finalization-rollback-test.json artifacts/gopay-capture-finalization-20260830/MODIFIED_FILE"
+Input: mutated rollback-test copy
+Literal output/result: RESTORED_SHA256=3C30B25A3999936BA8743CAF6F9499EEFC61E25FD438ACDE7BF24EC80CFD8A96; EXPECTED_SHA256=3C30B25A3999936BA8743CAF6F9499EEFC61E25FD438ACDE7BF24EC80CFD8A96; RESTORED_STATUS=PASS
+Exit status: 0
+
+Hash preservation:
+- MODIFIED_FILE baseline SHA-256: 76C7F6C7F3EDCDCD3C8E92A7666F8BDCFE4E0B2BECF4DC19D46E89384EC18B3B
+- MODIFIED_FILE final SHA-256: 3C30B25A3999936BA8743CAF6F9499EEFC61E25FD438ACDE7BF24EC80CFD8A96
+- final HAR SHA-256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
+
+Restored behavior/status:
+The optimization recorder captured page and iframe targets, Stripe init/elements/confirm, ChatGPT checkout/taxes/snapshot/approve, and Midtrans flow. The redacted summary now reports Stripe coverage conditionally. Only the final GoPay HAR remains in artifacts-local.
