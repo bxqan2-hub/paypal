@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from payment_link_extractor.errors import CheckoutCreateError
 from payment_link_extractor.gopay_pro_core.validation import validate_checkout_batch
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.transport import BrowserSentinelProvider
+from payment_link_extractor.transport import DefaultTransportFactory
 from payment_link_extractor.web.tasks import TaskManager
 
 
@@ -46,6 +48,33 @@ def test_sentinel_default_aliases_use_chatgpt_checkout_and_sync_observer() -> No
     assert headers["oai-device-id"] == "browser-device"
     assert any('token("chatgpt_checkout")' in call for call in calls)
     assert all('token("default")' not in call for call in calls)
+
+
+def test_transport_defaults_match_current_gopay_har_contract(monkeypatch) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+
+    monkeypatch.setattr("payment_link_extractor.transport.new_session", Session)
+    config = ExtractionConfig(
+        access_token="fixture",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="ID",
+        payment_method="gopay",
+        apply_checkout_update=False,
+    )
+    session = DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
+    assert session.headers["oai-language"] == "id-ID"
+    assert session.headers["oai-client-build-number"] == "10012890"
+    assert session.headers["oai-client-version"] == "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+    telemetry = session.refresh_openai_request_headers(
+        "POST", "https://chatgpt.com/backend-api/payments/checkout"
+    )["oai-telemetry"]
+    values = json.loads(telemetry)
+    assert len(values) == 8
+    assert values[0] == 1 and values[5:] == [2, 0, values[7]]
 
 
 def test_checkout_methods_merge_and_dedupe_across_nested_payloads() -> None:

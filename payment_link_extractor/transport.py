@@ -555,7 +555,7 @@ class BrowserSentinelProvider:
     @staticmethod
     def _build_sentinel_init_script() -> str:
         """Inject the bundled SDK as a window property before page scripts run."""
-        assets = Path(__file__).resolve().parent / "mk_gcash_open_source" / "sentinel_assets"
+        assets = Path(__file__).resolve().parent / "sentinel_assets"
         sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
         return (
             "(() => {\n"
@@ -742,10 +742,10 @@ class BrowserSentinelProvider:
                 "oai-language": self.language,
                 # Keep deployed checkout build identifiers overridable because
                 # the web client rotates them independently of payment flow.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
                 ),
             }
             account = account_id(self.access_token)
@@ -888,14 +888,17 @@ class DefaultTransportFactory:
                 "oai-session-id": session_id,
                 # ChatGPT's API language is the browser UI locale; the
                 # country-specific Accept-Language remains separate above.
-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
+                "oai-language": (
+                    os.getenv("OPLL_OAI_LANGUAGE", "").strip()
+                    or country_locale(config)
+                ),
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
                 ),
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
@@ -957,7 +960,21 @@ class DefaultTransportFactory:
                     ]
                     dynamic["oai-telemetry"] = json.dumps(values, separators=(",", ":"))
                 else:
-                    dynamic["oai-telemetry"] = os.getenv("OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]")
+                    elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
+                    values = [
+                        1,
+                        elapsed,
+                        secrets.randbelow(10),
+                        secrets.randbelow(32),
+                        secrets.randbelow(32),
+                        2,
+                        0,
+                        round(elapsed + secrets.randbelow(24), 1),
+                    ]
+                    dynamic["oai-telemetry"] = os.getenv(
+                        "OPLL_OAI_CHECKOUT_TELEMETRY",
+                        json.dumps(values, separators=(",", ":")),
+                    )
             return dynamic
 
         session.refresh_openai_request_headers = refresh_openai_request_headers

@@ -1,0 +1,149 @@
+diff --git a/.env.example b/.env.example
+index f227343..7a07abd 100644
+--- a/.env.example
++++ b/.env.example
+@@ -21,7 +21,7 @@ MK_GCASH_CONNECT_TIMEOUT_MS=8000
+ # GCash accepts host:port:user:pass, socks5://host:port, and authenticated
+ # socks5://user:pass@host:port (the latter is bridged to local HTTP CONNECT).
+ OPLL_USER_AGENT=
+-OPLL_OAI_LANGUAGE=en-US
++OPLL_OAI_LANGUAGE=
+ OPLL_SEC_CH_UA=
+ OPLL_SEC_CH_UA_PLATFORM=
+
+diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
+index 3dc73a4..a15fbf6 100644
+--- a/payment_link_extractor/transport.py
++++ b/payment_link_extractor/transport.py
+@@ -555,7 +555,7 @@ class BrowserSentinelProvider:
+     @staticmethod
+     def _build_sentinel_init_script() -> str:
+         """Inject the bundled SDK as a window property before page scripts run."""
+-        assets = Path(__file__).resolve().parent / "mk_gcash_open_source" / "sentinel_assets"
++        assets = Path(__file__).resolve().parent / "sentinel_assets"
+         sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
+         return (
+             "(() => {\n"
+@@ -742,10 +742,10 @@ class BrowserSentinelProvider:
+                 "oai-language": self.language,
+                 # Keep deployed checkout build identifiers overridable because
+                 # the web client rotates them independently of payment flow.
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
++                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
+                 "oai-client-version": os.getenv(
+                     "OPLL_OAI_CLIENT_VERSION",
+-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
++                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+                 ),
+             }
+             account = account_id(self.access_token)
+@@ -888,14 +888,17 @@ class DefaultTransportFactory:
+                 "oai-session-id": session_id,
+                 # ChatGPT's API language is the browser UI locale; the
+                 # country-specific Accept-Language remains separate above.
+-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
++                "oai-language": (
++                    os.getenv("OPLL_OAI_LANGUAGE", "").strip()
++                    or country_locale(config)
++                ),
+                 # These values match the current browser checkout contract;
+                 # environment overrides keep the transport forward-compatible
+                 # when the web deployment rotates its build identifier.
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
++                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
+                 "oai-client-version": os.getenv(
+                     "OPLL_OAI_CLIENT_VERSION",
+-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
++                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+                 ),
+                 "x-oai-is-pending-updates": os.getenv(
+                     "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
+@@ -957,7 +960,21 @@ class DefaultTransportFactory:
+                     ]
+                     dynamic["oai-telemetry"] = json.dumps(values, separators=(",", ":"))
+                 else:
+-                    dynamic["oai-telemetry"] = os.getenv("OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]")
++                    elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
++                    values = [
++                        1,
++                        elapsed,
++                        secrets.randbelow(10),
++                        secrets.randbelow(32),
++                        secrets.randbelow(32),
++                        2,
++                        0,
++                        round(elapsed + secrets.randbelow(24), 1),
++                    ]
++                    dynamic["oai-telemetry"] = os.getenv(
++                        "OPLL_OAI_CHECKOUT_TELEMETRY",
++                        json.dumps(values, separators=(",", ":")),
++                    )
+             return dynamic
+
+         session.refresh_openai_request_headers = refresh_openai_request_headers
+diff --git a/tests/test_gopay_checkout_optimization.py b/tests/test_gopay_checkout_optimization.py
+index 443754e..b793e0f 100644
+--- a/tests/test_gopay_checkout_optimization.py
++++ b/tests/test_gopay_checkout_optimization.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+
+ import threading
+ import time
++import json
+ from types import SimpleNamespace
+
+ import pytest
+@@ -11,6 +12,7 @@ from payment_link_extractor.errors import CheckoutCreateError
+ from payment_link_extractor.gopay_pro_core.validation import validate_checkout_batch
+ from payment_link_extractor.models import ExtractionConfig
+ from payment_link_extractor.transport import BrowserSentinelProvider
++from payment_link_extractor.transport import DefaultTransportFactory
+ from payment_link_extractor.web.tasks import TaskManager
+
+
+@@ -48,6 +50,33 @@ def test_sentinel_default_aliases_use_chatgpt_checkout_and_sync_observer() -> No
+     assert all('token("default")' not in call for call in calls)
+
+
++def test_transport_defaults_match_current_gopay_har_contract(monkeypatch) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setattr("payment_link_extractor.transport.new_session", Session)
++    config = ExtractionConfig(
++        access_token="fixture",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="",
++        country="ID",
++        payment_method="gopay",
++        apply_checkout_update=False,
++    )
++    session = DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
++    assert session.headers["oai-language"] == "id-ID"
++    assert session.headers["oai-client-build-number"] == "10012890"
++    assert session.headers["oai-client-version"] == "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
++    telemetry = session.refresh_openai_request_headers(
++        "POST", "https://chatgpt.com/backend-api/payments/checkout"
++    )["oai-telemetry"]
++    values = json.loads(telemetry)
++    assert len(values) == 8
++    assert values[0] == 1 and values[5:] == [2, 0, values[7]]
++
++
+ def test_checkout_methods_merge_and_dedupe_across_nested_payloads() -> None:
+     state: dict[str, object] = {
+         "payment_method_types": ["card", "gopay"],
+diff --git a/tests/test_sentinel_browser_injection.py b/tests/test_sentinel_browser_injection.py
+index 1b5e701..8597615 100644
+--- a/tests/test_sentinel_browser_injection.py
++++ b/tests/test_sentinel_browser_injection.py
+@@ -17,6 +17,7 @@ def test_sentinel_init_script_publishes_window_sdk_without_bootstrap_shim() -> N
+     # The Node-only bootstrap replaces browser read-only globals and must not
+     # be injected into Chromium's real window.
+     assert "g.crypto = g.crypto || {};" not in script
++    assert "mk_gcash_open_source" not in script
+
+
+ def test_sentinel_provider_defaults_empty_flow_to_chatgpt_checkout() -> None:

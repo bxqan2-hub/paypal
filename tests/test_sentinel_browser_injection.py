@@ -17,6 +17,7 @@ def test_sentinel_init_script_publishes_window_sdk_without_bootstrap_shim() -> N
     # The Node-only bootstrap replaces browser read-only globals and must not
     # be injected into Chromium's real window.
     assert "g.crypto = g.crypto || {};" not in script
+    assert "mk_gcash_open_source" not in script
 
 
 def test_sentinel_provider_defaults_empty_flow_to_chatgpt_checkout() -> None:
