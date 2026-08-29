@@ -1,7 +1,0 @@
-diff -- gopay-pro-channel-20260829
-+ Added independent gopay_pro channel registration and UI option.
-+ Copied GCash framework into payment_link_extractor/gopay_pro_core/ without modifying mk_gcash_open_source.
-+ Renamed chain/monitor/sentinel modules to gopay_pro_* to avoid module collisions.
-+ Adapted checkout billing and browser locale from PH/PHP to ID/IDR and id-ID/Asia/Jakarta.
-+ Adapted custom-method and redirect validation to GoPay hosts and pm-redirects.stripe.com authorize links.
-+ Added gopay_pro adapter, manifest, IDR billing mapping, result field and independent tests.

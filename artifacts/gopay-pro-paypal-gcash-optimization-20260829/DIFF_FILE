@@ -1,6 +1,0 @@
-diff -- gopay-pro-paypal-gcash-optimization-20260829
-- Removed the previous direct GCash-derived GoPay Pro core copy.
-+ GoPay Pro now delegates protocol execution to PayPal's extract_legacy_payment_link.
-+ GoPay Pro keeps independent registry/provider/result/billing configuration.
-+ GCash browser/Sentinel optimization is used only as a transport layer: injected SDK, chatgpt_checkout proof, browser session and oai-did identity.
-+ Original GCash adapter and 22-file upstream copy remain untouched.

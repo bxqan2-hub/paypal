@@ -1,0 +1,5 @@
+diff -- rollback-gopay-pro-20260829
+- Removed commits 660fae9 and 1766613 changes from the current tree.
++ Restored repository tree to c92b434 content.
++ Removed gopay_pro channel and all related files.
++ Existing PayPal, GoPay and GCash channels remain at the pre-gopay_pro state.

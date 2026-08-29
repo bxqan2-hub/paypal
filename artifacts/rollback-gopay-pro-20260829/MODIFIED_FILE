@@ -1,0 +1,5 @@
+BRANCH: repository state after gopay_pro removal
+FIELD: target baseline
+VALUE: c92b434 (the commit immediately before gopay_pro creation)
+REMOVED: gopay_pro registration, adapter, provider, tests, UI option, and post-creation artifacts
+RETAINED: PayPal/GoPay shared core and existing GCash channel

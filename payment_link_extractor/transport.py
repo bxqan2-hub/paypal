@@ -938,7 +938,7 @@ class DefaultTransportFactory:
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         normalized_proxy = normalize_proxy_url(proxy)
-        if normalize_payment_method(config.payment_method) in {"paypal", "gopay", "gopay_pro"}:
+        if normalize_payment_method(config.payment_method) in {"paypal", "gopay"}:
             mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
             if mode not in {"0", "false", "off", "disabled", "no"}:
                 session.openai_sentinel_provider = BrowserSentinelProvider(
