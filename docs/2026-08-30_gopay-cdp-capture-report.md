@@ -293,7 +293,7 @@ api.stripe.com: 0
 
 ## 8. 下一次完整抓包
 
-下一次应连接浏览器级 WebSocket，启用 `Target.setDiscoverTargets` 和 `Target.setAutoAttach(flatten=true)`，对所有 `page`、`iframe`、`worker` target 分别启用 Network/Fetch。重点补齐：
+下一次应使用 [`har_capture_browser_attach.py`](../tools/har_capture_browser_attach.py) 连接浏览器级 WebSocket，启用 `Target.setDiscoverTargets` 和 `Target.setAutoAttach(flatten=true)`，对所有 `page`、`iframe`、`worker` target 分别启用 Network/Fetch。重点补齐：
 
 1. Stripe init、Elements、5 次 tax_region、confirm 和响应正文。
 2. Stripe `next_action`/`redirect_to_url` 与 Midtrans UUID 的绑定。

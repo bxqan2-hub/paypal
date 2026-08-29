@@ -1,0 +1,53 @@
+Browser-level CDP target recorder verification
+===============================================
+
+Changed branch/field:
+tools/har_capture_browser_attach.py -> browser WebSocket Target auto-attach
+Reserved next capture port: 127.0.0.1:58868
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-browser-targets-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-browser-targets-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-browser-targets-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-browser-targets-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe tools\har_capture_attach.py --help
+Input: page-target recorder
+Literal output/result:
+usage: har_capture_attach.py [-h] --cdp-port CDP_PORT --output OUTPUT
+                             [--page-contains PAGE_CONTAINS]
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m py_compile tools\har_capture_browser_attach.py
+Input: browser-level recorder source
+Literal output/result: no output; syntax check passed
+Exit status: 0
+
+FULL_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: repository with browser-level recorder
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+..................................                                       [100%]
+178 passed in 1.61s
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-cdp-browser-targets-20260830/ROLLBACK.sh && artifacts/gopay-cdp-browser-targets-20260830/ROLLBACK.sh artifacts-local/gopay-cdp-browser-target-rollback-test.py artifacts/gopay-cdp-browser-targets-20260830/MODIFIED_FILE"
+Input: another temporary copy after intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-cdp-browser-target-rollback-test.py
+BEFORE_SHA256=7c820ffe1c91036ec2a1307772de800660a683011be53549ef7c22cc9647b000
+RESTORED_SHA256=71e180ab9a7916ccc8e8f412cb8e4d293aff95132c7f19061775286a2bcaa19c
+EXPECTED_SHA256=71e180ab9a7916ccc8e8f412cb8e4d293aff95132c7f19061775286a2bcaa19c
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Restored behavior/status:
+The next capture uses browser-level flattened target attachment; the new browser is not connected until the user sends start.
+
+MODIFIED_FILE SHA-256:
+71e180ab9a7916ccc8e8f412cb8e4d293aff95132c7f19061775286a2bcaa19c

@@ -1,0 +1,20 @@
+Browser-level CDP recorder upgrade
+==================================
+
+Previous mode:
+- attach to one page WebSocket
+- captured ChatGPT and Midtrans bodies
+- missed api.stripe.com requests emitted by Stripe iframe/OOPIF targets
+
+Current mode:
+- connect to browser WebSocket from /json/version
+- Target.setDiscoverTargets(discover=true)
+- Target.setAutoAttach(autoAttach=true, waitForDebuggerOnStart=false, flatten=true)
+- attach Network/Fetch/Runtime to page, iframe, worker, service_worker and shared_worker targets
+- route flattened CDP session events into per-target HARRecorder instances
+- merge all target entries into one local HAR
+
+New browser port reserved by user:
+127.0.0.1:58868
+
+Capture is not started until the user sends the start instruction.
