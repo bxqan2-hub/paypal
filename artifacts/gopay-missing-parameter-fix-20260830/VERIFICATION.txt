@@ -1,0 +1,85 @@
+GoPay CS-live missing-parameter and HAR alignment verification
+===============================================================
+
+Changed branch/field:
+- GoPay isolated `cs_live` Stripe confirm: `js_checksum`, `rv_timestamp`, stable metrics IDs, optional `passive_captcha_token`.
+- GoPay isolated Stripe tax-region update: one-shot address -> cumulative five-step sequence.
+
+Artifacts (four required paths plus source snapshots):
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\ROLLBACK.sh
+
+Original Git baseline SHA-256 (from `git show HEAD:<path>`):
+- payment_link_extractor/gopay_stripe_common.py: 9b175ba0f030732a9826821cc8dae2cc451ac7744067e2cba3f9d79fbecf2b63
+- payment_link_extractor/gopay_cs_live.py: 1fd19626ce42817722786463692f7a321164b1fd937510fb44b9f8547ac70e1d
+- tests/test_gopay_isolated_optimization.py: 0206e450f0585b313010d712af482070de6b70090b9497fecc7e5f0530665d98
+
+Modified snapshot SHA-256:
+- gopay_stripe_common.py: ee8a9686290bba73cd67780f4276307a373d9e1177d4eb65a5818a9c480a4789
+- gopay_cs_live.py: 8d820a053c42bce59aa4622a296c72acdb4c4b2b9d4179edec537f8ccffd3d75
+- test_gopay_isolated_optimization.py: 8ce72571bf93762666930602028032a11fc3b045c80f2836436b377615ef41f9
+- DIFF_FILE: 0d855e0173598cc7ee086cfe38bdea2434951315a4ea14a518c15cfa0156fba7
+- ROLLBACK.sh: 926e910771f71d2f85ed79400fe8429e8008837c2384ff3e6f997e779ded0c0e
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: Git baseline before the change
+Literal output/result:
+........................................................................ [ 38%]
+........................................................................ [ 77%]
+.........................................                                [100%]
+185 passed in 1.53s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with the GoPay fix and regression tests
+Literal output/result:
+........................................................................ [ 38%]
+........................................................................ [ 76%]
+............................................                             [100%]
+188 passed in 1.54s
+Exit status: 0
+
+PY_COMPILE command:
+.\.venv\Scripts\python.exe -m py_compile payment_link_extractor\gopay_stripe_common.py payment_link_extractor\gopay_cs_live.py
+Literal output/result: no output; syntax check passed
+Exit status: 0
+
+HAR_CONTRACT command:
+.\.venv\Scripts\python.exe -c "<offline parser: gopay-cdp-capture-browser-targets-20260830-next.har>"
+Input: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+Literal output/result:
+HAR_SHA256=8df5163e0a2d57598b257435c2449ea0371a236c6114bae85234a94108547e50
+HAR_ENTRIES=483
+CONFIRM_KEYS=60 HAS_JS_CHECKSUM=True HAS_RV_TIMESTAMP=True
+TAX_PROGRESSIVE_COUNTS=[1, 2, 3, 4, 5]
+Exit status: 0
+
+LIVE_ATTEMPT command:
+.\.venv\Scripts\python.exe -c "extract_payment_link(ExtractionConfig(...))"
+Input: user-supplied AT and five 1024Proxy entries held in process memory; values are intentionally not persisted.
+Literal output/result:
+RESULT_ERROR ProtocolError status=401: promo eligibility check failed; upstream code=unauthorized_unknown; message=Could not parse your authentication token. Please try signing in again.
+Exit status: 1
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\ROLLBACK.sh C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-missing-parameter-rollback-test C:\Users\Administrator\Desktop\提链\artifacts\gopay-missing-parameter-fix-20260830\MODIFIED_FILE"
+Input: another copy of MODIFIED_FILE after an intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-missing-parameter-rollback-test
+RESTORED_FILES=4
+RESTORED_STATUS=PASS
+BEFORE_SHA256=45d2fd864065ee143af67471c196bafcd93d2b40d67e3d9e59c523f815dd31a3
+RESTORED_SHA256=8d820a053c42bce59aa4622a296c72acdb4c4b2b9d4179edec537f8ccffd3d75
+EXPECTED_SHA256=8d820a053c42bce59aa4622a296c72acdb4c4b2b9d4179edec537f8ccffd3d75
+HASH_MATCH=True
+Exit status: 0
+
+Restored behavior/status:
+- ROLLBACK.sh restores all four snapshot files into an independent target copy; MODIFIED_FILE remains unchanged.
+- GoPay confirm now emits the two browser integrity parameters from the current Payment Page id/build, keeps 42-char metrics IDs, forwards an optional passive captcha token, and submits five cumulative tax-region requests.
+- GoPay amount validation remains fail-closed for non-zero or missing due values.
+- No raw AT, proxy credentials, cookies, or redirect nonce was written to any artifact.

@@ -1,0 +1,430 @@
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 466f3d9..ffe421d 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -43,6 +43,8 @@ from .gopay_stripe_common import (
+     stripe_deferred_intent_params,
+     stripe_elements_options_params,
+     stripe_key,
++    stripe_js_checksum,
++    stripe_rv_timestamp,
+     stripe_provider_poll,
+     stripe_confirm_return_url,
+ )
+@@ -169,33 +171,45 @@ def cs_update_tax_region(
+     billing: dict[str, str],
+     log: Any | None,
+ ) -> dict[str, Any]:
+-    data = cs_elements_client_params(ctx)
+-    data.update(stripe_additional_elements_params("client_attribution_metadata"))
+-    data.update({"key": stripe_key(checkout), "_stripe_version": STRIPE_VERSION_FULL})
+-    for field in ("country", "line1", "city", "postal_code", "state"):
++    # Stripe's custom-checkout browser sends a cumulative five-step address
++    # update (country → line1 → city → state → postal_code).  Keeping the
++    # same Elements session and adding one field per request is important for
++    # automatic-tax recalculation and for the confirm checksum contract.
++    common = cs_elements_client_params(ctx)
++    common.update(stripe_additional_elements_params("client_attribution_metadata"))
++    common.update({"key": stripe_key(checkout), "_stripe_version": STRIPE_VERSION_FULL})
++    accumulated: dict[str, str] = {}
++    last_payload: dict[str, Any] = {}
++    for field in ("country", "line1", "city", "state", "postal_code"):
+         value = str(billing.get(field) or "").strip()
+         if value:
+-            data[f"tax_region[{field}]"] = value
+-    response = stage_http_request(
+-        stripe,
+-        "Stripe tax_region",
+-        "POST",
+-        f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
+-        log,
+-        data=data,
+-        headers=cs_stripe_headers(),
+-        timeout=DEFAULT_TIMEOUT,
+-    )
+-    if response.status_code >= 400:
+-        emit_log(log, f"Stripe tax_region failed: {response.text[:300]}")
+-        return {}
+-    payload = response_json(response, "Stripe tax_region")
+-    amount = (payload.get("total_summary") or {}).get("total")
+-    if amount is None:
+-        amount = (payload.get("total_summary") or {}).get("due")
+-    if amount is not None:
+-        ctx["checkout_amount"] = amount
+-    return payload
++            accumulated[field] = value
++        if not accumulated:
++            continue
++        data = dict(common)
++        data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
++        response = stage_http_request(
++            stripe,
++            f"Stripe tax_region ({field})",
++            "POST",
++            f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
++            log,
++            data=data,
++            headers=cs_stripe_headers(),
++            timeout=DEFAULT_TIMEOUT,
++        )
++        if response.status_code >= 400:
++            emit_log(log, f"Stripe tax_region failed ({field}): {response.text[:300]}")
++            return last_payload
++        payload = response_json(response, "Stripe tax_region")
++        if isinstance(payload, dict):
++            last_payload = payload
++            amount = (payload.get("total_summary") or {}).get("total")
++            if amount is None:
++                amount = (payload.get("total_summary") or {}).get("due")
++            if amount is not None:
++                ctx["checkout_amount"] = amount
++    return last_payload
+ 
+ 
+ def cs_snapshot_billing(
+@@ -345,6 +359,9 @@ def stripe_confirm_cs_live(
+     payment_method: str,
+     billing: dict[str, str],
+     log: Any | None,
++    *,
++    passive_captcha_token: str = "",
++    passive_captcha_ekey: str = "",
+ ) -> dict[str, Any]:
+     runtime = STRIPE_RUNTIME_VERSION
+     amount = ctx.get("checkout_amount") or expected_amount(init_payload)
+@@ -352,13 +369,23 @@ def stripe_confirm_cs_live(
+     elements_session_config_id = str(ctx.get("elements_session_config_id") or "")
+     checkout_config_id = str(ctx.get("config_id") or "")
+     body = {
+-        "guid": uuid.uuid4().hex,
+-        "muid": uuid.uuid4().hex,
+-        "sid": uuid.uuid4().hex,
++        "guid": str(ctx.get("guid") or f"{uuid.uuid4()}"),
++        "muid": str(ctx.get("muid") or f"{uuid.uuid4()}"),
++        "sid": str(ctx.get("sid") or f"{uuid.uuid4()}"),
+         "init_checksum": str(init_payload.get("init_checksum") or ctx.get("init_checksum") or ""),
+         "version": runtime,
+         "expected_amount": str(amount),
+         "expected_payment_method_type": payment_method,
++        "js_checksum": str(
++            ctx.get("js_checksum")
++            or init_payload.get("js_checksum")
++            or stripe_js_checksum(init_payload.get("id") or ctx.get("payment_page_id"))
++        ),
++        "rv_timestamp": str(
++            ctx.get("rv_timestamp")
++            or init_payload.get("rv_timestamp")
++            or stripe_rv_timestamp()
++        ),
+         "return_url": stripe_confirm_return_url(checkout, hosted_url),
+         "_stripe_version": STRIPE_VERSION_FULL,
+         "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
+@@ -374,6 +401,16 @@ def stripe_confirm_cs_live(
+         "link_brand": "link",
+         "key": stripe_key(checkout),
+     }
++    captcha = str(passive_captcha_token or "").strip()
++    if captcha:
++        # Riskier sessions may return a passive hCaptcha token.  The browser
++        # sends it as a top-level confirm field (not radar_options); omit it
++        # only when the caller has no fresh token.
++        body["passive_captcha_token"] = captcha
++        # Stripe serializes the companion ekey even when it is empty; keep
++        # that key so riskier sessions retain the same 62-field contract as
++        # the browser HAR.
++        body["passive_captcha_ekey"] = str(passive_captcha_ekey or "")
+     body.update(cs_elements_client_params(ctx))
+     body.update(stripe_additional_elements_params("client_attribution_metadata"))
+     body.update(
+@@ -545,7 +582,15 @@ def extract_cs_live_provider(
+         stage_callback("payment_confirmation")
+     payment_method_id = stripe_create_payment_method(stripe, checkout, billing, ctx, payment_method, log)
+     confirm_payload = stripe_confirm_cs_live(
+-        stripe, checkout, init_payload, ctx, hosted_url, payment_method, billing, log
++        stripe,
++        checkout,
++        init_payload,
++        ctx,
++        hosted_url,
++        payment_method,
++        billing,
++        log,
++        passive_captcha_token=config.stripe_hcaptcha_token,
+     )
+     stripe_redirect = provider_redirect_after_confirm(
+         chatgpt, stripe, checkout, confirm_payload, payment_method, log, ctx
+diff --git a/payment_link_extractor/gopay_stripe_common.py b/payment_link_extractor/gopay_stripe_common.py
+index c3777ae..815afea 100644
+--- a/payment_link_extractor/gopay_stripe_common.py
++++ b/payment_link_extractor/gopay_stripe_common.py
+@@ -1,9 +1,12 @@
+ from __future__ import annotations
+ 
++import base64
++import json
++import secrets
+ import time
+ import uuid
+ from typing import Any
+-from urllib.parse import parse_qsl, urljoin, urlsplit, urlencode, urlunsplit
++from urllib.parse import parse_qsl, quote, urljoin, urlsplit, urlencode, urlunsplit
+ 
+ from .gopay_checkout import chatgpt_success_return_url, first_value_by_key
+ from .config import (
+@@ -24,6 +27,50 @@ STRIPE_CLIENT_BETAS = (
+ )
+ STRIPE_ADDITIONAL_ELEMENTS = ("expressCheckout", "payment", "address")
+ 
++# Stripe.js derives these two confirmation fields in the browser.  The
++# derivation is intentionally reproduced here instead of copying values from
++# a HAR: `js_checksum` binds the request to the Payment Page id, while
++# `rv_timestamp` carries the current Stripe.js build constants.
++STRIPE_RV_TIMESTAMP = "2024-01-01 00:00:00 -0000"
++STRIPE_RV_BUILD = "b0f5e7abe5ab1a4b215a0dbc9e8f642173efc07e"
++STRIPE_RV_SALT = "2ab88fa6a8e98b8aca4b257a12633402a6f9ca3d7f29ec369e620c310e8b2229"
++
++
++def _stripe_xor5(value: str) -> str:
++    """Match Stripe.js module 3950's byte-wise XOR obfuscation."""
++    return "".join(chr(ord(char) ^ 5) for char in value)
++
++
++def _stripe_encoded(value: str) -> str:
++    """Return Stripe.js's encodeURIComponent(base64(xor5(value + padding)))."""
++    padding = 3 - (len(value) % 3)
++    padded = value + (" " * padding)
++    encoded = base64.b64encode(_stripe_xor5(padded).encode("latin-1")).decode("ascii")
++    return quote(encoded, safe="-_.!~*'()")
++
++
++def _stripe_printable_shift(value: str, amount: int = 11) -> str:
++    return "".join(chr((ord(char) - 32 + amount) % 95 + 32) for char in value)
++
++
++def stripe_js_checksum(payment_page_id: str) -> str:
++    """Build the `js_checksum` required by Stripe payment-page confirm."""
++    page_id = str(payment_page_id or "").strip()
++    if not page_id:
++        return ""
++    payload = json.dumps({"id": page_id}, separators=(",", ":"), ensure_ascii=False)
++    return _stripe_printable_shift(_stripe_encoded(payload))
++
++
++def stripe_rv_timestamp() -> str:
++    """Build the build-bound `rv_timestamp` emitted by Stripe.js."""
++    payload = json.dumps(
++        {"rvTs": STRIPE_RV_TIMESTAMP, "rv": STRIPE_RV_BUILD, "sv": STRIPE_RV_SALT},
++        separators=(",", ":"),
++        ensure_ascii=False,
++    )
++    return _stripe_printable_shift(_stripe_encoded(payload))
++
+ 
+ def stripe_key(checkout: CheckoutData) -> str:
+     return str(checkout.get("publishable_key") or "").strip() or DEFAULT_STRIPE_PK
+@@ -113,6 +160,7 @@ def stripe_context(
+     checkout: CheckoutData,
+     stripe_js_id: str = "",
+ ) -> StripeContext:
++    payment_page_id = str(init_payload.get("id") or init_payload.get("payment_page_id") or "").strip()
+     return {
+         "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
+         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
+@@ -122,6 +170,15 @@ def stripe_context(
+         "checkout_amount": expected_amount(init_payload),
+         "currency": str(init_payload.get("currency") or checkout.get("currency") or "GBP").lower(),
+         "locale": str(checkout.get("payment_locale") or "en-GB"),
++        "payment_page_id": payment_page_id,
++        "js_checksum": stripe_js_checksum(payment_page_id),
++        "rv_timestamp": stripe_rv_timestamp(),
++        # Stripe's metrics controller emits UUIDs with a six-character suffix
++        # (42 characters total).  Keep them stable across payment-method and
++        # confirm requests instead of regenerating 32-character hex strings.
++        "guid": f"{uuid.uuid4()}" + secrets.token_hex(3),
++        "muid": f"{uuid.uuid4()}" + secrets.token_hex(3),
++        "sid": f"{uuid.uuid4()}" + secrets.token_hex(3),
+     }
+ 
+ 
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 0f9aef1..8f94411 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -8,6 +8,7 @@ import pytest
+ 
+ from payment_link_extractor import gopay_checkout
+ from payment_link_extractor import gopay_core
++from payment_link_extractor import gopay_cs_live
+ from payment_link_extractor import gopay_transport
+ from payment_link_extractor.gopay_validation import validate_checkout_batch
+ from payment_link_extractor.models import ExtractionConfig
+@@ -107,6 +108,169 @@ def test_gopay_amount_gate_is_zero_only() -> None:
+         gopay_core.validate_gopay_amount(349000, promotion_applied=True)
+ 
+ 
++def test_gopay_stripe_confirm_includes_browser_checksum_fields(monkeypatch) -> None:
++    class Response:
++        status_code = 200
++        text = "{}"
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {}
++
++    captured: dict[str, object] = {}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++    }
++    init_payload = {
++        "id": "ppage_fixture",
++        "init_checksum": "init-fixture",
++        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_live_fixture",
++    }
++    ctx = gopay_cs_live.stripe_context(init_payload, checkout, "stripe-js-fixture")
++    billing = {
++        "name": "Budi Santoso",
++        "email": "budi@example.com",
++        "phone": "+622112345678",
++        "country": "ID",
++        "line1": "Jl. Sudirman",
++        "city": "Jakarta",
++        "state": "DKI Jakarta",
++        "postal_code": "10220",
++    }
++
++    gopay_cs_live.stripe_confirm_cs_live(
++        object(),
++        checkout,
++        init_payload,
++        ctx,
++        init_payload["stripe_hosted_url"],
++        "gopay",
++        billing,
++        None,
++    )
++
++    body = captured["data"]
++    assert isinstance(body, dict)
++    assert body["js_checksum"] == gopay_cs_live.stripe_js_checksum("ppage_fixture")
++    assert body["rv_timestamp"] == gopay_cs_live.stripe_rv_timestamp()
++    assert all(len(str(body[key])) == 42 for key in ("guid", "muid", "sid"))
++    # HAR confirm requests contain 60 form fields, including both browser
++    # integrity values that were missing from the previous implementation.
++    assert len(body) == 60
++
++
++def test_gopay_stripe_confirm_forwards_optional_passive_captcha(monkeypatch) -> None:
++    class Response:
++        status_code = 200
++        text = "{}"
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {}
++
++    captured: dict[str, object] = {}
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "stage_http_request",
++        lambda *_args, **kwargs: (captured.update(kwargs) or Response()),
++    )
++    checkout = {"cs_id": "cs_live_fixture", "publishable_key": "pk_live_fixture"}
++    init_payload = {
++        "id": "ppage_fixture",
++        "init_checksum": "init-fixture",
++        "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_live_fixture",
++    }
++    ctx = gopay_cs_live.stripe_context(init_payload, checkout, "stripe-js-fixture")
++    billing = {
++        "name": "Budi Santoso",
++        "email": "budi@example.com",
++        "country": "ID",
++        "line1": "Jl. Sudirman",
++        "city": "Jakarta",
++        "state": "DKI Jakarta",
++        "postal_code": "10220",
++    }
++    gopay_cs_live.stripe_confirm_cs_live(
++        object(),
++        checkout,
++        init_payload,
++        ctx,
++        init_payload["stripe_hosted_url"],
++        "gopay",
++        billing,
++        None,
++        passive_captcha_token="P1_fixture",
++    )
++    assert captured["data"]["passive_captcha_token"] == "P1_fixture"
++    assert captured["data"]["passive_captcha_ekey"] == ""
++    assert len(captured["data"]) == 62
++
++
++def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
++    class Response:
++        status_code = 200
++        text = "{}"
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"total_summary": {"total": 0}}
++
++    requests: list[dict[str, str]] = []
++
++    def fake_request(*_args, **kwargs):
++        requests.append(dict(kwargs["data"]))
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    checkout = {"cs_id": "cs_live_fixture", "publishable_key": "pk_live_fixture"}
++    ctx = {
++        "stripe_js_id": "stripe-js-fixture",
++        "elements_session_id": "elements-fixture",
++        "locale": "id",
++    }
++    billing = {
++        "country": "ID",
++        "line1": "Jl. Jenderal Sudirman No. 45, Jakarta, DKI Jakarta",
++        "city": "Jakarta",
++        "state": "Kalimantan Utara",
++        "postal_code": "10220",
++    }
++
++    gopay_cs_live.cs_update_tax_region(
++        object(), checkout, ctx, billing, None
++    )
++
++    tax_keys = [
++        [key for key in data if key.startswith("tax_region[")]
++        for data in requests
++    ]
++    assert tax_keys == [
++        ["tax_region[country]"],
++        ["tax_region[country]", "tax_region[line1]"],
++        ["tax_region[country]", "tax_region[line1]", "tax_region[city]"],
++        [
++            "tax_region[country]",
++            "tax_region[line1]",
++            "tax_region[city]",
++            "tax_region[state]",
++        ],
++        [
++            "tax_region[country]",
++            "tax_region[line1]",
++            "tax_region[city]",
++            "tax_region[state]",
++            "tax_region[postal_code]",
++        ],
++    ]
++
++
+ def test_gopay_core_mock_flow_uses_own_factory_and_result_field(monkeypatch) -> None:
+     class Session:
+         def close(self) -> None:
