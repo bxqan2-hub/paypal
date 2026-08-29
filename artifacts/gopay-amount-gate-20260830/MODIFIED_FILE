@@ -1,4 +1,4 @@
 BRANCH: GoPay amount screening
-FIELD: validate_gopay_amount and extract_gopay_payment_link output gate
-VALUE: 2b4b1a89328dcfff1504760acf83ef21cdc072dc8eac4df3acadd2ea78c9bc96
-CONTRACT: GoPay never returns gopay_url unless amount_due_minor == 0.
+FIELD: validate_gopay_amount and authoritative amount presence
+VALUE: b7e0bf7a846c4722b6192540eac7fcfab7173618435167c1ec69bd7b44611bbf
+CONTRACT: GoPay never returns gopay_url unless a present amount_due_minor equals 0.

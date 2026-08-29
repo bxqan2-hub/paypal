@@ -819,6 +819,12 @@ def extract_oaics_provider(
     if stage_callback:
         stage_callback("taxes")
     openai_checkout_taxes(config, chatgpt, checkout, billing, log)
+    if payment_method == "gopay":
+        from ..gopay_pro_core.core import validate_gopay_amount
+        from ..stripe_common import checkout_payable_amount_with_presence
+
+        amount_due_minor, _ = checkout_payable_amount_with_presence(checkout)
+        validate_gopay_amount(amount_due_minor, promotion_applied=True)
     refreshed = openai_checkout_init_payload(checkout)
     ensure_payment_method_offered(refreshed, payment_method, "oaics taxes refresh")
     ctx["checkout_amount"] = expected_amount(refreshed)

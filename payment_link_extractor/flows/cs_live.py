@@ -521,6 +521,12 @@ def extract_cs_live_provider(
     cs_update_tax_region(stripe, checkout, ctx, billing, log)
     checkout["payable_amount_minor"] = ctx.get("checkout_amount")
     cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    if payment_method == "gopay":
+        from ..gopay_pro_core.core import validate_gopay_amount
+        from ..stripe_common import checkout_payable_amount_with_presence
+
+        amount_due_minor, _ = checkout_payable_amount_with_presence(checkout)
+        validate_gopay_amount(amount_due_minor, promotion_applied=True)
     cs_snapshot_billing(chatgpt, checkout, billing, log)
     final_elements_amount = str(ctx.get("checkout_amount") or "0")
     if final_elements_amount != initial_elements_amount:

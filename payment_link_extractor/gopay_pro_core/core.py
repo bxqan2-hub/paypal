@@ -20,7 +20,7 @@ from ..flows.cs_live import extract_cs_live_provider
 from ..flows.oaics import extract_oaics_provider
 from ..logging_utils import stage_logger
 from ..models import ExtractionConfig, PaymentLinkResult
-from ..stripe_common import checkout_payable_amount
+from ..stripe_common import checkout_payable_amount_with_presence
 from ..transport import DefaultTransportFactory, TransportFactory, safe_close
 
 GOPAY_COUNTRY = "ID"
@@ -31,7 +31,7 @@ GOPAY_CORE_SOURCE_MANIFEST = GOPAY_CORE_SOURCE_DIR / "SOURCE_MANIFEST.json"
 
 
 def validate_gopay_amount(
-    amount_due_minor: int,
+    amount_due_minor: int | None,
     *,
     promotion_applied: bool,
 ) -> None:
@@ -39,9 +39,11 @@ def validate_gopay_amount(
     if not promotion_applied:
         return
     try:
-        amount = int(amount_due_minor)
+        amount = int(amount_due_minor) if amount_due_minor is not None else None
     except (TypeError, ValueError) as exc:
         raise ProtocolError(409, "expected zero amount, got invalid") from exc
+    if amount is None:
+        raise ProtocolError(409, "expected zero amount, got missing")
     if amount != 0:
         raise ProtocolError(409, f"expected zero amount, got {amount}")
 
@@ -93,7 +95,7 @@ def extract_gopay_payment_link(
             provider = extract_oaics_provider(config, chatgpt, stripe, checkout, billing, log, stage_callback=checkpoint)
         else:
             raise ConfigurationError(f"unsupported checkout session: {checkout.get('cs_id')}")
-        amount_due_minor, amount_currency = checkout_payable_amount(checkout)
+        amount_due_minor, amount_currency = checkout_payable_amount_with_presence(checkout)
         amount_currency = amount_currency or GOPAY_CURRENCY
         validate_gopay_amount(
             amount_due_minor,

@@ -1,8 +1,42 @@
+diff --git a/payment_link_extractor/flows/cs_live.py b/payment_link_extractor/flows/cs_live.py
+index 24ce658..22d03ef 100644
+--- a/payment_link_extractor/flows/cs_live.py
++++ b/payment_link_extractor/flows/cs_live.py
+@@ -521,6 +521,12 @@ def extract_cs_live_provider(
+     cs_update_tax_region(stripe, checkout, ctx, billing, log)
+     checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+     cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    if payment_method == "gopay":
++        from ..gopay_pro_core.core import validate_gopay_amount
++        from ..stripe_common import checkout_payable_amount_with_presence
++
++        amount_due_minor, _ = checkout_payable_amount_with_presence(checkout)
++        validate_gopay_amount(amount_due_minor, promotion_applied=True)
+     cs_snapshot_billing(chatgpt, checkout, billing, log)
+     final_elements_amount = str(ctx.get("checkout_amount") or "0")
+     if final_elements_amount != initial_elements_amount:
+diff --git a/payment_link_extractor/flows/oaics.py b/payment_link_extractor/flows/oaics.py
+index bda7f6a..34d55ec 100644
+--- a/payment_link_extractor/flows/oaics.py
++++ b/payment_link_extractor/flows/oaics.py
+@@ -819,6 +819,12 @@ def extract_oaics_provider(
+     if stage_callback:
+         stage_callback("taxes")
+     openai_checkout_taxes(config, chatgpt, checkout, billing, log)
++    if payment_method == "gopay":
++        from ..gopay_pro_core.core import validate_gopay_amount
++        from ..stripe_common import checkout_payable_amount_with_presence
++
++        amount_due_minor, _ = checkout_payable_amount_with_presence(checkout)
++        validate_gopay_amount(amount_due_minor, promotion_applied=True)
+     refreshed = openai_checkout_init_payload(checkout)
+     ensure_payment_method_offered(refreshed, payment_method, "oaics taxes refresh")
+     ctx["checkout_amount"] = expected_amount(refreshed)
 diff --git a/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md b/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
-index 4ee91b9..671b986 100644
+index 4ee91b9..a922568 100644
 --- a/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
 +++ b/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
-@@ -14,9 +14,9 @@
+@@ -14,9 +14,12 @@
  5. Checkout responses detect `oaics_` versus `cs_`, merge duplicate method
     lists, and classify retryable versus terminal failures.
  6. GoPay output is zero-amount-only: the final authoritative amount must be
@@ -12,6 +46,9 @@ index 4ee91b9..671b986 100644
 +   present and exactly zero even when the optional update request is disabled.
 +   A missing or non-zero amount is rejected before the result is returned
 +   (`expected zero amount, got missing` or `expected zero amount, got N`).
++   The same check runs immediately after the CS/OAICS taxes response, before
++   PaymentMethod confirmation, so a paid Midtrans URL is never intentionally
++   produced.
 
  ## Failure modes
 

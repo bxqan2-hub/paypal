@@ -14,9 +14,12 @@
 5. Checkout responses detect `oaics_` versus `cs_`, merge duplicate method
    lists, and classify retryable versus terminal failures.
 6. GoPay output is zero-amount-only: the final authoritative amount must be
-   exactly zero even when the optional update request is disabled. A non-zero
-   amount is rejected before the result is returned
-   (`expected zero amount, got N`).
+   present and exactly zero even when the optional update request is disabled.
+   A missing or non-zero amount is rejected before the result is returned
+   (`expected zero amount, got missing` or `expected zero amount, got N`).
+   The same check runs immediately after the CS/OAICS taxes response, before
+   PaymentMethod confirmation, so a paid Midtrans URL is never intentionally
+   produced.
 
 ## Failure modes
 

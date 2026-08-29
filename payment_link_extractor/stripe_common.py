@@ -54,6 +54,14 @@ def expected_amount(payload: Any) -> str:
 
 
 def checkout_payable_amount(checkout: CheckoutData) -> tuple[int, str]:
+    amount, currency = checkout_payable_amount_with_presence(checkout)
+    return int(amount or 0), currency
+
+
+def checkout_payable_amount_with_presence(
+    checkout: CheckoutData,
+) -> tuple[int | None, str]:
+    """Return the authoritative amount while preserving a missing-value state."""
     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
     total = state.get("total") if isinstance(state.get("total"), dict) else {}
     due = total.get("total") if isinstance(total.get("total"), dict) else {}
@@ -65,9 +73,9 @@ def checkout_payable_amount(checkout: CheckoutData) -> tuple[int, str]:
 
         minor_units = extract_checkout_totals(openai_checkout_init_payload(checkout)).get("due")
     try:
-        amount = int(minor_units) if minor_units not in (None, "") else 0
+        amount = int(minor_units) if minor_units not in (None, "") else None
     except (TypeError, ValueError):
-        amount = 0
+        amount = None
     currency = str(state.get("currency") or checkout.get("currency") or "GBP").upper()
     return amount, currency
 

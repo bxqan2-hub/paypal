@@ -129,6 +129,8 @@ def test_checkout_methods_merge_and_dedupe_across_nested_payloads() -> None:
 def test_gopay_zero_amount_gate_matches_promotion_contract() -> None:
     validate_gopay_amount(0, promotion_applied=True)
     validate_gopay_amount(349000, promotion_applied=False)
+    with pytest.raises(Exception, match="expected zero amount, got missing"):
+        validate_gopay_amount(None, promotion_applied=True)
     with pytest.raises(Exception, match="expected zero amount, got 349000"):
         validate_gopay_amount(349000, promotion_applied=True)
 
