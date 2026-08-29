@@ -53,6 +53,8 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
         result_field="gopay_pro_url",
         country="ID",
         currency="IDR",
+        uses_legacy_transport=True,
+        uses_checkout_update=True,
     ),
     "gcash": PaymentChannel(
         name="gcash",

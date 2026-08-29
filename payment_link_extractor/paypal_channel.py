@@ -27,7 +27,7 @@ def extract_legacy_payment_link(
 ) -> PaymentLinkResult:
     method = str(config.payment_method or "paypal").strip().lower() or "paypal"
     channel = payment_channel(method)
-    if method not in {"paypal", "gopay"}:
+    if method not in {"paypal", "gopay", "gopay_pro"}:
         raise ConfigurationError(f"legacy Checkout core does not support {method}")
 
     def checkpoint(stage: str) -> None:

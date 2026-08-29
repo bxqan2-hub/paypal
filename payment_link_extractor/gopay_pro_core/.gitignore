@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-*.log
-.env
-.venv/
-venv/
-.pytest_cache/
-.DS_Store
-Thumbs.db

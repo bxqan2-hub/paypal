@@ -24,11 +24,11 @@ def test_channel_country_currency_and_transport_contracts_are_isolated() -> None
     gcash = PAYMENT_CHANNELS["gcash"]
     assert (paypal.country, paypal.currency, paypal.uses_legacy_transport) == ("", "", True)
     assert (gopay.country, gopay.currency, gopay.uses_legacy_transport) == ("ID", "IDR", True)
-    assert (gopay_pro.country, gopay_pro.currency, gopay_pro.uses_legacy_transport) == ("ID", "IDR", False)
+    assert (gopay_pro.country, gopay_pro.currency, gopay_pro.uses_legacy_transport) == ("ID", "IDR", True)
     assert (gcash.country, gcash.currency, gcash.uses_legacy_transport) == ("PH", "PHP", False)
     assert paypal.uses_checkout_update is True
     assert gopay.uses_checkout_update is True
-    assert gopay_pro.uses_checkout_update is False
+    assert gopay_pro.uses_checkout_update is True
     assert gcash.uses_checkout_update is False
 
 

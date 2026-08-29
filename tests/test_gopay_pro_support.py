@@ -1,102 +1,75 @@
 from __future__ import annotations
 
-import sys
-import hashlib
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
-import payment_link_extractor.gopay_pro as adapter
+import payment_link_extractor.gopay_pro as gopay_pro
 from payment_link_extractor.application import _normalize_config, extract_payment_link
 from payment_link_extractor.channels import PAYMENT_CHANNELS
-from payment_link_extractor.models import ExtractionConfig
+from payment_link_extractor.models import BillingProfile, ExtractionConfig, PaymentLinkResult
+from payment_link_extractor.providers import provider_redirect_config
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def gopay_pro_config() -> ExtractionConfig:
+def config() -> ExtractionConfig:
     return ExtractionConfig(
         access_token="fixture-token",
         checkout_proxy="http://proxy.example:8080",
-        update_proxy="",
+        update_proxy="http://proxy.example:8080",
         country="US",
         payment_method="gopay_pro",
-        apply_checkout_update=False,
-        account_email="gopay@example.com",
-        account_name="GoPay Pro User",
+        apply_checkout_update=True,
     )
 
 
-def test_gopay_pro_has_independent_channel_and_idr_billing() -> None:
+def _result() -> PaymentLinkResult:
+    return PaymentLinkResult(
+        checkout_session_id="cs_gopay_pro",
+        session_kind="stripe_checkout",
+        payment_method="gopay_pro",
+        billing_country="ID",
+        currency="IDR",
+        amount_due=0,
+        amount_due_minor=0,
+        billing=BillingProfile("GoPay Pro User", "user@example.com", "", "ID", "", "", "", ""),
+        provider_url="https://pm-redirects.stripe.com/authorize/gopay-pro",
+        provider_field="gopay_pro_url",
+        provider_value="https://pm-redirects.stripe.com/authorize/gopay-pro",
+    )
+
+
+def test_gopay_pro_is_independent_and_fixed_to_id_idr() -> None:
     channel = PAYMENT_CHANNELS["gopay_pro"]
     assert channel.adapter_module == "payment_link_extractor.gopay_pro"
     assert channel.adapter_callable == "extract_gopay_pro_payment_link"
     assert channel.result_field == "gopay_pro_url"
     assert (channel.country, channel.currency) == ("ID", "IDR")
-    normalized = _normalize_config(gopay_pro_config())
-    assert normalized.country == "ID"
+    assert channel.uses_legacy_transport is True
+    assert channel.uses_checkout_update is True
+    assert _normalize_config(config()).country == "ID"
 
 
-def test_gopay_pro_core_is_a_distinct_copy_with_id_route() -> None:
-    core = adapter.GOPAY_PRO_PROJECT_DIR
-    assert core != ROOT / "payment_link_extractor" / "mk_gcash_open_source"
-    assert (core / "gopay_pro_chain.py").is_file()
-    assert (core / "gopay_pro_monitor.py").is_file()
-    assert (core / "gopay_pro_sentinel.py").is_file()
-    text = (core / "gopay_pro_chain.py").read_text(encoding="utf-8")
-    assert '"billing_country": "ID"' in text
-    assert '"currency": "IDR"' in text
-    assert "_is_gopay_pro_url" in text
+def test_gopay_pro_provider_hosts_are_separate() -> None:
+    redirect = provider_redirect_config("gopay_pro")
+    assert redirect["result_field"] == "gopay_pro_url"
+    assert "pm-redirects.stripe.com" in redirect["preferred_hosts"]
 
 
-def test_gopay_pro_core_manifest_matches_its_copied_files() -> None:
-    manifest = json.loads((ROOT / "gopay_pro_project_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["channel"] == "gopay_pro"
-    assert manifest["tracked_file_count"] == 22
-    for relative, expected in manifest["sha256"].items():
-        assert hashlib.sha256((adapter.GOPAY_PRO_PROJECT_DIR / relative).read_bytes()).hexdigest() == expected
+def test_gopay_pro_delegates_to_paypal_base_and_adds_gcash_optimization(monkeypatch) -> None:
+    base_calls = {}
+
+    def fake_base(config, **kwargs):
+        base_calls["config"] = config
+        base_calls["kwargs"] = kwargs
+        return _result()
+
+    monkeypatch.setattr(gopay_pro, "extract_legacy_payment_link", fake_base)
+    result = gopay_pro.extract_gopay_pro_payment_link(config())
+    assert base_calls["config"].payment_method == "gopay_pro"
+    assert result.extra["gopay_pro_core"] == "paypal_legacy_checkout_stripe"
+    assert result.extra["gopay_pro_optimization"] == "gcash_browser_sentinel_sdk"
+    assert result.extra["payment_route"] == "gopay_pro_paypal_base"
 
 
-def test_gopay_pro_adapter_maps_core_result_to_own_field(monkeypatch) -> None:
-    fake = SimpleNamespace()
-    raw = {
-        "client_account_id": "acct_fixture",
-        "status": "success",
-        "current_step": "follow_redirect",
-        "checkout_session_id": "oaics_gopay_pro",
-        "payment_method_id": "cpmt_gopay",
-        "checkout_amount": 0,
-        "gopay_pro_url": "https://gopay.co.id/pay/fixture",
-        "payment_route": "direct_gopay_pro",
-    }
-    fake.CHAIN_MANAGER = SimpleNamespace(get_tasks=lambda _job: [raw])
-    fake.create_job = lambda _payload: {"job_id": "local_fixture", "accounts": [{"id": "acct_fixture"}]}
-    fake.public_job = lambda _job: {
-        "accounts": [{
-            "id": "acct_fixture",
-            "status": "success",
-            "current_step": "follow_redirect",
-            "link": raw["gopay_pro_url"],
-        }]
-    }
-    fake.cancel_job = lambda _job: None
-    monkeypatch.setattr(adapter, "_APP", fake)
-    monkeypatch.setitem(sys.modules, "gopay_pro_chain", SimpleNamespace(_is_gopay_pro_url=lambda value: value.startswith("https://gopay.co.id/")))
-    result = adapter.extract_gopay_pro_payment_link(gopay_pro_config())
-    assert result.payment_method == "gopay_pro"
-    assert result.billing_country == "ID"
-    assert result.currency == "IDR"
-    assert result.provider_field == "gopay_pro_url"
-    assert result.provider_value == raw["gopay_pro_url"]
-
-
-def test_gopay_pro_dispatch_does_not_construct_legacy_paypal_transport(monkeypatch) -> None:
+def test_application_dispatches_gopay_pro_to_its_adapter(monkeypatch) -> None:
     expected = object()
-    monkeypatch.setattr(adapter, "extract_gopay_pro_payment_link", lambda config, **_kwargs: expected)
-
-    class ForbiddenFactory:
-        def chatgpt(self, *_args, **_kwargs):
-            raise AssertionError("GoPay Pro should use its copied core")
-
-    assert extract_payment_link(gopay_pro_config(), transport_factory=ForbiddenFactory()) is expected
+    monkeypatch.setattr(gopay_pro, "extract_gopay_pro_payment_link", lambda config, **kwargs: expected)
+    assert extract_payment_link(config()) is expected

@@ -1,0 +1,32 @@
+BRANCH: payment_link_extractor/gopay_pro.py, payment_link_extractor/paypal_channel.py, payment_link_extractor/transport.py
+FIELD: GoPay Pro protocol core, GCash-derived browser optimization, ID/IDR billing, gopay_pro_url result field
+MODIFIED_FILE: artifacts/gopay-pro-paypal-gcash-optimization-20260829/MODIFIED_FILE
+DIFF_FILE: artifacts/gopay-pro-paypal-gcash-optimization-20260829/DIFF_FILE
+VERIFICATION: artifacts/gopay-pro-paypal-gcash-optimization-20260829/VERIFICATION.txt
+ROLLBACK: artifacts/gopay-pro-paypal-gcash-optimization-20260829/ROLLBACK.sh
+
+BASELINE command:
+  git show 660fae9:payment_link_extractor/gopay_pro.py > artifacts-local/gopay-pro-paypal-gcash-optimization-20260829/baseline_gopay_pro.py; .venv/Scripts/python.exe -m py_compile artifacts-local/gopay-pro-paypal-gcash-optimization-20260829/baseline_gopay_pro.py
+  input: previous direct GCash-derived GoPay Pro adapter
+  literal output/result: baseline adapter compiled successfully; exit status 0
+  exit status: 0
+
+MODIFIED command:
+  .venv/Scripts/python.exe -m pytest -q
+  input: repository test suite
+  literal output: 172 passed in 1.53s
+  exit status: 0
+  result: GoPay Pro dispatches through PayPal legacy core and receives the GCash-derived browser/Sentinel optimization layer through transport.
+
+GCASH_INTEGRITY command:
+  PowerShell SHA-256 comparison of payment_link_extractor/mk_gcash_open_source against mk_gcash_project_manifest.json and C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource
+  input: 22 manifest files
+  literal output: GCASH_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5 FILES=22 MISMATCHES=0
+  exit status: 0
+
+ROLLBACK command:
+  bash artifacts/gopay-pro-paypal-gcash-optimization-20260829/ROLLBACK.sh "$(pwd)" artifacts-local/gopay-pro-paypal-gcash-optimization-20260829
+  input: current corrected GoPay Pro adapter, channel registry and transport
+  literal output: ROLLBACK_OK target=artifacts-local/gopay-pro-paypal-gcash-optimization-20260829 restored_commit=660fae9 previous_direct-copy-state=true status=0
+  exit status: 0
+  restored behavior/status: rollback target restores the previous direct-copy implementation; working tree remains on PayPal-base plus GCash optimization.
