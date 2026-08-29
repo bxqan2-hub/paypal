@@ -154,7 +154,10 @@ def entry_summary(index: int, entry: dict[str, Any], *, redact: bool = True) -> 
         ),
         "request_size": int(request.get("bodySize", 0) or 0),
         "response_size": _body_size(response_content),
-        "redirect_url": redact_url(str(response.get("redirectURL") or ""), redact=redact),
+        "redirect_url": redact_url(
+            str(response.get("redirectURL") or response_headers.get("location", "") or ""),
+            redact=redact,
+        ),
         "resource_type": entry.get("_resourceType") or entry.get("resourceType", ""),
     }
 
@@ -218,8 +221,16 @@ def analyze_har(
     user_agents: set[str] = set()
     sentinel_lengths: list[int] = []
     short_urls: list[str] = []
+    gopay_redirects: list[dict[str, Any]] = []
+    gopay_payment_methods: set[str] = set()
+    gopay_amounts: set[str] = set()
     notable: list[dict[str, Any]] = []
+    stripe_init_entries: list[dict[str, Any]] = []
     short_url_re = re.compile(r"https://m\.gcash/s/[A-Za-z0-9_-]+")
+    gopay_redirect_re = re.compile(
+        r"https://pm-redirects\.stripe\.com/authorize/[^\s\"'<]+",
+        re.IGNORECASE,
+    )
     for index, entry in selected:
         summary = entry_summary(index, entry, redact=redact)
         hosts[summary["host"]] += 1
@@ -238,6 +249,36 @@ def analyze_har(
             sentinel_lengths.append(len(token))
         body_text = json.dumps(summary.get("response_body"), ensure_ascii=False)
         short_urls.extend(short_url_re.findall(body_text))
+        # GoPay observations: authorize redirect (request url / redirect header /
+        # response body), payment method types, amount.
+        response_redirect = str(summary.get("redirect_url") or "")
+        redirect_haystack = (
+            str(summary.get("url") or "") + "\n" + response_redirect + "\n" + body_text
+        )
+        gopay_redirects.extend(
+            {
+                "index": index,
+                "sha256": hashlib.sha256(match.group(0).encode("utf-8")).hexdigest()[:32],
+                "host": "pm-redirects.stripe.com",
+                "path_prefix": "/authorize/",
+                "url_redacted": redact_url(match.group(0), redact=redact),
+            }
+            for match in gopay_redirect_re.finditer(redirect_haystack)
+        )
+        if summary["host"] == "api.stripe.com":
+            method_groups = re.findall(r'"payment_method_types"\s*:\s*\[([^\]]*)\]', body_text)
+            gopay_payment_methods.update(
+                str(item).strip().lower()
+                for group in method_groups
+                for item in re.findall(r'"(gopay|card|link)"', group)
+            )
+            gopay_amounts.update(
+                str(value)
+                for value in re.findall(
+                    r'"(?:amount_total|checkout_amount|expected_amount|amount)":\s*"?(\d+)"?',
+                    body_text,
+                )
+            )
         operation = ""
         request_body = str((entry.get("request") or {}).get("postData", {}).get("text", ""))
         for marker in (
@@ -248,12 +289,24 @@ def analyze_har(
             "authorisation.stateless.consult",
             "short.dynamic.link",
             "query.result",
+            "payments/checkout/approve",
+            "payments/checkout/snapshot",
+            "payment_pages/",
         ):
             if marker.lower() in (summary["url"] + " " + request_body).lower():
                 operation = marker
                 break
         if operation:
             notable.append({"index": index, "operation": operation, "status": summary["status"], "url": summary["url"]})
+        if summary["host"] == "api.stripe.com" and summary["path"].endswith("/init"):
+            stripe_init_entries.append(
+                {
+                    "index": index,
+                    "checkpoint": "gopay_stripe_init",
+                    "status": summary["status"],
+                    "path": summary["path"],
+                }
+            )
 
     return {
         "schema": "opll.har-analysis.v1",
@@ -282,6 +335,10 @@ def analyze_har(
             "user_agents": sorted(user_agents),
             "sentinel_header_lengths": sorted(set(sentinel_lengths)),
             "short_urls": sorted(set(short_urls)),
+            "gopay_redirects": gopay_redirects,
+            "gopay_payment_methods": sorted(gopay_payment_methods),
+            "gopay_amounts": sorted(gopay_amounts),
+            "gopay_stripe_init": stripe_init_entries,
             "notable_operations": notable,
         },
         "entries": summaries,
@@ -310,6 +367,9 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"- Client versions: `{', '.join(observations.get('oai_client_versions', [])) or '-'}`",
         f"- Sentinel header lengths: `{', '.join(map(str, observations.get('sentinel_header_lengths', []))) or '-'}`",
         f"- HAR-observed short URLs: `{', '.join(observations.get('short_urls', [])) or '-'}`",
+        f"- GoPay redirects (#): `{len(observations.get('gopay_redirects', []))}`",
+        f"- GoPay payment methods: `{', '.join(observations.get('gopay_payment_methods', [])) or '-'}`",
+        f"- GoPay amounts: `{', '.join(observations.get('gopay_amounts', [])) or '-'}`",
         "",
         "## Notable operations",
         "",
@@ -318,6 +378,22 @@ def markdown_report(report: dict[str, Any]) -> str:
     ]
     for item in observations.get("notable_operations", []):
         lines.append(f"| {item.get('index')} | `{item.get('operation')}` | {item.get('status')} | `{item.get('url')}` |")
+    gopay_redirects = observations.get("gopay_redirects", [])
+    if gopay_redirects:
+        lines.extend(
+            [
+                "",
+                "## GoPay authorize redirects",
+                "",
+                "| Index | sha256 | Host | Path | Redacted URL |",
+                "|---:|---|---:|---|---|",
+            ]
+        )
+        for item in gopay_redirects:
+            lines.append(
+                f"| {item.get('index')} | `{item.get('sha256')}` | `{item.get('host')}` | "
+                f"`{item.get('path_prefix')}` | `{item.get('url_redacted')}` |"
+            )
     lines.extend(["", "## Entries", "", "| Index | Method | Status | Host | Path | Time (ms) |", "|---:|---|---:|---|---|---:|"])
     for item in report.get("entries", []):
         lines.append(

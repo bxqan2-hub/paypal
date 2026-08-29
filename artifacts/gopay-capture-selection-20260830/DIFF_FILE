@@ -1,0 +1,7 @@
+--- baseline
+- {"status":"baseline","canonical_capture":null}
++++ selected
++ canonical GoPay HAR retained: artifacts-local/gopay-cdp-capture-browser-targets-20260830-60943-fixed.har
++ sha256: 7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
++ entries: 401; response bodies: 368; hosts: 27
++ optimization thread state: completed

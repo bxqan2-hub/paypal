@@ -1,0 +1,41 @@
+GoPay canonical capture selection verification
+=============================================
+
+Changed branch/field:
+Capture retention marker -> canonical GoPay HAR selected after optimization thread completion.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-selection-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-selection-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-selection-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-selection-20260830\ROLLBACK.sh
+
+Canonical capture:
+- path: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har
+- sha256: 7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
+- entries: 401
+- response bodies: 368
+- hosts: 27
+
+BASELINE command:
+.\\.venv\\Scripts\\python.exe -m pytest -q
+Literal output/result: 184 passed in 1.50s
+Exit status: 0
+
+MODIFIED command:
+.\\.venv\\Scripts\\python.exe -m pytest -q
+Literal output/result: 184 passed in 1.53s; canonical marker added without source-code changes.
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "cp artifacts/gopay-capture-selection-20260830/MODIFIED_FILE artifacts-local/gopay-capture-selection-rollback-test.json; printf '\\nmutation' >> artifacts-local/gopay-capture-selection-rollback-test.json; chmod +x artifacts/gopay-capture-selection-20260830/ROLLBACK.sh; artifacts/gopay-capture-selection-20260830/ROLLBACK.sh artifacts-local/gopay-capture-selection-rollback-test.json artifacts/gopay-capture-selection-20260830/MODIFIED_FILE"
+Literal output/result: ROLLBACK_TARGET=artifacts-local/gopay-cdp-selection-rollback-test.json; BEFORE_SHA256=924c474c0454fff4fd856499008fc862a4b9b3a054b88db9654bb447944b6a8d; RESTORED_SHA256=bdf77ebcb0fd098d3f7de3954b8be3229e420fb265b19946672bc1e6c04a09c9; EXPECTED_SHA256=bdf77ebcb0fd098d3f7de3954b8be3229e420fb265b19946672bc1e6c04a09c9; RESTORED_STATUS=PASS
+Exit status: 0
+
+Hash preservation:
+- MODIFIED_FILE baseline SHA-256: 76C7F6C7F3EDCDCD3C8E92A7666F8BDCFE4E0B2BECF4DC19D46E89384EC18B3B
+- MODIFIED_FILE final SHA-256: BDF77EBCB0FD098D3F7DE3954B8BE3229E420FB265B19946672BC1E6C04A09C9
+- canonical HAR SHA-256: 7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
+
+Restored behavior/status:
+Optimization capture thread completed; canonical GoPay HAR remains retained and marked. No other GoPay HAR was present to retain.

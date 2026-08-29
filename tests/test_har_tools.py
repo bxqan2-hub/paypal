@@ -375,8 +375,112 @@ def test_completeness_audit_reports_and_accepts_full_gcash_flow() -> None:
     har = {"log": {"entries": entries, "_capture": {}}}
     complete = audit_har_completeness(har)
     assert complete["complete"] is True
+    assert complete["channel"] == "gcash"
     entries[2]["response"]["content"] = {}
     entries[2]["_capture"]["responseBodyMissing"] = True
     incomplete = audit_har_completeness(har)
     assert incomplete["complete"] is False
     assert "custom_payment_method_start:response_body_missing" in incomplete["issues"]
+
+
+def _gopay_fixture(*, include_redirect: bool = True) -> dict:
+    """A complete GoPay extraction corpus (stripe init/confirm/elements/poll +
+    chatgpt checkout/taxes/snapshot/approve)."""
+    gopay_checkpoints = [
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout", '{"plan":"plus","promo":true}'),
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout/taxes", '{"checkout_session_id":"cs_live_x"}'),
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout/snapshot", '{"snapshot":{}}'),
+        ("POST", "https://api.stripe.com/v1/payment_pages/cs_live_x/init", "expected_amount=0&key=pk_live_x"),
+        ("GET", "https://api.stripe.com/v1/elements/sessions?key=pk_live_x", ""),
+        ("POST", "https://api.stripe.com/v1/payment_pages/cs_live_x/confirm", "expected_amount=0&payment_method_data[type]=gopay"),
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout/approve", '{"checkout_session_id":"cs_live_x"}'),
+        ("GET", "https://api.stripe.com/v1/payment_pages/cs_live_x", ""),
+    ]
+    entries = []
+    for method, url, body in gopay_checkpoints:
+        entry = {
+            "request": {"method": method, "url": url, "postData": {"text": body}},
+            "response": {"status": 200, "content": {"text": '{"result":"approved"}'}, "headers": []},
+            "_capture": {"responseBodySource": "Network.getResponseBody"},
+        }
+        if method == "GET":
+            entry["request"].pop("postData")
+        entries.append(entry)
+    if include_redirect:
+        entries.append(
+            {
+                "request": {
+                    "method": "GET",
+                    "url": "https://pm-redirects.stripe.com/authorize/pm_pay_page-session?client_reference_id=x",
+                },
+                "response": {
+                    "status": 200,
+                    "content": {"text": "<html>gopay authorize</html>"},
+                    "headers": [],
+                },
+                "_capture": {"responseBodySource": "Network.getResponseBody"},
+            }
+        )
+    return {"log": {"entries": entries, "_capture": {}}}
+
+
+def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
+    har = _gopay_fixture(include_redirect=True)
+    complete = audit_har_completeness(har)
+    assert complete["channel"] == "gopay"
+    assert complete["complete"] is True
+    assert complete["issues"] == []
+    assert complete["gopayRedirect"]["found"] is True
+    assert complete["gopayRedirect"]["sha256"]
+
+
+def test_gopay_audit_reports_missing_redirect_and_no_gopay_sentinel_gate() -> None:
+    har = _gopay_fixture(include_redirect=False)
+    incomplete = audit_har_completeness(har)
+    assert incomplete["channel"] == "gopay"
+    assert incomplete["complete"] is False
+    assert "gopay_redirect:entry_missing" in incomplete["issues"]
+    # Sentinel is minted outside the browser; it must never gate GoPay captures.
+    assert all("sentinel_req" not in issue for issue in incomplete["issues"])
+
+
+def test_gopay_audit_rejects_confusable_elements_response_as_approve() -> None:
+    """The /elements/sessions GET must not satisfy the approve POST checkpoint."""
+    har = _gopay_fixture(include_redirect=True)
+    approve = har["log"]["entries"][6]
+    approve["request"]["method"] = "GET"
+    approve["request"]["url"] = "https://api.stripe.com/v1/elements/sessions"
+    approve["request"]["postData"] = {}
+    audit = audit_har_completeness(har)
+    assert audit["channel"] == "gopay"
+    assert "gopay_approve:entry_missing" in audit["issues"]
+
+
+def test_gopay_observations_capture_redirect_and_methods_from_all_sources(tmp_path: Path) -> None:
+    """Redirect detection must span request url / redirect header / response body,
+    and stripe init metadata (payment_method_types, amount) must be extracted."""
+    har = _gopay_fixture(include_redirect=True)
+    entries = har["log"]["entries"]
+    # rotate coverage: entry 3 keeps an init body carrying methods + amount,
+    # entry 7's redirect is delivered via a 302 Location header with no body.
+    entries[3]["response"]["content"]["text"] = json.dumps(
+        {"payment_method_types": ["gopay", "card"], "amount_total": 174211}
+    )
+    entries[7]["request"]["url"] = "https://chatgpt.com/backend-api/payments/checkout/approve"
+    entries[7]["response"] = {
+        "status": 302,
+        "headers": [{"name": "location", "value": "https://pm-redirects.stripe.com/authorize/pm_pay_page-session"}],
+        "content": {"text": ""},
+    }
+    har_path = tmp_path / "gopay.har"
+    har_path.write_text(json.dumps(har, ensure_ascii=False), encoding="utf-8")
+    report = analyze_har(har_path)
+    observations = report["observations"]
+    assert len(observations["gopay_redirects"]) >= 2
+    assert all(item["sha256"] and item["host"] == "pm-redirects.stripe.com" for item in observations["gopay_redirects"])
+    assert {"gopay", "card"} <= set(observations["gopay_payment_methods"])
+    assert "174211" in observations["gopay_amounts"]
+    assert any(
+        item["checkpoint"] == "gopay_stripe_init" and item["path"].endswith("/init")
+        for item in observations["gopay_stripe_init"]
+    )

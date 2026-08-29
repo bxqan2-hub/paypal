@@ -1,0 +1,28 @@
+{
+  "marker": "GOPAY_CAPTURE_CANONICAL",
+  "selected_at": "2026-08-30",
+  "status": "retained",
+  "canonical_capture": {
+    "path": "C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har",
+    "sha256": "7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1",
+    "size_bytes": 16155304,
+    "entries": 401,
+    "response_bodies": 368,
+    "hosts": 27,
+    "methods": {"GET": 343, "OPTIONS": 11, "POST": 47},
+    "critical_flow": [
+      "/backend-api/payments/checkout",
+      "/backend-api/payments/checkout/taxes",
+      "/backend-api/payments/checkout/snapshot",
+      "/backend-api/payments/checkout/approve",
+      "pm-redirects.stripe.com/authorize",
+      "/snap/v1/transactions/<UUID>"
+    ]
+  },
+  "retention_policy": "Keep this canonical GoPay HAR only; no other GoPay HAR exists in the workspace. Channel-specific GCash/Roxy captures are not GoPay candidates.",
+  "capture_tool": {
+    "thread_id": "01a04ec6-82c9-7180-828f-834f20162b38",
+    "state": "completed",
+    "completed_at": "2026-08-30T05:43:36+08:00"
+  }
+}

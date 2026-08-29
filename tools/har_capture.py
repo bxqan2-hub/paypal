@@ -647,54 +647,268 @@ class HARRecorder:
         }
 
 
-def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
-    """Audit a GCash flow without exposing request or response payload values."""
+def _audit_request_text(entry: dict[str, Any]) -> str:
+    request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+    post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+    return str(post_data.get("text") or "")
+
+
+def _audit_response_text(entry: dict[str, Any]) -> str:
+    response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+    content = response.get("content") if isinstance(response.get("content"), dict) else {}
+    return str(content.get("text") or "")
+
+
+def _audit_searchable(entry: dict[str, Any]) -> str:
+    request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+    return (str(request.get("url") or "") + "\n" + _audit_request_text(entry)).lower()
+
+
+def _audit_path_pattern(entry: dict[str, Any]) -> str:
+    request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+    return str(urlsplit(str(request.get("url") or "")).path or "")
+
+
+# Method is exact for request.method when set; path_pattern is anchored against
+# the request URL's path; marker is a loose substring guard used for host/route
+# hints. requires_request_body marks true POST/PUT/PATCH checkpoints whose
+# bodies identify which checkout/payment-page a capture belongs to.
+CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
+    "gcash": [
+        {
+            "name": "checkout_taxes",
+            "marker": "/backend-api/payments/checkout/taxes",
+            "path_pattern": (r"^/backend-api/payments/checkout/taxes$",),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "checkout_confirm",
+            "marker": "/backend-api/payments/checkout/confirm",
+            "path_pattern": (r"^/backend-api/payments/checkout/confirm$",),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "custom_payment_method_start",
+            "marker": "/backend-api/payments/checkout/custom_payment_method/start",
+            "path_pattern": (r"^/backend-api/payments/checkout/custom_payment_method/start$",),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "sentinel_req",
+            "marker": "/backend-api/sentinel/req",
+            "path_pattern": (r"^/backend-api/sentinel/req$",),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "key_agreement",
+            "marker": "/c4/v3/key-agreement/handshake",
+            "path_pattern": (r"^/c4/v3/key-agreement/handshake$",),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "authorisation_consult",
+            "marker": "ap.mobilewallet.gka.authorisation.stateless.consult",
+            "path_pattern": (),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "short_dynamic_link",
+            "marker": "ap.mobilewallet.short.dynamic.link",
+            "path_pattern": (),
+            "method": None,
+            "requires_request_body": True,
+        },
+        {
+            "name": "query_result",
+            "marker": "ap.mobilewallet.gka.query.result",
+            "path_pattern": (),
+            "method": None,
+            "requires_request_body": True,
+        },
+    ],
+    # GoPay: the flow emits two Stripe payment_pages calls (init + confirm) and
+    # one bare poll GET, a ChatGPT checkout/taxes/snapshot/approve sequence, and
+    # one Stripe elements session GET.  Sentinel is minted OUTSIDE the browser by
+    # the local Node bridge, so /backend-api/sentinel/req is deliberately NOT a
+    # required checkpoint here — CDP can never capture it.
+    "gopay": [
+        {
+            "name": "gopay_checkout_create",
+            "marker": "/backend-api/payments/checkout",
+            "path_pattern": (r"^/backend-api/payments/checkout$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "gopay_checkout_taxes",
+            "marker": "/backend-api/payments/checkout/taxes",
+            "path_pattern": (r"^/backend-api/payments/checkout/taxes$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "gopay_checkout_snapshot",
+            "marker": "/backend-api/payments/checkout/snapshot",
+            "path_pattern": (r"^/backend-api/payments/checkout/snapshot$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "gopay_stripe_init",
+            "marker": "api.stripe.com/v1/payment_pages/",
+            "path_pattern": (r"^/v1/payment_pages/[^/]+/init$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "gopay_stripe_elements",
+            "marker": "/v1/elements/sessions",
+            "path_pattern": (r"^/v1/elements/sessions$",),
+            "method": "GET",
+            "requires_request_body": False,
+        },
+        {
+            "name": "gopay_stripe_confirm",
+            "marker": "/v1/payment_pages/",
+            "path_pattern": (r"^/v1/payment_pages/[^/]+/confirm$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "gopay_approve",
+            "marker": "/backend-api/payments/checkout/approve",
+            "path_pattern": (r"^/backend-api/payments/checkout/approve$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+    ],
+}
+
+GOPAY_REDIRECT_HOST = "pm-redirects.stripe.com"
+GOPAY_REDIRECT_PATH_PREFIX = "/authorize/"
+GCASH_CHANNEL_SIGNATURES = (
+    "/backend-api/payments/checkout/custom_payment_method/start",
+    "ap.mobilewallet.",
+    "short.dynamic.link",
+)
+GOPAY_CHANNEL_SIGNATURES = (
+    "/backend-api/payments/checkout/approve",
+    "/v1/payment_pages/",
+    "pm-redirects.stripe.com",
+)
+
+
+def classify_har_channel(har: dict[str, Any]) -> str:
+    """Return gopay/gcash/mixed/unknown without trusting any marker ordering."""
     log = har.get("log") if isinstance(har.get("log"), dict) else {}
     entries = log.get("entries") if isinstance(log.get("entries"), list) else []
+    corpus = "\n".join(_audit_searchable(entry) for entry in entries if isinstance(entry, dict)).lower()
+    gopay = any(marker.lower() in corpus for marker in GOPAY_CHANNEL_SIGNATURES)
+    gcash = any(marker.lower() in corpus for marker in GCASH_CHANNEL_SIGNATURES)
+    if gopay and gcash:
+        return "mixed"
+    return "gopay" if gopay else "gcash" if gcash else "unknown"
 
-    def request_text(entry: dict[str, Any]) -> str:
+
+def _find_gopay_redirect(har: dict[str, Any]) -> dict[str, Any]:
+    """Return a sha256-based summary of the GoPay authorize redirect if captured."""
+    log = har.get("log") if isinstance(har.get("log"), dict) else {}
+    entries = log.get("entries") if isinstance(log.get("entries"), list) else []
+    samples: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
-        post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
-        return str(post_data.get("text") or "")
-
-    def response_text(entry: dict[str, Any]) -> str:
         response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
-        content = response.get("content") if isinstance(response.get("content"), dict) else {}
-        return str(content.get("text") or "")
+        pieces = [
+            str(request.get("url") or ""),
+            str(response.get("redirectURL") or ""),
+            _audit_response_text(entry),
+        ]
+        for piece in pieces:
+            needle = f"{GOPAY_REDIRECT_HOST}{GOPAY_REDIRECT_PATH_PREFIX}"
+            if needle in piece.lower():
+                samples.append(piece.strip())
+    if not samples:
+        return {"found": False, "sourceList": [], "sha256": ""}
+    samples = list(dict.fromkeys(samples))
+    return {
+        "found": True,
+        "sourceList": samples[:3],
+        "sha256": hashlib.sha256("\n".join(samples).encode("utf-8")).hexdigest()[:32],
+    }
 
-    def searchable(entry: dict[str, Any]) -> str:
-        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
-        return (str(request.get("url") or "") + "\n" + request_text(entry)).lower()
 
-    critical = [
-        ("checkout_taxes", "/backend-api/payments/checkout/taxes"),
-        ("checkout_confirm", "/backend-api/payments/checkout/confirm"),
-        ("custom_payment_method_start", "/backend-api/payments/checkout/custom_payment_method/start"),
-        ("sentinel_req", "/backend-api/sentinel/req"),
-        ("key_agreement", "/c4/v3/key-agreement/handshake"),
-        ("authorisation_consult", "ap.mobilewallet.gka.authorisation.stateless.consult"),
-        ("short_dynamic_link", "ap.mobilewallet.short.dynamic.link"),
-        ("query_result", "ap.mobilewallet.gka.query.result"),
-    ]
+def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
+    """Audit a gopay/gcash extraction flow without exposing payload values.
+
+    The captured corpus is classified as ``gopay``, ``gcash``, ``mixed``, or
+    ``unknown`` and checked against the matching checkpoint list.  GoPay
+    captures additionally require an authorize redirect on
+    ``pm-redirects.stripe.com``; the raw URL is never stored — only a sha256
+    digest and a list of source hints.  The legacy GCash issue strings are
+    preserved verbatim.
+    """
+    log = har.get("log") if isinstance(har.get("log"), dict) else {}
+    entries = log.get("entries") if isinstance(log.get("entries"), list) else []
+    channel = classify_har_channel(har)
+    spec = CRITICAL_SPECS.get(channel)
     critical_results: list[dict[str, Any]] = []
     issues: list[str] = []
-    for name, marker in critical:
-        matches = [entry for entry in entries if isinstance(entry, dict) and marker in searchable(entry)]
-        request_body = any(bool(request_text(entry)) for entry in matches)
-        response_body = any(bool(response_text(entry)) for entry in matches)
-        result = {
-            "name": name,
-            "count": len(matches),
-            "requestBody": request_body,
-            "responseBody": response_body,
-        }
-        critical_results.append(result)
-        if not matches:
-            issues.append(f"{name}:entry_missing")
-        elif not request_body:
-            issues.append(f"{name}:request_body_missing")
-        elif not response_body:
-            issues.append(f"{name}:response_body_missing")
+    redirect_result: dict[str, Any] = {"found": False, "sourceList": [], "sha256": ""}
+
+    if spec is None:
+        issues.append(f"{channel or 'unknown'}:channel_unidentified")
+    else:
+        for item in spec:
+            name = str(item["name"] or "")
+            marker = str(item.get("marker") or "")
+            method = item.get("method")
+            requires_request_body = bool(item.get("requires_request_body"))
+            path_patterns = tuple(item.get("path_pattern") or ())
+
+            def checkpoint_match(entry: dict[str, Any]) -> bool:
+                if not isinstance(entry, dict):
+                    return False
+                if marker and marker.lower() not in _audit_searchable(entry):
+                    return False
+                if method:
+                    request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+                    if str(request.get("method") or "").upper() != method:
+                        return False
+                path = _audit_path_pattern(entry)
+                if path_patterns and not any(re.search(pattern, path) for pattern in path_patterns):
+                    return False
+                return True
+
+            matches = [entry for entry in entries if checkpoint_match(entry)]
+            request_body = any(bool(_audit_request_text(entry)) for entry in matches)
+            response_body = any(bool(_audit_response_text(entry)) for entry in matches)
+            critical_results.append(
+                {
+                    "name": name,
+                    "count": len(matches),
+                    "requestBody": request_body,
+                    "responseBody": response_body,
+                }
+            )
+            if not matches:
+                issues.append(f"{name}:entry_missing")
+            elif requires_request_body and not request_body:
+                issues.append(f"{name}:request_body_missing")
+            elif not response_body:
+                issues.append(f"{name}:response_body_missing")
+
+    if channel == "gopay":
+        redirect_result = _find_gopay_redirect(har)
+        if not redirect_result.get("found"):
+            issues.append("gopay_redirect:entry_missing")
 
     missing_responses: list[dict[str, Any]] = []
     for index, entry in enumerate(entries):
@@ -715,10 +929,12 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
         )
 
     audit = {
+        "channel": channel,
         "complete": not issues and not missing_responses,
         "criticalComplete": not issues,
         "entryCount": len(entries),
         "critical": critical_results,
+        "gopayRedirect": redirect_result,
         "issues": issues,
         "missingExpectedResponses": missing_responses,
     }

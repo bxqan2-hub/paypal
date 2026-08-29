@@ -147,14 +147,21 @@ def capture_target(target: RoxyTarget, args: argparse.Namespace) -> tuple[Path, 
         cdp,
         max_body_bytes=max(args.max_body_bytes, 0),
         response_body_retries=max(args.response_body_retries, 1),
-        stream_responses=args.no_fetch_responses and not args.no_stream_responses,
+        stream_responses=not args.no_stream_responses,
     )
     started_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     stop_event = threading.Event()
+    fetch_enabled = False
     try:
         recorder.command("Network.enable", network_enable_params(max(args.max_body_bytes, 0)))
         if not args.no_fetch_responses:
-            recorder.command("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]})
+            # RoxyChrome can omit the Fetch domain entirely; stream-based body
+            # recovery keeps the capture complete even when it is unavailable.
+            try:
+                recorder.command("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]})
+                fetch_enabled = True
+            except RuntimeError as exc:
+                print(f"ROXY_CAPTURE_FETCH_UNAVAILABLE={exc}", file=sys.stderr)
         cdp.sock.settimeout(0.25)
         print(f"ROXY_CAPTURE_STARTED=port={target.port} page={target.page_id}")
         print("ROXY_CAPTURE_STOP=press Enter here or double-click ROXY_CAPTURE_STOP.bat")
@@ -186,7 +193,7 @@ def capture_target(target: RoxyTarget, args: argparse.Namespace) -> tuple[Path, 
         return output, har
     finally:
         stop_file.unlink(missing_ok=True)
-        if not args.no_fetch_responses:
+        if fetch_enabled and not args.no_fetch_responses:
             try:
                 recorder.command("Fetch.disable")
             except Exception:
@@ -211,8 +218,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ROXY_CAPTURE_ENTRIES={len(har['log']['entries'])}")
         print(f"ROXY_CAPTURE_SHA256={hashlib.sha256(output.read_bytes()).hexdigest().upper()}")
         audit = har["log"]["_capture"].get("completenessAudit", {})
+        print(f"ROXY_CAPTURE_CHANNEL={str(audit.get('channel') or 'unknown').lower()}")
         print(f"ROXY_CAPTURE_COMPLETE={str(bool(audit.get('complete'))).lower()}")
         print(f"ROXY_CAPTURE_CRITICAL_COMPLETE={str(bool(audit.get('criticalComplete'))).lower()}")
+        redirect = audit.get("gopayRedirect") if isinstance(audit.get("gopayRedirect"), dict) else {}
+        print(f"ROXY_CAPTURE_GOPAY_REDIRECT_FOUND={str(bool(redirect.get('found'))).lower()}")
+        if redirect.get("sha256"):
+            print(f"ROXY_CAPTURE_GOPAY_REDIRECT_SHA256={str(redirect['sha256'])}")
         if audit.get("issues"):
             print("ROXY_CAPTURE_ISSUES=" + ",".join(str(item) for item in audit["issues"]))
         if args.require_complete and not audit.get("complete"):
