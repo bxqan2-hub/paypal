@@ -25,6 +25,22 @@ class ProtocolError(ExtractionError):
         self.detail = detail
 
 
+class CheckoutCreateError(ProtocolError):
+    """Structured Checkout creation failure used by retry orchestration."""
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        failure_mode: str,
+        retryable: bool,
+    ):
+        super().__init__(status_code, detail)
+        self.failure_mode = str(failure_mode or "checkout_create_failed")
+        self.retryable = bool(retryable)
+
+
 class ProviderRequiresApproval(ExtractionError):
     pass
 

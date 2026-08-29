@@ -781,6 +781,14 @@ class BrowserSentinelProvider:
         )
         self._eval(expression, timeout=30)
 
+    @staticmethod
+    def _normalize_flow(flow: str) -> str:
+        """Never let the SDK's ineffective default flow reach Checkout."""
+        selected = str(flow or "").strip()
+        if selected.lower() in {"", "default", "__default__"}:
+            return "chatgpt_checkout"
+        return selected
+
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         with self._lock:
             if self._failed:
@@ -788,7 +796,7 @@ class BrowserSentinelProvider:
             if not self._started:
                 self._start()
             self._ping(referer)
-            selected_flow = str(flow or "chatgpt_checkout").strip() or "chatgpt_checkout"
+            selected_flow = self._normalize_flow(flow)
             raw = self._eval(
                 "(async()=>{const token=await window.SentinelSDK.token(" + json.dumps(selected_flow) + ");return token})()",
                 timeout=90,
@@ -802,6 +810,31 @@ class BrowserSentinelProvider:
             if not token:
                 raise RuntimeError("SentinelSDK returned an empty token")
             result = {"OpenAI-Sentinel-Token": token}
+            observer = ""
+            try:
+                observer_raw = self._eval(
+                    "(async()=>{if(typeof window.SentinelSDK.sessionObserverToken!=='function')return '';"
+                    "const token=await window.SentinelSDK.sessionObserverToken("
+                    + json.dumps(selected_flow)
+                    + ");return token||''})()",
+                    timeout=45,
+                )
+                if isinstance(observer_raw, str):
+                    observer = observer_raw.strip()
+                elif isinstance(observer_raw, dict):
+                    observer = json.dumps(observer_raw, separators=(",", ":"))
+            except Exception:
+                observer = ""
+            if observer:
+                result["OpenAI-Sentinel-SO-Token"] = observer
+            # token() and sessionObserverToken() may update HttpOnly browser
+            # cookies. Read them through the browser/CDP command after proof
+            # creation, then mirror oai-did into the HTTP transport.
+            if hasattr(self, "_run"):
+                try:
+                    self._sync_cookies()
+                except Exception:
+                    pass
             if self._attestation:
                 result["oai-web-deployment-attestation"] = self._attestation
                 session_headers = getattr(self.transport_session, "headers", None)
@@ -809,6 +842,9 @@ class BrowserSentinelProvider:
                     session_headers["oai-web-deployment-attestation"] = self._attestation
             if self._cookies:
                 result["Cookie"] = self._cookies
+            current_device_id = str(getattr(self, "device_id", "") or "").strip()
+            if current_device_id:
+                result["oai-device-id"] = current_device_id
             return result
 
     def close(self) -> None:

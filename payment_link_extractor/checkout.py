@@ -5,13 +5,36 @@ import re
 from typing import Any
 
 from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
-from .errors import ConfigurationError, ProtocolError
+from .errors import CheckoutCreateError, ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
 from .transport import openai_sentinel_headers, response_json, set_proxy_url, stage_http_request
 
 CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
 PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+
+
+def classify_checkout_create_failure(status_code: int, body: Any) -> tuple[str, bool]:
+    """Classify Checkout creation failures for precise retry decisions."""
+    text = str(body or "").lower()
+    if "unusual activity" in text:
+        return "unusual_activity", True
+    if status_code == 429 or "rate limit" in text or "too many requests" in text:
+        return "rate_limited", True
+    if status_code in {408, 425} or status_code >= 500:
+        return "upstream_transient", True
+    if status_code in {401, 403} and any(
+        marker in text
+        for marker in ("unauthorized", "invalid token", "token revoked", "oauth token")
+    ):
+        return "access_token_invalid", False
+    if "payment method" in text and any(
+        marker in text for marker in ("not available", "unavailable", "unsupported")
+    ):
+        return "payment_method_unavailable", False
+    if status_code in {401, 403}:
+        return "access_denied", False
+    return "checkout_create_rejected", False
 
 
 def extract_processor_entity(data: Any) -> str:
@@ -99,6 +122,58 @@ def first_value_by_key(payload: Any, key: str) -> Any:
     return None
 
 
+def all_values_by_key(payload: Any, key: str) -> list[Any]:
+    """Collect every non-empty value for a key from a nested response."""
+    found: list[Any] = []
+    if isinstance(payload, dict):
+        if key in payload and payload[key] not in (None, "", [], {}):
+            found.append(payload[key])
+        for value in payload.values():
+            found.extend(all_values_by_key(value, key))
+    elif isinstance(payload, list):
+        for value in payload:
+            found.extend(all_values_by_key(value, key))
+    return found
+
+
+def _payment_method_key(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in (
+            "id",
+            "type",
+            "name",
+            "payment_method_type",
+            "custom_payment_method_type_id",
+        ):
+            marker = str(value.get(key) or "").strip().lower()
+            if marker:
+                return marker
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return str(value or "").strip().lower()
+
+
+def merge_payment_method_values(*collections: Any) -> list[Any]:
+    """Merge method arrays while preserving order and enriching duplicates."""
+    result: list[Any] = []
+    positions: dict[str, int] = {}
+    for collection in collections:
+        values = collection if isinstance(collection, list) else [collection]
+        for value in values:
+            if value in (None, "", [], {}):
+                continue
+            marker = _payment_method_key(value)
+            if not marker:
+                continue
+            if marker in positions:
+                index = positions[marker]
+                if isinstance(result[index], dict) and isinstance(value, dict):
+                    result[index] = {**result[index], **value}
+                continue
+            positions[marker] = len(result)
+            result.append(value)
+    return result
+
+
 def merge_checkout_payload(checkout: CheckoutData, payload: dict[str, Any]) -> None:
     processor = extract_processor_entity(payload)
     if processor:
@@ -106,11 +181,24 @@ def merge_checkout_payload(checkout: CheckoutData, payload: dict[str, Any]) -> N
     publishable_key = extract_publishable_key(payload)
     if publishable_key:
         checkout["publishable_key"] = publishable_key
+    method_types = merge_payment_method_values(
+        checkout.get("payment_method_types") or [],
+        *all_values_by_key(payload, "payment_method_types"),
+    )
+    custom_methods = merge_payment_method_values(
+        checkout.get("custom_payment_methods") or [],
+        *all_values_by_key(payload, "custom_payment_methods"),
+    )
+    if method_types:
+        checkout["payment_method_types"] = method_types
+    if custom_methods:
+        checkout["custom_payment_methods"] = custom_methods
+    checkout["payment_methods"] = merge_payment_method_values(
+        checkout.get("payment_methods") or [], method_types, custom_methods
+    )
     for key in (
         "checkout_state",
         "checkout_ui_mode",
-        "payment_method_types",
-        "custom_payment_methods",
         "confirm_return_url",
         "customer_session_client_secret",
         "checkout_session",
@@ -180,7 +268,15 @@ def create_checkout(
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise ProtocolError(response.status_code, f"checkout create failed: {response.text[:500]}")
+        mode, retryable = classify_checkout_create_failure(
+            response.status_code, response.text
+        )
+        raise CheckoutCreateError(
+            response.status_code,
+            f"checkout create failed [{mode}]: {response.text[:500]}",
+            failure_mode=mode,
+            retryable=retryable,
+        )
     payload = response_json(response, "checkout create")
     session_id = extract_checkout_session_id(payload)
     kind = checkout_session_kind(session_id)

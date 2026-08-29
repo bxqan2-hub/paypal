@@ -1,0 +1,39 @@
+GoPay browser proof optimization verification
+==============================================
+Changed branch/field: Sentinel flow normalization, browser oai-did continuity, Checkout failure modes, payment-method merge/dedupe, batch validation
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-sentinel-optimization-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-sentinel-optimization-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-sentinel-optimization-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-sentinel-optimization-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_sentinel_browser_injection.py tests/test_gopay_support.py tests/test_channel_isolation.py tests/test_gopay_go_core.py
+Input: pre-optimization GoPay/Sentinel integration
+Literal output/result:
+................                                                         [100%]
+16 passed in 0.30s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gcash_support.py tests/test_mk_gcash_replacement.py tests/test_gopay_support.py tests/test_gopay_checkout_optimization.py tests/test_sentinel_browser_injection.py tests/test_channel_isolation.py tests/test_extraction_full_retry.py
+Input: working tree after GoPay optimization
+Literal output/result:
+............................................................             [100%]
+60 passed in 0.42s
+Exit status: 0
+
+ROLLBACK command:
+.\.venv\Scripts\python.exe artifacts\gopay-sentinel-optimization-20260830\ROLLBACK.sh artifacts\gopay-sentinel-optimization-20260830\MODIFIED_FILE
+Input: temporary copy of MODIFIED_FILE
+Literal output/result:
+ROLLBACK_TARGET=artifacts\gopay-sentinel-optimization-20260830\rollback-test-copy
+BEFORE_SHA256=25d341a18f24a679e8f8d3bf7065396de83141d670e531936c79bbb2fec9c051
+RESTORED_SHA256=25d341a18f24a679e8f8d3bf7065396de83141d670e531936c79bbb2fec9c051
+EXPECTED_SHA256=25d341a18f24a679e8f8d3bf7065396de83141d670e531936c79bbb2fec9c051
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Modified file SHA-256: 25d341a18f24a679e8f8d3bf7065396de83141d670e531936c79bbb2fec9c051
+Restored behavior/status: rollback restored the temporary artifact copy; optimized GoPay browser-proof and failure-classification branch remains active.
