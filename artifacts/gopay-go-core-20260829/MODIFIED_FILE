@@ -1,0 +1,4 @@
+BRANCH: GoPay dedicated imported Go core
+FIELD: payment_link_extractor/gopay_channel.py adapter dispatch
+VALUE: 4484c2d6fb89db6196a1aacfc843412da94f7691fee86402caea427f9c30847c
+SOURCE: payment_link_extractor/gopay_pro_core/internal/payment/*.go copied byte-for-byte from gojek-gopay-cs-link-sanitized

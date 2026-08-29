@@ -1,0 +1,108 @@
+diff --git a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+index dd19cc8..1c59820 100644
+--- a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
++++ b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+@@ -5,7 +5,7 @@
+ | 方式 | 入口 | 核心位置 | 代理入口 |
+ |---|---|---|---|
+ | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
+-| GoPay | `gopay_channel.py` | 与 PayPal 共用 legacy Checkout/Stripe 核心、`providers/gopay.py` | 本站 GoPay transport |
++| GoPay | `gopay_channel.py` | `gopay_pro_core/` 专用 GoPay 核心、`providers/gopay.py` | 本站 GoPay transport |
+ | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
+ | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
+
+diff --git a/payment_link_extractor/channels.py b/payment_link_extractor/channels.py
+index 13eedde..e1b043d 100644
+--- a/payment_link_extractor/channels.py
++++ b/payment_link_extractor/channels.py
+@@ -42,7 +42,7 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
+         result_field="gopay_url",
+         country="ID",
+         currency="IDR",
+-        uses_legacy_transport=True,
++        uses_legacy_transport=False,
+         uses_checkout_update=True,
+     ),
+     "gcash": PaymentChannel(
+@@ -96,6 +96,6 @@ def invoke_payment_channel(
+         "cancel_event": cancel_event,
+         "stage_callback": stage_callback,
+     }
+-    if channel.uses_legacy_transport:
++    if transport_factory is not None:
+         kwargs["transport_factory"] = transport_factory
+     return extractor(config, **kwargs)
+diff --git a/payment_link_extractor/gopay_channel.py b/payment_link_extractor/gopay_channel.py
+index e322a70..9dc3640 100644
+--- a/payment_link_extractor/gopay_channel.py
++++ b/payment_link_extractor/gopay_channel.py
+@@ -1,12 +1,12 @@
+ from __future__ import annotations
+
+-"""GoPay channel adapter backed by the shared legacy Checkout core."""
++"""GoPay channel adapter backed by the imported dedicated Go core slice."""
+
+ import threading
+ from typing import Callable
+
++from .gopay_pro_core.core import extract_gopay_payment_link as _extract_gopay_core
+ from .models import ExtractionConfig, PaymentLinkResult
+-from .paypal_channel import extract_legacy_payment_link
+ from .transport import TransportFactory
+
+
+@@ -17,8 +17,8 @@ def extract_gopay_payment_link(
+     cancel_event: threading.Event | None = None,
+     stage_callback: Callable[[str], None] | None = None,
+ ) -> PaymentLinkResult:
+-    """Select GoPay provider settings while reusing PayPal's protocol core."""
+-    return extract_legacy_payment_link(
++    """Dispatch only to the imported GoPay core; no PayPal adapter call."""
++    return _extract_gopay_core(
+         config,
+         transport_factory=transport_factory,
+         cancel_event=cancel_event,
+diff --git a/tests/test_channel_isolation.py b/tests/test_channel_isolation.py
+index 9019a08..af387e2 100644
+--- a/tests/test_channel_isolation.py
++++ b/tests/test_channel_isolation.py
+@@ -22,7 +22,7 @@ def test_channel_country_currency_and_transport_contracts_are_isolated() -> None
+     gopay = PAYMENT_CHANNELS["gopay"]
+     gcash = PAYMENT_CHANNELS["gcash"]
+     assert (paypal.country, paypal.currency, paypal.uses_legacy_transport) == ("", "", True)
+-    assert (gopay.country, gopay.currency, gopay.uses_legacy_transport) == ("ID", "IDR", True)
++    assert (gopay.country, gopay.currency, gopay.uses_legacy_transport) == ("ID", "IDR", False)
+     assert (gcash.country, gcash.currency, gcash.uses_legacy_transport) == ("PH", "PHP", False)
+     assert paypal.uses_checkout_update is True
+     assert gopay.uses_checkout_update is True
+diff --git a/tests/test_gopay_support.py b/tests/test_gopay_support.py
+index a06e821..9fc2445 100644
+--- a/tests/test_gopay_support.py
++++ b/tests/test_gopay_support.py
+@@ -21,14 +21,14 @@ def gopay_config() -> ExtractionConfig:
+     )
+
+
+-def test_gopay_uses_shared_legacy_core_and_fixed_indonesia_billing() -> None:
++def test_gopay_uses_dedicated_core_and_fixed_indonesia_billing() -> None:
+     channel = PAYMENT_CHANNELS["gopay"]
+     assert channel.adapter_module == "payment_link_extractor.gopay_channel"
+     assert channel.adapter_callable == "extract_gopay_payment_link"
+     assert channel.result_field == "gopay_url"
+     assert channel.country == "ID"
+     assert channel.currency == "IDR"
+-    assert channel.uses_legacy_transport is True
++    assert channel.uses_legacy_transport is False
+     assert channel.uses_checkout_update is True
+
+     normalized = _normalize_config(gopay_config())
+@@ -62,3 +62,9 @@ def test_defaults_expose_gopay_choice() -> None:
+     methods = {item["value"]: item for item in data["payment_methods"]}
+     assert methods["gopay"]["label"] == "GoPay"
+     assert data["payment_method_countries"]["gopay"] == "ID"
++
++
++def test_gopay_adapter_does_not_import_paypal_core():
++    source = __import__("pathlib").Path(__file__).resolve().parents[1] / "payment_link_extractor/gopay_channel.py"
++    assert "paypal_channel" not in source.read_text(encoding="utf-8")
++    assert "gopay_pro_core" in source.read_text(encoding="utf-8")

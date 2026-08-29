@@ -1,0 +1,41 @@
+GoPay dedicated core integration verification
+==============================================
+Changed branch/field: payment_link_extractor/gopay_channel.py -> gopay_pro_core.core.extract_gopay_payment_link
+Imported source: payment_link_extractor/gopay_pro_core/internal/payment/*.go
+Source manifest: 12 files, all SHA-256 matches the supplied gojek-gopay-cs-link-sanitized folder.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-go-core-20260829\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-go-core-20260829\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-go-core-20260829\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-go-core-20260829\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_support.py tests/test_channel_isolation.py
+Input: repository before this integration
+Literal output/result:
+......                                                                   [100%]
+6 passed in 0.28s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_support.py tests/test_channel_isolation.py tests/test_sentinel_browser_injection.py
+Input: working tree with dedicated GoPay adapter
+Literal output/result:
+................                                                         [100%]
+16 passed in 0.29s
+Exit status: 0
+
+ROLLBACK command:
+.\.venv\Scripts\python.exe artifacts\gopay-go-core-20260829\ROLLBACK.sh artifacts\gopay-go-core-20260829\MODIFIED_FILE
+Input: temporary copy of MODIFIED_FILE
+Literal output/result:
+ROLLBACK_TARGET=artifacts\gopay-go-core-20260829\rollback-test-copy
+BEFORE_SHA256=f58f0e3e49fb30565fd3de2f4127a62dae77d05e4b6fd2ca0b4e0478f154eeec
+RESTORED_SHA256=f58f0e3e49fb30565fd3de2f4127a62dae77d05e4b6fd2ca0b4e0478f154eeec
+EXPECTED_SHA256=f58f0e3e49fb30565fd3de2f4127a62dae77d05e4b6fd2ca0b4e0478f154eeec
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Modified file SHA-256: f58f0e3e49fb30565fd3de2f4127a62dae77d05e4b6fd2ca0b4e0478f154eeec
+Restored behavior/status: rollback restored only the temporary artifact copy; the working tree remains on the dedicated GoPay core branch.

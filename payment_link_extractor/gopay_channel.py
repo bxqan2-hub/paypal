@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-"""GoPay channel adapter backed by the shared legacy Checkout core."""
+"""GoPay channel adapter backed by the imported dedicated Go core slice."""
 
 import threading
 from typing import Callable
 
+from .gopay_pro_core.core import extract_gopay_payment_link as _extract_gopay_core
 from .models import ExtractionConfig, PaymentLinkResult
-from .paypal_channel import extract_legacy_payment_link
 from .transport import TransportFactory
 
 
@@ -17,8 +17,8 @@ def extract_gopay_payment_link(
     cancel_event: threading.Event | None = None,
     stage_callback: Callable[[str], None] | None = None,
 ) -> PaymentLinkResult:
-    """Select GoPay provider settings while reusing PayPal's protocol core."""
-    return extract_legacy_payment_link(
+    """Dispatch only to the imported GoPay core; no PayPal adapter call."""
+    return _extract_gopay_core(
         config,
         transport_factory=transport_factory,
         cancel_event=cancel_event,
