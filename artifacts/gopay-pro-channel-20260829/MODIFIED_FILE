@@ -1,0 +1,13 @@
+BRANCH: payment_link_extractor/channels.py
+FIELD: new channel
+VALUE: gopay_pro -> payment_link_extractor.gopay_pro.extract_gopay_pro_payment_link
+FIELD: result_field
+VALUE: gopay_pro_url
+FIELD: country/currency
+VALUE: ID/IDR
+BRANCH: payment_link_extractor/gopay_pro_core/
+FIELD: copied framework
+VALUE: 22-file independent copy derived from local MK-GCash source, renamed and adapted to GoPay Pro
+BRANCH: payment_link_extractor/gopay_pro.py
+FIELD: adapter
+VALUE: direct core app.py loader and IDR result mapping

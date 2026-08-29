@@ -79,9 +79,10 @@ def test_defaults_expose_all_payment_choices() -> None:
     assert [(item["value"], item["label"]) for item in data["payment_methods"]] == [
         ("paypal", "PayPal"),
         ("gopay", "GoPay"),
+        ("gopay_pro", "GoPay Pro"),
         ("gcash", "GCash"),
     ]
-    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH"}
+    assert data["payment_method_countries"] == {"gopay": "ID", "gopay_pro": "ID", "gcash": "PH"}
 
 
 class _Response:

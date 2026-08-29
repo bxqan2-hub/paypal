@@ -337,7 +337,7 @@
   function saveFormPreferences() {
     syncSingleProxyPool();
     const paymentMethod = byId("payment-method").value;
-    if (!new Set(["gcash", "gopay"]).has(paymentMethod) && byId("country").value) {
+    if (!new Set(["gcash", "gopay", "gopay_pro"]).has(paymentMethod) && byId("country").value) {
       paypalCountryPreference = byId("country").value;
     }
     const preferences = {
@@ -411,8 +411,9 @@
     const method = byId("payment-method").value;
     const isGcash = method === "gcash";
     const isGopay = method === "gopay";
-    const isFixedCountry = isGcash || isGopay;
-    const fixedCountry = isGopay ? "ID" : "PH";
+    const isGopayPro = method === "gopay_pro";
+    const isFixedCountry = isGcash || isGopay || isGopayPro;
+    const fixedCountry = isGopay || isGopayPro ? "ID" : "PH";
     const country = byId("country");
     const countryField = byId("country-field");
     const gcashNote = byId("gcash-country-note");
@@ -422,14 +423,14 @@
     }
     if (isFixedCountry) {
       if (country.value && country.value !== fixedCountry) paypalCountryPreference = country.value;
-      if (isGopay) country.value = "ID";
+      if (isGopay || isGopayPro) country.value = "ID";
       else country.value = "PH";
     } else if (paypalCountryPreference && ["PH", "ID"].includes(country.value)) {
       country.value = paypalCountryPreference;
     }
     if (countryField) countryField.hidden = isFixedCountry;
     if (gcashNote) gcashNote.hidden = !isGcash;
-    if (gopayNote) gopayNote.hidden = !isGopay;
+    if (gopayNote) gopayNote.hidden = !(isGopay || isGopayPro);
     renderBillingPreview();
   }
 
@@ -593,7 +594,7 @@
       oaics_only: byId("oaics-only").checked,
     };
     const values = [
-      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : byId("country").value],
+      ["country", paymentMethod === "gcash" ? "PH" : ["gopay", "gopay_pro"].includes(paymentMethod) ? "ID" : byId("country").value],
       ["payment_method", paymentMethod],
     ];
     values.forEach(([key, value]) => {
@@ -1312,7 +1313,7 @@
   }
 
   function taskResultUrl(result) {
-    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || "";
+    return result.provider_url || result.paypal_url || result.gopay_url || result.gopay_pro_url || result.gcash_url || "";
   }
 
   function isPaypalBaLink(url) {
@@ -1870,7 +1871,7 @@
       field.addEventListener("input", saveFormPreferences);
     });
     byId("country").addEventListener("change", () => {
-      if (!["gcash", "gopay"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
+      if (!["gcash", "gopay", "gopay_pro"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
       renderBillingPreview();
     });
     byId("payment-method").addEventListener("change", () => {

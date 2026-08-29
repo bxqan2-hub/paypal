@@ -6,6 +6,7 @@
 |---|---|---|---|
 | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
 | GoPay | `gopay_channel.py` | 与 PayPal 共用 legacy Checkout/Stripe 核心、`providers/gopay.py` | 本站 GoPay transport |
+| GoPay Pro | `gopay_pro.py` | `gopay_pro_core/`（由 GCash 框架复制并改为 GoPay/ID/IDR） | GoPay Pro 独立代理池 |
 | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
 | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
 
