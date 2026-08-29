@@ -13,9 +13,10 @@
    written as numbered `__Secure-next-auth.session-token.0`, `.1`, ... chunks.
 5. Checkout responses detect `oaics_` versus `cs_`, merge duplicate method
    lists, and classify retryable versus terminal failures.
-6. When the promotion/update path is enabled, the final authoritative amount
-   must be exactly zero; a non-zero amount is rejected before the result is
-   returned (`expected zero amount, got N`).
+6. GoPay output is zero-amount-only: the final authoritative amount must be
+   exactly zero even when the optional update request is disabled. A non-zero
+   amount is rejected before the result is returned
+   (`expected zero amount, got N`).
 
 ## Failure modes
 

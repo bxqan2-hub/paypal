@@ -1,4 +1,4 @@
 BRANCH: GoPay amount screening
-FIELD: validate_gopay_amount
-VALUE: 34a3369b0968f30b91254f2cfb8f81da7b6c53e323835cb75d1a5ad0c3a01733
-CONTRACT: promotion/update enabled requires amount_due_minor == 0 before gopay_url is returned.
+FIELD: validate_gopay_amount and extract_gopay_payment_link output gate
+VALUE: 2b4b1a89328dcfff1504760acf83ef21cdc072dc8eac4df3acadd2ea78c9bc96
+CONTRACT: GoPay never returns gopay_url unless amount_due_minor == 0.

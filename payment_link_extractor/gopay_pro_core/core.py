@@ -97,7 +97,10 @@ def extract_gopay_payment_link(
         amount_currency = amount_currency or GOPAY_CURRENCY
         validate_gopay_amount(
             amount_due_minor,
-            promotion_applied=apply_checkout_update,
+            # GoPay output is intentionally zero-amount-only.  A caller may
+            # disable the optional update request, but that must never allow
+            # a paid URL to bypass the configured extraction filter.
+            promotion_applied=True,
         )
         amount_due = amount_due_minor / (10 ** currency_minor_scale(amount_currency))
         provider_value = str(provider.get(GOPAY_RESULT_FIELD) or provider.get("provider_url") or "")

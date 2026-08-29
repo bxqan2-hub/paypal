@@ -11,6 +11,7 @@ from payment_link_extractor import checkout
 from payment_link_extractor.errors import CheckoutCreateError
 from payment_link_extractor.gopay_pro_core.validation import validate_checkout_batch
 from payment_link_extractor.gopay_pro_core.core import validate_gopay_amount
+import payment_link_extractor.gopay_pro_core.core as gopay_core
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.transport import BrowserSentinelProvider
 from payment_link_extractor.transport import DefaultTransportFactory
@@ -130,6 +131,50 @@ def test_gopay_zero_amount_gate_matches_promotion_contract() -> None:
     validate_gopay_amount(349000, promotion_applied=False)
     with pytest.raises(Exception, match="expected zero amount, got 349000"):
         validate_gopay_amount(349000, promotion_applied=True)
+
+
+def test_gopay_core_rejects_paid_link_even_when_update_is_disabled(monkeypatch) -> None:
+    class Session:
+        def close(self) -> None:
+            return None
+
+    class Factory:
+        def chatgpt(self, _config, _proxy):
+            return Session()
+
+        def stripe(self, _config):
+            return Session()
+
+    monkeypatch.setattr(
+        gopay_core,
+        "create_checkout",
+        lambda *_args: {
+            "cs_id": "cs_fixture",
+            "session_kind": "stripe_checkout",
+            "billing_country": "ID",
+            "currency": "IDR",
+            "checkout_state": {
+                "currency": "IDR",
+                "total": {"total": {"minorUnitsAmount": 349000}},
+            },
+        },
+    )
+    monkeypatch.setattr(gopay_core, "require_country_currency", lambda *_args: None)
+    monkeypatch.setattr(
+        gopay_core,
+        "extract_cs_live_provider",
+        lambda *_args, **_kwargs: {"provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture"},
+    )
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="ID",
+        payment_method="gopay",
+        apply_checkout_update=False,
+    )
+    with pytest.raises(Exception, match="expected zero amount, got 349000"):
+        gopay_core.extract_gopay_payment_link(config, transport_factory=Factory())
 
 
 @pytest.mark.parametrize(

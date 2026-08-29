@@ -1,6 +1,6 @@
 GoPay amount gate verification
 =============================
-Changed branch/field: gopay_pro_core amount filtering
+Changed branch/field: GoPay output amount filter
 
 Artifacts:
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-amount-gate-20260830\MODIFIED_FILE
@@ -10,7 +10,7 @@ Artifacts:
 
 BASELINE command:
 .\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_support.py tests/test_channel_isolation.py tests/test_gopay_checkout_optimization.py
-Input: pre-amount-gate branch
+Input: pre-unconditional amount gate branch
 Literal output/result:
 .........................                                                [100%]
 25 passed in 0.40s
@@ -18,17 +18,24 @@ Exit status: 0
 
 MODIFIED command:
 .\.venv\Scripts\python.exe -m pytest -q
-Input: working tree with amount gate
+Input: working tree with unconditional GoPay zero-amount gate
 Literal output/result:
-........................................................................ [ 39%]
-........................................................................ [ 78%]
-........................................                                 [100%]
-184 passed in 1.65s
+........................................................................ [ 38%]
+........................................................................ [ 77%]
+.........................................                                [100%]
+185 passed in 1.77s
 Exit status: 0
 
-Amount check command:
+LIVE_LINK_CHECK command:
+requests GET https://app.midtrans.com/snap/v4/redirection/3fe5d3af-3f17-4c0d-9c05-7c6b55500da0
+Input: generated GoPay/Midtrans URL
+Literal output/result: HTTP 200 landing page; browser transaction endpoint returned currency=IDR, gross_amount=349000, enabled payment type=gopay
+Result: rejected by zero-amount gate (349000 != 0); URL is not valid for zero-amount output.
+Exit status: 0
+
+AMOUNT_GATE command:
 .\.venv\Scripts\python.exe -c "from payment_link_extractor.gopay_pro_core.core import validate_gopay_amount; validate_gopay_amount(349000, promotion_applied=True)"
-Input: generated URL transaction amount 349000 IDR
+Input: generated URL amount 349000 IDR
 Literal output/result: ProtocolError(409): expected zero amount, got 349000
 Exit status: 1 (rejected as intended)
 
@@ -39,5 +46,5 @@ Literal output/result:
 RESTORED_STATUS=PASS
 Exit status: 0
 
-Modified file SHA-256: 34a3369b0968f30b91254f2cfb8f81da7b6c53e323835cb75d1a5ad0c3a01733
-Restored behavior/status: non-zero promotional GoPay URLs are now rejected before output; rollback artifact test passed.
+Modified file SHA-256: 2b4b1a89328dcfff1504760acf83ef21cdc072dc8eac4df3acadd2ea78c9bc96
+Restored behavior/status: rollback artifact test passed; source remains on the unconditional zero-amount GoPay branch.

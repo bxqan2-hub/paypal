@@ -1,85 +1,95 @@
 diff --git a/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md b/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
-index 394e0cd..6135613 100644
+index 6135613..4ee91b9 100644
 --- a/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
 +++ b/payment_link_extractor/gopay_pro_core/GOPAY_OPTIMIZATION.md
-@@ -13,6 +13,9 @@
+@@ -13,9 +13,10 @@
     written as numbered `__Secure-next-auth.session-token.0`, `.1`, ... chunks.
  5. Checkout responses detect `oaics_` versus `cs_`, merge duplicate method
     lists, and classify retryable versus terminal failures.
-+6. When the promotion/update path is enabled, the final authoritative amount
-+   must be exactly zero; a non-zero amount is rejected before the result is
-+   returned (`expected zero amount, got N`).
+-6. When the promotion/update path is enabled, the final authoritative amount
+-   must be exactly zero; a non-zero amount is rejected before the result is
+-   returned (`expected zero amount, got N`).
++6. GoPay output is zero-amount-only: the final authoritative amount must be
++   exactly zero even when the optional update request is disabled. A non-zero
++   amount is rejected before the result is returned
++   (`expected zero amount, got N`).
 
  ## Failure modes
 
 diff --git a/payment_link_extractor/gopay_pro_core/core.py b/payment_link_extractor/gopay_pro_core/core.py
-index 90adf6a..55f2f96 100644
+index 55f2f96..5660416 100644
 --- a/payment_link_extractor/gopay_pro_core/core.py
 +++ b/payment_link_extractor/gopay_pro_core/core.py
-@@ -15,7 +15,7 @@ from typing import Callable
- from ..auth import account_email
- from ..checkout import check_coupon_eligibility, create_checkout, require_country_currency, update_checkout
- from ..config import billing_for_country, currency_minor_scale
--from ..errors import ConfigurationError, ExtractionCancelled
-+from ..errors import ConfigurationError, ExtractionCancelled, ProtocolError
- from ..flows.cs_live import extract_cs_live_provider
- from ..flows.oaics import extract_oaics_provider
- from ..logging_utils import stage_logger
-@@ -30,6 +30,22 @@ GOPAY_CORE_SOURCE_DIR = Path(__file__).resolve().parent
- GOPAY_CORE_SOURCE_MANIFEST = GOPAY_CORE_SOURCE_DIR / "SOURCE_MANIFEST.json"
-
-
-+def validate_gopay_amount(
-+    amount_due_minor: int,
-+    *,
-+    promotion_applied: bool,
-+) -> None:
-+    """Fail closed unless an applied GoPay promotion produces zero due."""
-+    if not promotion_applied:
-+        return
-+    try:
-+        amount = int(amount_due_minor)
-+    except (TypeError, ValueError) as exc:
-+        raise ProtocolError(409, "expected zero amount, got invalid") from exc
-+    if amount != 0:
-+        raise ProtocolError(409, f"expected zero amount, got {amount}")
-+
-+
- def extract_gopay_payment_link(
-     config: ExtractionConfig,
-     *,
-@@ -79,6 +95,10 @@ def extract_gopay_payment_link(
-             raise ConfigurationError(f"unsupported checkout session: {checkout.get('cs_id')}")
-         amount_due_minor, amount_currency = checkout_payable_amount(checkout)
+@@ -97,7 +97,10 @@ def extract_gopay_payment_link(
          amount_currency = amount_currency or GOPAY_CURRENCY
-+        validate_gopay_amount(
-+            amount_due_minor,
-+            promotion_applied=apply_checkout_update,
-+        )
+         validate_gopay_amount(
+             amount_due_minor,
+-            promotion_applied=apply_checkout_update,
++            # GoPay output is intentionally zero-amount-only.  A caller may
++            # disable the optional update request, but that must never allow
++            # a paid URL to bypass the configured extraction filter.
++            promotion_applied=True,
+         )
          amount_due = amount_due_minor / (10 ** currency_minor_scale(amount_currency))
          provider_value = str(provider.get(GOPAY_RESULT_FIELD) or provider.get("provider_url") or "")
-         if not provider_value:
 diff --git a/tests/test_gopay_checkout_optimization.py b/tests/test_gopay_checkout_optimization.py
-index 6884d4b..5434e8d 100644
+index 5434e8d..25311df 100644
 --- a/tests/test_gopay_checkout_optimization.py
 +++ b/tests/test_gopay_checkout_optimization.py
-@@ -10,6 +10,7 @@ import pytest
- from payment_link_extractor import checkout
+@@ -11,6 +11,7 @@ from payment_link_extractor import checkout
  from payment_link_extractor.errors import CheckoutCreateError
  from payment_link_extractor.gopay_pro_core.validation import validate_checkout_batch
-+from payment_link_extractor.gopay_pro_core.core import validate_gopay_amount
+ from payment_link_extractor.gopay_pro_core.core import validate_gopay_amount
++import payment_link_extractor.gopay_pro_core.core as gopay_core
  from payment_link_extractor.models import ExtractionConfig
  from payment_link_extractor.transport import BrowserSentinelProvider
  from payment_link_extractor.transport import DefaultTransportFactory
-@@ -124,6 +125,13 @@ def test_checkout_methods_merge_and_dedupe_across_nested_payloads() -> None:
-     assert len(state["payment_methods"]) == 5
+@@ -132,6 +133,50 @@ def test_gopay_zero_amount_gate_matches_promotion_contract() -> None:
+         validate_gopay_amount(349000, promotion_applied=True)
 
 
-+def test_gopay_zero_amount_gate_matches_promotion_contract() -> None:
-+    validate_gopay_amount(0, promotion_applied=True)
-+    validate_gopay_amount(349000, promotion_applied=False)
++def test_gopay_core_rejects_paid_link_even_when_update_is_disabled(monkeypatch) -> None:
++    class Session:
++        def close(self) -> None:
++            return None
++
++    class Factory:
++        def chatgpt(self, _config, _proxy):
++            return Session()
++
++        def stripe(self, _config):
++            return Session()
++
++    monkeypatch.setattr(
++        gopay_core,
++        "create_checkout",
++        lambda *_args: {
++            "cs_id": "cs_fixture",
++            "session_kind": "stripe_checkout",
++            "billing_country": "ID",
++            "currency": "IDR",
++            "checkout_state": {
++                "currency": "IDR",
++                "total": {"total": {"minorUnitsAmount": 349000}},
++            },
++        },
++    )
++    monkeypatch.setattr(gopay_core, "require_country_currency", lambda *_args: None)
++    monkeypatch.setattr(
++        gopay_core,
++        "extract_cs_live_provider",
++        lambda *_args, **_kwargs: {"provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture"},
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="",
++        country="ID",
++        payment_method="gopay",
++        apply_checkout_update=False,
++    )
 +    with pytest.raises(Exception, match="expected zero amount, got 349000"):
-+        validate_gopay_amount(349000, promotion_applied=True)
++        gopay_core.extract_gopay_payment_link(config, transport_factory=Factory())
 +
 +
  @pytest.mark.parametrize(
