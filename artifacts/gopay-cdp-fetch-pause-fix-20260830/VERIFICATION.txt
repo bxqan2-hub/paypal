@@ -1,0 +1,59 @@
+GoPay CDP Fetch pause root-cause fix verification
+=================================================
+
+Changed branch/field:
+tools/har_capture_browser_attach.py BrowserConnection event routing
+Target session events -> TargetRecorder.handle
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-fetch-pause-fix-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-fetch-pause-fix-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-fetch-pause-fix-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-fetch-pause-fix-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_har_capture_browser_attach.py
+Input: pre-fix event router behavior
+Literal output/result: test module did not exist before this fix; the observed runtime symptom was browser loading stall while Fetch responses remained paused
+Exit status: n/a (pre-fix diagnostic)
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_har_capture_browser_attach.py
+Input: fixed BrowserConnection.recv_any() and target-event dispatch
+Literal output/result:
+..                                                                       [100%]
+2 passed in 0.03s
+Exit status: 0
+
+FULL_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: repository after Fetch pause fix
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+....................................                                     [100%]
+180 passed in 1.54s
+Exit status: 0
+
+RUNTIME command:
+CDP diagnostic after stopping recorder: Runtime.evaluate readyState/pending
+Input: browser page on 127.0.0.1:60943 after recorder shutdown
+Literal output/result: readyState=complete; pending=0; ariaBusy=0; progress=0
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-cdp-fetch-pause-fix-20260830/ROLLBACK.sh && artifacts/gopay-cdp-fetch-pause-fix-20260830/ROLLBACK.sh artifacts-local/gopay-cdp-fetch-pause-rollback-test.py artifacts/gopay-cdp-fetch-pause-fix-20260830/MODIFIED_FILE"
+Input: another temporary copy after intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-cdp-fetch-pause-rollback-test.py
+BEFORE_SHA256=737e28ebe5b9137138b9b1cc40c4e73834a078b7a5c93f3d6def64f1ed919ebb
+RESTORED_SHA256=923af71759fe48eaa8fe9e6376c58053d010ae8ec2c70a64137bca8ed4c2c741
+EXPECTED_SHA256=923af71759fe48eaa8fe9e6376c58053d010ae8ec2c70a64137bca8ed4c2c741
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Restored behavior/status:
+Target Network/Fetch events are dispatched and Fetch requests are continued; the browser page remains responsive while capture is active.
+
+MODIFIED_FILE SHA-256:
+923af71759fe48eaa8fe9e6376c58053d010ae8ec2c70a64137bca8ed4c2c741

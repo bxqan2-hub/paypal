@@ -1,0 +1,18 @@
+GoPay CDP Fetch pause fix
+========================
+
+Observed root cause:
+- Browser-level Target.setAutoAttach(flatten=true) routed target events into per-session queues.
+- Main loop read only the global queue.
+- Fetch.requestPaused events were never delivered to HARRecorder.
+- Responses remained paused and the browser page stayed loading until recorder shutdown.
+
+Fix:
+- BrowserConnection.recv_any() drains global lifecycle events and flattened target queues.
+- Main loop forwards each session event to its TargetRecorder.
+- Fetch response bodies are read and Fetch.continueRequest runs promptly.
+
+Result:
+- page target no longer stalls due to recorder event backlog
+- current browser after stop: readyState=complete, pending resources=0
+- incomplete HAR from the diagnostic run was deleted

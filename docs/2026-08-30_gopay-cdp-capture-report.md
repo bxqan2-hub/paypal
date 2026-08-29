@@ -299,3 +299,27 @@ api.stripe.com: 0
 2. Stripe `next_action`/`redirect_to_url` 与 Midtrans UUID 的绑定。
 3. `Storage.getCookies` 中 `oai-did`、NextAuth 分片和域属性。
 4. taxes/snapshot 与 Stripe 更新的实际并发顺序。
+
+## 9. 抓包导致页面卡加载的根因与修复
+
+本次实时监测确认，问题来自浏览器级记录器的事件路由，而不是 GoPay 页面业务逻辑：
+
+1. `Target.setAutoAttach(flatten=true)` 后，Network/Fetch 事件带有 target `sessionId`。
+2. 旧主循环只读取 browser-level 全局事件队列，未读取各 target 队列。
+3. `Fetch.enable` 在响应阶段暂停资源；`Fetch.requestPaused` 没有被转交给对应 `HARRecorder`，所以页面请求持续处于 paused 状态。
+4. 停止记录器后 Fetch 会话关闭，浏览器请求恢复，因此出现“关闭抓包后页面恢复”。
+
+已修复 [`har_capture_browser_attach.py`](../tools/har_capture_browser_attach.py)：
+
+- 新增 `BrowserConnection.recv_any()`，优先处理 `Target.attachedToTarget` 等生命周期事件，再返回带 session ID 的 target 事件。
+- 主循环按 session ID 将每个 Network/Fetch/Runtime 事件转交给对应 `TargetRecorder`。
+- `Fetch.requestPaused` 会立即执行 `Fetch.getResponseBody` 和 `Fetch.continueRequest`，不再阻塞页面资源。
+
+修复后的回归结果：
+
+```text
+专属事件路由测试：2 passed
+完整仓库测试：180 passed
+```
+
+下一次开始抓包时继续使用浏览器级多 target 模式；实时监测重点为 `CAPTURE_TARGET_ATTACHED` 输出、记录器进程存活和页面 `readyState`。
