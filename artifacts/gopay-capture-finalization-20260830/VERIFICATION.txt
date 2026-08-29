@@ -10,6 +10,12 @@ Artifacts:
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\VERIFICATION.txt
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-finalization-20260830\ROLLBACK.sh
 
+STOP command:
+terminal session 97747 -> Ctrl+C
+Input: running browser-level capture on 127.0.0.1:60943
+Literal output/result: CAPTURE_SAVED=C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\gopay-cdp-capture-browser-targets-20260830-next.har; CAPTURE_ENTRIES=483; CAPTURE_SHA256=8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50; CAPTURE_TARGET_TYPES=[iframe,page]; CAPTURE_API_STRIPE_ENTRIES=12; CAPTURE_COMPLETENESS=complete; CAPTURE_MISSING=[]
+Exit status: 1 (Ctrl+C after save; output persisted)
+
 BASELINE command:
 Get-FileHash artifacts-local\\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har -Algorithm SHA256
 Input: previous canonical GoPay HAR before replacement
