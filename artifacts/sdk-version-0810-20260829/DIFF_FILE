@@ -1,0 +1,5 @@
+diff -- sdk-version-0810-20260829
+- STRIPE_RUNTIME_VERSION = "692f102a8f"
++ STRIPE_RUNTIME_VERSION = "0810"
+  OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION continues to inherit STRIPE_RUNTIME_VERSION
+  PayPal and GoPay continue to use the same shared constant in cs_live.py and oaics.py
