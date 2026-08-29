@@ -160,7 +160,7 @@ def create_checkout(
         "x-openai-target-path": path,
         "x-openai-target-route": path,
     }
-    if payment_method == "gcash":
+    if payment_method in {"gcash", "paypal", "gopay"}:
         headers.update(
             openai_sentinel_headers(
                 chatgpt,

@@ -1,0 +1,4 @@
+diff -- paypal-gopay-sentinel-complete-20260829
++ PayPal/GoPay protected backend calls now request a fresh browser SDK proof with flow chatgpt_checkout.
++ CS and OAICS paths both receive the proof at their ChatGPT confirmation/approval boundary.
++ GCash custom confirm continues using its existing checkout_session_approval path and its upstream core is untouched.

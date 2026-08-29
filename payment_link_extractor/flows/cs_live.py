@@ -45,7 +45,7 @@ from ..stripe_common import (
     stripe_provider_poll,
     stripe_confirm_return_url,
 )
-from ..transport import response_json, safe_close, set_proxy_url, stage_http_request
+from ..transport import openai_sentinel_headers, response_json, safe_close, set_proxy_url, stage_http_request
 
 
 def cs_elements_session(
@@ -257,6 +257,12 @@ def cs_checkout_taxes(
             "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
             "x-openai-target-path": path,
             "x-openai-target-route": path,
+            **openai_sentinel_headers(
+                chatgpt,
+                flow="chatgpt_checkout",
+                referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+                log=log,
+            ),
         },
         timeout=DEFAULT_TIMEOUT,
     )
@@ -437,6 +443,12 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
             "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
             "x-openai-target-path": path,
             "x-openai-target-route": path,
+            **openai_sentinel_headers(
+                chatgpt,
+                flow="chatgpt_checkout",
+                referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+                log=log,
+            ),
         },
         timeout=DEFAULT_TIMEOUT,
     )

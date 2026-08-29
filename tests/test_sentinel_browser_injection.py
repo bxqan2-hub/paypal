@@ -4,6 +4,8 @@ import threading
 from types import SimpleNamespace
 
 import payment_link_extractor.transport as transport
+from payment_link_extractor import checkout
+from payment_link_extractor.flows import cs_live, oaics
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.transport import BrowserSentinelProvider
 
@@ -84,3 +86,83 @@ def test_browser_provider_is_selected_for_paypal_and_gopay_not_gcash(monkeypatch
         if method == "gcash":
             assert not hasattr(session, "openai_sentinel_provider")
     assert [item["language"] for item in created] == ["en-GB", "id-ID"]
+
+
+def test_paypal_gopay_protected_backend_calls_request_chatgpt_checkout_proof(monkeypatch) -> None:
+    observed: list[str] = []
+
+    def fake_sentinel(_session, *, flow="", **_kwargs):
+        observed.append(flow)
+        return {"OpenAI-Sentinel-Token": "proof-fixture"}
+
+    monkeypatch.setattr(checkout, "openai_sentinel_headers", fake_sentinel)
+    monkeypatch.setattr(
+        checkout,
+        "stage_http_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"checkout_session_id": "cs_fixture"},
+        ),
+    )
+    for method in ("paypal", "gopay"):
+        config = ExtractionConfig(
+            access_token="token",
+            checkout_proxy="http://proxy.example:8080",
+            update_proxy="",
+            payment_method=method,
+            country="GB" if method == "paypal" else "ID",
+            apply_checkout_update=False,
+        )
+        checkout.create_checkout(config, SimpleNamespace(), None)
+    assert observed == ["chatgpt_checkout", "chatgpt_checkout"]
+
+
+def test_paypal_gopay_oaics_confirm_requests_chatgpt_checkout_proof(monkeypatch) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(
+        oaics,
+        "openai_sentinel_headers",
+        lambda _session, *, flow="", **_kwargs: observed.append(flow)
+        or {"OpenAI-Sentinel-Token": "proof-fixture"},
+    )
+    monkeypatch.setattr(
+        oaics,
+        "stage_http_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "success", "client_secret": "pi_fixture_secret_x"},
+        ),
+    )
+    oaics.openai_checkout_confirm(
+        SimpleNamespace(),
+        {"cs_id": "oaics_fixture", "billing_country": "GB"},
+        "ctoken_fixture",
+        "paypal",
+        None,
+    )
+    assert observed == ["chatgpt_checkout"]
+
+
+def test_paypal_gopay_cs_approve_requests_chatgpt_checkout_proof(monkeypatch) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(
+        cs_live,
+        "openai_sentinel_headers",
+        lambda _session, *, flow="", **_kwargs: observed.append(flow)
+        or {"OpenAI-Sentinel-Token": "proof-fixture"},
+    )
+
+    def fake_request(_session, _stage, _method, url, *_args, **_kwargs):
+        if url.endswith("/sentinel/ping"):
+            return SimpleNamespace(status_code=200, text="", json=lambda: {})
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"result": "approved"})
+
+    monkeypatch.setattr(cs_live, "stage_http_request", fake_request)
+    cs_live.chatgpt_approve(
+        SimpleNamespace(),
+        {"cs_id": "cs_fixture", "billing_country": "GB"},
+        None,
+    )
+    assert observed == ["chatgpt_checkout"]

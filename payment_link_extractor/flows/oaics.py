@@ -274,6 +274,12 @@ def openai_checkout_confirm(
             "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
             "x-openai-target-path": path,
             "x-openai-target-route": path,
+            **openai_sentinel_headers(
+                chatgpt,
+                flow="chatgpt_checkout",
+                referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+                log=log,
+            ),
         },
         timeout=DEFAULT_TIMEOUT,
     )
