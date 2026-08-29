@@ -96,6 +96,6 @@ def invoke_payment_channel(
         "cancel_event": cancel_event,
         "stage_callback": stage_callback,
     }
-    if transport_factory is not None:
+    if transport_factory is not None and channel.name in {"paypal", "gopay"}:
         kwargs["transport_factory"] = transport_factory
     return extractor(config, **kwargs)
