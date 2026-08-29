@@ -1,0 +1,56 @@
+GOPAY CDP capture completeness optimization verification
+BRANCH=main
+CHANGED_FIELDS=HARRecorder.Network.*ExtraInfo wire headers/cookies; browser Target auto-attach + nonblocking body streaming; capture completeness diagnostics
+
+SOURCE_PATHS
+1. C:\Users\Administrator\Desktop\提链\tools\har_capture.py
+2. C:\Users\Administrator\Desktop\提链\tools\har_capture_browser_attach.py
+3. C:\Users\Administrator\Desktop\提链\tests\test_har_extra_info.py
+4. C:\Users\Administrator\Desktop\提链\docs\2026-08-30_gopay-cdp-capture-report.md
+ARTIFACT_PATHS
+1. C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-completeness-20260830\MODIFIED_FILE
+2. C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-completeness-20260830\DIFF_FILE
+3. C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-completeness-20260830\VERIFICATION.txt
+4. C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-completeness-20260830\ROLLBACK.sh
+
+HASH_PRESERVATION
+- tools/har_capture.py HEAD/original SHA256=78A71DD2C8C02AB608F4D06F71D07BA1E4C323D71EF24A391EDEAE32344B0DBB
+- tools/har_capture_browser_attach.py HEAD/original SHA256=923AF71759FE48EAA8FE9E6376C58053D010AE8EC2C70A64137BCA8ED4C2C741
+- MODIFIED_FILE SHA256=3277B9EE18F1C704B1EA9ABA49770F9F225DBCB1778E7F499EEAB81821F525CE
+- DIFF_FILE SHA256=3E1F07C793ED9E6F69803C4D0FF541F3CA64E5B3BCCF70570CFDF28511054BCF
+
+BASELINE_COMMAND
+Input: .\.venv\Scripts\python.exe -m pytest -q -k 'not browser_capture_defaults_to_nonblocking_streaming and not capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets and not extra_info_headers_and_associated_cookies_are_preserved'
+Literal output:
+181 passed, 3 deselected in 1.53s
+Exit status: 0
+Result: pre-optimization regression suite passed.
+
+MODIFIED_COMMAND
+Input: .\.venv\Scripts\python.exe -m pytest -q
+Literal output:
+184 passed in 1.53s
+Exit status: 0
+Result: all tests, including the three new capture-completeness tests, passed.
+
+PYCOMPILE_COMMAND
+Input: .\.venv\Scripts\python.exe -m py_compile tools\har_capture.py tools\har_capture_browser_attach.py
+Literal output:
+PYCOMPILE_EXIT=0
+Exit status: 0
+Result: syntax compilation passed.
+
+ROLLBACK_COMMAND
+Input: & 'C:\Program Files\Git\bin\bash.exe' 'C:\Users\Administrator\Desktop\提链\artifacts\gopay-capture-completeness-20260830\ROLLBACK.sh'
+Literal output:
+ROLLBACK_BEFORE=3277B9EE18F1C704B1EA9ABA49770F9F225DBCB1778E7F499EEAB81821F525CE
+ROLLBACK_CHANGED=FB37D4E78A46A2B18ABA73DF12400942B1250FCE5C57ECEFC1179D7161515C75
+ROLLBACK_RESTORED=3277B9EE18F1C704B1EA9ABA49770F9F225DBCB1778E7F499EEAB81821F525CE
+Exit status: 0
+Result: rollback test copy was modified, restored to the original MODIFIED_FILE hash, then removed; MODIFIED_FILE remains changed.
+
+RESTORED_BEHAVIOR
+- Browser recorder default fetchResponses=false, so no Fetch response pause unless explicitly requested.
+- Flattened target session queues are continuously drained and body/ExtraInfo events are retained.
+- HAR save emits host counts, target types, api.stripe.com count, completeness, and missing checkpoint list.
+- Existing user worktree changes remain unstaged and untouched.

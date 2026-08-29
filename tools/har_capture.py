@@ -195,6 +195,12 @@ class HARRecorder:
         self.states: dict[str, dict[str, Any]] = {}
         self._commands: dict[int, dict[str, Any]] = {}
         self._fetch_bodies: dict[str, dict[str, Any]] = {}
+        # ExtraInfo events carry the complete wire headers/cookie metadata. They
+        # are delivered independently from requestWillBeSent/responseReceived
+        # (and can arrive before or after those events), so retain unmatched
+        # events until the corresponding network request is materialized.
+        self._request_extras: dict[str, dict[str, Any]] = {}
+        self._response_extras: dict[str, dict[str, Any]] = {}
 
     def command(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.cdp.next_id += 1
@@ -227,6 +233,15 @@ class HARRecorder:
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if method == "Fetch.requestPaused":
             self._capture_paused_response(params)
+        elif method == "Network.requestWillBeSentExtraInfo":
+            request_id = str(params.get("requestId") or "")
+            if not request_id:
+                return
+            state = self.states.get(request_id)
+            if state is None:
+                self._request_extras[request_id] = params
+            else:
+                state["request_extra"] = params
         elif method == "Network.requestWillBeSent":
             request_id = str(params.get("requestId") or "")
             if not request_id:
@@ -253,6 +268,8 @@ class HARRecorder:
                 "stream_truncated": False,
                 "stream_error": "",
                 "fetch_body": self._fetch_bodies.pop(request_id, None),
+                "request_extra": self._request_extras.pop(request_id, None),
+                "response_extra": self._response_extras.pop(request_id, None),
             }
         elif method == "Network.responseReceived":
             request_id = str(params.get("requestId") or "")
@@ -260,7 +277,18 @@ class HARRecorder:
             if state:
                 state["response"] = params.get("response") if isinstance(params.get("response"), dict) else {}
                 state["response_event"] = params
+                if state.get("response_extra") is None:
+                    state["response_extra"] = self._response_extras.pop(request_id, None)
                 self._begin_response_stream(state)
+        elif method == "Network.responseReceivedExtraInfo":
+            request_id = str(params.get("requestId") or "")
+            if not request_id:
+                return
+            state = self.states.get(request_id)
+            if state is None:
+                self._response_extras[request_id] = params
+            else:
+                state["response_extra"] = params
         elif method == "Network.dataReceived":
             request_id = str(params.get("requestId") or "")
             state = self.states.get(request_id)
@@ -428,6 +456,44 @@ class HARRecorder:
             # Chrome legitimately returns an error for bodyless POSTs or after a redirect.
             return
 
+    @staticmethod
+    def _cookies_from_extra(extra: Any) -> list[dict[str, Any]]:
+        """Convert Network.*ExtraInfo cookie records to HAR cookie objects."""
+        if not isinstance(extra, dict):
+            return []
+        result: list[dict[str, Any]] = []
+        associated = extra.get("associatedCookies")
+        if not isinstance(associated, list):
+            return result
+        for item in associated:
+            if not isinstance(item, dict):
+                continue
+            cookie = item.get("cookie") if isinstance(item.get("cookie"), dict) else item
+            if not isinstance(cookie, dict) or cookie.get("name") is None:
+                continue
+            value: dict[str, Any] = {
+                "name": str(cookie.get("name") or ""),
+                "value": str(cookie.get("value") or ""),
+            }
+            for key in ("path", "domain", "expires", "httpOnly", "secure", "sameSite", "size"):
+                if key in cookie and cookie[key] is not None:
+                    value[key] = cookie[key]
+            result.append(value)
+        return result
+
+    @staticmethod
+    def _merge_extra_headers(base: Any, extra: Any) -> list[dict[str, str]]:
+        """Prefer ExtraInfo's wire headers while preserving event-only headers."""
+        merged = _header_list(base)
+        extra_headers = extra.get("headers") if isinstance(extra, dict) else None
+        if not isinstance(extra_headers, (dict, list)):
+            return merged
+        # ExtraInfo is authoritative for duplicate/stripped headers. Keep a
+        # deterministic list and append only names absent from the wire set.
+        wire = _header_list(extra_headers)
+        names = {str(item.get("name") or "").lower() for item in wire}
+        return wire + [item for item in merged if str(item.get("name") or "").lower() not in names]
+
     def flush_pending(self) -> None:
         """Materialize requests still in flight when capture stops."""
         pending = list(self.states.values())
@@ -467,6 +533,8 @@ class HARRecorder:
     def _finish(self, state: dict[str, Any], *, response: dict[str, Any] | None = None, timestamp: Any = None) -> None:
         request = state.get("request") if isinstance(state.get("request"), dict) else {}
         response = response or (state.get("response") if isinstance(state.get("response"), dict) else {})
+        request_extra = state.get("request_extra") if isinstance(state.get("request_extra"), dict) else {}
+        response_extra = state.get("response_extra") if isinstance(state.get("response_extra"), dict) else {}
         request_event = state.get("request_event") if isinstance(state.get("request_event"), dict) else {}
         start_timestamp = request_event.get("timestamp")
         try:
@@ -494,7 +562,7 @@ class HARRecorder:
         if isinstance(request_body, dict):
             request_body = request_body.get("text", "")
         request_body = str(request_body or "")
-        request_headers = _header_list(request.get("headers"))
+        request_headers = self._merge_extra_headers(request.get("headers"), request_extra)
         request_content_type = next(
             (item.get("value", "") for item in request_headers if str(item.get("name", "")).lower() == "content-type"),
             "",
@@ -512,7 +580,7 @@ class HARRecorder:
                 content["encoding"] = "base64"
         if truncated:
             content["_captureTruncated"] = True
-        response_headers = _header_list(response.get("headers"))
+        response_headers = self._merge_extra_headers(response.get("headers"), response_extra)
         location = next(
             (item.get("value", "") for item in response_headers if str(item.get("name", "")).lower() == "location"),
             "",
@@ -526,7 +594,7 @@ class HARRecorder:
                 "httpVersion": "HTTP/1.1",
                 "headers": request_headers,
                 "queryString": _query_list(str(request.get("url") or "")),
-                "cookies": [],
+                "cookies": self._cookies_from_extra(request_extra),
                 "headersSize": -1,
                 "bodySize": len(request_body.encode("utf-8")),
             },
@@ -535,7 +603,7 @@ class HARRecorder:
                 "statusText": str(response.get("statusText") or ""),
                 "httpVersion": "HTTP/1.1",
                 "headers": response_headers,
-                "cookies": [],
+                "cookies": self._cookies_from_extra(response_extra),
                 "content": content,
                 "redirectURL": str(location) if int(response.get("status", 0) or 0) in {301, 302, 303, 307, 308} else "",
                 "headersSize": -1,

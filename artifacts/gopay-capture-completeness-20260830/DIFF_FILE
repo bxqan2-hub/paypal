@@ -1,0 +1,667 @@
+diff --git a/tests/test_har_capture_browser_attach.py b/tests/test_har_capture_browser_attach.py
+index 19f2ae9..4488663 100644
+--- a/tests/test_har_capture_browser_attach.py
++++ b/tests/test_har_capture_browser_attach.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+
+ from collections import deque
+
+-from tools.har_capture_browser_attach import BrowserConnection
++from tools.har_capture_browser_attach import BrowserConnection, _capture_completeness_audit, build_parser
+
+
+ def test_browser_connection_dispatches_flattened_target_events() -> None:
+@@ -23,3 +23,40 @@ def test_browser_connection_prioritizes_target_lifecycle_events() -> None:
+     session_id, message = connection.recv_any()
+     assert session_id == ""
+     assert message["method"] == "Target.attachedToTarget"
++
++
++def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
++    args = build_parser().parse_args(["--cdp-port", "60943", "--output", "capture.har"])
++    assert args.fetch_responses is False
++    assert args.no_fetch_responses is False
++    assert args.heartbeat_seconds == 5.0
++
++
++def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:
++    def entry(url: str, method: str, status: int, request_body: str = "", response_body: str = "") -> dict:
++        value = {
++            "request": {"url": url, "method": method},
++            "response": {"status": status, "content": {}},
++        }
++        if request_body:
++            value["request"]["postData"] = {"text": request_body}
++        if response_body:
++            value["response"]["content"] = {"text": response_body}
++        return value
++
++    har = {
++        "log": {
++            "entries": [
++                entry("https://chatgpt.com/backend-api/payments/checkout", "POST", 200, "{}", "{}"),
++                entry("https://chatgpt.com/backend-api/payments/checkout/taxes", "POST", 200, "{}", "{}"),
++                entry("https://chatgpt.com/backend-api/payments/checkout/snapshot", "POST", 204, "{}"),
++                entry("https://chatgpt.com/backend-api/payments/checkout/approve", "POST", 200, "{}", "{}"),
++                entry("https://pm-redirects.stripe.com/authorize/fixture", "GET", 302),
++            ]
++        }
++    }
++    audit = _capture_completeness_audit(har)
++    assert audit["channel"] == "gopay"
++    assert "gopay_checkout_snapshot:response_body_missing" not in audit["issues"]
++    assert "gopay_redirect:response_body_missing" not in audit["issues"]
++    assert "gopay_stripe_init:entry_missing" in audit["issues"]
+diff --git a/tests/test_har_extra_info.py b/tests/test_har_extra_info.py
+new file mode 100644
+index 0000000..6351a2c
+--- /dev/null
++++ b/tests/test_har_extra_info.py
+@@ -0,0 +1,66 @@
++from __future__ import annotations
++
++from tools.har_capture import HARRecorder
++
++
++def test_extra_info_headers_and_associated_cookies_are_preserved() -> None:
++    recorder = HARRecorder(object(), stream_responses=False)  # type: ignore[arg-type]
++
++    def fake_command(method: str, params: dict | None = None) -> dict:
++        if method == "Network.getResponseBody":
++            return {"body": '{"ok":true}', "base64Encoded": False}
++        return {}
++
++    recorder.command = fake_command  # type: ignore[method-assign]
++    recorder.handle(
++        {
++            "method": "Network.requestWillBeSentExtraInfo",
++            "params": {
++                "requestId": "r1",
++                "headers": {"x-wire": "present", "cookie": "sid=fixture"},
++                "associatedCookies": [
++                    {"cookie": {"name": "sid", "value": "fixture", "domain": "chatgpt.com", "path": "/"}}
++                ],
++            },
++        }
++    )
++    recorder.handle(
++        {
++            "method": "Network.requestWillBeSent",
++            "params": {
++                "requestId": "r1",
++                "timestamp": 1,
++                "wallTime": 0,
++                "request": {
++                    "method": "GET",
++                    "url": "https://chatgpt.com/backend-api/payments/checkout",
++                    "headers": {"x-event-only": "kept"},
++                },
++            },
++        }
++    )
++    recorder.handle(
++        {
++            "method": "Network.responseReceived",
++            "params": {
++                "requestId": "r1",
++                "response": {"status": 200, "mimeType": "application/json", "headers": {}},
++            },
++        }
++    )
++    recorder.handle(
++        {
++            "method": "Network.responseReceivedExtraInfo",
++            "params": {"requestId": "r1", "headers": {"x-response-wire": "yes"}},
++        }
++    )
++    recorder.handle({"method": "Network.loadingFinished", "params": {"requestId": "r1", "timestamp": 1.1}})
++
++    entry = recorder.entries[0]
++    request_headers = {item["name"].lower(): item["value"] for item in entry["request"]["headers"]}
++    response_headers = {item["name"].lower(): item["value"] for item in entry["response"]["headers"]}
++    assert request_headers == {"x-wire": "present", "cookie": "sid=fixture", "x-event-only": "kept"}
++    assert response_headers == {"x-response-wire": "yes"}
++    assert entry["request"]["cookies"][0]["name"] == "sid"
++    assert entry["request"]["cookies"][0]["value"] == "fixture"
++
+diff --git a/tools/har_capture.py b/tools/har_capture.py
+index 8170f68..9b5872b 100644
+--- a/tools/har_capture.py
++++ b/tools/har_capture.py
+@@ -195,6 +195,12 @@ class HARRecorder:
+         self.states: dict[str, dict[str, Any]] = {}
+         self._commands: dict[int, dict[str, Any]] = {}
+         self._fetch_bodies: dict[str, dict[str, Any]] = {}
++        # ExtraInfo events carry the complete wire headers/cookie metadata. They
++        # are delivered independently from requestWillBeSent/responseReceived
++        # (and can arrive before or after those events), so retain unmatched
++        # events until the corresponding network request is materialized.
++        self._request_extras: dict[str, dict[str, Any]] = {}
++        self._response_extras: dict[str, dict[str, Any]] = {}
+
+     def command(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+         self.cdp.next_id += 1
+@@ -227,6 +233,15 @@ class HARRecorder:
+         params = message.get("params") if isinstance(message.get("params"), dict) else {}
+         if method == "Fetch.requestPaused":
+             self._capture_paused_response(params)
++        elif method == "Network.requestWillBeSentExtraInfo":
++            request_id = str(params.get("requestId") or "")
++            if not request_id:
++                return
++            state = self.states.get(request_id)
++            if state is None:
++                self._request_extras[request_id] = params
++            else:
++                state["request_extra"] = params
+         elif method == "Network.requestWillBeSent":
+             request_id = str(params.get("requestId") or "")
+             if not request_id:
+@@ -253,6 +268,8 @@ class HARRecorder:
+                 "stream_truncated": False,
+                 "stream_error": "",
+                 "fetch_body": self._fetch_bodies.pop(request_id, None),
++                "request_extra": self._request_extras.pop(request_id, None),
++                "response_extra": self._response_extras.pop(request_id, None),
+             }
+         elif method == "Network.responseReceived":
+             request_id = str(params.get("requestId") or "")
+@@ -260,7 +277,18 @@ class HARRecorder:
+             if state:
+                 state["response"] = params.get("response") if isinstance(params.get("response"), dict) else {}
+                 state["response_event"] = params
++                if state.get("response_extra") is None:
++                    state["response_extra"] = self._response_extras.pop(request_id, None)
+                 self._begin_response_stream(state)
++        elif method == "Network.responseReceivedExtraInfo":
++            request_id = str(params.get("requestId") or "")
++            if not request_id:
++                return
++            state = self.states.get(request_id)
++            if state is None:
++                self._response_extras[request_id] = params
++            else:
++                state["response_extra"] = params
+         elif method == "Network.dataReceived":
+             request_id = str(params.get("requestId") or "")
+             state = self.states.get(request_id)
+@@ -428,6 +456,44 @@ class HARRecorder:
+             # Chrome legitimately returns an error for bodyless POSTs or after a redirect.
+             return
+
++    @staticmethod
++    def _cookies_from_extra(extra: Any) -> list[dict[str, Any]]:
++        """Convert Network.*ExtraInfo cookie records to HAR cookie objects."""
++        if not isinstance(extra, dict):
++            return []
++        result: list[dict[str, Any]] = []
++        associated = extra.get("associatedCookies")
++        if not isinstance(associated, list):
++            return result
++        for item in associated:
++            if not isinstance(item, dict):
++                continue
++            cookie = item.get("cookie") if isinstance(item.get("cookie"), dict) else item
++            if not isinstance(cookie, dict) or cookie.get("name") is None:
++                continue
++            value: dict[str, Any] = {
++                "name": str(cookie.get("name") or ""),
++                "value": str(cookie.get("value") or ""),
++            }
++            for key in ("path", "domain", "expires", "httpOnly", "secure", "sameSite", "size"):
++                if key in cookie and cookie[key] is not None:
++                    value[key] = cookie[key]
++            result.append(value)
++        return result
++
++    @staticmethod
++    def _merge_extra_headers(base: Any, extra: Any) -> list[dict[str, str]]:
++        """Prefer ExtraInfo's wire headers while preserving event-only headers."""
++        merged = _header_list(base)
++        extra_headers = extra.get("headers") if isinstance(extra, dict) else None
++        if not isinstance(extra_headers, (dict, list)):
++            return merged
++        # ExtraInfo is authoritative for duplicate/stripped headers. Keep a
++        # deterministic list and append only names absent from the wire set.
++        wire = _header_list(extra_headers)
++        names = {str(item.get("name") or "").lower() for item in wire}
++        return wire + [item for item in merged if str(item.get("name") or "").lower() not in names]
++
+     def flush_pending(self) -> None:
+         """Materialize requests still in flight when capture stops."""
+         pending = list(self.states.values())
+@@ -467,6 +533,8 @@ class HARRecorder:
+     def _finish(self, state: dict[str, Any], *, response: dict[str, Any] | None = None, timestamp: Any = None) -> None:
+         request = state.get("request") if isinstance(state.get("request"), dict) else {}
+         response = response or (state.get("response") if isinstance(state.get("response"), dict) else {})
++        request_extra = state.get("request_extra") if isinstance(state.get("request_extra"), dict) else {}
++        response_extra = state.get("response_extra") if isinstance(state.get("response_extra"), dict) else {}
+         request_event = state.get("request_event") if isinstance(state.get("request_event"), dict) else {}
+         start_timestamp = request_event.get("timestamp")
+         try:
+@@ -494,7 +562,7 @@ class HARRecorder:
+         if isinstance(request_body, dict):
+             request_body = request_body.get("text", "")
+         request_body = str(request_body or "")
+-        request_headers = _header_list(request.get("headers"))
++        request_headers = self._merge_extra_headers(request.get("headers"), request_extra)
+         request_content_type = next(
+             (item.get("value", "") for item in request_headers if str(item.get("name", "")).lower() == "content-type"),
+             "",
+@@ -512,7 +580,7 @@ class HARRecorder:
+                 content["encoding"] = "base64"
+         if truncated:
+             content["_captureTruncated"] = True
+-        response_headers = _header_list(response.get("headers"))
++        response_headers = self._merge_extra_headers(response.get("headers"), response_extra)
+         location = next(
+             (item.get("value", "") for item in response_headers if str(item.get("name", "")).lower() == "location"),
+             "",
+@@ -526,7 +594,7 @@ class HARRecorder:
+                 "httpVersion": "HTTP/1.1",
+                 "headers": request_headers,
+                 "queryString": _query_list(str(request.get("url") or "")),
+-                "cookies": [],
++                "cookies": self._cookies_from_extra(request_extra),
+                 "headersSize": -1,
+                 "bodySize": len(request_body.encode("utf-8")),
+             },
+@@ -535,7 +603,7 @@ class HARRecorder:
+                 "statusText": str(response.get("statusText") or ""),
+                 "httpVersion": "HTTP/1.1",
+                 "headers": response_headers,
+-                "cookies": [],
++                "cookies": self._cookies_from_extra(response_extra),
+                 "content": content,
+                 "redirectURL": str(location) if int(response.get("status", 0) or 0) in {301, 302, 303, 307, 308} else "",
+                 "headersSize": -1,
+diff --git a/tools/har_capture_browser_attach.py b/tools/har_capture_browser_attach.py
+index ce8b86a..5f02dc2 100644
+--- a/tools/har_capture_browser_attach.py
++++ b/tools/har_capture_browser_attach.py
+@@ -10,7 +10,7 @@ The browser is never navigated or reloaded by this tool.
+ """
+
+ import argparse
+-from collections import defaultdict, deque
++from collections import Counter, defaultdict, deque
+ import hashlib
+ import json
+ import socket
+@@ -146,10 +146,25 @@ class TargetRecorder:
+
+     def enable(self) -> None:
+         self.recorder.command("Network.enable", network_enable_params(self.recorder.max_body_bytes))
++        try:
++            self.recorder.command("Page.enable")
++        except Exception:
++            pass
+         try:
+             self.recorder.command("Runtime.enable")
+         except Exception:
+             pass
++        # A page can create nested OOPIF/worker targets after initial attach.
++        # Ask the target itself to discover and auto-attach children as a
++        # second line of defense in addition to the browser-level setting.
++        try:
++            self.recorder.command("Target.setDiscoverTargets", {"discover": True})
++            self.recorder.command(
++                "Target.setAutoAttach",
++                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
++            )
++        except Exception:
++            pass
+         if self.fetch_responses:
+             try:
+                 self.recorder.command(
+@@ -172,6 +187,16 @@ class TargetRecorder:
+                 self.recorder.command("Fetch.disable")
+             except Exception:
+                 pass
++        target_type = str(self.target_info.get("type") or "")
++        target_url = str(self.target_info.get("url") or "")
++        target_id = str(self.target_info.get("targetId") or "")
++        for entry in self.recorder.entries:
++            entry["_cdp_target"] = {
++                "targetId": target_id,
++                "sessionId": self.session_id,
++                "type": target_type,
++                "url": target_url,
++            }
+         return self.recorder.entries
+
+
+@@ -187,12 +212,144 @@ def _browser_websocket(port: int) -> str:
+     return str(version["webSocketDebuggerUrl"])
+
+
++def _capture_completeness_audit(har: dict[str, Any]) -> dict[str, Any]:
++    """Check the GoPay checkpoints without depending on a mutable helper module.
++
++    The browser recorder must remain usable with older ``har_capture.py``
++    deployments, so the save-time audit is intentionally self-contained. It
++    distinguishes a bodyless 204 snapshot from a response that should contain
++    JSON, and reports API Stripe absence rather than fabricating it.
++    """
++    entries = har.get("log", {}).get("entries", []) if isinstance(har.get("log"), dict) else []
++    entries = [item for item in entries if isinstance(item, dict)] if isinstance(entries, list) else []
++
++    def request(entry: dict[str, Any]) -> dict[str, Any]:
++        value = entry.get("request")
++        return value if isinstance(value, dict) else {}
++
++    def response(entry: dict[str, Any]) -> dict[str, Any]:
++        value = entry.get("response")
++        return value if isinstance(value, dict) else {}
++
++    def body(entry: dict[str, Any], side: str) -> str:
++        if side == "request":
++            value = request(entry).get("postData")
++            return str(value.get("text") or "") if isinstance(value, dict) else str(value or "")
++        content = response(entry).get("content")
++        return str(content.get("text") or "") if isinstance(content, dict) else ""
++
++    def matches(entry: dict[str, Any], host: str, path: str, method: str) -> bool:
++        parsed = urlsplit(str(request(entry).get("url") or ""))
++        return (
++            parsed.netloc.lower() == host
++            and parsed.path == path
++            and str(request(entry).get("method") or "").upper() == method
++        )
++
++    def stripe_payment_page(entry: dict[str, Any], suffix: str, method: str) -> bool:
++        parsed = urlsplit(str(request(entry).get("url") or ""))
++        return (
++            parsed.netloc.lower() == "api.stripe.com"
++            and str(request(entry).get("method") or "").upper() == method
++            and parsed.path.startswith("/v1/payment_pages/")
++            and parsed.path.endswith(suffix)
++        )
++
++    def stripe_redirect(entry: dict[str, Any]) -> bool:
++        candidates = [
++            str(request(entry).get("url") or ""),
++            str(response(entry).get("redirectURL") or ""),
++        ]
++        return any(
++            (parsed := urlsplit(candidate)).netloc.lower() == "pm-redirects.stripe.com"
++            and parsed.path.startswith("/authorize/")
++            for candidate in candidates
++        )
++
++    specs: list[tuple[str, Any, bool]] = [
++        (
++            "gopay_checkout_create",
++            lambda e: matches(e, "chatgpt.com", "/backend-api/payments/checkout", "POST"),
++            True,
++        ),
++        (
++            "gopay_checkout_taxes",
++            lambda e: matches(e, "chatgpt.com", "/backend-api/payments/checkout/taxes", "POST"),
++            True,
++        ),
++        (
++            "gopay_checkout_snapshot",
++            lambda e: matches(e, "chatgpt.com", "/backend-api/payments/checkout/snapshot", "POST"),
++            True,
++        ),
++        (
++            "gopay_approve",
++            lambda e: matches(e, "chatgpt.com", "/backend-api/payments/checkout/approve", "POST"),
++            True,
++        ),
++        ("gopay_stripe_init", lambda e: stripe_payment_page(e, "/init", "POST"), True),
++        (
++            "gopay_stripe_elements",
++            lambda e: matches(e, "api.stripe.com", "/v1/elements/sessions", "GET"),
++            False,
++        ),
++        ("gopay_stripe_confirm", lambda e: stripe_payment_page(e, "/confirm", "POST"), True),
++        ("gopay_redirect", stripe_redirect, False),
++    ]
++    critical: list[dict[str, Any]] = []
++    issues: list[str] = []
++    for name, predicate, needs_request_body in specs:
++        found = [entry for entry in entries if predicate(entry)]
++        request_body = any(bool(body(entry, "request")) for entry in found)
++        response_body = any(bool(body(entry, "response")) for entry in found)
++        status_all_bodyless = bool(found) and all(
++            int(response(entry).get("status", 0) or 0) in {101, 204, 205, 304}
++            for entry in found
++        )
++        critical.append(
++            {"name": name, "count": len(found), "requestBody": request_body, "responseBody": response_body}
++        )
++        if not found:
++            issues.append(f"{name}:entry_missing")
++        elif needs_request_body and not request_body:
++            issues.append(f"{name}:request_body_missing")
++        elif name != "gopay_redirect" and not response_body and not status_all_bodyless:
++            issues.append(f"{name}:response_body_missing")
++    sentinel_count = sum(
++        1
++        for entry in entries
++        if "/backend-api/sentinel/req" in str(request(entry).get("url") or "")
++    )
++    channel_markers = {"gopay_approve", "gopay_stripe_init", "gopay_redirect"}
++    channel = "gopay" if any(
++        predicate(entry)
++        for entry in entries
++        for name, predicate, _ in specs
++        if name in channel_markers
++    ) else "unknown"
++    return {
++        "channel": channel,
++        "complete": channel == "gopay" and not issues,
++        "criticalComplete": channel == "gopay" and not issues,
++        "entryCount": len(entries),
++        "critical": critical,
++        "sentinelReqEntries": sentinel_count,
++        "issues": issues if channel == "gopay" else ["unknown:channel_unidentified"],
++    }
++
++
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--cdp-port", type=int, required=True)
+     parser.add_argument("--output", "-o", type=Path, required=True)
+     parser.add_argument("--max-body-bytes", type=int, default=16 * 1024 * 1024)
+-    parser.add_argument("--no-fetch-responses", action="store_true")
++    parser.add_argument(
++        "--fetch-responses",
++        action="store_true",
++        help="pause responses to fetch bodies explicitly; default uses non-blocking Network streaming",
++    )
++    parser.add_argument("--no-fetch-responses", action="store_true", help=argparse.SUPPRESS)
++    parser.add_argument("--heartbeat-seconds", type=float, default=5.0)
+     return parser
+
+
+@@ -200,24 +357,90 @@ def main() -> int:
+     args = build_parser().parse_args()
+     browser = BrowserConnection(_browser_websocket(args.cdp_port))
+     recorders: dict[str, TargetRecorder] = {}
++    target_sessions: dict[str, str] = {}
+     all_entries: list[dict[str, Any]] = []
++    target_types_seen: set[str] = set()
++    target_ids_seen: set[str] = set()
++    target_count_seen = 0
+     page_url = "https://chatgpt.com/"
++
++    def attach_target(session_id: str, target_info: dict[str, Any]) -> None:
++        nonlocal target_count_seen
++        target_type = str(target_info.get("type") or "")
++        target_id = str(target_info.get("targetId") or "")
++        if not session_id or target_type not in TARGET_TYPES:
++            return
++        if session_id in recorders or (target_id and target_id in target_sessions):
++            return
++        target = TargetRecorder(
++            browser,
++            session_id,
++            target_info,
++            max_body_bytes=max(args.max_body_bytes, 0),
++            fetch_responses=bool(args.fetch_responses and not args.no_fetch_responses),
++        )
++        try:
++            target.enable()
++        except Exception:
++            return
++        recorders[session_id] = target
++        if target_id:
++            target_sessions[target_id] = session_id
++        target_types_seen.add(target_type)
++        target_ids_seen.add(target_id or session_id)
++        target_count_seen = len(target_ids_seen)
++        url = str(target_info.get("url") or "")
++        print(
++            f"CAPTURE_TARGET_ATTACHED={target_type}:{urlsplit(url).netloc}{urlsplit(url).path}",
++            flush=True,
++        )
++
++    def manually_attach_target(target_info: dict[str, Any]) -> None:
++        target_id = str(target_info.get("targetId") or "")
++        if not target_id or target_id in target_sessions:
++            return
++        try:
++            result = browser.command(
++                "Target.attachToTarget",
++                {"targetId": target_id, "flatten": True},
++            )
++        except Exception:
++            return
++        session_id = str(result.get("sessionId") or "") if isinstance(result, dict) else ""
++        if session_id:
++            attach_target(session_id, target_info)
++
+     try:
+         browser.command("Target.setDiscoverTargets", {"discover": True})
+         browser.command(
+             "Target.setAutoAttach",
+             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+         )
++        try:
++            existing = browser.command("Target.getTargets").get("targetInfos", [])
++            for target_info in existing if isinstance(existing, list) else []:
++                if isinstance(target_info, dict) and str(target_info.get("type") or "") in TARGET_TYPES:
++                    manually_attach_target(target_info)
++        except Exception:
++            pass
+         browser.sock.settimeout(0.25)
+         print(f"CAPTURE_CDP=127.0.0.1:{args.cdp_port}", flush=True)
+         print("CAPTURE_TARGET_MODE=browser-auto-attach-flatten", flush=True)
+         print(f"CAPTURE_OUTPUT={args.output.resolve()}", flush=True)
+         print("CAPTURE_READY=1", flush=True)
+         print("CAPTURE_ACTION=perform the complete GoPay flow; send the stop instruction when finished", flush=True)
++        heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
++        last_heartbeat = time.monotonic()
+         while True:
+             try:
+                 session_id, message = browser.recv_any()
+             except socket.timeout:
++                if time.monotonic() - last_heartbeat >= heartbeat_interval:
++                    print(
++                        f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
++                        flush=True,
++                    )
++                    last_heartbeat = time.monotonic()
+                 continue
+             method = str(message.get("method") or "")
+             params = message.get("params") if isinstance(message.get("params"), dict) else {}
+@@ -225,40 +448,38 @@ def main() -> int:
+                 target = recorders.get(session_id)
+                 if target is not None:
+                     target.handle(message)
++                if time.monotonic() - last_heartbeat >= heartbeat_interval:
++                    print(
++                        f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
++                        flush=True,
++                    )
++                    last_heartbeat = time.monotonic()
+                 continue
+             if method == "Target.attachedToTarget":
+                 session_id = str(params.get("sessionId") or "")
+                 target_info = params.get("targetInfo") if isinstance(params.get("targetInfo"), dict) else {}
+-                target_type = str(target_info.get("type") or "")
+-                if not session_id or target_type not in TARGET_TYPES:
+-                    continue
+-                if session_id in recorders:
+-                    continue
+-                target = TargetRecorder(
+-                    browser,
+-                    session_id,
+-                    target_info,
+-                    max_body_bytes=max(args.max_body_bytes, 0),
+-                    fetch_responses=not args.no_fetch_responses,
+-                )
+-                try:
+-                    target.enable()
+-                except Exception:
+-                    continue
+-                recorders[session_id] = target
++                attach_target(session_id, target_info)
+                 url = str(target_info.get("url") or "")
+-                if target_type == "page" and "chatgpt.com" in url:
++                if str(target_info.get("type") or "") == "page" and "chatgpt.com" in url:
+                     page_url = url
+-                print(
+-                    f"CAPTURE_TARGET_ATTACHED={target_type}:{urlsplit(url).netloc}{urlsplit(url).path}",
+-                    flush=True,
+-                )
++            elif method == "Target.targetCreated":
++                target_info = params.get("targetInfo") if isinstance(params.get("targetInfo"), dict) else {}
++                manually_attach_target(target_info)
++            elif method == "Target.targetInfoChanged":
++                target_info = params.get("targetInfo") if isinstance(params.get("targetInfo"), dict) else {}
++                target_id = str(target_info.get("targetId") or "")
++                session_for_target = target_sessions.get(target_id)
++                if session_for_target and session_for_target in recorders:
++                    recorders[session_for_target].target_info = target_info
+             elif method == "Target.detachedFromTarget":
+                 session_id = str(params.get("sessionId") or "")
+                 target = recorders.pop(session_id, None)
+                 if target is not None:
+                     all_entries.extend(target.close())
+-    except KeyboardInterrupt:
++                for target_id, mapped_session in list(target_sessions.items()):
++                    if mapped_session == session_id:
++                        target_sessions.pop(target_id, None)
++    except (KeyboardInterrupt, EOFError, ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+         pass
+     finally:
+         for session_id, target in list(recorders.items()):
+@@ -275,14 +496,35 @@ def main() -> int:
+                     "title": page_url,
+                     "entryCount": len(all_entries),
+                     "targetMode": "browser-auto-attach-flatten",
++                    "targetCount": target_count_seen,
++                    "targetTypes": sorted(target_types_seen),
++                    "fetchResponses": bool(args.fetch_responses and not args.no_fetch_responses),
+                 },
+             }
+         }
++        try:
++            completeness = _capture_completeness_audit(har)
++        except Exception as exc:
++            completeness = {"complete": False, "criticalComplete": False, "issues": [f"audit_error:{exc}"]}
++        har["log"]["_capture"]["completenessAudit"] = completeness
+         args.output.parent.mkdir(parents=True, exist_ok=True)
+         args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+         print(f"CAPTURE_SAVED={args.output.resolve()}", flush=True)
+         print(f"CAPTURE_ENTRIES={len(all_entries)}", flush=True)
+         print(f"CAPTURE_SHA256={hashlib.sha256(args.output.read_bytes()).hexdigest().upper()}", flush=True)
++        host_counts = Counter(
++            urlsplit(str(entry.get("request", {}).get("url") or "")).netloc.lower()
++            for entry in all_entries
++            if isinstance(entry, dict) and isinstance(entry.get("request"), dict)
++        )
++        print(f"CAPTURE_HOST_COUNTS={json.dumps(dict(sorted(host_counts.items())), ensure_ascii=False)}", flush=True)
++        print(f"CAPTURE_TARGET_TYPES={json.dumps(sorted(target_types_seen), ensure_ascii=False)}", flush=True)
++        print(f"CAPTURE_API_STRIPE_ENTRIES={host_counts.get('api.stripe.com', 0)}", flush=True)
++        print(f"CAPTURE_COMPLETENESS={'complete' if completeness.get('complete') else 'partial'}", flush=True)
++        print(
++            f"CAPTURE_MISSING={json.dumps(completeness.get('issues', []), ensure_ascii=False)}",
++            flush=True,
++        )
+         browser.close()
+     return 0

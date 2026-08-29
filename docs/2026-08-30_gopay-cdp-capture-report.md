@@ -347,3 +347,26 @@ sha256=7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1
 完整性结论仍为**协议层未完整**：主机统计中 `api.stripe.com=0`、`js.stripe.com=12`，所以 Stripe init、Elements、tax_region、confirm 及 Stripe 响应正文没有进入这次 HAR。`audit_har_completeness` 的关键缺口为 `gopay_stripe_init/element/confirm:entry_missing`；这不是页面卡死，页面已到达 Midtrans 且停止记录器后 `readyState=complete`、`pending=0`。
 
 本次脱敏摘要由 [`har_cdp_gopay_summary.py`](../tools/har_cdp_gopay_summary.py) 生成；下一次如需 Stripe API 全量，应继续确认 API 请求是否由独立浏览器上下文或服务端路径产生，并同时保留 browser target 与代理层记录。
+
+## 11. 抓包工具完整性优化（本次）
+
+`har_capture_browser_attach.py` 现以浏览器级 CDP 为唯一入口，启动时先枚举已有 target，再通过 `Target.setDiscoverTargets`、`Target.setAutoAttach(flatten=true)` 监听后续创建的 page/iframe/worker/service-worker/shared-worker。每个 target 独立启用 `Network`，并在 target 内再次尝试子 target 自动附着，避免 Stripe OOPIF 在流程中途漏记。
+
+为避免再次造成页面卡在加载状态，默认路径改为非阻塞的 `Network.streamResourceContent`/`Network.getResponseBody` 双路正文采集；只有明确传入 `--fetch-responses` 才启用 Fetch 响应暂停。主循环现在持续排空每个 flattened session 队列，停止时会 flush 未完成请求并保留 `_capture` 正文来源、截断标记、错误和 target 元数据。
+
+此外，记录器接收 `Network.requestWillBeSentExtraInfo` 与 `Network.responseReceivedExtraInfo`，将真实 wire headers、关联 cookie 属性和响应头合并进 HAR；ExtraInfo 先到或后到都能按 requestId 对齐。保存时新增主机计数、target 类型、API Stripe 条目计数和脱敏完整性审计输出：`CAPTURE_HOST_COUNTS`、`CAPTURE_TARGET_TYPES`、`CAPTURE_API_STRIPE_ENTRIES`、`CAPTURE_COMPLETENESS`、`CAPTURE_MISSING`。因此一次运行结束即可区分“工具漏记”和“业务流程本身没有产生 api.stripe.com 请求”。
+
+验证命令与结果：
+
+```text
+.\.venv\Scripts\python.exe -m py_compile tools\har_capture.py tools\har_capture_browser_attach.py  -> exit 0
+.\.venv\Scripts\python.exe -m pytest -q                                      -> 184 passed
+```
+
+完整抓包仍使用：
+
+```text
+.\.venv\Scripts\python.exe tools\har_capture_browser_attach.py --cdp-port <端口> --output artifacts-local\gopay-cdp-full.har
+```
+
+看到 `CAPTURE_READY=1` 后再操作完整 GoPay 流程；结束后先读取 `CAPTURE_COMPLETENESS` 和 `CAPTURE_MISSING`，再按 HAR 中的 `log._capture.completenessAudit` 修改提链核心。
