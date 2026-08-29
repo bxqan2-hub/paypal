@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
+import uuid
 from typing import Callable
 from typing import Any
 
@@ -24,7 +26,6 @@ from ..errors import ProtocolError
 from ..logging_utils import emit_log
 from ..models import CheckoutData, ExtractionConfig, StripeContext
 from ..providers import provider_redirect_config
-from ..risk_params import time_on_page_ms
 from ..stripe_common import (
     cs_stripe_headers,
     ensure_payment_method_offered,
@@ -205,7 +206,7 @@ def openai_confirmation_token(
         "payment_method_data[billing_details][phone]": billing["phone"],
         "payment_method_data[payment_user_agent]": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
         "payment_method_data[referrer]": "https://chatgpt.com",
-        "payment_method_data[time_on_page]": str(time_on_page_ms(45000, 85000)),
+        "payment_method_data[time_on_page]": str(random.randint(45000, 85000)),
         "payment_method_data[guid]": ctx["guid"],
         "payment_method_data[muid]": ctx["muid"],
         "payment_method_data[sid]": ctx["sid"],

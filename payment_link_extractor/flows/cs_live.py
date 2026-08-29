@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import random
 from typing import Callable
+import uuid
 from typing import Any
 
 from ..checkout import (
@@ -22,7 +24,6 @@ from ..errors import ProtocolError, ProviderRequiresApproval
 from ..logging_utils import emit_log, safe_log_text
 from ..models import CheckoutData, ExtractionConfig, StripeContext
 from ..providers import provider_redirect_config
-from ..risk_params import stripe_js_id as new_stripe_js_id, time_on_page_ms
 from ..stripe_common import (
     STRIPE_CLIENT_BETAS,
     cs_billing_address,
@@ -115,7 +116,7 @@ def cs_elements_session(
 
 
 def stripe_init(config: ExtractionConfig, checkout: CheckoutData, log: Any | None, stripe: Any) -> tuple[dict[str, Any], str]:
-    stripe_js_id = new_stripe_js_id()
+    stripe_js_id = str(uuid.uuid4())
     common = {
         "browser_locale": config_locale(config),
         "browser_timezone": config_timezone(config),
@@ -287,7 +288,7 @@ def stripe_create_payment_method(
         "type": payment_method,
         "payment_user_agent": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
         "referrer": "https://chatgpt.com",
-        "time_on_page": str(time_on_page_ms(25000, 55000)),
+        "time_on_page": str(random.randint(25000, 55000)),
         "client_attribution_metadata[checkout_session_id]": checkout["cs_id"],
         "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
         "client_attribution_metadata[checkout_config_id]": ctx["config_id"],
@@ -337,9 +338,9 @@ def stripe_confirm_cs_live(
     elements_session_config_id = str(ctx.get("elements_session_config_id") or "")
     checkout_config_id = str(ctx.get("config_id") or "")
     body = {
-        "guid": ctx["guid"],
-        "muid": ctx["muid"],
-        "sid": ctx["sid"],
+        "guid": uuid.uuid4().hex,
+        "muid": uuid.uuid4().hex,
+        "sid": uuid.uuid4().hex,
         "init_checksum": str(init_payload.get("init_checksum") or ctx.get("init_checksum") or ""),
         "version": runtime,
         "expected_amount": str(amount),
@@ -372,7 +373,7 @@ def stripe_confirm_cs_live(
             "payment_method_data[billing_details][address][country]": billing["country"],
             "payment_method_data[payment_user_agent]": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
             "payment_method_data[referrer]": "https://chatgpt.com",
-            "payment_method_data[time_on_page]": str(time_on_page_ms(45000, 120000)),
+            "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
             "payment_method_data[client_attribution_metadata][client_session_id]": ctx["stripe_js_id"],
             "payment_method_data[client_attribution_metadata][checkout_session_id]": checkout["cs_id"],
             "payment_method_data[client_attribution_metadata][merchant_integration_source]": "elements",

@@ -16,12 +16,6 @@ from .errors import ProtocolError, ProviderRequiresApproval
 from .logging_utils import emit_log, safe_log_text
 from .models import CheckoutData, StripeContext
 from .providers import provider_redirect_config
-from .risk_params import (
-    stripe_guid,
-    stripe_js_id as new_stripe_js_id,
-    stripe_muid,
-    stripe_sid,
-)
 from .transport import response_json, stage_http_request
 
 STRIPE_CLIENT_BETAS = (
@@ -120,10 +114,7 @@ def stripe_context(
     stripe_js_id: str = "",
 ) -> StripeContext:
     return {
-        "stripe_js_id": str(stripe_js_id or new_stripe_js_id()),
-        "guid": stripe_guid(),
-        "muid": stripe_muid(),
-        "sid": stripe_sid(),
+        "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
         "config_id": str(init_payload.get("config_id") or ""),

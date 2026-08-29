@@ -1,0 +1,7 @@
+BRANCH: PayPal/GoPay shared protocol restore
+RESTORED_FILES: payment_link_extractor/flows/cs_live.py, payment_link_extractor/stripe_common.py
+RESTORED_PROVIDER_FILES: providers/base.py, providers/paypal.py, providers/gopay.py, providers/registry.py
+RETAINED_EXCEPTION: payment_link_extractor/auth.py multi-format AT parsing
+RETAINED_EXCEPTION: PayPal country billing profiles in payment_link_extractor/config.py
+RETAINED_EXCEPTION: proxy format expansion in transport/web proxy adapters
+REMOVED_ENHANCEMENT: payment_link_extractor/risk_params.py

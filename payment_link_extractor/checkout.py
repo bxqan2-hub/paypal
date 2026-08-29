@@ -152,9 +152,7 @@ def create_checkout(
             "entry_point": "all_plans_pricing_modal",
             "plan_name": "chatgptplusplan",
             "billing_details": {"country": config.country.upper(), "currency": config_currency(config)},
-            "cancel_url": "https://chatgpt.com/",
             "checkout_ui_mode": "custom",
-            "check_card_proxy": True,
         }
         referer = "https://chatgpt.com/"
     headers = {
@@ -162,16 +160,15 @@ def create_checkout(
         "x-openai-target-path": path,
         "x-openai-target-route": path,
     }
-    # The browser can attach a fresh Sentinel token on the initial checkout
-    # request.  Keep it optional so older deployments remain compatible.
-    headers.update(
-        openai_sentinel_headers(
-            chatgpt,
-            flow="chatgpt_checkout" if payment_method == "gcash" else "",
-            referer=referer,
-            log=log,
+    if payment_method == "gcash":
+        headers.update(
+            openai_sentinel_headers(
+                chatgpt,
+                flow="chatgpt_checkout",
+                referer=referer,
+                log=log,
+            )
         )
-    )
     response = stage_http_request(
         chatgpt,
         "ChatGPT checkout",
