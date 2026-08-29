@@ -8,6 +8,7 @@
 - `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.md`：按正文顺序展开的可检索文本，包含标题、段落、代码样式文本和 12 个表格。
 - `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.json`：结构化解析，包含元数据、标题索引、正文块、表格、页眉页脚和 OOXML 检查结果。
 - `README.md`：本索引和当前项目对照说明。
+- `../../2026-08-30_gopay-midtrans-har-analysis-report.md`：两个 `app.midtrans.com*.har` 的脱敏时序、Header、Stripe 表单和 Midtrans 交易对比报告。
 
 ## 内容摘要
 
@@ -27,7 +28,7 @@
 文档是架构参考，不是本项目的自动执行配置。当前项目只将其中与现有三个渠道相关的边界落到代码：
 
 - PayPal：现有旧 Checkout/Stripe 通道。
-- GoPay：独立适配器，复用 PayPal legacy Checkout/Stripe 核心，固定 ID/IDR，仅 provider 配置和结果字段独立。
+- GoPay：独立适配器，使用从 PayPal legacy 核心复制出的 GoPay 专属 Checkout/Stripe/transport 副本，固定 ID/IDR；PayPal 原核心不被 GoPay 优化覆盖。
 - GCash：独立适配器，运行时读取本地完整 Git 上游：`C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource`。
 
 当前项目的渠道注册与隔离入口：`payment_link_extractor/channels.py`；总分发入口：`payment_link_extractor/application.py`。文档中提到的其他支付方式（例如 UPI、PIX、iDEAL、Kakao Pay、MoMo、BLIK、TWINT）只在资料中出现，不能据此视为当前项目已支持。

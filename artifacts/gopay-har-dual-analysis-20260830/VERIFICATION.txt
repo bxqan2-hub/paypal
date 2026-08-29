@@ -1,0 +1,71 @@
+GoPay dual Midtrans HAR analysis verification
+==============================================
+
+Changed branch/field:
+two offline HAR inputs -> redacted GoPay callflow/protocol report
+No network replay was performed.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\ROLLBACK.sh
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\DUAL_ANALYSIS.md
+
+BASELINE command:
+.\.venv\Scripts\python.exe tools\har_analyze.py C:\Users\Administrator\Downloads\app.midtrans.com.har --format markdown --host chatgpt.com --limit 200
+Input: first user-provided HAR
+Literal output/result:
+# HAR analysis
+- SHA-256: `521AE7D5567654242F87448F8E709DE46DCAEA1E1117244D22639CD76872D202`
+- Entries: `580` (selected `36`)
+- Client builds: `10012890`
+- Client versions: `prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4`
+- Sentinel header lengths: `6890, 8145`
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe tools\har_gopay_compare.py C:\Users\Administrator\Downloads\app.midtrans.com.har C:\Users\Administrator\Downloads\app.midtrans.com1.har --output artifacts\gopay-har-dual-analysis-20260830\DUAL_ANALYSIS.md
+Input: two user-provided HARs processed by the reusable redacted comparator
+Literal output/result:
+HAR_COMPARE_REPORT=C:\Users\Administrator\Desktop\提链\artifacts\gopay-har-dual-analysis-20260830\DUAL_ANALYSIS.md
+A entries=580; B entries=587; both cs_live; both Midtrans gross_amount=349000 IDR; both recommended=gopay
+Exit status: 0
+
+PY_COMPILE command:
+.\.venv\Scripts\python.exe -m py_compile tools\har_gopay_compare.py
+Literal output/result: no output; syntax check passed
+Exit status: 0
+
+FULL_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+..................................                                       [100%]
+178 passed in 1.52s
+Exit status: 0
+
+TEST command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_har_gopay_compare.py
+Literal output/result:
+.                                                                        [100%]
+1 passed in 0.02s
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-har-dual-analysis-20260830/ROLLBACK.sh && artifacts/gopay-har-dual-analysis-20260830/ROLLBACK.sh artifacts-local/gopay-har-analysis-rollback-test.md artifacts/gopay-har-dual-analysis-20260830/MODIFIED_FILE"
+Input: another temporary copy of MODIFIED_FILE after an intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-har-analysis-rollback-test.md
+BEFORE_SHA256=02f0d358b88f4e6a921d7dbc53f8cbbec26256d09c1c18b76ed0ef6672a53e2a
+RESTORED_SHA256=63845f9ed33f9c3d3e5b7b8facade5ac3ac965d7391a5299ac659f846505b0f4
+EXPECTED_SHA256=63845f9ed33f9c3d3e5b7b8facade5ac3ac965d7391a5299ac659f846505b0f4
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Restored behavior/status:
+The report remains a redacted offline analysis; source HAR files are not copied into the repository and no request is replayed.
+
+MODIFIED_FILE SHA-256:
+63845f9ed33f9c3d3e5b7b8facade5ac3ac965d7391a5299ac659f846505b0f4

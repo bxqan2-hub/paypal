@@ -1,0 +1,35 @@
+GoPay dual HAR analysis diff
+============================
+
+Input A: C:\Users\Administrator\Downloads\app.midtrans.com.har
+  size=20718395
+  sha256=521AE7D5567654242F87448F8E709DE46DCAEA1E1117244D22639CD76872D202
+  entries=580
+
+Input B: C:\Users\Administrator\Downloads\app.midtrans.com1.har
+  size=19414223
+  sha256=FD33ECDD26D93688A9208FF66457673CAA676A7C428B87BDBD54CAF605DD449
+  entries=587
+
+Stable contract:
+- both are cs_live, not oaics_
+- Sentinel req flows: chatgpt_checkout=2 and checkout_session_approval=2 per file
+- Checkout/taxes/snapshot/approve statuses: 200/200/204/200
+- Stripe Elements amount=34900000, currency=idr, methods=card,gopay
+- five progressive tax_region posts: 1,2,3,4,5 fields
+- Stripe authorize 302 -> app.midtrans.com Snap redirection
+- Midtrans transaction: gross_amount=349000, currency=IDR, recommended=gopay, enabled=gopay/qris
+
+Variable contract:
+- B adds one ws.chatgpt.com WebSocket and seven total entries
+- FARO and Gojek telemetry counts are higher in B
+- Sentinel proof lengths differ: A=[8145,6890], B=[5893,6146]
+- device/session/checksum values differ per capture
+- snapshot/taxes event ordering differs around the refresh phase
+- ChatGPT payment request/response bodies are absent from both HARs
+
+Future GoPay modification candidates:
+- model five progressive Stripe tax-region updates instead of one-shot address submission
+- preserve Stripe/Midtrans amount-unit distinction and zero-amount gate
+- keep chatgpt_checkout flow and browser proof/device continuity
+- tolerate asynchronous taxes/snapshot ordering without weakening business-state checks
