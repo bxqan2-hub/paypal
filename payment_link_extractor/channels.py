@@ -37,11 +37,13 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
     "gopay": PaymentChannel(
         name="gopay",
         label="GoPay",
-        adapter_module="payment_link_extractor.mk_gopay",
-        adapter_callable="extract_mk_gopay_payment_link",
+        adapter_module="payment_link_extractor.gopay_channel",
+        adapter_callable="extract_gopay_payment_link",
         result_field="gopay_url",
         country="ID",
         currency="IDR",
+        uses_legacy_transport=True,
+        uses_checkout_update=True,
     ),
     "gcash": PaymentChannel(
         name="gcash",

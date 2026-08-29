@@ -1,1 +1,0 @@
-"""GoPay protocol extractor package."""

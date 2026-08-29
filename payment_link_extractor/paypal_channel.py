@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-"""PayPal-only extraction channel.
-
-This module owns the legacy Checkout/Stripe path. GoPay and GCash never enter
-this module and are dispatched to their own upstream adapters.
-"""
+"""Shared legacy Checkout/Stripe extraction core for PayPal-family methods."""
 
 import threading
 from typing import Callable
@@ -22,14 +18,17 @@ from .stripe_common import checkout_payable_amount
 from .transport import DefaultTransportFactory, TransportFactory, safe_close
 
 
-def extract_paypal_payment_link(
+def extract_legacy_payment_link(
     config: ExtractionConfig,
     *,
     transport_factory: TransportFactory | None = None,
     cancel_event: threading.Event | None = None,
     stage_callback: Callable[[str], None] | None = None,
 ) -> PaymentLinkResult:
-    channel = payment_channel("paypal")
+    method = str(config.payment_method or "paypal").strip().lower() or "paypal"
+    channel = payment_channel(method)
+    if method not in {"paypal", "gopay"}:
+        raise ConfigurationError(f"legacy Checkout core does not support {method}")
 
     def checkpoint(stage: str) -> None:
         if cancel_event is not None and cancel_event.is_set():
@@ -37,7 +36,7 @@ def extract_paypal_payment_link(
         if stage_callback is not None:
             stage_callback(stage)
 
-    apply_checkout_update = bool(config.apply_checkout_update)
+    apply_checkout_update = bool(config.apply_checkout_update and channel.uses_checkout_update)
     log = stage_logger(config.verbose)
     billing = billing_for_country(config.country).to_dict()
     factory = transport_factory or DefaultTransportFactory()
@@ -99,3 +98,19 @@ def extract_paypal_payment_link(
     finally:
         safe_close(stripe)
         safe_close(chatgpt)
+
+
+def extract_paypal_payment_link(
+    config: ExtractionConfig,
+    *,
+    transport_factory: TransportFactory | None = None,
+    cancel_event: threading.Event | None = None,
+    stage_callback: Callable[[str], None] | None = None,
+) -> PaymentLinkResult:
+    """Extract a PayPal link through the canonical shared core."""
+    return extract_legacy_payment_link(
+        config,
+        transport_factory=transport_factory,
+        cancel_event=cancel_event,
+        stage_callback=stage_callback,
+    )

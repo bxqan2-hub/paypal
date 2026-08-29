@@ -1,0 +1,14 @@
+diff -- paypal-gopay-shared-core-20260829
+ BRANCH payment_link_extractor/channels.py
+- adapter_module=payment_link_extractor.mk_gopay
+- adapter_callable=extract_mk_gopay_payment_link
+- uses_legacy_transport=false
++ adapter_module=payment_link_extractor.gopay_channel
++ adapter_callable=extract_gopay_payment_link
++ uses_legacy_transport=true
++ uses_checkout_update=true
+ BRANCH payment_link_extractor/paypal_channel.py
++ extract_legacy_payment_link selects paypal/gopay provider registry entries
+ BRANCH payment_link_extractor/gopay_channel.py
++ thin GoPay adapter delegates to the shared legacy Checkout/Stripe core
+ REMOVED payment_link_extractor/mk_gopay_open_source and mk_gopay.py

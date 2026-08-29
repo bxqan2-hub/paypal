@@ -1,0 +1,11 @@
+BRANCH: payment_link_extractor/channels.py
+FIELD: gopay.adapter_module
+VALUE: payment_link_extractor.gopay_channel
+FIELD: gopay.adapter_callable
+VALUE: extract_gopay_payment_link
+FIELD: gopay.uses_legacy_transport
+VALUE: true
+FIELD: gopay.uses_checkout_update
+VALUE: true
+FIELD: shared_core
+VALUE: payment_link_extractor/paypal_channel.py::extract_legacy_payment_link

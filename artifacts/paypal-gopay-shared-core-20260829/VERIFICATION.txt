@@ -1,0 +1,26 @@
+BRANCH: payment_link_extractor/channels.py (GoPay registration) and payment_link_extractor/paypal_channel.py (shared core)
+FIELD: gopay.adapter_module, gopay.adapter_callable, gopay.result_field, gopay.country, gopay.currency, gopay.uses_legacy_transport, gopay.uses_checkout_update
+MODIFIED_FILE: artifacts/paypal-gopay-shared-core-20260829/MODIFIED_FILE
+DIFF_FILE: artifacts/paypal-gopay-shared-core-20260829/DIFF_FILE
+VERIFICATION: artifacts/paypal-gopay-shared-core-20260829/VERIFICATION.txt
+ROLLBACK: artifacts/paypal-gopay-shared-core-20260829/ROLLBACK.sh
+
+BASELINE command:
+  .venv/Scripts/python.exe -c "from pathlib import Path; import subprocess; src=Path(r'C:\Users\Administrator\Downloads\OAI-PayPal-Extractor-Sanitized-20260813-142859\payment_link_extractor'); files=[p.relative_to(src).as_posix() for p in src.rglob('*') if p.is_file()]; ok=all(subprocess.check_output(['git','hash-object',str(src/f)]).decode().strip()==subprocess.check_output(['git','rev-parse',f'7b1a82f:payment_link_extractor/{f}']).decode().strip() for f in files); print(f'PAYPAL_BASELINE_FILES={len(files)} MATCH={ok}')"
+  input: specified PayPal source folder and Git commit 7b1a82f
+  literal output: PAYPAL_BASELINE_FILES=34 MATCH=True
+  exit status: 0
+
+MODIFIED command:
+  .venv/Scripts/python.exe -m pytest -q tests/test_channel_isolation.py tests/test_gopay_support.py tests/test_gcash_support.py tests/test_mk_gcash_replacement.py
+  input: repository test fixtures
+  literal output: 33 passed in 0.31s
+  exit status: 0
+  result: GoPay selects ID/IDR and shared legacy transport; GCash remains independently dispatched.
+
+ROLLBACK command:
+  bash artifacts/paypal-gopay-shared-core-20260829/ROLLBACK.sh "$(pwd)" artifacts-local/paypal-gopay-shared-core-20260829/CHANNELS_FIXTURE
+  input: artifacts/paypal-gopay-shared-core-20260829/MODIFIED_FILE copied to the rollback fixture
+  literal output: ROLLBACK_OK target=artifacts-local/paypal-gopay-shared-core-20260829/CHANNELS_FIXTURE restored=pre_shared-core-gopay-registration status=0
+  exit status: 0
+  restored behavior/status: the fixture contains the pre-change GoPay module/callable and false legacy/update flags; repository MODIFIED_FILE remains changed.
