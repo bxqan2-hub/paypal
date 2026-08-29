@@ -6,6 +6,7 @@
   "response_bodies": 368,
   "hosts": 27,
   "retention": "only-canonical-gopay-har",
+  "coverage_status": "best_available_core_flow; api.stripe.com subtargets absent in this capture",
   "optimization_thread": "01a04ec6-82c9-7180-828f-834f20162b38",
   "optimization_state": "completed"
 }

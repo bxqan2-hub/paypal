@@ -2,6 +2,7 @@
   "marker": "GOPAY_CAPTURE_CANONICAL",
   "selected_at": "2026-08-30",
   "status": "retained",
+  "coverage_status": "best_available_core_flow; api.stripe.com subtargets absent in this capture",
   "canonical_capture": {
     "path": "C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\gopay-cdp-capture-browser-targets-20260830-60943-fixed.har",
     "sha256": "7E7AB2715B3728314C67CBAD5C477E44FC353F0AC00ADAACC0320F06FA3A48C1",
