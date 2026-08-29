@@ -22,3 +22,7 @@
 
 - 新 AT + 1024proxy：真实浏览器 Sentinel proof 生成成功；无 sessionToken 时直接 AT 流程曾完整到达 `completed` 并返回非空 `gopay_url`。
 - 带 4092 字节 JWE sessionToken：Cookie chunk 写入与浏览器 proof 生成成功。
+
+## Amount verification
+
+The generated Midtrans URL was opened in a browser and its transaction endpoint returned `currency=IDR` and `gross_amount=349000`. This is a non-zero 349,000 IDR checkout, so it does not satisfy the zero-amount promotion filter. The GoPay core now rejects non-zero amounts when the promotion/update path is enabled, before returning `gopay_url`.

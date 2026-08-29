@@ -15,7 +15,7 @@ from typing import Callable
 from ..auth import account_email
 from ..checkout import check_coupon_eligibility, create_checkout, require_country_currency, update_checkout
 from ..config import billing_for_country, currency_minor_scale
-from ..errors import ConfigurationError, ExtractionCancelled
+from ..errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from ..flows.cs_live import extract_cs_live_provider
 from ..flows.oaics import extract_oaics_provider
 from ..logging_utils import stage_logger
@@ -28,6 +28,22 @@ GOPAY_CURRENCY = "IDR"
 GOPAY_RESULT_FIELD = "gopay_url"
 GOPAY_CORE_SOURCE_DIR = Path(__file__).resolve().parent
 GOPAY_CORE_SOURCE_MANIFEST = GOPAY_CORE_SOURCE_DIR / "SOURCE_MANIFEST.json"
+
+
+def validate_gopay_amount(
+    amount_due_minor: int,
+    *,
+    promotion_applied: bool,
+) -> None:
+    """Fail closed unless an applied GoPay promotion produces zero due."""
+    if not promotion_applied:
+        return
+    try:
+        amount = int(amount_due_minor)
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(409, "expected zero amount, got invalid") from exc
+    if amount != 0:
+        raise ProtocolError(409, f"expected zero amount, got {amount}")
 
 
 def extract_gopay_payment_link(
@@ -79,6 +95,10 @@ def extract_gopay_payment_link(
             raise ConfigurationError(f"unsupported checkout session: {checkout.get('cs_id')}")
         amount_due_minor, amount_currency = checkout_payable_amount(checkout)
         amount_currency = amount_currency or GOPAY_CURRENCY
+        validate_gopay_amount(
+            amount_due_minor,
+            promotion_applied=apply_checkout_update,
+        )
         amount_due = amount_due_minor / (10 ** currency_minor_scale(amount_currency))
         provider_value = str(provider.get(GOPAY_RESULT_FIELD) or provider.get("provider_url") or "")
         if not provider_value:

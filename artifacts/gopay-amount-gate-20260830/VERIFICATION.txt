@@ -1,0 +1,43 @@
+GoPay amount gate verification
+=============================
+Changed branch/field: gopay_pro_core amount filtering
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-amount-gate-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-amount-gate-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-amount-gate-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-amount-gate-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_support.py tests/test_channel_isolation.py tests/test_gopay_checkout_optimization.py
+Input: pre-amount-gate branch
+Literal output/result:
+.........................                                                [100%]
+25 passed in 0.40s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with amount gate
+Literal output/result:
+........................................................................ [ 39%]
+........................................................................ [ 78%]
+........................................                                 [100%]
+184 passed in 1.65s
+Exit status: 0
+
+Amount check command:
+.\.venv\Scripts\python.exe -c "from payment_link_extractor.gopay_pro_core.core import validate_gopay_amount; validate_gopay_amount(349000, promotion_applied=True)"
+Input: generated URL transaction amount 349000 IDR
+Literal output/result: ProtocolError(409): expected zero amount, got 349000
+Exit status: 1 (rejected as intended)
+
+ROLLBACK command:
+.\.venv\Scripts\python.exe artifacts\gopay-amount-gate-20260830\ROLLBACK.sh artifacts\gopay-amount-gate-20260830\MODIFIED_FILE
+Input: temporary copy of MODIFIED_FILE
+Literal output/result:
+RESTORED_STATUS=PASS
+Exit status: 0
+
+Modified file SHA-256: 34a3369b0968f30b91254f2cfb8f81da7b6c53e323835cb75d1a5ad0c3a01733
+Restored behavior/status: non-zero promotional GoPay URLs are now rejected before output; rollback artifact test passed.
