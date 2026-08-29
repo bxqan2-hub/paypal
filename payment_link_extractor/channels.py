@@ -42,7 +42,7 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
         result_field="gopay_url",
         country="ID",
         currency="IDR",
-        uses_legacy_transport=False,
+        uses_legacy_transport=True,
         uses_checkout_update=True,
     ),
     "gcash": PaymentChannel(
@@ -96,6 +96,6 @@ def invoke_payment_channel(
         "cancel_event": cancel_event,
         "stage_callback": stage_callback,
     }
-    if transport_factory is not None:
+    if channel.uses_legacy_transport:
         kwargs["transport_factory"] = transport_factory
     return extractor(config, **kwargs)

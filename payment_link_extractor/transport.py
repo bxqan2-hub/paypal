@@ -358,7 +358,6 @@ def openai_sentinel_headers(
     flow: str = "",
     referer: str = "",
     log: Any | None = None,
-    required: bool = False,
 ) -> dict[str, str]:
     """Build fresh Sentinel/attestation headers for a browser checkout.
 
@@ -369,10 +368,6 @@ def openai_sentinel_headers(
     """
     headers: dict[str, str] = {}
     provider = getattr(session, "openai_sentinel_provider", None)
-    if required and not flow:
-        flow = "chatgpt_checkout"
-    if required and provider is None:
-        raise RuntimeError("browser Sentinel provider is required for this Checkout")
     if flow and provider is not None:
         try:
             generated = provider.headers(flow, referer=referer)
@@ -394,18 +389,12 @@ def openai_sentinel_headers(
             # Do not turn an optional browser helper into a transport outage;
             # the caller can still use explicitly supplied values.
             emit_log(log, f"Sentinel browser provider unavailable: {safe_log_text(exc, 180)}")
-            if required:
-                raise RuntimeError(
-                    "browser Sentinel proof generation failed"
-                ) from exc
     token = openai_sentinel_token(session)
     if token:
         headers["OpenAI-Sentinel-Token"] = token
     so_token = openai_sentinel_so_token(session)
     if so_token:
         headers["OpenAI-Sentinel-SO-Token"] = so_token
-    if required and not headers.get("OpenAI-Sentinel-Token"):
-        raise RuntimeError("browser Sentinel proof is missing")
     return headers
 
 
@@ -523,9 +512,6 @@ class BrowserSentinelProvider:
         user_agent: str,
         proxy: str,
         transport_session: Any,
-        session_token: str = "",
-        language: str = "en-US",
-        timezone: str = "America/New_York",
         log: Any | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
@@ -533,37 +519,17 @@ class BrowserSentinelProvider:
         self.session_id = str(session_id or "").strip()
         self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
         self.proxy = str(proxy or "").strip()
-        # Chromium/agent-browser accepts an unauthenticated HTTP proxy more
-        # reliably than an authenticated ``socks5h://`` URL. Reuse the
-        # loopback CONNECT bridge for 1024proxy-style authenticated SOCKS5
-        # routes while keeping the direct normalized proxy for HTTP clients.
-        try:
-            from .web.socks5_bridge import http_proxy_for
-
-            self.browser_proxy = http_proxy_for(self.proxy)
-        except Exception:
-            self.browser_proxy = self.proxy
         self.transport_session = transport_session
-        self.session_token = str(session_token or "").strip()
-        self.language = str(language or "en-US").strip() or "en-US"
-        self.timezone = str(timezone or "America/New_York").strip() or "America/New_York"
         self.log = log
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
         self.locale_script = self.temp_dir / "locale.js"
-        self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
         self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => "
-            + json.dumps(self.language)
-            + "});Object.defineProperty(navigator, 'languages', {get: () => ["
-            + json.dumps(self.language)
-            + ", 'en']});",
+            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
+            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
             encoding="utf-8",
-        )
-        self.sentinel_init_script.write_text(
-            self._build_sentinel_init_script(), encoding="utf-8"
         )
         self._lock = threading.RLock()
         self._started = False
@@ -573,33 +539,9 @@ class BrowserSentinelProvider:
         self._cookies = ""
         self._launch_args_used = False
 
-    @staticmethod
-    def _build_sentinel_init_script() -> str:
-        """Inject the bundled SDK as a window property before page scripts run."""
-        assets = Path(__file__).resolve().parent / "sentinel_assets"
-        sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
-        return (
-            "(() => {\n"
-            "  const install = () => { try {\n"
-            # The bootstrap shim is for the Node VM bridge and attempts to
-            # replace browser read-only globals such as crypto/navigator.  A
-            # real Chromium page already supplies those values, so inject
-            # only the SDK itself and publish its var explicitly on window.
-            f"{sdk}\n"
-            "    window.SentinelSDK = SentinelSDK;\n"
-            "    globalThis.SentinelSDK = SentinelSDK;\n"
-            "    window.__opllSentinelInjected = true;\n"
-            "  } catch (error) {\n"
-            "    window.__opllSentinelInjectionError = String(error && error.message || error);\n"
-            "  } };\n"
-            "  if (document.body) install();\n"
-            "  else document.addEventListener('DOMContentLoaded', install, {once:true});\n"
-            "})();\n"
-        )
-
     @property
     def enabled(self) -> bool:
-        mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
+        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
         return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
 
     def _base_command(self) -> list[str]:
@@ -615,11 +557,11 @@ class BrowserSentinelProvider:
             self.user_agent,
             "--init-script",
             str(self.locale_script),
-            "--init-script",
-            str(self.sentinel_init_script),
         ]
-        if self.browser_proxy:
-            command.extend(["--proxy", self.browser_proxy])
+        if self.proxy:
+            command.extend(["--proxy", self.proxy])
+        if not self._launch_args_used:
+            command.extend(["--args", "--disable-blink-features=AutomationControlled"])
         return command
 
     def _run(self, args: list[str], timeout: float = 75.0) -> Any:
@@ -628,8 +570,8 @@ class BrowserSentinelProvider:
         output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
         env = dict(os.environ)
         # Chromium uses TZ when constructing the browser fingerprint.  Keep
-        # Keep the browser and selected checkout locale coherent when supported.
-        env.setdefault("TZ", self.timezone)
+        # the browser and the PH checkout locale coherent when supported.
+        env.setdefault("TZ", "Asia/Manila")
         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         status = -1
@@ -660,11 +602,7 @@ class BrowserSentinelProvider:
                 except OSError:
                     time.sleep(0.05)
         if status != 0:
-            detail = safe_log_text(text, 600)
-            raise RuntimeError(
-                f"agent-browser exited with status {status}"
-                + (f": {detail}" if detail else "")
-            )
+            raise RuntimeError(f"agent-browser exited with status {status}")
         return _decode_agent_browser_output(text)
 
     def _eval(self, expression: str, timeout: float = 75.0) -> Any:
@@ -685,34 +623,6 @@ class BrowserSentinelProvider:
             if attestation:
                 self._attestation = attestation
 
-    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
-        """Set a browser cookie, chunking large NextAuth values safely."""
-        cookie_name = str(name or "").strip()
-        cookie_value = str(value or "")
-        if not cookie_name or not cookie_value:
-            return
-        chunk_size = 3800
-        chunks = [
-            cookie_value[index : index + chunk_size]
-            for index in range(0, len(cookie_value), chunk_size)
-        ]
-        if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096:
-            names = [(cookie_name, chunks[0])]
-        else:
-            names = [
-                (f"{cookie_name}.{index}", chunk)
-                for index, chunk in enumerate(chunks)
-            ]
-        for chunk_name, chunk in names:
-            args = [
-                "cookies", "set", chunk_name, chunk,
-                "--domain", ".chatgpt.com", "--path", "/",
-            ]
-            if http_only:
-                args.append("--httpOnly")
-            args.append("--secure")
-            self._run(args)
-
     def _sync_cookies(self) -> None:
         value = self._run(["cookies", "get", "--json"])
         cookies: list[dict[str, Any]] = []
@@ -728,52 +638,29 @@ class BrowserSentinelProvider:
             val = str(cookie.get("value") or "")
             if name:
                 pairs.append(f"{name}={val}")
-                if name.lower() == "oai-did" and val:
-                    self.device_id = val
         if pairs:
             self._cookies = "; ".join(pairs)
             headers = getattr(self.transport_session, "headers", None)
             if headers is not None:
                 headers["Cookie"] = self._cookies
-                if self.device_id:
-                    headers["oai-device-id"] = self.device_id
 
     def _start(self) -> None:
         if not self.enabled:
             raise RuntimeError("agent-browser is disabled or unavailable")
         try:
-            # Init scripts are not executed by agent-browser on about:blank;
-            # load the real ChatGPT origin so the SDK runs in a browser page
-            # with the same origin, storage, and fingerprint as Checkout.
-            self._run(["open", "https://chatgpt.com/", "--json"])
+            self._run(["open", "about:blank", "--json"])
             self._started = True
             self._launch_args_used = True
-            injected: Any = {}
-            for _ in range(10):
-                injected = self._eval(
-                    "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
-                )
-                if isinstance(injected, dict) and (
-                    injected.get("token") == "function"
-                    or injected.get("proto2") == "function"
-                ):
-                    break
-                self._run(["wait", "100"])
-            if not isinstance(injected, dict) or not (
-                injected.get("token") == "function"
-                or injected.get("proto2") == "function"
-            ):
-                detail = str((injected or {}).get("error") or "SentinelSDK injection failed")
-                raise RuntimeError(detail)
-            # A NextAuth session may be represented by cookies left by a
-            # previous browser context. Clear that context before installing
-            # the current session so duplicate `.0/.1` chunks cannot be
-            # concatenated into a stale token.
-            if self.session_token:
-                self._run(["cookies", "clear"])
-            self._set_cookie("oai-did", self.device_id)
-            if self.session_token:
-                self._set_cookie("__Secure-next-auth.session-token", self.session_token)
+            self._run(
+                [
+                    "cookies",
+                    "set",
+                    "oai-did",
+                    self.device_id,
+                    "--url",
+                    "https://chatgpt.com",
+                ]
+            )
             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
             # The bootstrap document carries the current signed deployment
             # attestation.  The initial navigation is authenticated when an
@@ -783,13 +670,15 @@ class BrowserSentinelProvider:
                 "Authorization": f"Bearer {self.access_token}",
                 "oai-device-id": self.device_id,
                 "oai-session-id": self.session_id,
-                "oai-language": self.language,
-                # Keep deployed checkout build identifiers overridable because
-                # the web client rotates them independently of payment flow.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
+                "oai-language": "en-US",
+                # The current browser HAR (m.gcash.com111.har) uses the
+                # deployed checkout build below.  Keep both values overridable
+                # because the web client rotates them independently of the
+                # payment flow.
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
             }
             account = account_id(self.access_token)
@@ -825,14 +714,6 @@ class BrowserSentinelProvider:
         )
         self._eval(expression, timeout=30)
 
-    @staticmethod
-    def _normalize_flow(flow: str) -> str:
-        """Never let the SDK's ineffective default flow reach Checkout."""
-        selected = str(flow or "").strip()
-        if selected.lower() in {"", "default", "__default__"}:
-            return "chatgpt_checkout"
-        return selected
-
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         with self._lock:
             if self._failed:
@@ -840,9 +721,8 @@ class BrowserSentinelProvider:
             if not self._started:
                 self._start()
             self._ping(referer)
-            selected_flow = self._normalize_flow(flow)
             raw = self._eval(
-                "(async()=>{const token=await window.SentinelSDK.token(" + json.dumps(selected_flow) + ");return token})()",
+                "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
                 timeout=90,
             )
             if isinstance(raw, str):
@@ -854,31 +734,6 @@ class BrowserSentinelProvider:
             if not token:
                 raise RuntimeError("SentinelSDK returned an empty token")
             result = {"OpenAI-Sentinel-Token": token}
-            observer = ""
-            try:
-                observer_raw = self._eval(
-                    "(async()=>{if(typeof window.SentinelSDK.sessionObserverToken!=='function')return '';"
-                    "const token=await window.SentinelSDK.sessionObserverToken("
-                    + json.dumps(selected_flow)
-                    + ");return token||''})()",
-                    timeout=45,
-                )
-                if isinstance(observer_raw, str):
-                    observer = observer_raw.strip()
-                elif isinstance(observer_raw, dict):
-                    observer = json.dumps(observer_raw, separators=(",", ":"))
-            except Exception:
-                observer = ""
-            if observer:
-                result["OpenAI-Sentinel-SO-Token"] = observer
-            # token() and sessionObserverToken() may update HttpOnly browser
-            # cookies. Read them through the browser/CDP command after proof
-            # creation, then mirror oai-did into the HTTP transport.
-            if hasattr(self, "_run"):
-                try:
-                    self._sync_cookies()
-                except Exception:
-                    pass
             if self._attestation:
                 result["oai-web-deployment-attestation"] = self._attestation
                 session_headers = getattr(self.transport_session, "headers", None)
@@ -886,9 +741,6 @@ class BrowserSentinelProvider:
                     session_headers["oai-web-deployment-attestation"] = self._attestation
             if self._cookies:
                 result["Cookie"] = self._cookies
-            current_device_id = str(getattr(self, "device_id", "") or "").strip()
-            if current_device_id:
-                result["oai-device-id"] = current_device_id
             return result
 
     def close(self) -> None:
@@ -917,19 +769,13 @@ class DefaultTransportFactory:
         device_id = str(uuid.uuid4())
         session_id = str(uuid.uuid4())
         session = new_session()
-        payment_method = normalize_payment_method(config.payment_method)
-        is_gopay = payment_method == "gopay"
         user_agent = os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
         observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
         session.headers.update(
             {
                 "User-Agent": user_agent,
                 "Accept": "*/*",
-                "Accept-Language": (
-                    country_accept_language(config)
-                    if normalize_payment_method(config.payment_method) == "gopay"
-                    else f"{country_locale(config)},en;q=0.9"
-                ),
+                "Accept-Language": f"{country_locale(config)},en;q=0.9",
                 "Authorization": f"Bearer {config.access_token}",
                 "Origin": "https://chatgpt.com",
                 "Referer": "https://chatgpt.com/",
@@ -938,28 +784,14 @@ class DefaultTransportFactory:
                 "oai-session-id": session_id,
                 # ChatGPT's API language is the browser UI locale; the
                 # country-specific Accept-Language remains separate above.
-                "oai-language": (
-                    os.getenv("OPLL_OAI_LANGUAGE", "").strip()
-                    or (
-                        country_locale(config)
-                        if normalize_payment_method(config.payment_method) == "gopay"
-                        else "en-US"
-                    )
-                ),
+                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
-                "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER",
-                    "10012890" if is_gopay else "9748354",
-                ),
+                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
-                    (
-                        "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
-                        if is_gopay
-                        else "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
-                    ),
+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
@@ -986,8 +818,8 @@ class DefaultTransportFactory:
         account = account_id(config.access_token)
         if account:
             session.headers["chatgpt-account-id"] = account
-        # Keep these values on the session for the browser Sentinel adapter
-        # and diagnostics without putting identifiers into request URLs/logs.
+        # Keep these values on the session for the GCash Sentinel adapter and
+        # for diagnostics without putting identifiers into request URLs/logs.
         session.openai_device_id = device_id
         session.openai_did = device_id
         session.openai_proxy = proxy
@@ -1007,11 +839,7 @@ class DefaultTransportFactory:
                 normalized_url.endswith("/backend-api/payments/checkout")
                 or normalized_url.endswith("/backend-api/payments/checkout/confirm")
             ):
-                if payment_method not in {"paypal", "gopay"}:
-                    dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
-                    )
-                elif normalized_url.endswith("/confirm"):
+                if normalized_url.endswith("/confirm"):
                     elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
                     values = [
                         1,
@@ -1025,21 +853,7 @@ class DefaultTransportFactory:
                     ]
                     dynamic["oai-telemetry"] = json.dumps(values, separators=(",", ":"))
                 else:
-                    elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
-                    values = [
-                        1,
-                        elapsed,
-                        secrets.randbelow(10),
-                        secrets.randbelow(32),
-                        secrets.randbelow(32),
-                        2,
-                        0,
-                        round(elapsed + secrets.randbelow(24), 1),
-                    ]
-                    dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY",
-                        json.dumps(values, separators=(",", ":")),
-                    )
+                    dynamic["oai-telemetry"] = os.getenv("OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]")
             return dynamic
 
         session.refresh_openai_request_headers = refresh_openai_request_headers
@@ -1056,8 +870,8 @@ class DefaultTransportFactory:
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         normalized_proxy = normalize_proxy_url(proxy)
-        if normalize_payment_method(config.payment_method) in {"paypal", "gopay"}:
-            mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
+        if normalize_payment_method(config.payment_method) == "gcash":
+            mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
             if mode not in {"0", "false", "off", "disabled", "no"}:
                 session.openai_sentinel_provider = BrowserSentinelProvider(
                     access_token=config.access_token,
@@ -1066,9 +880,6 @@ class DefaultTransportFactory:
                     user_agent=user_agent,
                     proxy=normalized_proxy,
                     transport_session=session,
-                    session_token=str(getattr(config, "session_token", "") or ""),
-                    language=country_locale(config),
-                    timezone=country_timezone(config),
                 )
         session.proxies = (
             {"http": normalized_proxy, "https": normalized_proxy}
@@ -1082,11 +893,7 @@ class DefaultTransportFactory:
         session.headers.update(
             {
                 "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
-                "Accept-Language": (
-                    country_accept_language(config)
-                    if normalize_payment_method(config.payment_method) == "gopay"
-                    else f"{country_locale(config)},en;q=0.9"
-                ),
+                "Accept-Language": f"{country_locale(config)},en;q=0.9",
             }
         )
         set_proxy_url(session, config.checkout_proxy)
@@ -1099,16 +906,3 @@ def country_locale(config: ExtractionConfig) -> str:
     from .config import country_config
 
     return country_config(config.country)[2]
-
-
-def country_accept_language(config: ExtractionConfig) -> str:
-    """Match Chromium's locale-first Accept-Language ordering."""
-    locale = country_locale(config)
-    language = locale.split("-", 1)[0]
-    return f"{locale},{language};q=0.9"
-
-
-def country_timezone(config: ExtractionConfig) -> str:
-    from .config import country_config
-
-    return country_config(config.country)[3]

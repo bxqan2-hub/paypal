@@ -21,14 +21,14 @@ def gopay_config() -> ExtractionConfig:
     )
 
 
-def test_gopay_uses_dedicated_core_and_fixed_indonesia_billing() -> None:
+def test_gopay_uses_shared_legacy_core_and_fixed_indonesia_billing() -> None:
     channel = PAYMENT_CHANNELS["gopay"]
     assert channel.adapter_module == "payment_link_extractor.gopay_channel"
     assert channel.adapter_callable == "extract_gopay_payment_link"
     assert channel.result_field == "gopay_url"
     assert channel.country == "ID"
     assert channel.currency == "IDR"
-    assert channel.uses_legacy_transport is False
+    assert channel.uses_legacy_transport is True
     assert channel.uses_checkout_update is True
 
     normalized = _normalize_config(gopay_config())
@@ -62,9 +62,3 @@ def test_defaults_expose_gopay_choice() -> None:
     methods = {item["value"]: item for item in data["payment_methods"]}
     assert methods["gopay"]["label"] == "GoPay"
     assert data["payment_method_countries"]["gopay"] == "ID"
-
-
-def test_gopay_adapter_does_not_import_paypal_core():
-    source = __import__("pathlib").Path(__file__).resolve().parents[1] / "payment_link_extractor/gopay_channel.py"
-    assert "paypal_channel" not in source.read_text(encoding="utf-8")
-    assert "gopay_pro_core" in source.read_text(encoding="utf-8")

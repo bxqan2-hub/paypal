@@ -16,6 +16,12 @@ from .errors import ProtocolError, ProviderRequiresApproval
 from .logging_utils import emit_log, safe_log_text
 from .models import CheckoutData, StripeContext
 from .providers import provider_redirect_config
+from .risk_params import (
+    stripe_guid,
+    stripe_js_id as new_stripe_js_id,
+    stripe_muid,
+    stripe_sid,
+)
 from .transport import response_json, stage_http_request
 
 STRIPE_CLIENT_BETAS = (
@@ -54,14 +60,6 @@ def expected_amount(payload: Any) -> str:
 
 
 def checkout_payable_amount(checkout: CheckoutData) -> tuple[int, str]:
-    amount, currency = checkout_payable_amount_with_presence(checkout)
-    return int(amount or 0), currency
-
-
-def checkout_payable_amount_with_presence(
-    checkout: CheckoutData,
-) -> tuple[int | None, str]:
-    """Return the authoritative amount while preserving a missing-value state."""
     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
     total = state.get("total") if isinstance(state.get("total"), dict) else {}
     due = total.get("total") if isinstance(total.get("total"), dict) else {}
@@ -73,9 +71,9 @@ def checkout_payable_amount_with_presence(
 
         minor_units = extract_checkout_totals(openai_checkout_init_payload(checkout)).get("due")
     try:
-        amount = int(minor_units) if minor_units not in (None, "") else None
+        amount = int(minor_units) if minor_units not in (None, "") else 0
     except (TypeError, ValueError):
-        amount = None
+        amount = 0
     currency = str(state.get("currency") or checkout.get("currency") or "GBP").upper()
     return amount, currency
 
@@ -122,7 +120,10 @@ def stripe_context(
     stripe_js_id: str = "",
 ) -> StripeContext:
     return {
-        "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
+        "stripe_js_id": str(stripe_js_id or new_stripe_js_id()),
+        "guid": stripe_guid(),
+        "muid": stripe_muid(),
+        "sid": stripe_sid(),
         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
         "config_id": str(init_payload.get("config_id") or ""),

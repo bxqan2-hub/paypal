@@ -1,0 +1,17 @@
+GoPay rollback target: 7ec66b3
+Current pre-rollback source: 3697637
+
+Reversed branch changes:
+- payment_link_extractor/gopay_channel.py now delegates to paypal_channel.extract_legacy_payment_link
+- payment_link_extractor/channels.py restores gopay uses_legacy_transport=True
+- dedicated payment_link_extractor/gopay_pro_core/ is removed from the tracked tree
+- GoPay-only Sentinel/HAR/amount-gate tests and implementation changes are removed
+- PayPal/GoPay shared transport and provider result mapping are restored
+
+Preserved unrelated working-tree files:
+- paypal_agreement_protocol/data/used_local_card_hashes.txt
+- tests/test_har_tools.py
+- tools/har_capture.py
+- tools/har_utils.py
+- tools/roxy_har_capture.py
+- m.gcash.com111.har

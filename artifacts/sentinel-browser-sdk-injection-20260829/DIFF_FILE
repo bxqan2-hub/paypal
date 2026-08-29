@@ -1,8 +1,0 @@
-diff -- sentinel-browser-sdk-injection-20260829
-+ BrowserSentinelProvider writes a temporary init script containing the bundled sentinel SDK.
-+ The Node-only bootstrap shim is excluded because it overwrites Chromium read-only globals.
-+ The init script assigns window.SentinelSDK = SentinelSDK after DOMContentLoaded when needed.
-+ Browser startup verifies window.SentinelSDK.__proto2 is a function before protected calls.
-+ oai-did HttpOnly cookie value is synchronized into the transport oai-device-id header.
-+ Optional session_token is installed as the Secure HttpOnly NextAuth cookie.
-+ SentinelSDK.token(flow) uses chatgpt_checkout when flow is empty.

@@ -1,6 +1,0 @@
-diff -- paypal-gopay-browser-sdk-20260829
-- Previous routing created BrowserSentinelProvider for gcash.
-+ New routing creates it only for paypal and gopay.
-+ GCash upstream source and GCash adapter remain unchanged.
-+ Browser init script injects sentinel_sdk.js and assigns window.SentinelSDK explicitly.
-+ PayPal/GoPay use country-specific locale/timezone values for the browser context.

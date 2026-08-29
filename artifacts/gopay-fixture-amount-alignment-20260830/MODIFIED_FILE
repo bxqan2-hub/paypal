@@ -1,5 +1,0 @@
-BRANCH: GoPay fixture-aligned amount validation
-FIELD: taxes-stage zero amount gate + final output gate
-VALUE: b7e0bf7a846c4722b6192540eac7fcfab7173618435167c1ec69bd7b44611bbf
-REFERENCE: C:\Users\Administrator\Downloads\GoPay-印尼0元优惠百分百提链
-CONTRACT: verify amount after promotion/taxes and before confirm; return no URL when amount != 0.

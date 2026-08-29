@@ -1,0 +1,50 @@
+GoPay PayPal shared-core rollback verification
+===============================================
+
+Changed branch/field:
+payment_link_extractor/gopay_channel.py -> paypal_channel.extract_legacy_payment_link
+PAYMENT_CHANNELS[gopay].uses_legacy_transport -> True
+Rollback target commit: 7ec66b3
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-paypal-core-rollback-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-paypal-core-rollback-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-paypal-core-rollback-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-paypal-core-rollback-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: pre-rollback working tree at commit 3697637
+Literal output/result:
+........................................................................ [ 39%]
+........................................................................ [ 79%]
+......................................                                   [100%]
+185 passed in 1.48s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree restored to commit 7ec66b3 plus this analysis document
+Literal output/result:
+........................................................................ [ 42%]
+........................................................................ [ 85%]
+.........................                                                [100%]
+169 passed in 1.61s
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-paypal-core-rollback-20260830/ROLLBACK.sh && artifacts/gopay-paypal-core-rollback-20260830/ROLLBACK.sh artifacts-local/gopay-rollback-test.py artifacts/gopay-paypal-core-rollback-20260830/MODIFIED_FILE"
+Input: another temporary copy of the pre-rollback GoPay adapter
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-rollback-test.py
+BEFORE_SHA256=35e10d15e35b12b71ef6b4051da3f9899d08126ba0ac4290ac26fa5e6b0be60b
+RESTORED_SHA256=c72d3fc32efd8220d760da232f29b5907a97d1717a7074d5d7bb0b565572272b
+EXPECTED_SHA256=c72d3fc32efd8220d760da232f29b5907a97d1717a7074d5d7bb0b565572272b
+RESTORED_STATUS=PASS
+Exit status: 0
+
+MODIFIED_FILE SHA-256:
+c72d3fc32efd8220d760da232f29b5907a97d1717a7074d5d7bb0b565572272b
+
+Restored behavior/status:
+GoPay keeps its independent channel/result registration while sharing PayPal's legacy Checkout core. The dedicated Go source slice is absent from the tracked tree.

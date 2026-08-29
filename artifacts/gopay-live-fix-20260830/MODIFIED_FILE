@@ -1,3 +1,0 @@
-BRANCH: GoPay live Sentinel/HTTP transport fix
-FIELD: browser init, proxy bridge, session-cookie chunks, fail-closed proof
-VALUE: 2e22c6768ee7d4f20eaed337eef577e32b4e5e2bb6980441e2e6d3a5ab183afc

@@ -24,10 +24,3 @@ ROLLBACK command:
   literal output: ROLLBACK_OK target=artifacts-local/paypal-gopay-shared-core-20260829/CHANNELS_FIXTURE restored=pre_shared-core-gopay-registration status=0
   exit status: 0
   restored behavior/status: the fixture contains the pre-change GoPay module/callable and false legacy/update flags; repository MODIFIED_FILE remains changed.
-
-GCASH_INTEGRITY command:
-  PowerShell manifest SHA-256 comparison of payment_link_extractor/mk_gcash_open_source against mk_gcash_project_manifest.json and C:\Users\Administrator\AppData\Local\Temp\codex-upstreams\MK-GCash-Link-OpenSource
-  input: 22 manifest paths
-  literal output: GCASH_MANIFEST_FILES=22 MISMATCHES=0 UPSTREAM_MISMATCHES=0 REMOVED_GOPAY_PATHS=0
-  exit status: 0
-  restored behavior/status: the GCash site copy remains byte-identical to the authoritative local upstream; no GoPay path remains.
