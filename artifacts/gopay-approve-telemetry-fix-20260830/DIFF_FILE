@@ -1,0 +1,101 @@
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index ffe421d..08e155a 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -490,7 +490,10 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+             "x-openai-target-route": path,
+             **openai_sentinel_headers(
+                 chatgpt,
+-                flow="chatgpt_checkout",
++                # The browser prefetches an approval proof under this flow
++                # before calling checkout/approve; reusing chatgpt_checkout
++                # here produces a valid proof for the wrong protected action.
++                flow="checkout_session_approval",
+                 referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+                 log=log,
+                 required=True,
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index be56c40..bc47a03 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -999,15 +999,21 @@ class DefaultTransportFactory:
+             session.headers["x-oai-is-client-observation"] = observation
+             dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
+             normalized_url = str(url or "").lower()
++            is_checkout = normalized_url.endswith("/backend-api/payments/checkout")
++            is_checkout_confirm = normalized_url.endswith(
++                "/backend-api/payments/checkout/confirm"
++            )
++            is_checkout_approve = normalized_url.endswith(
++                "/backend-api/payments/checkout/approve"
++            )
+             if method.upper() == "POST" and (
+-                normalized_url.endswith("/backend-api/payments/checkout")
+-                or normalized_url.endswith("/backend-api/payments/checkout/confirm")
++                is_checkout or is_checkout_confirm or is_checkout_approve
+             ):
+                 if payment_method not in {"paypal", "gopay"}:
+                     dynamic["oai-telemetry"] = os.getenv(
+                         "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
+                     )
+-                elif normalized_url.endswith("/confirm"):
++                elif is_checkout_confirm or is_checkout_approve:
+                     elapsed = round((time.perf_counter() - session.openai_request_started) * 1000, 1)
+                     values = [
+                         1,
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 8f94411..22a7427 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -61,6 +61,12 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
+     values = json.loads(telemetry)
+     assert len(values) == 8
+     assert values[0] == 1 and values[5:] == [2, 0, values[7]]
++    approve_telemetry = session.refresh_openai_request_headers(
++        "POST", "https://chatgpt.com/backend-api/payments/checkout/approve"
++    )["oai-telemetry"]
++    approve_values = json.loads(approve_telemetry)
++    assert len(approve_values) == 8
++    assert approve_values[0] == 1 and approve_values[5:] == [2, 0, approve_values[7]]
+ 
+ 
+ def test_gopay_required_sentinel_proof_fails_closed() -> None:
+@@ -213,6 +219,38 @@ def test_gopay_stripe_confirm_forwards_optional_passive_captcha(monkeypatch) ->
+     assert len(captured["data"]) == 62
+ 
+ 
++def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) -> None:
++    class Response:
++        status_code = 200
++        text = '{"result":"approved"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"result": "approved"}
++
++    flows: list[str] = []
++
++    class Provider:
++        def headers(self, flow, **_kwargs):
++            flows.append(flow)
++            return {"OpenAI-Sentinel-Token": "proof-fixture"}
++
++    class Session:
++        openai_sentinel_provider = Provider()
++
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "stage_http_request",
++        lambda *_args, **_kwargs: Response(),
++    )
++    gopay_cs_live.chatgpt_approve(
++        Session(),
++        {"cs_id": "cs_live_fixture", "billing_country": "ID"},
++        None,
++    )
++    assert flows == ["checkout_session_approval"]
++
++
+ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+     class Response:
+         status_code = 200
