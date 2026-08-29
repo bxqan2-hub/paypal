@@ -1,0 +1,9 @@
+BRANCH: payment_link_extractor/transport.py::BrowserSentinelProvider
+FIELD: SDK injection
+VALUE: sentinel_sdk.js is wrapped and explicitly published as window.SentinelSDK
+FIELD: SDK call flow
+VALUE: empty flow defaults to chatgpt_checkout; explicit checkout_session_approval remains supported
+FIELD: device identity
+VALUE: HttpOnly oai-did cookie is read from browser cookies and promoted to oai-device-id
+FIELD: browser session
+VALUE: optional __Secure-next-auth.session-token is installed before authenticated navigation

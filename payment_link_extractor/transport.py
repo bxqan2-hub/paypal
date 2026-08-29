@@ -512,6 +512,7 @@ class BrowserSentinelProvider:
         user_agent: str,
         proxy: str,
         transport_session: Any,
+        session_token: str = "",
         log: Any | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
@@ -520,16 +521,21 @@ class BrowserSentinelProvider:
         self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
         self.proxy = str(proxy or "").strip()
         self.transport_session = transport_session
+        self.session_token = str(session_token or "").strip()
         self.log = log
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
         self.locale_script = self.temp_dir / "locale.js"
+        self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
         self.locale_script.write_text(
             "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
             "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
             encoding="utf-8",
+        )
+        self.sentinel_init_script.write_text(
+            self._build_sentinel_init_script(), encoding="utf-8"
         )
         self._lock = threading.RLock()
         self._started = False
@@ -538,6 +544,30 @@ class BrowserSentinelProvider:
         self._attestation = ""
         self._cookies = ""
         self._launch_args_used = False
+
+    @staticmethod
+    def _build_sentinel_init_script() -> str:
+        """Inject the bundled SDK as a window property before page scripts run."""
+        assets = Path(__file__).resolve().parent / "mk_gcash_open_source" / "sentinel_assets"
+        sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
+        return (
+            "(() => {\n"
+            "  const install = () => { try {\n"
+            # The bootstrap shim is for the Node VM bridge and attempts to
+            # replace browser read-only globals such as crypto/navigator.  A
+            # real Chromium page already supplies those values, so inject
+            # only the SDK itself and publish its var explicitly on window.
+            f"{sdk}\n"
+            "    window.SentinelSDK = SentinelSDK;\n"
+            "    globalThis.SentinelSDK = SentinelSDK;\n"
+            "    window.__opllSentinelInjected = true;\n"
+            "  } catch (error) {\n"
+            "    window.__opllSentinelInjectionError = String(error && error.message || error);\n"
+            "  } };\n"
+            "  if (document.body) install();\n"
+            "  else document.addEventListener('DOMContentLoaded', install, {once:true});\n"
+            "})();\n"
+        )
 
     @property
     def enabled(self) -> bool:
@@ -557,6 +587,8 @@ class BrowserSentinelProvider:
             self.user_agent,
             "--init-script",
             str(self.locale_script),
+            "--init-script",
+            str(self.sentinel_init_script),
         ]
         if self.proxy:
             command.extend(["--proxy", self.proxy])
@@ -638,11 +670,15 @@ class BrowserSentinelProvider:
             val = str(cookie.get("value") or "")
             if name:
                 pairs.append(f"{name}={val}")
+                if name.lower() == "oai-did" and val:
+                    self.device_id = val
         if pairs:
             self._cookies = "; ".join(pairs)
             headers = getattr(self.transport_session, "headers", None)
             if headers is not None:
                 headers["Cookie"] = self._cookies
+                if self.device_id:
+                    headers["oai-device-id"] = self.device_id
 
     def _start(self) -> None:
         if not self.enabled:
@@ -651,6 +687,17 @@ class BrowserSentinelProvider:
             self._run(["open", "about:blank", "--json"])
             self._started = True
             self._launch_args_used = True
+            injected: Any = {}
+            for _ in range(10):
+                injected = self._eval(
+                    "({injected:!!window.SentinelSDK,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''})()"
+                )
+                if isinstance(injected, dict) and injected.get("proto2") == "function":
+                    break
+                self._run(["wait", "100"])
+            if not isinstance(injected, dict) or injected.get("proto2") != "function":
+                detail = str((injected or {}).get("error") or "SentinelSDK injection failed")
+                raise RuntimeError(detail)
             self._run(
                 [
                     "cookies",
@@ -659,8 +706,23 @@ class BrowserSentinelProvider:
                     self.device_id,
                     "--url",
                     "https://chatgpt.com",
+                    "--httpOnly",
+                    "--secure",
                 ]
             )
+            if self.session_token:
+                self._run(
+                    [
+                        "cookies",
+                        "set",
+                        "__Secure-next-auth.session-token",
+                        self.session_token,
+                        "--url",
+                        "https://chatgpt.com",
+                        "--httpOnly",
+                        "--secure",
+                    ]
+                )
             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
             # The bootstrap document carries the current signed deployment
             # attestation.  The initial navigation is authenticated when an
@@ -721,8 +783,9 @@ class BrowserSentinelProvider:
             if not self._started:
                 self._start()
             self._ping(referer)
+            selected_flow = str(flow or "chatgpt_checkout").strip() or "chatgpt_checkout"
             raw = self._eval(
-                "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
+                "(async()=>{const token=await window.SentinelSDK.token(" + json.dumps(selected_flow) + ");return token})()",
                 timeout=90,
             )
             if isinstance(raw, str):
@@ -880,6 +943,7 @@ class DefaultTransportFactory:
                     user_agent=user_agent,
                     proxy=normalized_proxy,
                     transport_session=session,
+                    session_token=str(getattr(config, "session_token", "") or ""),
                 )
         session.proxies = (
             {"http": normalized_proxy, "https": normalized_proxy}

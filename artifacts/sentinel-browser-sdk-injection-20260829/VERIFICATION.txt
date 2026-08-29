@@ -1,0 +1,32 @@
+BRANCH: payment_link_extractor/transport.py::BrowserSentinelProvider
+FIELD: window.SentinelSDK injection, chatgpt_checkout flow default, HttpOnly oai-did synchronization, browser session cookie
+MODIFIED_FILE: artifacts/sentinel-browser-sdk-injection-20260829/MODIFIED_FILE
+DIFF_FILE: artifacts/sentinel-browser-sdk-injection-20260829/DIFF_FILE
+VERIFICATION: artifacts/sentinel-browser-sdk-injection-20260829/VERIFICATION.txt
+ROLLBACK: artifacts/sentinel-browser-sdk-injection-20260829/ROLLBACK.sh
+
+BASELINE command:
+  git show 9ea3528:payment_link_extractor/transport.py > artifacts-local/sentinel-browser-sdk-injection-20260829/baseline_transport.py; .venv/Scripts/python.exe -m py_compile artifacts-local/sentinel-browser-sdk-injection-20260829/baseline_transport.py
+  input: pre-change transport.py at Git commit 9ea3528
+  literal output/result: baseline transport compiled successfully; exit status 0
+  exit status: 0
+
+MODIFIED command:
+  .venv/Scripts/python.exe -m pytest -q
+  input: repository test suite plus browser injection tests
+  literal output: 164 passed in 1.68s
+  exit status: 0
+  result: injected SDK exposes window.SentinelSDK.__proto2; default flow is chatgpt_checkout; HttpOnly oai-did is promoted to oai-device-id.
+
+BROWSER_SMOKE command:
+  agent-browser --session codex-sentinel-test --namespace codex-sentinel-test --init-script artifacts-local/sentinel-init-check.js open about:blank; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test wait 500; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test eval "JSON.stringify({injected:!!window.SentinelSDK,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''})"; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test close
+  input: generated SDK init script in a real Chromium context
+  literal output/result: {"injected":true,"proto2":"function","error":""}; browser closed; exit status 0
+  exit status: 0
+
+ROLLBACK command:
+  bash artifacts/sentinel-browser-sdk-injection-20260829/ROLLBACK.sh "$(pwd)" artifacts-local/sentinel-browser-sdk-injection-20260829/transport.py
+  input: current transport.py copied to rollback target
+  literal output: ROLLBACK_OK target=artifacts-local/sentinel-browser-sdk-injection-20260829/transport.py restored_commit=9ea3528 sha_match=true status=0
+  exit status: 0
+  restored behavior/status: rollback target matches the pre-injection transport; working tree remains modified with injection active.
