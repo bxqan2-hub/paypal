@@ -539,8 +539,14 @@ class TaskManager:
                     error = redact_text(exc, self._secrets(record.config))
                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
+                    is_gopay = record.config.payment_method == "gopay"
+                    explicit_retryable = getattr(exc, "retryable", None)
+                    failure_mode = str(
+                        getattr(exc, "failure_mode", "") or type(exc).__name__
+                    )
                     may_retry = (
                         attempt_index < retry_count
+                        and (not is_gopay or explicit_retryable is not False)
                         and (
                             record.config.payment_method != "gcash"
                             or mk_retryable
@@ -563,6 +569,11 @@ class TaskManager:
                                 "next_attempt": record.attempt + 1,
                                 "max_attempts": total_attempts,
                                 "ip_rotated": True,
+                                **(
+                                    {"failure_mode": failure_mode, "retryable": True}
+                                    if is_gopay
+                                    else {}
+                                ),
                                 "elapsed_ms": elapsed_ms,
                             },
                         )
@@ -585,6 +596,14 @@ class TaskManager:
                             "status": record.status,
                             "error": record.error,
                             "network_error": record.network_error,
+                            **(
+                                {
+                                    "failure_mode": failure_mode,
+                                    "retryable": bool(explicit_retryable),
+                                }
+                                if is_gopay
+                                else {}
+                            ),
                             "progress": record.progress,
                             "attempt": record.attempt,
                             "max_attempts": total_attempts,

@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from payment_link_extractor import gopay_checkout
+from payment_link_extractor import gopay_core
+from payment_link_extractor import gopay_transport
+from payment_link_extractor.gopay_validation import validate_checkout_batch
+from payment_link_extractor.models import ExtractionConfig
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_gopay_uses_isolated_copy_and_paypal_core_is_unchanged() -> None:
+    adapter = (ROOT / "payment_link_extractor/gopay_channel.py").read_text(encoding="utf-8")
+    assert "gopay_core" in adapter
+    assert "paypal_channel" not in adapter
+    assert (ROOT / "payment_link_extractor/gopay_core.py").is_file()
+    assert (ROOT / "payment_link_extractor/gopay_transport.py").is_file()
+    # Git blob hash of the PayPal core at the shared-core baseline 7ec66b3.
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "hash-object", "payment_link_extractor/paypal_channel.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "8b2191fceceb103014682b822658051c8dfab4e6"
+
+
+def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(monkeypatch) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+
+    monkeypatch.setattr(gopay_transport, "new_session", Session)
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="ID",
+        payment_method="gopay",
+        apply_checkout_update=False,
+    )
+    session = gopay_transport.GoPayTransportFactory().chatgpt(config, config.checkout_proxy)
+    assert session.headers["oai-language"] == "id-ID"
+    assert session.headers["oai-client-build-number"] == "10012890"
+    assert session.headers["oai-client-version"] == "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+    telemetry = session.refresh_openai_request_headers(
+        "POST", "https://chatgpt.com/backend-api/payments/checkout"
+    )["oai-telemetry"]
+    values = json.loads(telemetry)
+    assert len(values) == 8
+    assert values[0] == 1 and values[5:] == [2, 0, values[7]]
+
+
+def test_gopay_required_sentinel_proof_fails_closed() -> None:
+    with pytest.raises(RuntimeError, match="browser Sentinel provider is required"):
+        gopay_transport.openai_sentinel_headers(
+            SimpleNamespace(), flow="chatgpt_checkout", required=True
+        )
+
+
+def test_gopay_sentinel_init_script_uses_dedicated_assets() -> None:
+    script = gopay_transport.BrowserSentinelProvider._build_sentinel_init_script()
+    assert "window.SentinelSDK = SentinelSDK" in script
+    assert "mk_gcash_open_source" not in script
+
+
+def test_gopay_checkout_methods_merge_nested_values() -> None:
+    state: dict[str, object] = {
+        "payment_method_types": ["card", "gopay"],
+        "custom_payment_methods": [{"id": "cpmt_1", "name": "GoPay"}],
+    }
+    gopay_checkout.merge_checkout_payload(
+        state,
+        {
+            "checkout_session": {
+                "payment_method_types": ["gopay", "link"],
+                "custom_payment_methods": [
+                    {"id": "cpmt_1", "display_name": "GoPay Indonesia"},
+                    {"id": "cpmt_2", "name": "Bank"},
+                ],
+            }
+        },
+    )
+    assert state["payment_method_types"] == ["card", "gopay", "link"]
+    assert state["custom_payment_methods"] == [
+        {"id": "cpmt_1", "name": "GoPay", "display_name": "GoPay Indonesia"},
+        {"id": "cpmt_2", "name": "Bank"},
+    ]
+
+
+def test_gopay_amount_gate_is_zero_only() -> None:
+    gopay_core.validate_gopay_amount(0, promotion_applied=True)
+    with pytest.raises(Exception, match="expected zero amount, got missing"):
+        gopay_core.validate_gopay_amount(None, promotion_applied=True)
+    with pytest.raises(Exception, match="expected zero amount, got 349000"):
+        gopay_core.validate_gopay_amount(349000, promotion_applied=True)
+
+
+def test_gopay_core_mock_flow_uses_own_factory_and_result_field(monkeypatch) -> None:
+    class Session:
+        def close(self) -> None:
+            return None
+
+    class Factory:
+        def __init__(self) -> None:
+            self.chatgpt_calls = 0
+            self.stripe_calls = 0
+
+        def chatgpt(self, _config, _proxy):
+            self.chatgpt_calls += 1
+            return Session()
+
+        def stripe(self, _config):
+            self.stripe_calls += 1
+            return Session()
+
+    factory = Factory()
+    monkeypatch.setattr(
+        gopay_core,
+        "create_checkout",
+        lambda *_args: {
+            "cs_id": "cs_fixture",
+            "session_kind": "stripe_checkout",
+            "billing_country": "ID",
+            "currency": "IDR",
+            "checkout_state": {
+                "currency": "IDR",
+                "total": {"total": {"minorUnitsAmount": 0}},
+            },
+        },
+    )
+    monkeypatch.setattr(gopay_core, "require_country_currency", lambda *_args: None)
+    monkeypatch.setattr(
+        gopay_core,
+        "extract_cs_live_provider",
+        lambda *_args, **_kwargs: {
+            "provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
+            "gopay_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
+        },
+    )
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="",
+        country="ID",
+        payment_method="gopay",
+        apply_checkout_update=False,
+    )
+    result = gopay_core.extract_gopay_payment_link(
+        config, transport_factory=factory
+    )
+    assert result.payment_method == "gopay"
+    assert result.provider_field == "gopay_url"
+    assert result.provider_value.endswith("/fixture")
+    assert factory.chatgpt_calls == 1 and factory.stripe_calls == 1
+
+
+def test_gopay_batch_validation_keeps_failure_modes_separate() -> None:
+    report = validate_checkout_batch(
+        [
+            {"status_code": 200, "payload": {"checkout_session_id": "oaics_one", "payment_method_types": ["gopay"]}},
+            {"status_code": 200, "payload": {"checkout_session": {"id": "cs_two", "payment_method_types": ["gopay", "card"]}}},
+            {"status_code": 429, "payload": '{"detail":"Too many requests"}'},
+        ]
+    )
+    assert report["success_count"] == 2
+    assert report["session_kinds"] == {
+        "openai_custom_checkout": 1,
+        "stripe_checkout": 1,
+    }
+    assert report["failure_modes"] == {"rate_limited": 1}
+    assert report["payment_methods"] == ["gopay", "card"]

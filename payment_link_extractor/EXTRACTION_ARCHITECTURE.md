@@ -5,7 +5,7 @@
 | 方式 | 入口 | 核心位置 | 代理入口 |
 |---|---|---|---|
 | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
-| GoPay | `gopay_channel.py` | 与 PayPal 共用 legacy Checkout/Stripe 核心、`providers/gopay.py` | 本站 GoPay transport |
+| GoPay | `gopay_channel.py` | `gopay_core.py`、`gopay_*` flow/Stripe/Checkout 副本、`providers/gopay.py` | `gopay_transport.py` |
 | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
 | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
 
@@ -19,7 +19,7 @@
 
 GCash 的建单、税费、确认、GCash 页面、二维码、回调监控和重试都留在
 `payment_link_extractor/mk_gcash_open_source/`，不复用 PayPal 的 provider 或
-checkout transport。GoPay 只切换 provider 配置和结果字段，不加载独立上游源码。
+checkout transport。GoPay 使用从 PayPal 核心复制出的独立模块，不加载独立上游源码；PayPal 的核心、flow 和 transport 不被 GoPay 特有优化覆盖。
 
 ## 代理规范
 

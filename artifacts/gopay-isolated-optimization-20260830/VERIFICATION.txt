@@ -1,0 +1,54 @@
+GoPay isolated PayPal-core-copy optimization verification
+==========================================================
+
+Changed branch/field:
+payment_link_extractor/gopay_channel.py -> payment_link_extractor.gopay_core
+GoPay transport -> gopay_transport.GoPayTransportFactory
+GoPay result field -> gopay_url
+PayPal core -> unchanged paypal_channel.py
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-isolated-optimization-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-isolated-optimization-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-isolated-optimization-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-isolated-optimization-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: clean shared-core baseline commit 6ca2947 before this isolation change
+Literal output/result:
+........................................................................ [ 42%]
+........................................................................ [ 85%]
+.........................                                                [100%]
+169 passed in 1.52s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: GoPay isolated core copy with 78c1357 and later optimizations
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 81%]
+.................................                                        [100%]
+177 passed in 1.51s
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-isolated-optimization-20260830/ROLLBACK.sh && artifacts/gopay-isolated-optimization-20260830/ROLLBACK.sh artifacts-local/gopay-isolated-rollback-test.py artifacts/gopay-isolated-optimization-20260830/MODIFIED_FILE"
+Input: temporary copy initially containing PayPal core, restored from MODIFIED_FILE
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-isolated-rollback-test.py
+BEFORE_SHA256=814ae2747657f161403027190c46b133e32bd83c8e366a14a4fd63c8dcab67ef
+RESTORED_SHA256=a9fef6b68781b0f9db289050ca9634a8c1f9d7ffa7921f2a7f1625e9d274aa71
+EXPECTED_SHA256=a9fef6b68781b0f9db289050ca9634a8c1f9d7ffa7921f2a7f1625e9d274aa71
+RESTORED_STATUS=PASS
+Exit status: 0
+
+MODIFIED_FILE SHA-256:
+a9fef6b68781b0f9db289050ca9634a8c1f9d7ffa7921f2a7f1625e9d274aa71
+
+PayPal core SHA-1 blob:
+8b2191fceceb103014682b822658051c8dfab4e6
+
+Restored behavior/status:
+GoPay runs through isolated gopay_* modules and PayPal continues through paypal_channel.py. The dedicated Go source slice is not restored.

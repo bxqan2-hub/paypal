@@ -1,0 +1,27 @@
+GoPay isolated optimization reapplication
+==========================================
+
+Baseline commit: 6ca2947 (PayPal shared-core rollback)
+Optimization reference range: 50c3a45..78c1357 plus later GoPay amount gate commits
+
+Changed branch/field:
+- payment_link_extractor/gopay_channel.py -> payment_link_extractor.gopay_core
+- GoPay uses gopay_checkout.py, gopay_cs_live.py, gopay_oaics.py,
+  gopay_stripe_common.py and gopay_transport.py
+- GoPay result remains gopay_url; PayPal remains paypal_url
+
+Applied optimization groups:
+- structured Checkout failure modes and explicit GoPay retryability
+- nested payment-method collection, dedupe and offline batch validation
+- HAR-matched GoPay locale, client build/version and dynamic telemetry
+- real ChatGPT origin Sentinel injection and fail-closed proof checks
+- authenticated SOCKS5 browser bridge, device-id/cookie synchronization
+- NextAuth cookie chunking and stale-cookie clearing
+- fresh Stripe risk identifiers/time-on-page values
+- strict zero-amount GoPay gate before link output
+
+PayPal isolation:
+- payment_link_extractor/paypal_channel.py SHA-1 blob remains
+  8b2191fceceb103014682b822658051c8dfab4e6
+- shared payment_link_extractor/checkout.py, transport.py, Stripe flow files
+  are unchanged by GoPay-specific protocol edits
