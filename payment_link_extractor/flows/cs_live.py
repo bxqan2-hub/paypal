@@ -262,6 +262,7 @@ def cs_checkout_taxes(
                 flow="chatgpt_checkout",
                 referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
                 log=log,
+                required=normalize_payment_method(config.payment_method) == "gopay",
             ),
         },
         timeout=DEFAULT_TIMEOUT,

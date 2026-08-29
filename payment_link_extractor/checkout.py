@@ -255,6 +255,7 @@ def create_checkout(
                 flow="chatgpt_checkout",
                 referer=referer,
                 log=log,
+                required=payment_method == "gopay",
             )
         )
     response = stage_http_request(

@@ -279,6 +279,7 @@ def openai_checkout_confirm(
                 flow="chatgpt_checkout",
                 referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
                 log=log,
+                required=payment_method == "gopay",
             ),
         },
         timeout=DEFAULT_TIMEOUT,

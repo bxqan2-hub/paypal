@@ -50,6 +50,28 @@ def test_sentinel_default_aliases_use_chatgpt_checkout_and_sync_observer() -> No
     assert all('token("default")' not in call for call in calls)
 
 
+def test_nextauth_session_cookie_is_chunked_under_chromium_limit() -> None:
+    provider = BrowserSentinelProvider.__new__(BrowserSentinelProvider)
+    calls: list[list[str]] = []
+    provider._run = lambda args: calls.append(list(args))
+    value = "x" * 4092
+    provider._set_cookie("__Secure-next-auth.session-token", value)
+    assert [call[2] for call in calls] == [
+        "__Secure-next-auth.session-token.0",
+        "__Secure-next-auth.session-token.1",
+    ]
+    assert len(calls[0][3]) == 3800
+    assert len(calls[1][3]) == 292
+    assert all("--httpOnly" in call and "--secure" in call for call in calls)
+
+
+def test_required_sentinel_proof_fails_closed_without_browser_provider() -> None:
+    with pytest.raises(RuntimeError, match="browser Sentinel provider is required"):
+        from payment_link_extractor.transport import openai_sentinel_headers
+
+        openai_sentinel_headers(SimpleNamespace(), flow="chatgpt_checkout", required=True)
+
+
 def test_transport_defaults_match_current_gopay_har_contract(monkeypatch) -> None:
     class Session:
         def __init__(self) -> None:

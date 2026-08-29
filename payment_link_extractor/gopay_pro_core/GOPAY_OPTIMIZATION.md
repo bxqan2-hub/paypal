@@ -9,6 +9,8 @@
 4. The same browser session supplies the short-lived Sentinel token, optional
    session-observer token, deployment attestation, HttpOnly cookies, and
    `oai-did`/`oai-device-id` continuity.
+   NextAuth session values larger than Chromium's 4096-byte cookie limit are
+   written as numbered `__Secure-next-auth.session-token.0`, `.1`, ... chunks.
 5. Checkout responses detect `oaics_` versus `cs_`, merge duplicate method
    lists, and classify retryable versus terminal failures.
 
@@ -31,6 +33,19 @@
 | Captured static Sentinel token | fallback only | Short-lived and not bound to the current browser session |
 | Node/browser shim | diagnostic only | Does not reproduce a real Chromium fingerprint/session |
 | Manual browser handoff | recovery path | Highest fidelity but not suitable for unattended batches |
+
+## Verified live path
+
+With a supplied Web AT, a matching NextAuth session token, and the provided
+Indonesia-routed 1024proxy pool, the optimized flow reached:
+
+```text
+checkout -> checkout_kind:stripe_checkout -> stripe_init -> elements_session
+-> taxes -> payment_confirmation -> redirect_resolution -> completed
+```
+
+The provider proof included a fresh Sentinel token, synchronized device ID,
+and four session-cookie chunks; the task returned a non-empty `gopay_url`.
 
 Use `validation.validate_checkout_batch` for sanitized offline comparison of
 successful `oaics_`/`cs_` samples and differentiated failure modes.
