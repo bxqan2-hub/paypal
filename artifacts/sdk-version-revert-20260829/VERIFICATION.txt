@@ -1,0 +1,26 @@
+BRANCH: payment_link_extractor/config.py
+FIELD: STRIPE_RUNTIME_VERSION / OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION
+MODIFIED_FILE: artifacts/sdk-version-revert-20260829/MODIFIED_FILE
+DIFF_FILE: artifacts/sdk-version-revert-20260829/DIFF_FILE
+VERIFICATION: artifacts/sdk-version-revert-20260829/VERIFICATION.txt
+ROLLBACK: artifacts/sdk-version-revert-20260829/ROLLBACK.sh
+
+BASELINE command:
+  .venv/Scripts/python.exe -c "import subprocess; text=subprocess.check_output(['git','show','bca6458:payment_link_extractor/config.py'], text=True); print('SDK_BASELINE=0810' if 'STRIPE_RUNTIME_VERSION = \"0810\"' in text else 'SDK_BASELINE_MISMATCH')"
+  input: Git commit bca6458
+  literal output: SDK_BASELINE=0810
+  exit status: 0
+
+MODIFIED command:
+  .venv/Scripts/python.exe -m pytest -q tests/test_sdk_version.py
+  input: restored PayPal/GoPay SDK constants
+  literal output: 1 passed
+  exit status: 0
+  result: STRIPE_RUNTIME_VERSION=692f102a8f and OPENAI_CUSTOM_STRIPE_RUNTIME_VERSION=692f102a8f.
+
+ROLLBACK command:
+  bash artifacts/sdk-version-revert-20260829/ROLLBACK.sh "$(pwd)" artifacts-local/sdk-version-revert-20260829/config.py
+  input: Git pre-revert commit bca6458
+  literal output: ROLLBACK_OK target=artifacts-local/sdk-version-revert-20260829/config.py restored_commit=bca6458 sdk_version=0810 status=0
+  exit status: 0
+  restored behavior/status: rollback fixture restores SDK version 0810; working tree remains reverted to 692f102a8f.
