@@ -1,0 +1,24 @@
+GoPay CDP capture result
+========================
+
+Capture command:
+tools/har_capture_attach.py --cdp-port 61375 --output raw_capture.har
+
+Raw capture:
+- path=artifacts/gopay-cdp-capture-20260830/raw_capture.har
+- size=13474625
+- sha256=6D1F47CC1CFC4F739D66A3A5FD41EE9CE011DA6C6EA524D1AF54A99382E75F45
+- entries=345
+
+Observed:
+- CDP page target captured 345 entries.
+- ChatGPT Checkout/taxes/snapshot/approve request and response bodies were present.
+- Sentinel req body flow values were chatgpt_checkout x2 and checkout_session_approval x2.
+- Midtrans transaction returned gross_amount=349000, currency=IDR, recommended=gopay, enabled=[gopay,qris].
+
+Gap:
+- api.stripe.com entries=0 in this page-target capture.
+- Stripe init/elements/tax_region/confirm bodies were not captured.
+- Next capture must use browser-level Target.setAutoAttach(flatten=true) for iframe/OOPIF targets.
+
+No raw token, cookie, session, customer, order, or redirect nonce is included here.

@@ -1,0 +1,65 @@
+GoPay CDP capture verification
+==============================
+
+Changed branch/field:
+127.0.0.1:61375 page-target CDP capture -> redacted GoPay protocol report
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-capture-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-capture-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-capture-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-capture-20260830\ROLLBACK.sh
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-cdp-capture-20260830\REDACTED_CAPTURE_ANALYSIS.md
+
+BASELINE command:
+.\.venv\Scripts\python.exe tools\har_analyze.py artifacts\gopay-cdp-capture-20260830\raw_capture.har --format markdown --host chatgpt.com --limit 200
+Input: raw CDP HAR after manual GoPay operation
+Literal output/result: SHA-256=6D1F47CC1CFC4F739D66A3A5FD41EE9CE011DA6C6EA524D1AF54A99382E75F45; Entries=345 (selected 36); Client build=10012890; proof lengths=6125,6186
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe tools\har_analyze.py artifacts\gopay-cdp-capture-20260830\raw_capture.har --format json --contains checkout --limit 100
+Input: same raw CDP HAR analyzed for request/response bodies
+Literal output/result: Checkout request keys=4; taxes response amount_total=34900000, payment_method_types=[card,gopay]; approve response result=approved; snapshot responses=204 with empty bodies
+Exit status: 0
+
+COMPLETENESS command:
+.\.venv\Scripts\python.exe -c "from tools.har_capture import audit_har_completeness; import json; from pathlib import Path; print(json.dumps(audit_har_completeness(json.loads(Path('artifacts/gopay-cdp-capture-20260830/raw_capture.har').read_text(encoding='utf-8'))), ensure_ascii=False))"
+Input: raw CDP HAR
+Literal output/result: channel=gopay; criticalComplete=False; gopay_stripe_init/element/confirm=entry_missing; checkout/taxes/approve requestBody=True and responseBody=True
+Exit status: 0
+
+FULL_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: repository with CDP attach helper and report tests
+Literal output/result:
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+..................................                                       [100%]
+178 passed in 1.64s
+Exit status: 0
+
+ATTACH_HELPER command:
+.\.venv\Scripts\python.exe -m py_compile tools\har_capture_attach.py
+Literal output/result: no output; syntax check passed
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "chmod +x artifacts/gopay-cdp-capture-20260830/ROLLBACK.sh && artifacts/gopay-cdp-capture-20260830/ROLLBACK.sh artifacts-local/gopay-cdp-capture-rollback-test.md artifacts/gopay-cdp-capture-20260830/MODIFIED_FILE"
+Input: another temporary copy after intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=artifacts-local/gopay-cdp-capture-rollback-test.md
+BEFORE_SHA256=51c2d9271a87aa8150c623f1867a07b50c0126290e72d30de13ae827866a028b
+RESTORED_SHA256=1d2e3e11fb1479f230640136a0fc25480465797570b1d08c0194201d1e350b59
+EXPECTED_SHA256=1d2e3e11fb1479f230640136a0fc25480465797570b1d08c0194201d1e350b59
+RESTORED_STATUS=PASS
+Exit status: 0
+
+MODIFIED_FILE SHA-256:
+1d2e3e11fb1479f230640136a0fc25480465797570b1d08c0194201d1e350b59
+
+Restored behavior/status:
+ChatGPT and Midtrans bodies are retained only in the local ignored raw HAR. The committed report is redacted; Stripe API target coverage remains the next capture objective.
+
+MODIFIED_FILE SHA-256:
+1d2e3e11fb1479f230640136a0fc25480465797570b1d08c0194201d1e350b59

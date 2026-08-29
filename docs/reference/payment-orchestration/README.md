@@ -9,6 +9,7 @@
 - `半自动支付编排系统_从账号结账到支付结果确认_紧凑版.json`：结构化解析，包含元数据、标题索引、正文块、表格、页眉页脚和 OOXML 检查结果。
 - `README.md`：本索引和当前项目对照说明。
 - `../../2026-08-30_gopay-midtrans-har-analysis-report.md`：两个 `app.midtrans.com*.har` 的脱敏时序、Header、Stripe 表单和 Midtrans 交易对比报告。
+- `../../2026-08-30_gopay-cdp-capture-report.md`：通过 `127.0.0.1:61375` 实际操作采集的 ChatGPT/Midtrans 正文与 Stripe page-target 捕获缺口。
 
 ## 内容摘要
 
