@@ -513,6 +513,8 @@ class BrowserSentinelProvider:
         proxy: str,
         transport_session: Any,
         session_token: str = "",
+        language: str = "en-US",
+        timezone: str = "America/New_York",
         log: Any | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
@@ -522,6 +524,8 @@ class BrowserSentinelProvider:
         self.proxy = str(proxy or "").strip()
         self.transport_session = transport_session
         self.session_token = str(session_token or "").strip()
+        self.language = str(language or "en-US").strip() or "en-US"
+        self.timezone = str(timezone or "America/New_York").strip() or "America/New_York"
         self.log = log
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
@@ -530,8 +534,11 @@ class BrowserSentinelProvider:
         self.locale_script = self.temp_dir / "locale.js"
         self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
         self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
+            "Object.defineProperty(navigator, 'language', {get: () => "
+            + json.dumps(self.language)
+            + "});Object.defineProperty(navigator, 'languages', {get: () => ["
+            + json.dumps(self.language)
+            + ", 'en']});",
             encoding="utf-8",
         )
         self.sentinel_init_script.write_text(
@@ -571,7 +578,7 @@ class BrowserSentinelProvider:
 
     @property
     def enabled(self) -> bool:
-        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
+        mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
         return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
 
     def _base_command(self) -> list[str]:
@@ -602,8 +609,8 @@ class BrowserSentinelProvider:
         output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
         env = dict(os.environ)
         # Chromium uses TZ when constructing the browser fingerprint.  Keep
-        # the browser and the PH checkout locale coherent when supported.
-        env.setdefault("TZ", "Asia/Manila")
+        # Keep the browser and selected checkout locale coherent when supported.
+        env.setdefault("TZ", self.timezone)
         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         status = -1
@@ -732,11 +739,9 @@ class BrowserSentinelProvider:
                 "Authorization": f"Bearer {self.access_token}",
                 "oai-device-id": self.device_id,
                 "oai-session-id": self.session_id,
-                "oai-language": "en-US",
-                # The current browser HAR (m.gcash.com111.har) uses the
-                # deployed checkout build below.  Keep both values overridable
-                # because the web client rotates them independently of the
-                # payment flow.
+                "oai-language": self.language,
+                # Keep deployed checkout build identifiers overridable because
+                # the web client rotates them independently of payment flow.
                 "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION",
@@ -881,8 +886,8 @@ class DefaultTransportFactory:
         account = account_id(config.access_token)
         if account:
             session.headers["chatgpt-account-id"] = account
-        # Keep these values on the session for the GCash Sentinel adapter and
-        # for diagnostics without putting identifiers into request URLs/logs.
+        # Keep these values on the session for the browser Sentinel adapter
+        # and diagnostics without putting identifiers into request URLs/logs.
         session.openai_device_id = device_id
         session.openai_did = device_id
         session.openai_proxy = proxy
@@ -933,8 +938,8 @@ class DefaultTransportFactory:
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         normalized_proxy = normalize_proxy_url(proxy)
-        if normalize_payment_method(config.payment_method) == "gcash":
-            mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
+        if normalize_payment_method(config.payment_method) in {"paypal", "gopay"}:
+            mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
             if mode not in {"0", "false", "off", "disabled", "no"}:
                 session.openai_sentinel_provider = BrowserSentinelProvider(
                     access_token=config.access_token,
@@ -944,6 +949,8 @@ class DefaultTransportFactory:
                     proxy=normalized_proxy,
                     transport_session=session,
                     session_token=str(getattr(config, "session_token", "") or ""),
+                    language=country_locale(config),
+                    timezone=country_timezone(config),
                 )
         session.proxies = (
             {"http": normalized_proxy, "https": normalized_proxy}
@@ -970,3 +977,9 @@ def country_locale(config: ExtractionConfig) -> str:
     from .config import country_config
 
     return country_config(config.country)[2]
+
+
+def country_timezone(config: ExtractionConfig) -> str:
+    from .config import country_config
+
+    return country_config(config.country)[3]

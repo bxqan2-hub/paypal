@@ -1,0 +1,32 @@
+BRANCH: payment_link_extractor/transport.py
+FIELD: BrowserSentinelProvider routing for PayPal/GoPay only
+MODIFIED_FILE: artifacts/paypal-gopay-browser-sdk-20260829/MODIFIED_FILE
+DIFF_FILE: artifacts/paypal-gopay-browser-sdk-20260829/DIFF_FILE
+VERIFICATION: artifacts/paypal-gopay-browser-sdk-20260829/VERIFICATION.txt
+ROLLBACK: artifacts/paypal-gopay-browser-sdk-20260829/ROLLBACK.sh
+
+BASELINE command:
+  git show 5a63e90:payment_link_extractor/transport.py > artifacts-local/paypal-gopay-browser-sdk-20260829/baseline_transport.py; .venv/Scripts/python.exe -m py_compile artifacts-local/paypal-gopay-browser-sdk-20260829/baseline_transport.py
+  input: pre-routing transport.py at Git commit 5a63e90
+  literal output/result: baseline transport compiled successfully; exit status 0
+  exit status: 0
+
+MODIFIED command:
+  .venv/Scripts/python.exe -m pytest -q
+  input: repository test suite
+  literal output: 165 passed in 1.53s
+  exit status: 0
+  result: PayPal/GoPay receive browser SDK injection; GCash does not instantiate BrowserSentinelProvider.
+
+BROWSER_SMOKE command:
+  agent-browser --session codex-sentinel-test --namespace codex-sentinel-test --init-script artifacts-local/sentinel-init-check.js open about:blank; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test wait 500; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test eval "JSON.stringify({injected:!!window.SentinelSDK,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''})"; agent-browser --session codex-sentinel-test --namespace codex-sentinel-test close
+  input: generated init script in real Chromium
+  literal output/result: {"injected":true,"proto2":"function","error":""}; browser closed; exit status 0
+  exit status: 0
+
+ROLLBACK command:
+  bash artifacts/paypal-gopay-browser-sdk-20260829/ROLLBACK.sh "$(pwd)" artifacts-local/paypal-gopay-browser-sdk-20260829/transport.py
+  input: current transport.py copied to rollback target
+  literal output: ROLLBACK_OK target=artifacts-local/paypal-gopay-browser-sdk-20260829/transport.py restored_commit=5a63e90 routing=gcash-provider status=0
+  exit status: 0
+  restored behavior/status: rollback target restores previous GCash provider routing; working tree remains on PayPal/GoPay routing.
