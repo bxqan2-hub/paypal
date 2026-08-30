@@ -1,0 +1,466 @@
+diff --git a/docs/2026-08-31_gopay-three-at-continuation-report.md b/docs/2026-08-31_gopay-three-at-continuation-report.md
+new file mode 100644
+index 0000000..df96099
+--- /dev/null
++++ b/docs/2026-08-31_gopay-three-at-continuation-report.md
+@@ -0,0 +1,130 @@
++# GoPay 三账号继续修复与最终验证报告
++
++## 结论
++
++依据用户更正的机会边界，本轮继续使用前次只发生 HTTP 400/422、网络或 Sentinel 超时的账号；只有真正到达最终 `approve=blocked` 后才停止该账号。
++
++三个账号最终都在完整零元 GoPay 链路的 `payment_confirmation` 阶段得到 `approve=blocked`，没有生成 GoPay 长链。每个账号在首次最终 blocked 后立即停止，未再创建 Checkout。此前的 400/422、not_eligible、Sentinel 超时均按用户规则修复后继续。
++
++本轮还获得一份新的、浏览器真实操作成功的完整 GoPay HAR：Checkout、Stripe、approve、redirect 和 Midtrans 全部成功，`approve=approved`。但该成功样本是非零付费链，Checkout 正文没有零元 promo mutation；它携带匹配浏览器的 NextAuth `.0/.1`、291 字符 attestation 和 Cookie 演进。该浏览器登录账号与本轮三个 AT 均不匹配，因此只用于字段/时序分析，没有把其 Cookie 重放到任务账号。
++
++## 新 canonical HAR
++
++- 路径：`artifacts-local/gopay-cdp-capture-20260831-001428.har`
++- SHA-256：`A3E879FF0895859910FEF4A45A40FE97EF72871A820D002B14CE6EC1C3BC004F`
++- Entries：567
++- 完整性：complete，missing=[]
++- Checkout：HTTP 200
++- Stripe confirm：HTTP 200
++- ChatGPT approve：HTTP 200，业务结果 `approved`
++- Midtrans transaction：HTTP 200
++- 浏览器：保留并返回 `https://chatgpt.com/`
++
++该 HAR 的稳定特征：
++
++1. Checkout 正文只有 `entry_point/plan_name/billing_details/checkout_ui_mode`。
++2. 只有一次 `/v1/elements/sessions`。
++3. tax_region 为 `country → line1 → city`，随后与 snapshot/taxes/page GET 交织，再提交 postal/state。
++4. Checkout/approve 不携带 `chatgpt-account-id`。
++5. Sentinel 每个 flow 各观察到两次 req，实际受保护请求使用的 token 仍来自对应真实浏览器上下文。
++6. Checkout 前已有 NextAuth 分片与 attestation；Checkout 页面随后设置 `_account` 并演进 Cookie。
++
++## 账号 1
++
++### 非最终错误
++
++- 代理槽位 1 在不同时间返回 eligible/not_eligible；未建单时继续。
++- 浏览器直接 Checkout 实验返回 422；未到最终 approve，按用户规则继续。
++
++### 修复
++
++- 恢复原 curl_cffi 支付 HTTP 传输。
++- 保留资格 HTTP Cookie → Playwright context 的桥接。
++- 允许显式实验模式使用浏览器 `/backend-api/me` 与 AT user 绑定通过 readiness；默认仍保持严格登录态门禁。
++
++### 最终结果
++
++- 代理槽位 2：eligible。
++- Checkout、Promotion、Stripe init、Elements、taxes、confirm 全部到达。
++- Chrome 151、持久 runtime/profile、精确 SDK、账号绑定均为 true。
++- NextAuth session cookie：缺失。
++- attestation：长度 0。
++- 最终：`approve_blocked`；账号停止。
++
++## 账号 2
++
++### 非最终错误
++
++- 代理槽位 4 的 Checkout 返回 HTTP 400 unusual_activity；未到 approve，继续。
++
++### 修复
++
++- 增加 `OPLL_GOPAY_DEVICE_ATTEMPT_NONCE`：只在 pre-Checkout 重建时轮换 device/profile，单次完整尝试内保持稳定。
++- 按成功 HAR 改写 tax/snapshot/taxes/page GET cadence。
++- 删除额外第二次 Elements GET，仍复用初次 `elements_session_id`。
++
++### 最终结果
++
++- 新 device attempt + 代理槽位 5：eligible。
++- 完整链到达 Stripe confirm。
++- 最终：`approve_blocked`；账号停止。
++- NextAuth session cookie 与 attestation 仍缺失。
++
++## 账号 3
++
++### 非最终错误
++
++- 代理槽位 4 首次 pre-Checkout Sentinel 启动错误，没有 Checkout。
++- 同槽位后续创建 Checkout，在 Elements 后 approval prefetch 超时；未到 final blocked，继续。
++
++### 修复
++
++- GoPay Checkout/approve 不再发送成功 HAR 中不存在的 `chatgpt-account-id`。
++- 使用新的 device attempt 和代理出口重建整链。
++
++### 最终结果
++
++- 代理槽位 5：eligible。
++- 完整链到达 Stripe confirm。
++- 最终：`approve_blocked`；账号停止。
++- NextAuth session cookie 与 attestation 仍缺失。
++
++## 浏览器运行态复用
++
++从用户已登录的实时浏览器 `127.0.0.1:61908` 读取到：
++
++- 7 个认证相关 Cookie。
++- NextAuth 分片数：2。
++- deployment attestation 长度：291。
++- 浏览器会话账号与三个任务 AT 均不匹配。
++
++这些值仅写入 Git 忽略的 runtime 文件；因账号不匹配且项目禁止重放 HAR 请求，本轮没有把它们用于三个账号。最终新增 canary `--browser-state-file` 能在未来从匹配账号的实时浏览器状态文件加载 Cookie/attestation，且只接受认证 Cookie 白名单。
++
++## 最终代码状态
++
++1. NextAuth `.0/.1` 精确分片导入。
++2. 每任务 deployment attestation 导入。
++3. 资格 HTTP cookie jar 与 Playwright context 合并。
++4. device profile 默认按 account ID 稳定；非 final pre-Checkout 重建可用 attempt nonce 轮换。
++5. Checkout/tax cadence 与最新成功 HAR 对齐。
++6. GoPay 请求不发送成功 HAR 中缺失的 account header。
++7. 默认 readiness 仍要求真实 session+attestation；AT-bound 放宽只通过显式环境变量启用。
++8. `gopay_live_canary.py --browser-state-file` 支持匹配账号实时浏览器状态。
++9. 失败的 browser payment fetch 实验未保留在生产传输中。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-501：新 HAR approve=approved 且 Midtrans 完整 | 浏览器真实非零 GoPay 链可稳定成功 | canonical HAR |
++| E-502：三个零元账号在不同修复后都 final blocked | billing/Elements/device/account-header 不是充分根因 | live canary |
++| E-503：三个 blocked 上下文均无 NextAuth、attestation=0 | 缺失登录浏览器状态仍是稳定共同差异 | Playwright safe context |
++| E-504：成功 HAR 有 `.0/.1`、attestation 291、`_account` 演进 | 成功链依赖匹配的登录浏览器会话 | session importer |
++| E-505：实时登录浏览器账号与任务 AT 不匹配 | 不应跨账号复用或重放 Cookie | runtime session scan |
++| E-506：AT2 新 device/新代理仍 blocked | 设备/出口轮换只能修 unusual_activity，不能修 final block | attempt nonce |
++
++## 最终判断
++
++三个任务账号现已全部出现最终 `approve=blocked`，按用户定义已失去继续提链资格。本轮没有成功零元链接。继续对这三个账号重试不会产生新的有效证据；下一轮必须使用新 eligible AT，并在 Checkout 前取得**同一账号**实时浏览器的 NextAuth 分片与 attestation，再使用现有 `--browser-state-file` 入口验证。
++
++本报告不包含 AT、Cookie 值、代理凭据、账号标识、Checkout ID、订单 ID 或 redirect nonce。
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index ef5bb60..b616095 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -4,0 +5 @@ import hashlib
++import os
+@@ -349 +350,11 @@ def create_checkout(
+-        if not has_session_token or attestation_length < 64:
++        provider = getattr(chatgpt, "openai_sentinel_provider", None)
++        allow_at_bound_browser = (
++            os.getenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", "false")
++            .strip()
++            .lower()
++            in {"1", "true", "on", "enabled", "yes"}
++            and bool(getattr(provider, "_account_binding_verified", False))
++        )
++        if (
++            not has_session_token or attestation_length < 64
++        ) and not allow_at_bound_browser:
+@@ -373,0 +385 @@ def create_checkout(
++                "allow_at_bound_browser": allow_at_bound_browser,
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 31a78d7..72a6e86 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -310,0 +311,25 @@ def cs_update_tax_region(
++def cs_update_tax_region_stages(
++    stripe: Any,
++    checkout: CheckoutData,
++    ctx: StripeContext,
++    billing: dict[str, str],
++    log: Any | None,
++    stages: tuple[tuple[str, ...], ...],
++    accumulated: dict[str, str] | None = None,
++) -> tuple[dict[str, Any], dict[str, str]]:
++    """Apply selected cumulative tax-region stages in observed HAR order."""
++    current = dict(accumulated or {})
++    payload: dict[str, Any] = {}
++    for fields in stages:
++        payload, current = _cs_update_tax_region_fields(
++            stripe,
++            checkout,
++            ctx,
++            billing,
++            log,
++            fields,
++            current,
++        )
++    return payload, current
++
++
+@@ -792,12 +817,4 @@ def extract_cs_live_provider(
+-    cs_update_tax_region(stripe, checkout, ctx, billing, log)
+-    for _round in range(2):
+-        cs_snapshot_billing(chatgpt, checkout, billing, log)
+-        cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+-        cs_checkout_page_refresh(stripe, checkout, ctx, log)
+-        require_gopay_fail_fast_amount(
+-            ctx.get("checkout_amount"),
+-            "taxes refresh",
+-            enabled=bool(config.gopay_zero_trial_validation),
+-        )
+-    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+-    refreshed_elements = cs_elements_session(
++    # Both successful HARs use one Elements session, then build tax_region as
++    # country -> line1 -> city before interleaving snapshot/taxes/page GET.
++    accumulated: dict[str, str] = {}
++    _, accumulated = cs_update_tax_region_stages(
+@@ -806 +822,0 @@ def extract_cs_live_provider(
+-        init_payload,
+@@ -807,0 +824 @@ def extract_cs_live_provider(
++        billing,
+@@ -809 +826,2 @@ def extract_cs_live_provider(
+-        reuse_session=True,
++        (("country",), ("line1",), ("city",)),
++        accumulated,
+@@ -811,6 +829,36 @@ def extract_cs_live_provider(
+-    if refreshed_elements:
+-        ensure_payment_method_offered(
+-            refreshed_elements,
+-            payment_method,
+-            "cs_live forced-reuse Elements session",
+-        )
++    cs_snapshot_billing(chatgpt, checkout, billing, log)
++    # The browser-targets HAR commits state before the second snapshot.
++    _, accumulated = cs_update_tax_region_stages(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        (("state",),),
++        accumulated,
++    )
++    cs_snapshot_billing(chatgpt, checkout, billing, log)
++    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    cs_checkout_page_refresh(stripe, checkout, ctx, log)
++    require_gopay_fail_fast_amount(
++        ctx.get("checkout_amount"),
++        "taxes refresh 1",
++        enabled=bool(config.gopay_zero_trial_validation),
++    )
++    _, accumulated = cs_update_tax_region_stages(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        (("postal_code", "state"),),
++        accumulated,
++    )
++    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    cs_checkout_page_refresh(stripe, checkout, ctx, log)
++    require_gopay_fail_fast_amount(
++        ctx.get("checkout_amount"),
++        "taxes refresh 2",
++        enabled=bool(config.gopay_zero_trial_validation),
++    )
++    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 34525a7..68c8ad4 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -1570,0 +1571,6 @@ class DefaultTransportFactory:
++        device_attempt_nonce = os.getenv(
++            "OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", ""
++        ).strip()
++        device_seed = stable_account_id or config.access_token
++        if payment_method == "gopay" and device_attempt_nonce:
++            device_seed += ":attempt:" + device_attempt_nonce
+@@ -1575 +1581 @@ class DefaultTransportFactory:
+-                    f"gopay-device:{stable_account_id or config.access_token}",
++                    f"gopay-device:{device_seed}",
+@@ -1645 +1651 @@ class DefaultTransportFactory:
+-        if account:
++        if account and not is_gopay:
+diff --git a/tests/test_gopay_browser_session_material.py b/tests/test_gopay_browser_session_material.py
+index bf4bdb5..ef0c84f 100644
+--- a/tests/test_gopay_browser_session_material.py
++++ b/tests/test_gopay_browser_session_material.py
+@@ -105,0 +106,30 @@ def test_device_profile_is_stable_across_refreshed_at_for_same_account(
++def test_device_attempt_nonce_rotates_profile_for_precheckout_rebuild(
++    monkeypatch,
++) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setattr(gopay_transport, "new_session", Session)
++    token = _token("account-same", "user-same", "signature")
++    config = ExtractionConfig(
++        access_token=token,
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++
++    def current() -> str:
++        return gopay_transport.GoPayTransportFactory().chatgpt(
++            config, config.checkout_proxy
++        ).headers["oai-device-id"]
++
++    monkeypatch.setenv("OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", "attempt-one")
++    first = current()
++    assert current() == first
++    monkeypatch.setenv("OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", "attempt-two")
++    assert current() != first
++
++
+@@ -116,0 +147,43 @@ def test_checkout_failure_context_contains_only_shape() -> None:
++
++
++def test_explicit_at_bound_browser_mode_can_pass_readiness(monkeypatch) -> None:
++    class Provider:
++        _account_binding_verified = True
++
++        def headers(self, _flow, **_kwargs):
++            return {
++                "OpenAI-Sentinel-Token": "proof-fixture",
++                "oai-device-id": "device-fixture",
++            }
++
++    class Response:
++        status_code = 200
++        text = '{"checkout_session_id":"cs_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"checkout_session_id": "cs_fixture"}
++
++    session = SimpleNamespace(openai_sentinel_provider=Provider(), headers={})
++    monkeypatch.setenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", "true")
++    monkeypatch.setattr(
++        gopay_checkout,
++        "stage_http_request",
++        lambda *_args, **_kwargs: Response(),
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    committed: list[bool] = []
++    checkout = gopay_checkout.create_checkout(
++        config,
++        session,
++        None,
++        commit_callback=lambda: committed.append(True),
++    )
++    assert checkout["session_kind"] == "stripe_checkout"
++    assert committed == [True]
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 4bfdba5..79f19e7 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -77,0 +78 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
++    assert "chatgpt-account-id" not in session.headers
+@@ -1400 +1401,2 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-        "tax_region:city,postal_code",
++        "tax_region:city",
++        "snapshot",
+@@ -1405 +1407 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-        "snapshot",
++        "tax_region:postal_code,state",
+@@ -1409 +1411 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-    assert elements_reuse == [False, True]
++    assert elements_reuse == [False]
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+index 5e8f57c..06d40d1 100644
+--- a/tests/test_gopay_live_canary.py
++++ b/tests/test_gopay_live_canary.py
+@@ -92,0 +93,31 @@ def test_canary_loader_parses_jsonl_before_matching_token(tmp_path: Path) -> Non
++
++
++def test_canary_loads_runtime_browser_state_without_exposing_values(
++    tmp_path: Path,
++) -> None:
++    state = tmp_path / "browser-state.json"
++    state.write_text(
++        json.dumps(
++            {
++                "cookies": [
++                    {
++                        "name": "__Secure-next-auth.session-token.0",
++                        "value": "chunk-zero",
++                    },
++                    {
++                        "name": "__Secure-next-auth.session-token.1",
++                        "value": "chunk-one",
++                    },
++                    {"name": "__cf_bm", "value": "must-be-ignored"},
++                ],
++                "oai-web-deployment-attestation": "a" * 291,
++            }
++        ),
++        encoding="utf-8",
++    )
++    cookies, attestation = MODULE.load_browser_state(state)
++    assert cookies == (
++        ("__Secure-next-auth.session-token.0", "chunk-zero"),
++        ("__Secure-next-auth.session-token.1", "chunk-one"),
++    )
++    assert attestation == "a" * 291
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+index 1ffe71f..081ce37 100644
+--- a/tools/gopay_live_canary.py
++++ b/tools/gopay_live_canary.py
+@@ -23,0 +24,7 @@ PROXY_RE = re.compile(
++AUTH_COOKIE_NAMES = {
++    "__Host-next-auth.csrf-token",
++    "__Secure-next-auth.callback-url",
++    "__Secure-oai-is",
++    "oai-client-auth-info",
++    "oai-client-session-epoch",
++}
+@@ -68,0 +76,33 @@ def load_rollout_proxies(path: Path) -> list[str]:
++def load_browser_state(path: Path | None) -> tuple[tuple[tuple[str, str], ...], str]:
++    if path is None:
++        return (), ""
++    payload = json.loads(path.read_text(encoding="utf-8-sig"))
++    if not isinstance(payload, dict):
++        raise ValueError("browser state must be a JSON object")
++    selected: dict[str, str] = {}
++    for item in payload.get("cookies") or []:
++        if not isinstance(item, dict):
++            continue
++        name = str(item.get("name") or "").strip()
++        value = str(item.get("value") or "").strip()
++        if (
++            name.startswith("__Secure-next-auth.session-token")
++            or name in AUTH_COOKIE_NAMES
++        ) and value:
++            selected[name] = value
++    attestation = str(
++        payload.get("oai-web-deployment-attestation")
++        or payload.get("gopay_deployment_attestation")
++        or ""
++    ).strip()
++    cookies = tuple(sorted(selected.items()))
++    if not any(
++        name.startswith("__Secure-next-auth.session-token")
++        for name, _value in cookies
++    ):
++        raise ValueError("browser state is missing NextAuth session cookies")
++    if len(attestation) < 64:
++        raise ValueError("browser state is missing deployment attestation")
++    return cookies, attestation
++
++
+@@ -125,0 +166,5 @@ def main() -> int:
++    parser.add_argument(
++        "--browser-state-file",
++        type=Path,
++        help="runtime-only JSON containing browser auth cookies and attestation",
++    )
+@@ -135,0 +181,7 @@ def main() -> int:
++    try:
++        browser_cookies, browser_attestation = load_browser_state(
++            args.browser_state_file
++        )
++    except (OSError, ValueError, json.JSONDecodeError):
++        print(json.dumps({"status": "input_error", "browser_state": False}))
++        return 2
+@@ -160,0 +213,2 @@ def main() -> int:
++            gopay_session_cookies=browser_cookies,
++            gopay_deployment_attestation=browser_attestation,

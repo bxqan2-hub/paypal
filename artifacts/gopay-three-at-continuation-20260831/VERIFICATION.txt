@@ -1,0 +1,149 @@
+GoPay 三账号继续修复验证
+========================
+
+Changed branch/fields:
+- Git branch: main
+- Baseline commit: f2d97f77dc01aae267a54eb3e8efd834582d407b
+- Explicit AT-bound browser readiness experiment remains default-off.
+- Successful-HAR cadence: one Elements request; country/line1/city then snapshot/state/snapshot/taxes/page, final postal/state/taxes/page.
+- Pre-Checkout device rebuild: OPLL_GOPAY_DEVICE_ATTEMPT_NONCE.
+- GoPay account header: omitted to match successful HAR.
+- Canary browser state: --browser-state-file loads runtime-only auth Cookie whitelist and per-session attestation.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-three-at-continuation-20260831\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-three-at-continuation-20260831\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-three-at-continuation-20260831\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-three-at-continuation-20260831\ROLLBACK.sh
+
+Original hashes:
+- gopay_checkout.py: 1d7c1196f8fd1faf7309ca121a3fb8c30040e5e710ac1f1b54e8a59e570924e9
+- gopay_cs_live.py: 7364326aa3766f25a47818ec9b7631fe2da6cf964610c97f9c113a8cf6f3c34e
+- gopay_transport.py: 70ab839fc829a647f543496e61974d584fe880776dffd5106764182e4760e4bd
+- tools/gopay_live_canary.py: 358beabd72661dab6bc95e0acf61cdc95dd866a5e8698dd8f6b2bc0e5cd254bc
+- tests/test_gopay_browser_session_material.py: d098f167f16a4b81034fd2641b8b3382b9cffdfddd9c6ca4e387de41ee790865
+- tests/test_gopay_isolated_optimization.py: cf75c833f38581b33ac7ab93d17b2359fb52587fe75a5ee6ecec450100713568
+- tests/test_gopay_live_canary.py: 6165fb81023403e9e62938aee6a4d15cef11e6e32c37c78c91c458afe44363c7
+
+Modified hashes:
+- gopay_checkout.py: eb2f907de4c314edf31f7112fb69669a6540c1ae4bdeed2dee431aca291e05fa
+- gopay_cs_live.py: f435be9f43e20180f95fd863dae9cf8e61a88de26faa50ab429601696d7aefa8
+- gopay_transport.py: befbf36dd25b7d739d6b1920f3131cb98b32aa872ade664754ac43db85cb1130
+- tools/gopay_live_canary.py: 42756983861f4eb9440f6b745fb7e89c77bc45aea8de88b476bd78b7c0a2396c
+- tests/test_gopay_browser_session_material.py: 41e04c00cdcbb10900d997bf29a2f475fadc7bc9ee79cebe653d087f8b2cb24e
+- tests/test_gopay_isolated_optimization.py: cf7f10ca331e86d03602e64d448297d1897a341a932fb93d7143f7094c0fd37c
+- tests/test_gopay_live_canary.py: 52fe5ddb44a97750ea6ee289db97ed39d2ed7a70a87baeb7b009e2b4d58a0f91
+- DIFF_FILE: 35a795f9ccffa7ea9e5d7ca2259a65deeb680d813e23fa5fb508dc7c2b3de9d6
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: f2d97f7 session-material implementation before continuation optimizations.
+Literal output/result:
+........................................................................ [ 29%]
+........................................................................ [ 58%]
+........................................................................ [ 87%]
+...............................                                          [100%]
+247 passed in 1.70s
+STATE_POST_COMMIT_FULL_EXIT=0
+Exit status: 0
+
+NEW CANONICAL CAPTURE:
+COMMAND=.\.venv\Scripts\python.exe tools\playwright_capture_session.py capture --cdp-port 61908 --channel gopay --return-url https://chatgpt.com/ --output artifacts-local\gopay-cdp-capture-20260831-001428.har
+Input: logged-in browser normal GoPay checkout.
+Literal output/result:
+CAPTURE_ENTRIES=567
+CAPTURE_SHA256=A3E879FF0895859910FEF4A45A40FE97EF72871A820D002B14CE6EC1C3BC004F
+CAPTURE_COMPLETENESS=complete
+CAPTURE_MISSING=[]
+CAPTURE_BROWSER_PRESERVED=1
+CAPTURE_RETURNED_MAIN=https://chatgpt.com/
+CAPTURE_NEXT_CYCLE_READY=1
+Exit status: 0
+Observed result: Checkout 200, Stripe confirm 200, ChatGPT approve approved, Midtrans transaction 200.
+
+LIVE ACCOUNT 1 CONTINUATION:
+- proxy slot 1 not_eligible; proxy slot 2 eligible.
+- one Checkout; full chain reached payment_confirmation.
+- Chrome 151, persistent runtime/profile, account binding true, SDK SHA exact.
+- NextAuth session cookie absent; attestation length 0.
+- final result approve_blocked; canary exit 20; no further account-1 retry.
+
+FIRST OPTIMIZATION:
+- HAR tax/snapshot/page cadence alignment.
+- Removed second Elements GET while retaining initial elements_session_id.
+
+LIVE ACCOUNT 2 CONTINUATION:
+- proxy slot 4 eligible but Checkout returned HTTP 400 unusual_activity; not a final block.
+- new device attempt and proxy slot 5 then completed Checkout through Stripe confirm.
+- final result approve_blocked; canary exit 20; no further account-2 retry.
+
+SECOND OPTIMIZATION:
+- Added OPLL_GOPAY_DEVICE_ATTEMPT_NONCE for non-final pre-Checkout rebuild.
+- Removed GoPay chatgpt-account-id header to match successful HAR.
+
+LIVE ACCOUNT 3 CONTINUATION:
+- proxy slot 4 eligible; first pre-Checkout Sentinel startup error did not send Checkout.
+- second attempt created Checkout but approval prefetch timed out after Elements; no final block.
+- new device attempt and proxy slot 5 completed full chain through Stripe confirm.
+- final result approve_blocked; canary exit 20; no further account-3 retry.
+
+RUNTIME BROWSER STATE:
+- live CDP browser exposed 7 auth-related cookies, 2 NextAuth chunks and attestation length 291.
+- browser session account did not match any of the three task token slots.
+- state was not replayed against task accounts.
+- --browser-state-file support was added for future matching-account runtime input.
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: continuation code plus current complete-capture workflow.
+Literal output/result:
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+.....................................                                    [100%]
+253 passed in 1.66s
+CONTINUATION_FULL_EXIT=0
+Exit status: 0
+
+MODIFIED TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_browser_session_material.py tests\test_gopay_isolated_optimization.py tests\test_gopay_live_canary.py
+Literal output/result:
+.......................................................                  [100%]
+55 passed in 0.23s
+CONTINUATION_TARGET_EXIT=0
+Exit status: 0
+
+CHANNEL ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Literal output/result:
+........................                                                 [100%]
+CONTINUATION_ISOLATION_EXIT=0
+Exit status: 0
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISMATCH_COUNT=0
+GCASH_EXTRA_NONCACHE_COUNT=0
+GCASH_BYTE_EQUAL=True
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-three-at-continuation-20260831/ROLLBACK.sh' 'C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-continuation-rollback-test-20260831-002646' 'C:/Users/Administrator/Desktop/提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to payment_link_extractor/gopay_transport.py.
+Literal output/result:
+ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-continuation-rollback-test-20260831-002646
+RESTORED_TRACKED_FILES=7
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+RESTORED_SHA256=70ab839fc829a647f543496e61974d584fe880776dffd5106764182e4760e4bd
+EXPECTED_SHA256=70ab839fc829a647f543496e61974d584fe880776dffd5106764182e4760e4bd
+HASH_MATCH=True
+CONTINUATION_ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- Independent rollback restored all seven tracked files to f2d97f7 and removed the continuation report.
+- Repository and MODIFIED_FILE remain on continuation implementation.
+- Three account final blocked results are evidence only and no credentials are present in artifacts.
+- PayPal and byte-identical 22-file GCash upstream remain unchanged.
