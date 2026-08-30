@@ -96,11 +96,6 @@ def load_browser_state(path: Path | None) -> tuple[tuple[tuple[str, str], ...], 
         or ""
     ).strip()
     cookies = tuple(sorted(selected.items()))
-    if not any(
-        name.startswith("__Secure-next-auth.session-token")
-        for name, _value in cookies
-    ):
-        raise ValueError("browser state is missing NextAuth session cookies")
     if len(attestation) < 64:
         raise ValueError("browser state is missing deployment attestation")
     return cookies, attestation

@@ -121,3 +121,19 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
         ("__Secure-next-auth.session-token.1", "chunk-one"),
     )
     assert attestation == "a" * 291
+
+
+def test_canary_accepts_attestation_only_runtime_state(tmp_path: Path) -> None:
+    state = tmp_path / "attestation-only.json"
+    state.write_text(
+        json.dumps(
+            {
+                "cookies": [],
+                "oai-web-deployment-attestation": "a" * 291,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cookies, attestation = MODULE.load_browser_state(state)
+    assert cookies == ()
+    assert attestation == "a" * 291
