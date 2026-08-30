@@ -26,6 +26,8 @@
 
 - 当用户说“抓包”“开始抓包”“准备抓包”或“继续抓包”时，先扫描当前浏览器的 `DevToolsActivePort`，确认可用 CDP 端口和页面，再准备记录器；不创建新的浏览器配置，除非用户明确要求。
 - 用户已明确授权维护 Playwright 抓包配置：扫描不到可用 CDP 浏览器时，使用 `tools\playwright_capture_session.py prepare` 自动启动 `data\playwright-capture-profile`；抓包使用其 `capture --channel <渠道>` 入口，连接、profile 准备、保存和脱敏分析均自动执行。
+- 每轮抓包结束后不得关闭浏览器或持久上下文；保存并分析 HAR 后必须把现有页面导航回 `https://chatgpt.com/` 登录后主界面，确认 `CAPTURE_BROWSER_PRESERVED=1`、`CAPTURE_RETURNED_MAIN` 和 `CAPTURE_NEXT_CYCLE_READY=1`，继续复用同一个 profile、登录态和 CDP 会话。
+- 优化任务采用连续闭环：操作一次完整提链流程并实时抓包，分析缺口，实施一轮源码优化和测试，再从登录后主界面启动下一轮同渠道抓包；重复到真实抓包完整性通过、分析没有待修复缺口且回归测试通过为止。
 - GoPay 默认使用浏览器级多目标记录器：
   `C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_capture_browser_attach.py --cdp-port <CDP_PORT> --output artifacts-local\gopay-cdp-capture-<YYYYMMDD-HHMMSS>.har`
   该模式使用 `Target.setAutoAttach(flatten=true)`，覆盖 page/iframe/worker，并默认采用非阻塞响应体采集。

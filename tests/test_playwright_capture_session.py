@@ -37,6 +37,7 @@ def test_capture_parser_and_output() -> None:
     args = build_parser().parse_args(["capture", "--channel", "gopay", "--duration", "2"])
     assert args.channel == "gopay"
     assert args.duration == 2
+    assert args.return_url == "https://chatgpt.com/"
     output = default_output("gopay")
     assert output.parent.name == "playwright-captures"
     assert output.name.startswith("gopay-cdp-capture-")
@@ -47,3 +48,8 @@ def test_prepare_parser_accepts_explicit_profile(tmp_path: Path) -> None:
     args = build_parser().parse_args(["prepare", "--profile-dir", str(tmp_path)])
     assert args.profile_dir == tmp_path
     assert args.cdp_port == 0
+
+
+def test_capture_parser_accepts_explicit_return_url() -> None:
+    args = build_parser().parse_args(["capture", "--return-url", "about:blank"])
+    assert args.return_url == "about:blank"

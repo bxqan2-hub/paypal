@@ -185,6 +185,32 @@ def verify_connection(session: BrowserSession) -> tuple[int, int]:
         return len(browser.contexts), sum(len(context.pages) for context in browser.contexts)
 
 
+def return_to_main(session: BrowserSession, return_url: str) -> str:
+    """Return an attached browser to its signed-in main page without closing it."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(session.endpoint)
+        if not browser.contexts:
+            raise RuntimeError("connected browser has no persistent context")
+        context = browser.contexts[0]
+        pages = list(context.pages)
+        page = next((item for item in pages if "chatgpt.com" in item.url), pages[0] if pages else context.new_page())
+        page.goto(return_url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=5_000)
+        except PlaywrightTimeoutError:
+            pass
+        final_url = page.url
+    if probe_port(session.port, session.profile_dir, timeout=2.0) is None:
+        raise RuntimeError("browser stopped after returning to the main page")
+    print("CAPTURE_BROWSER_PRESERVED=1", flush=True)
+    print(f"CAPTURE_RETURNED_MAIN={final_url}", flush=True)
+    print("CAPTURE_NEXT_CYCLE_READY=1", flush=True)
+    return final_url
+
+
 def ensure_session(args: argparse.Namespace) -> BrowserSession:
     profile = args.profile_dir.resolve() if args.profile_dir else None
     if args.cdp_port:
@@ -229,35 +255,40 @@ def run_capture(args: argparse.Namespace) -> int:
     ]
     if args.duration > 0:
         command.extend(["--duration", str(args.duration)])
-    result = subprocess.run(command, cwd=WORKSPACE, check=False)
-    if result.returncode or not output.is_file():
-        return result.returncode or 2
-    summary = output.with_suffix(".summary.md")
-    result = subprocess.run(
-        [sys.executable, str(WORKSPACE / "tools/har_analyze.py"), str(output), "--output", str(summary)],
-        cwd=WORKSPACE,
-        check=False,
-    )
-    if result.returncode:
-        return result.returncode
-    print(f"CAPTURE_ANALYSIS={summary}", flush=True)
-    if args.channel == "gopay":
-        channel_summary = output.with_suffix(".gopay.md")
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(WORKSPACE / "tools/har_cdp_gopay_summary.py"),
-                str(output),
-                "--output",
-                str(channel_summary),
-            ],
+    capture = subprocess.run(command, cwd=WORKSPACE, check=False)
+    status = capture.returncode or (0 if output.is_file() else 2)
+    if status == 0:
+        summary = output.with_suffix(".summary.md")
+        analysis = subprocess.run(
+            [sys.executable, str(WORKSPACE / "tools/har_analyze.py"), str(output), "--output", str(summary)],
             cwd=WORKSPACE,
             check=False,
         )
-        if result.returncode:
-            return result.returncode
-        print(f"CAPTURE_CHANNEL_ANALYSIS={channel_summary}", flush=True)
-    return 0
+        status = analysis.returncode
+        if status == 0:
+            print(f"CAPTURE_ANALYSIS={summary}", flush=True)
+        if status == 0 and args.channel == "gopay":
+            channel_summary = output.with_suffix(".gopay.md")
+            channel_analysis = subprocess.run(
+                [
+                    sys.executable,
+                    str(WORKSPACE / "tools/har_cdp_gopay_summary.py"),
+                    str(output),
+                    "--output",
+                    str(channel_summary),
+                ],
+                cwd=WORKSPACE,
+                check=False,
+            )
+            status = channel_analysis.returncode
+            if status == 0:
+                print(f"CAPTURE_CHANNEL_ANALYSIS={channel_summary}", flush=True)
+    try:
+        return_to_main(session, args.return_url)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"CAPTURE_RETURN_ERROR={exc}", file=sys.stderr)
+        status = status or 2
+    return status
 
 
 def add_connection_options(parser: argparse.ArgumentParser) -> None:
@@ -280,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--channel", choices=("generic", "paypal", "gopay", "gcash"), default="generic")
     capture.add_argument("--output", "-o", type=Path)
     capture.add_argument("--duration", type=float, default=0)
+    capture.add_argument("--return-url", default="https://chatgpt.com/")
     return parser
 
 
