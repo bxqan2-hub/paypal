@@ -1,0 +1,2396 @@
+diff --git a/.env.example b/.env.example
+index d6e7aae..78f29e3 100644
+--- a/.env.example
++++ b/.env.example
+@@ -16,0 +17,6 @@ OPLL_X_OAI_IS_PENDING_UPDATES=
++# GoPay Sentinel uses a real persistent Playwright-controlled Chrome profile.
++OPLL_SENTINEL_BROWSER=auto
++OPLL_SENTINEL_HEADLESS=false
++OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL=chrome
++OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT=true
++OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
+diff --git a/.gitignore b/.gitignore
+index 25a8e6b..a455e8a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -11,0 +12 @@ data/har-capture-profile/
++data/gopay-sentinel-profiles/
+diff --git a/docs/2026-08-30_gopay-playwright-sentinel-four-account-report.md b/docs/2026-08-30_gopay-playwright-sentinel-four-account-report.md
+new file mode 100644
+index 0000000..5b666c6
+--- /dev/null
++++ b/docs/2026-08-30_gopay-playwright-sentinel-four-account-report.md
+@@ -0,0 +1,127 @@
++# GoPay 真 Playwright Sentinel 与四账号验证报告
++
++## 结论
++
++GoPay 已从 Node/DOM 模拟路径切换到 **Playwright 控制的真实 Chrome 151**。同一完整提链尝试现在复用一个守护线程、一个长期事件循环、一个持久 Chromium context 和一个按设备 ID 固定的本地 profile；`chatgpt_checkout` 与 `checkout_session_approval` 的 `init → token` 生命周期也在同一浏览器实例内连续执行。
++
++四个新账号均按“资格代理等于提链代理、每个账号最多创建一次 Checkout”完成验证：三个账号进入最终 `checkout/approve` 后仍返回 `blocked`，第四个账号在创建并更新零元 Checkout 后于 Stripe init 遇到网络中断。没有账号被自动切换代理后创建第二个 Checkout。
++
++真实浏览器证明链已验证成功，但三次 `blocked` 说明 **“改为真 Playwright”是必要条件，不是当前 AT-only 输入下的充分条件**。与两份成功 HAR 比较，剩余共同差异是：成功浏览器带有 NextAuth 登录态分片和 291 字符部署 attestation；本轮 AT-only profile 没有 session-token，attestation 长度为 0。
++
++## 样本与范围
++
++| 样本 | SHA-256 | 用途 |
++|---|---|---|
++| `gopay-cdp-capture-20260830-180333.har` | `14280D53DBC2C9E3AB901BDC0C43A007474211D1B017F06B4CF8ABE1E426A2FE` | 成功 GoPay approval/redirect 基线 |
++| `gopay-cdp-capture-browser-targets-20260830-next.har` | `8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50` | 第二份成功基线与稳定不变量 |
++
++附件包含四个互不重复、可解析的 AT。报告只记录槽位和阶段，不记录 AT、Cookie、代理凭据、Checkout ID 或跳转 nonce。
++
++## 原因分级
++
++### 高概率且已修复
++
++1. **Sentinel 运行环境**：弃用 GoPay 的 Node/jsdom/手工 DOM 证明路径；改为系统 Chrome 151 的真实 V8、DOM、iframe、fetch、Cookie 和 Resource Timing。
++2. **Playwright 生命周期**：所有 Playwright API 只在专用 daemon 线程的持久 `ProactorEventLoop` 上执行，业务 worker 使用 `run_coroutine_threadsafe` 调度，避免 worker thread 内启动/销毁 Playwright。
++3. **设备 profile**：`oai-device-id` 由 AT 稳定派生；Chrome user-data-dir 按设备 ID 固定并被 Git 忽略。
++4. **Sentinel 顺序**：Checkout token 为 `req → zero-body ping → token`；approval 为 `init(req → zero-body ping) → Stripe confirm → token(zero-body ping) → approve`。
++5. **Stripe init**：首包固定 FULL 版本并携带 `custom_checkout_server_updates_1` 与 `custom_checkout_manual_approval_1`。
++6. **双 config ID**：confirm 顶层使用最终 payment-page `config_id`，嵌套 payment-method 使用 `/init` 初始 `config_id`。
++7. **pending receipt**：回送 `x-oai-is-receipt`，不再错误回送 `x-oai-is-update`；ack 后清空。
++8. **账号邮箱**：consumer lookup、taxes、confirm 使用当前 AT 的账号邮箱，不再复用静态邮箱。
++
++### 中概率且已修复
++
++- Elements 使用 `locale=id` 和 `browser_timezone=Asia/Jakarta`。
++- 缺少 `__stripe_sid` 时发送 `sid=NA`。
++- 地址/税费按成功 HAR 的五步字段和两轮 snapshot/taxes/page GET 时序执行。
++- approval 使用版本化 frame 与精确 Checkout Referer。
++- consumer lookup 使用 HAR 的 `Accept-Language: en`。
++- Checkout 一旦真正发出，任务层禁止该账号的任何完整重试。
++- Stripe init 网络中断现在只在**同一 Checkout、同一代理**内重试三次，不创建新 Checkout。
++
++### 剩余高概率差异
++
++两份成功 HAR 的 Sentinel/checkout/approve Cookie 均包含 `__Secure-next-auth.session-token.*`，且 checkout/approve 都携带同一份 291 字符 `oai-web-deployment-attestation`。本轮 AT-only Playwright profile 能生成真实 Sentinel token，但没有 NextAuth session-token，attestation 长度为 0。该差异与三个 `approve=blocked` 结果一致，是后续账号材料应补齐的首要字段。
++
++## 真实浏览器证据
++
++Playwright 生命周期探针观测到：
++
++```text
++PLAYWRIGHT_BROWSER_CHANNEL=chrome
++PLAYWRIGHT_BROWSER_VERSION=151.0.7922.170
++PERSISTENT_RUNTIME_ID_PRESENT=True
++CHECKOUT_TOKEN_PRESENT=True
++APPROVAL_TOKEN_PRESENT=True
++SAME_RUNTIME_AFTER_TOKEN=True
++SDK_SHA256=49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd
++```
++
++approval 稳定顺序：
++
++```text
++init:  /backend-api/sentinel/req(body>0, frame referer)
++       /backend-api/sentinel/ping(body=0, checkout referer)
++token: /backend-api/sentinel/ping(body=0, checkout referer)
++```
++
++```mermaid
++sequenceDiagram
++    participant Core as GoPay core
++    participant PW as Persistent Playwright Chrome
++    participant OAI as ChatGPT Sentinel
++    participant Stripe as Stripe
++    Core->>PW: checkout token(flow)
++    PW->>OAI: req + zero-body ping
++    PW-->>Core: OpenAI-Sentinel-Token
++    Core->>OAI: create/update Checkout
++    Core->>Stripe: FULL init + Elements
++    Core->>PW: init(checkout_session_approval)
++    PW->>OAI: req + zero-body ping
++    Core->>Stripe: taxes/config updates + confirm
++    Core->>PW: token(checkout_session_approval)
++    PW->>OAI: zero-body ping
++    PW-->>Core: approval token
++    Core->>OAI: checkout/approve
++```
++
++## 四账号结果
++
++| AT 槽位 | 固定代理槽位 | Checkout 次数 | 最后阶段 | 结果 |
++|---:|---:|---:|---|---|
++| 1 | 5 | 1 | `payment_confirmation` | `approve=blocked` |
++| 2 | 5 | 1 | `payment_confirmation` | `approve=blocked` |
++| 3 | 5 | 1 | `payment_confirmation` | `approve=blocked`；Chrome 151、持久 profile、精确 SDK 与 proof 顺序均生效 |
++| 4 | 3 | 1 | `stripe_init` | 同代理网络中断；未进入 approve |
++
++AT-3 的脱敏运行上下文确认：
++
++- provider：`PlaywrightSentinelProvider`
++- Chrome：`151.0.7922.170`
++- 持久 runtime/profile：均为 `true`
++- SDK SHA-256：与双 HAR 逐字节一致
++- approval token：存在
++- approval token ping：零长度、Checkout Referer
++- pending updates：空封套
++- Cookie：包含 `oai-did`、`oai-sc`、`__stripe_mid` 等，但不含 NextAuth session-token
++- attestation：长度 `0`
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-001：真实 Chrome 151 生成 token，SDK SHA 与 HAR 一致 | Node/jsdom 不再参与 GoPay proof | `gopay_sentinel_playwright.py` |
++| E-002：init/token 共用 runtime ID，事件顺序为 req/ping → ping | daemon/event loop/browser 生命周期已连续 | `gopay_transport.py` |
++| E-003：双 HAR 的 FULL init 字段集合相同 | BASE-first 会漏 manual approval beta | `gopay_cs_live.py` |
++| E-004：HAR 顶层/嵌套 config ID 来源不同 | 必须保存初始与最新两个 config ID | `gopay_stripe_common.py`、`gopay_cs_live.py` |
++| E-005：HAR pending item 等于 receipt 而非 update | pending 字段来源已纠正 | `gopay_transport.py` |
++| E-006：AT-1..3 仍 blocked，且均缺 session-token/attestation | AT-only 浏览器登录态仍与成功 HAR 不同 | 运行时输入与 Playwright profile |
++| E-007：AT-4 在 Stripe init 网络中断 | 同 Checkout 内需要传输重试 | `gopay_cs_live.py` |
++
++## 复验命令
++
++```powershell
++.\.venv\Scripts\python.exe -m pytest -q
++.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_playwright.py tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py
++```
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index c7b327a..180932d 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -5 +5 @@ import re
+-from typing import Any
++from typing import Any, Callable
+@@ -252,0 +253,2 @@ def create_checkout(
++    *,
++    commit_callback: Callable[[], None] | None = None,
+@@ -294,0 +297,2 @@ def create_checkout(
++    if commit_callback is not None:
++        commit_callback()
+diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
+index 825e939..7e4c484 100644
+--- a/payment_link_extractor/gopay_core.py
++++ b/payment_link_extractor/gopay_core.py
+@@ -128 +128,7 @@ def extract_gopay_payment_link(
+-    billing = billing_for_country(GOPAY_COUNTRY).to_dict()
++    billing_profile = billing_for_country(GOPAY_COUNTRY)
++    checkout_account_email = account_email(config.access_token)
++    if checkout_account_email:
++        # Link lookup, taxes and confirm to the account identity instead of
++        # reusing one static fixture email for every account.
++        billing_profile = replace(billing_profile, email=checkout_account_email)
++    billing = billing_profile.to_dict()
+@@ -141 +147,6 @@ def extract_gopay_payment_link(
+-        checkout = create_checkout(config, chatgpt, log)
++        checkout = create_checkout(
++            config,
++            chatgpt,
++            log,
++            commit_callback=lambda: checkpoint("checkout_committed"),
++        )
+@@ -188,2 +199,2 @@ def extract_gopay_payment_link(
+-            billing=billing_for_country(GOPAY_COUNTRY),
+-            account_email=account_email(config.access_token),
++            billing=billing_profile,
++            account_email=checkout_account_email,
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index f16a8fe..a7d7016 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -12,0 +13 @@ import random
++import time
+@@ -23 +24 @@ from .config import (
+-from .errors import ProtocolError, ProviderRequiresApproval
++from .errors import NetworkError, ProtocolError, ProviderRequiresApproval
+@@ -108,0 +110 @@ def cs_elements_session(
++        "browser_timezone": str(ctx.get("browser_timezone") or "Asia/Jakarta"),
+@@ -165,25 +167,30 @@ def stripe_init(config: ExtractionConfig, checkout: CheckoutData, log: Any | Non
+-    last_response = None
+-    for version in (STRIPE_VERSION_BASE, STRIPE_VERSION_FULL):
+-        body = dict(common)
+-        body["_stripe_version"] = version
+-        if version == STRIPE_VERSION_FULL:
+-            body["elements_session_client[client_betas][0]"] = STRIPE_CLIENT_BETAS[0]
+-            body["elements_session_client[client_betas][1]"] = STRIPE_CLIENT_BETAS[1]
+-        response = stage_http_request(
+-            stripe,
+-            "Stripe payment_pages init",
+-            "POST",
+-            f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}/init",
+-            log,
+-            data=body,
+-            headers=cs_stripe_headers(),
+-            timeout=DEFAULT_TIMEOUT,
+-        )
+-        last_response = response
+-        if response.status_code < 400:
+-            return response_json(response, "Stripe init"), stripe_js_id
+-        if response.status_code == 400 and "beta" in (response.text or "").lower():
+-            continue
+-        break
+-    assert last_response is not None
+-    raise ProtocolError(last_response.status_code, f"Stripe init failed: {last_response.text[:500]}")
++    # Manual approval/server updates must be negotiated on the first /init.
++    # Both complete GoPay HARs send the FULL version plus both client betas;
++    # BASE can return 2xx while leaving the later approval session incomplete.
++    body = dict(common)
++    body["_stripe_version"] = STRIPE_VERSION_FULL
++    body["elements_session_client[client_betas][0]"] = STRIPE_CLIENT_BETAS[0]
++    body["elements_session_client[client_betas][1]"] = STRIPE_CLIENT_BETAS[1]
++    response = None
++    for attempt in range(3):
++        try:
++            response = stage_http_request(
++                stripe,
++                "Stripe payment_pages init",
++                "POST",
++                f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}/init",
++                log,
++                data=body,
++                headers=cs_stripe_headers(),
++                timeout=DEFAULT_TIMEOUT,
++            )
++            break
++        except NetworkError:
++            if attempt >= 2:
++                raise
++            emit_log(log, f"Stripe init transport retry {attempt + 2}/3 on same Checkout")
++            time.sleep(0.35 * (attempt + 1))
++    assert response is not None
++    if response.status_code >= 400:
++        raise ProtocolError(response.status_code, f"Stripe init failed: {response.text[:500]}")
++    return response_json(response, "Stripe init"), stripe_js_id
+@@ -192 +199 @@ def stripe_init(config: ExtractionConfig, checkout: CheckoutData, log: Any | Non
+-def cs_update_tax_region(
++def _cs_update_tax_region_fields(
+@@ -198 +205,3 @@ def cs_update_tax_region(
+-) -> dict[str, Any]:
++    fields: tuple[str, ...],
++    accumulated: dict[str, str] | None = None,
++) -> tuple[dict[str, Any], dict[str, str]]:
+@@ -206 +215 @@ def cs_update_tax_region(
+-    accumulated: dict[str, str] = {}
++    accumulated = dict(accumulated or {})
+@@ -208 +217 @@ def cs_update_tax_region(
+-    for field in ("country", "line1", "city", "state", "postal_code"):
++    for field in fields:
+@@ -228 +237 @@ def cs_update_tax_region(
+-            return last_payload
++            return last_payload, accumulated
+@@ -231,0 +241,3 @@ def cs_update_tax_region(
++            checkout_config_id = str(payload.get("config_id") or "").strip()
++            if checkout_config_id:
++                ctx["checkout_config_id"] = checkout_config_id
+@@ -237 +249,19 @@ def cs_update_tax_region(
+-    return last_payload
++    return last_payload, accumulated
++
++
++def cs_update_tax_region(
++    stripe: Any,
++    checkout: CheckoutData,
++    ctx: StripeContext,
++    billing: dict[str, str],
++    log: Any | None,
++) -> dict[str, Any]:
++    payload, _ = _cs_update_tax_region_fields(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        ("country", "line1", "city", "state", "postal_code"),
++    )
++    return payload
+@@ -251 +281,4 @@ def cs_snapshot_billing(
+-        response = chatgpt.post(
++        response = stage_http_request(
++            chatgpt,
++            "ChatGPT checkout/snapshot",
++            "POST",
+@@ -252,0 +286 @@ def cs_snapshot_billing(
++            log,
+@@ -264,0 +299 @@ def cs_snapshot_billing(
++                "x-oai-is-pending-updates": EMPTY_PENDING_UPDATES,
+@@ -305,0 +341 @@ def cs_checkout_taxes(
++            "x-oai-is-pending-updates": EMPTY_PENDING_UPDATES,
+@@ -393 +429 @@ def stripe_consumer_session_lookup(
+-        headers=cs_stripe_headers(),
++        headers={**cs_stripe_headers(), "Accept-Language": "en"},
+@@ -403,0 +440,36 @@ def stripe_consumer_session_lookup(
++def cs_checkout_page_refresh(
++    stripe: Any,
++    checkout: CheckoutData,
++    ctx: StripeContext,
++    log: Any | None,
++) -> dict[str, Any]:
++    """Refresh the manual-approval payment page after a tax update round."""
++    params = cs_elements_client_params(
++        ctx,
++        locale_fallback=str(checkout.get("payment_locale") or "id"),
++    )
++    params.update({"key": stripe_key(checkout), "_stripe_version": STRIPE_VERSION_FULL})
++    response = stage_http_request(
++        stripe,
++        "Stripe payment page refresh",
++        "GET",
++        f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
++        log,
++        params=params,
++        headers=cs_stripe_headers(),
++        timeout=DEFAULT_TIMEOUT,
++    )
++    if response.status_code >= 400:
++        raise ProtocolError(response.status_code, f"Stripe payment page refresh failed: {response.text[:500]}")
++    payload = response_json(response, "Stripe payment page refresh")
++    checkout_config_id = str(payload.get("config_id") or "").strip()
++    if checkout_config_id:
++        ctx["checkout_config_id"] = checkout_config_id
++    amount = (payload.get("total_summary") or {}).get("total")
++    if amount is None:
++        amount = (payload.get("total_summary") or {}).get("due")
++    if amount is not None:
++        ctx["checkout_amount"] = amount
++    return payload
++
++
+@@ -421 +493,2 @@ def stripe_confirm_cs_live(
+-    checkout_config_id = str(ctx.get("config_id") or "")
++    init_checkout_config_id = str(ctx.get("config_id") or "")
++    checkout_config_id = str(ctx.get("checkout_config_id") or init_checkout_config_id)
+@@ -471 +544 @@ def stripe_confirm_cs_live(
+-            "payment_method_data[billing_details][email]": billing["email"],
++            "payment_method_data[billing_details][email]": openai_checkout_email(checkout) or billing["email"],
+@@ -488 +561 @@ def stripe_confirm_cs_live(
+-            "payment_method_data[client_attribution_metadata][checkout_config_id]": checkout_config_id,
++            "payment_method_data[client_attribution_metadata][checkout_config_id]": init_checkout_config_id,
+@@ -560 +633,41 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+-        raise ProtocolError(409, "ChatGPT manual approval blocked")
++        provider = getattr(chatgpt, "openai_sentinel_provider", None)
++        cookie_header = str(getattr(chatgpt, "headers", {}).get("Cookie") or "")
++        cookie_names = sorted(
++            {
++                item.split("=", 1)[0].strip()
++                for item in cookie_header.split(";")
++                if "=" in item and item.split("=", 1)[0].strip()
++            }
++        )
++        error = ProtocolError(409, "ChatGPT manual approval blocked")
++        error.safe_context = {
++            "sentinel_provider": type(provider).__name__ if provider is not None else "",
++            "browser_channel": str(getattr(provider, "_browser_channel", "") or ""),
++            "browser_version": str(getattr(provider, "_browser_version", "") or ""),
++            "persistent_runtime": bool(getattr(provider, "_runtime_id", "")),
++            "persistent_profile": bool(getattr(provider, "_profile_path", "")),
++            "sdk_sha256": str(getattr(provider, "_sdk_sha256", "") or ""),
++            "challenge_shapes": list(getattr(provider, "_challenge_shapes", []) or []),
++            "prepare_events": list(
++                getattr(chatgpt, "openai_sentinel_prepare_events", []) or []
++            ),
++            "token_events": list(
++                getattr(chatgpt, "openai_sentinel_token_events", []) or []
++            ),
++            "approval_token_length": len(
++                str(generated.get("OpenAI-Sentinel-Token") or "")
++            ),
++            "attestation_length": len(
++                str(generated.get("oai-web-deployment-attestation") or "")
++            ),
++            "cookie_names": cookie_names,
++            "pending_updates_length": len(
++                str(
++                    getattr(chatgpt, "headers", {}).get(
++                        "x-oai-is-pending-updates"
++                    )
++                    or ""
++                )
++            ),
++        }
++        raise error
+@@ -612,0 +726 @@ def extract_cs_live_provider(
++    ctx["browser_timezone"] = config_timezone(config)
+@@ -624,3 +738,11 @@ def extract_cs_live_provider(
+-    cs_update_tax_region(stripe, checkout, ctx, billing, log)
+-    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    # Reproduce the second complete HAR's deterministic address/tax cadence:
++    # country -> line1 -> city -> snapshot -> state -> snapshot -> taxes ->
++    # page refresh -> postal -> taxes -> page refresh.
++    _, tax_region = _cs_update_tax_region_fields(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        ("country", "line1", "city"),
++    )
+@@ -627,0 +750,24 @@ def extract_cs_live_provider(
++    _, tax_region = _cs_update_tax_region_fields(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        ("state",),
++        tax_region,
++    )
++    cs_snapshot_billing(chatgpt, checkout, billing, log)
++    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    cs_checkout_page_refresh(stripe, checkout, ctx, log)
++    _cs_update_tax_region_fields(
++        stripe,
++        checkout,
++        ctx,
++        billing,
++        log,
++        ("postal_code",),
++        tax_region,
++    )
++    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    cs_checkout_page_refresh(stripe, checkout, ctx, log)
++    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+new file mode 100644
+index 0000000..6ea2335
+--- /dev/null
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -0,0 +1,576 @@
++from __future__ import annotations
++
++import asyncio
++import atexit
++import hashlib
++import json
++import os
++import threading
++import time
++import uuid
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Coroutine
++from urllib.parse import unquote, urlsplit
++
++try:
++    from playwright.async_api import BrowserContext, Page, async_playwright
++except ImportError:  # pragma: no cover - dependency is validated at runtime
++    BrowserContext = Any  # type: ignore[misc,assignment]
++    Page = Any  # type: ignore[misc,assignment]
++    async_playwright = None  # type: ignore[assignment]
++
++
++SENTINEL_SDK_VERSION = "20260810913b"
++CHATGPT_ORIGIN = "https://chatgpt.com"
++
++
++def _enabled(value: str, *, default: bool) -> bool:
++    text = str(value or "").strip().lower()
++    if not text:
++        return default
++    return text not in {"0", "false", "off", "disabled", "no"}
++
++
++def _profile_root() -> Path:
++    configured = os.getenv("OPLL_GOPAY_SENTINEL_PROFILE_DIR", "").strip()
++    if configured:
++        return Path(configured).expanduser().resolve()
++    return (Path(__file__).resolve().parents[1] / "data" / "gopay-sentinel-profiles").resolve()
++
++
++def _profile_key(device_id: str) -> str:
++    try:
++        return str(uuid.UUID(str(device_id)))
++    except (TypeError, ValueError):
++        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-profile:{device_id}"))
++
++
++def _proxy_options(proxy_url: str) -> dict[str, str] | None:
++    text = str(proxy_url or "").strip()
++    if not text:
++        return None
++    parsed = urlsplit(text)
++    if not parsed.scheme or not parsed.hostname:
++        raise ValueError("browser proxy URL is invalid")
++    host = parsed.hostname
++    if ":" in host and not host.startswith("["):
++        host = f"[{host}]"
++    port = f":{parsed.port}" if parsed.port else ""
++    result = {"server": f"{parsed.scheme}://{host}{port}"}
++    if parsed.username is not None:
++        result["username"] = unquote(parsed.username)
++    if parsed.password is not None:
++        result["password"] = unquote(parsed.password)
++    return result
++
++
++def _cookie_header(cookies: list[dict[str, Any]]) -> str:
++    return "; ".join(
++        f"{str(item.get('name') or '')}={str(item.get('value') or '')}"
++        for item in cookies
++        if str(item.get("name") or "").strip()
++    )
++
++
++@dataclass
++class _BrowserSession:
++    context: BrowserContext
++    page: Page
++    profile_path: Path
++    device_id: str
++    attestation: str = ""
++    request_events: list[dict[str, Any]] = field(default_factory=list)
++    latest_receipt: str = ""
++    challenge_shapes: list[dict[str, Any]] = field(default_factory=list)
++    sdk_sha256: str = ""
++    bootstrap_headers: dict[str, str] = field(default_factory=dict)
++    active_page_url: str = ""
++
++
++class PersistentPlaywrightDaemon:
++    """One daemon thread owns Playwright, its event loop and live browsers."""
++
++    def __init__(self) -> None:
++        if async_playwright is None:
++            raise RuntimeError("playwright is not installed")
++        self._loop = asyncio.new_event_loop()
++        self._ready = threading.Event()
++        self._startup_error: BaseException | None = None
++        self._playwright: Any = None
++        self._sessions: dict[str, _BrowserSession] = {}
++        self._thread = threading.Thread(
++            target=self._thread_main,
++            name="gopay-sentinel-playwright",
++            daemon=True,
++        )
++        self._thread.start()
++        if not self._ready.wait(timeout=30):
++            raise RuntimeError("Playwright daemon did not start")
++        if self._startup_error is not None:
++            raise RuntimeError("Playwright daemon startup failed") from self._startup_error
++
++    def _thread_main(self) -> None:
++        asyncio.set_event_loop(self._loop)
++        try:
++            self._playwright = self._loop.run_until_complete(async_playwright().start())
++        except BaseException as exc:  # pragma: no cover - platform startup
++            self._startup_error = exc
++            self._ready.set()
++            return
++        self._ready.set()
++        try:
++            self._loop.run_forever()
++        finally:
++            self._loop.run_until_complete(self._shutdown_async())
++            self._loop.close()
++
++    def _call(self, coro: Coroutine[Any, Any, Any], timeout: float) -> Any:
++        if self._startup_error is not None or not self._thread.is_alive():
++            raise RuntimeError("Playwright daemon is unavailable")
++        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
++        return future.result(timeout=timeout)
++
++    async def _capture_request(self, session_id: str, request: Any) -> None:
++        session = self._sessions.get(session_id)
++        if session is None:
++            return
++        try:
++            parsed = urlsplit(request.url)
++            headers = await request.all_headers()
++        except Exception:
++            return
++        attestation = str(headers.get("oai-web-deployment-attestation") or "").strip()
++        if attestation:
++            session.attestation = attestation
++        if parsed.path in {
++            "/backend-api/sentinel/req",
++            "/backend-api/sentinel/ping",
++        }:
++            session.request_events.append(
++                {
++                    "path": parsed.path,
++                    "method": request.method,
++                    "body_length": len(request.post_data or ""),
++                    "referer_kind": (
++                        "checkout"
++                        if "/checkout/" in str(headers.get("referer") or "")
++                        else "frame"
++                        if "/sentinel/frame.html" in str(headers.get("referer") or "")
++                        else "other"
++                    ),
++                }
++            )
++
++    async def _capture_response(self, session_id: str, response: Any) -> None:
++        session = self._sessions.get(session_id)
++        if session is None:
++            return
++        try:
++            response_url = response.url
++            headers = await response.all_headers()
++        except Exception:
++            return
++        path = urlsplit(response_url).path
++        receipt = str(headers.get("x-oai-is-receipt") or "").strip()
++        if receipt:
++            session.latest_receipt = receipt
++        if path == "/backend-api/sentinel/req":
++            try:
++                payload = await response.json()
++            except Exception:
++                payload = {}
++            if isinstance(payload, dict):
++                turnstile = payload.get("turnstile")
++                turnstile = turnstile if isinstance(turnstile, dict) else {}
++                proof = payload.get("proofofwork")
++                proof = proof if isinstance(proof, dict) else {}
++                session.challenge_shapes.append(
++                    {
++                        "token_length": len(str(payload.get("token") or "")),
++                        "turnstile_required": bool(turnstile.get("required")),
++                        "turnstile_dx_length": len(str(turnstile.get("dx") or "")),
++                        "pow_required": bool(proof.get("required")),
++                        "pow_seed_length": len(str(proof.get("seed") or "")),
++                        "pow_difficulty_length": len(
++                            str(proof.get("difficulty") or "")
++                        ),
++                    }
++                )
++        if path == f"/sentinel/{SENTINEL_SDK_VERSION}/sdk.js":
++            try:
++                session.sdk_sha256 = hashlib.sha256(await response.body()).hexdigest()
++            except Exception:
++                pass
++
++    async def _install_sdk(self, page: Page) -> None:
++        present = await page.evaluate(
++            "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'"
++        )
++        if present:
++            return
++        await page.add_script_tag(
++            url=f"{CHATGPT_ORIGIN}/backend-api/sentinel/sdk.js"
++        )
++        await page.wait_for_function(
++            "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'",
++            timeout=30_000,
++        )
++
++    async def _capture_page_attestation(self, session: _BrowserSession) -> None:
++        try:
++            value = await session.page.evaluate(
++                """() => {
++                    const direct = window.__reactRouterContext?.state?.loaderData?.root?.clientBootstrap?.webDeploymentAttestation;
++                    if (direct) return String(direct);
++                    const node = document.getElementById('client-bootstrap');
++                    if (node) {
++                        try {
++                            const data = JSON.parse(node.textContent || '{}');
++                            if (data.webDeploymentAttestation) return String(data.webDeploymentAttestation);
++                        } catch (_) {}
++                    }
++                    return '';
++                }"""
++            )
++        except Exception:
++            value = ""
++        if value:
++            session.attestation = str(value)
++
++    async def _open_session_async(
++        self,
++        *,
++        access_token: str,
++        account_id: str,
++        device_id: str,
++        session_id: str,
++        user_agent: str,
++        browser_proxy: str,
++        session_token: str,
++        language: str,
++        timezone: str,
++    ) -> dict[str, Any]:
++        runtime_id = uuid.uuid4().hex
++        profile_path = _profile_root() / _profile_key(device_id)
++        profile_path.mkdir(parents=True, exist_ok=True)
++        headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=False)
++        browser_channel = os.getenv(
++            "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
++        ).strip()
++        launch_options: dict[str, Any] = {
++            "user_data_dir": str(profile_path),
++            "headless": headless,
++            "proxy": _proxy_options(browser_proxy),
++            "user_agent": user_agent,
++            "locale": language,
++            "timezone_id": timezone,
++            "viewport": {"width": 1365, "height": 768},
++            "bypass_csp": True,
++            "ignore_https_errors": False,
++            "args": ["--no-first-run", "--no-default-browser-check"],
++        }
++        if browser_channel:
++            launch_options["channel"] = browser_channel
++        try:
++            context = await self._playwright.chromium.launch_persistent_context(
++                **launch_options
++            )
++        except Exception:
++            if not browser_channel:
++                raise
++            launch_options.pop("channel", None)
++            context = await self._playwright.chromium.launch_persistent_context(
++                **launch_options
++            )
++        browser_version = (
++            str(context.browser.version)
++            if getattr(context, "browser", None) is not None
++            else ""
++        )
++        (profile_path / "device-profile.json").write_text(
++            json.dumps(
++                {
++                    "device_id": device_id,
++                    "language": language,
++                    "timezone": timezone,
++                    "user_agent": user_agent,
++                    "browser_channel": browser_channel or "bundled-chromium",
++                    "browser_version": browser_version,
++                },
++                ensure_ascii=False,
++                indent=2,
++            ),
++            encoding="utf-8",
++        )
++        page = context.pages[0] if context.pages else await context.new_page()
++        session = _BrowserSession(
++            context=context,
++            page=page,
++            profile_path=profile_path,
++            device_id=device_id,
++        )
++        self._sessions[runtime_id] = session
++        context.on(
++            "request",
++            lambda request: asyncio.create_task(self._capture_request(runtime_id, request)),
++        )
++        context.on(
++            "response",
++            lambda response: asyncio.create_task(self._capture_response(runtime_id, response)),
++        )
++        cookies = [
++            {
++                "name": "oai-did",
++                "value": device_id,
++                "domain": ".chatgpt.com",
++                "path": "/",
++                "secure": True,
++            }
++        ]
++        if session_token:
++            cookies.append(
++                {
++                    "name": "__Secure-next-auth.session-token",
++                    "value": session_token,
++                    "domain": ".chatgpt.com",
++                    "path": "/",
++                    "secure": True,
++                    "httpOnly": True,
++                }
++            )
++        await context.add_cookies(cookies)
++        bootstrap_headers = {
++            "Authorization": f"Bearer {access_token}",
++            "oai-device-id": device_id,
++            "oai-session-id": session_id,
++            "oai-language": language,
++            "oai-client-build-number": os.getenv(
++                "OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"
++            ),
++            "oai-client-version": os.getenv(
++                "OPLL_OAI_CLIENT_VERSION",
++                "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
++            ),
++        }
++        if account_id:
++            bootstrap_headers["chatgpt-account-id"] = account_id
++        session.bootstrap_headers = dict(bootstrap_headers)
++        await context.set_extra_http_headers(bootstrap_headers)
++        try:
++            await page.goto(
++                f"{CHATGPT_ORIGIN}/?promo_campaign=plus-1-month-free",
++                wait_until="domcontentloaded",
++                timeout=90_000,
++            )
++        finally:
++            # Sentinel req/ping in both HARs are cookie/browser requests and do
++            # not carry the API Authorization header.
++            await context.set_extra_http_headers({})
++        await self._install_sdk(page)
++        await self._capture_page_attestation(session)
++        await asyncio.sleep(0.15)
++        browser_cookies = await context.cookies(CHATGPT_ORIGIN)
++        return {
++            "runtime_id": runtime_id,
++            "attestation": session.attestation,
++            "cookie_header": _cookie_header(browser_cookies),
++            "latest_receipt": session.latest_receipt,
++            "challenge_shapes": list(session.challenge_shapes),
++            "sdk_sha256": session.sdk_sha256,
++            "profile_path": str(profile_path),
++            "headless": headless,
++            "browser_channel": browser_channel or "bundled-chromium",
++            "browser_version": browser_version,
++        }
++
++    def open_session(self, **kwargs: Any) -> dict[str, Any]:
++        return self._call(self._open_session_async(**kwargs), timeout=150)
++
++    async def _set_page_url(self, session: _BrowserSession, page_url: str) -> None:
++        parsed = urlsplit(str(page_url or CHATGPT_ORIGIN))
++        if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
++            raise ValueError("Sentinel page URL must remain on chatgpt.com")
++        relative = parsed.path or "/"
++        if parsed.query:
++            relative += "?" + parsed.query
++        if parsed.fragment:
++            relative += "#" + parsed.fragment
++        navigate_checkout = _enabled(
++            os.getenv("OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT", ""),
++            default=True,
++        )
++        current = urlsplit(session.page.url)
++        if (
++            navigate_checkout
++            and parsed.path.startswith("/checkout/")
++            and session.active_page_url != parsed.geturl()
++        ):
++            await session.context.set_extra_http_headers(session.bootstrap_headers)
++            try:
++                await session.page.goto(
++                    parsed.geturl(),
++                    wait_until="domcontentloaded",
++                    timeout=90_000,
++                )
++            finally:
++                await session.context.set_extra_http_headers({})
++            await self._install_sdk(session.page)
++            await self._capture_page_attestation(session)
++            # Auth-only AT sessions may be redirected while the checkout shell
++            # loads. Restore the exact Checkout URL before SDK.init so its
++            # zero-length ping carries the HAR checkout Referer.
++            await session.page.evaluate(
++                "url => history.replaceState({}, '', url)",
++                relative,
++            )
++            session.active_page_url = parsed.geturl()
++            return
++        await session.page.evaluate(
++            "url => history.replaceState({}, '', url)",
++            relative,
++        )
++
++    async def _prepare_flow_async(
++        self, runtime_id: str, flow: str, page_url: str
++    ) -> dict[str, Any]:
++        session = self._sessions[runtime_id]
++        await self._set_page_url(session, page_url)
++        await self._install_sdk(session.page)
++        before = len(session.request_events)
++        await session.page.evaluate(
++            "async flow => { await window.SentinelSDK.init(flow); return true; }",
++            flow,
++        )
++        await asyncio.sleep(0.1)
++        cookies = await session.context.cookies(CHATGPT_ORIGIN)
++        return {
++            "attestation": session.attestation,
++            "cookie_header": _cookie_header(cookies),
++            "latest_receipt": session.latest_receipt,
++            "request_events": session.request_events[before:],
++            "challenge_shapes": list(session.challenge_shapes),
++            "sdk_sha256": session.sdk_sha256,
++        }
++
++    def prepare_flow(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
++        return self._call(
++            self._prepare_flow_async(runtime_id, flow, page_url), timeout=120
++        )
++
++    async def _token_async(
++        self, runtime_id: str, flow: str, page_url: str
++    ) -> dict[str, Any]:
++        session = self._sessions[runtime_id]
++        await self._set_page_url(session, page_url)
++        await self._install_sdk(session.page)
++        before = len(session.request_events)
++        started = time.perf_counter()
++        generated = await session.page.evaluate(
++            """async flow => {
++                const token = await window.SentinelSDK.token(flow);
++                const timing = typeof window.SentinelSDK.timing === 'function'
++                    ? window.SentinelSDK.timing()
++                    : null;
++                return {token, timing};
++            }""",
++            flow,
++        )
++        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
++        cookies = await session.context.cookies(CHATGPT_ORIGIN)
++        return {
++            "token": generated.get("token") if isinstance(generated, dict) else "",
++            "timing": generated.get("timing") if isinstance(generated, dict) else None,
++            "attestation": session.attestation,
++            "cookie_header": _cookie_header(cookies),
++            "latest_receipt": session.latest_receipt,
++            "request_events": session.request_events[before:],
++            "elapsed_ms": elapsed_ms,
++            "challenge_shapes": list(session.challenge_shapes),
++            "sdk_sha256": session.sdk_sha256,
++        }
++
++    def token(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
++        return self._call(self._token_async(runtime_id, flow, page_url), timeout=120)
++
++    async def _set_cookie_async(
++        self, runtime_id: str, name: str, value: str, http_only: bool
++    ) -> dict[str, Any]:
++        session = self._sessions[runtime_id]
++        await session.context.add_cookies(
++            [
++                {
++                    "name": str(name),
++                    "value": str(value),
++                    "domain": ".chatgpt.com",
++                    "path": "/",
++                    "secure": True,
++                    "httpOnly": bool(http_only),
++                }
++            ]
++        )
++        cookies = await session.context.cookies(CHATGPT_ORIGIN)
++        return {"cookie_header": _cookie_header(cookies)}
++
++    def set_cookie(
++        self, runtime_id: str, name: str, value: str, http_only: bool
++    ) -> dict[str, Any]:
++        return self._call(
++            self._set_cookie_async(runtime_id, name, value, http_only), timeout=30
++        )
++
++    async def _close_session_async(self, runtime_id: str) -> None:
++        session = self._sessions.pop(runtime_id, None)
++        if session is not None:
++            await session.context.close()
++
++    def close_session(self, runtime_id: str) -> None:
++        if runtime_id:
++            self._call(self._close_session_async(runtime_id), timeout=30)
++
++    async def _shutdown_async(self) -> None:
++        for runtime_id in list(self._sessions):
++            try:
++                await self._close_session_async(runtime_id)
++            except Exception:
++                pass
++        if self._playwright is not None:
++            try:
++                await self._playwright.stop()
++            except Exception:
++                pass
++
++    def shutdown(self) -> None:
++        if not self._thread.is_alive():
++            return
++        for runtime_id in list(self._sessions):
++            try:
++                self.close_session(runtime_id)
++            except Exception:
++                pass
++        self._loop.call_soon_threadsafe(self._loop.stop)
++        self._thread.join(timeout=10)
++
++
++_DAEMON: PersistentPlaywrightDaemon | None = None
++_DAEMON_LOCK = threading.Lock()
++
++
++def get_playwright_daemon() -> PersistentPlaywrightDaemon:
++    global _DAEMON
++    with _DAEMON_LOCK:
++        if _DAEMON is None:
++            _DAEMON = PersistentPlaywrightDaemon()
++        return _DAEMON
++
++
++def shutdown_playwright_daemon() -> None:
++    global _DAEMON
++    with _DAEMON_LOCK:
++        daemon = _DAEMON
++        _DAEMON = None
++    if daemon is not None:
++        daemon.shutdown()
++
++
++atexit.register(shutdown_playwright_daemon)
+diff --git a/payment_link_extractor/gopay_stripe_common.py b/payment_link_extractor/gopay_stripe_common.py
+index 815afea..7cbf27c 100644
+--- a/payment_link_extractor/gopay_stripe_common.py
++++ b/payment_link_extractor/gopay_stripe_common.py
+@@ -163,0 +164,2 @@ def stripe_context(
++    init_checkout_config_id = str(init_payload.get("config_id") or "")
++    browser_locale = str(checkout.get("payment_locale") or "en-GB")
+@@ -168 +170,5 @@ def stripe_context(
+-        "config_id": str(init_payload.get("config_id") or ""),
++        # Stripe keeps two checkout config identities in the final confirm:
++        # nested payment-method attribution retains the /init config while
++        # top-level attribution follows the latest server-update response.
++        "config_id": init_checkout_config_id,
++        "checkout_config_id": init_checkout_config_id,
+@@ -172 +178,3 @@ def stripe_context(
+-        "locale": str(checkout.get("payment_locale") or "en-GB"),
++        # /init uses id-ID; Elements and payment-page calls use id.
++        "locale": browser_locale.split("-", 1)[0].lower(),
++        "browser_timezone": str(checkout.get("browser_timezone") or "Asia/Jakarta"),
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 86fedb0..d96bfb8 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -31,0 +32 @@ EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
++SENTINEL_SDK_VERSION = "20260810913b"
+@@ -355,5 +356,3 @@ def stage_http_request(
+-    # ChatGPT rotates an encrypted `x-oai-is-update` receipt on responses and
+-    # sends it back as the next request's `x-oai-is-pending-updates` value.
+-    # The canonical GoPay HAR carries this header on checkout (502 bytes),
+-    # while later requests use the acknowledged empty envelope. Keep the
+-    # session synchronized without persisting or logging the opaque token.
++    # ChatGPT's opaque pending item is `x-oai-is-receipt`. The much larger
++    # `x-oai-is-update` field is a different response artifact and must never
++    # be echoed as a receipt. An explicit ack clears the pending envelope.
+@@ -361 +360,2 @@ def stage_http_request(
+-    pending_update = None
++    pending_receipt = None
++    pending_ack = None
+@@ -364 +364,2 @@ def stage_http_request(
+-            pending_update = response_headers.get("x-oai-is-update")
++            pending_receipt = response_headers.get("x-oai-is-receipt")
++            pending_ack = response_headers.get("x-oai-is-pending-updates-ack")
+@@ -366,5 +367,8 @@ def stage_http_request(
+-            pending_update = None
+-    if pending_update:
+-        session_headers = getattr(session, "headers", None)
+-        if session_headers is not None:
+-            try:
++            pending_receipt = None
++            pending_ack = None
++    session_headers = getattr(session, "headers", None)
++    if session_headers is not None:
++        try:
++            if pending_ack:
++                session_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
++            elif pending_receipt:
+@@ -372 +376 @@ def stage_http_request(
+-                    {"v": 3, "updates": [str(pending_update)]},
++                    {"v": 3, "updates": [str(pending_receipt)]},
+@@ -375,2 +379,2 @@ def stage_http_request(
+-            except Exception:
+-                pass
++        except Exception:
++            pass
+@@ -536,0 +541,3 @@ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
++    else:
++        # The successful no-cookie browser shape sends the literal NA.
++        ctx["sid"] = "NA"
+@@ -724,0 +732,4 @@ class BrowserSentinelProvider:
++            "        if (isPing && window.__opllSentinelReferer) {\n"
++            "          const init = Object.assign({}, args[1] || {}, {referrer: window.__opllSentinelReferer, referrerPolicy: 'strict-origin-when-cross-origin'});\n"
++            "          args = [args[0], init];\n"
++            "        }\n"
+@@ -841,0 +853,36 @@ class BrowserSentinelProvider:
++        if self._attestation:
++            return
++        # Current deployments may generate the signed value inside the web
++        # client instead of exposing `client-bootstrap`. Recover the fresh
++        # value from a same-context backend request without logging it.
++        try:
++            captured = self._run(
++                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
++                timeout=20,
++            )
++        except Exception:
++            return
++        data = captured.get("data") if isinstance(captured, dict) else None
++        requests = data.get("requests") if isinstance(data, dict) else None
++        if not isinstance(requests, list):
++            return
++        for item in reversed(requests):
++            if not isinstance(item, dict):
++                continue
++            headers = item.get("requestHeaders") or item.get("headers")
++            if isinstance(headers, list):
++                header_map = {
++                    str(header.get("name") or "").lower(): str(header.get("value") or "")
++                    for header in headers
++                    if isinstance(header, dict)
++                }
++            elif isinstance(headers, dict):
++                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
++            else:
++                continue
++            attestation = str(
++                header_map.get("oai-web-deployment-attestation") or ""
++            ).strip()
++            if attestation:
++                self._attestation = attestation
++                return
+@@ -846 +893 @@ class BrowserSentinelProvider:
+-        ChatGPT returns `x-oai-is-update` on browser responses and the next
++        ChatGPT returns `x-oai-is-receipt` on browser responses and the next
+@@ -869,2 +916,2 @@ class BrowserSentinelProvider:
+-            update = headers.get("x-oai-is-update") or headers.get("X-OAI-IS-Update")
+-            if not update:
++            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
++            if not receipt:
+@@ -876 +923 @@ class BrowserSentinelProvider:
+-                {"v": 3, "updates": [str(update)]}, separators=(",", ":")
++                {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
+@@ -969 +1016,5 @@ class BrowserSentinelProvider:
+-            self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
++            frame_url = (
++                "https://chatgpt.com/backend-api/sentinel/frame.html?sv="
++                + SENTINEL_SDK_VERSION
++            )
++            self._run(["open", frame_url])
+@@ -1004 +1055 @@ class BrowserSentinelProvider:
+-            self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
++            self._run(["open", frame_url])
+@@ -1061 +1112,3 @@ class BrowserSentinelProvider:
+-                "(async()=>{await window.SentinelSDK.init("
++                "(async()=>{window.__opllSentinelReferer="
++                + json.dumps(str(referer or ""))
++                + ";await window.SentinelSDK.init("
+@@ -1087 +1140,3 @@ class BrowserSentinelProvider:
+-                "(async()=>{const token=await window.SentinelSDK.token("
++                "(async()=>{window.__opllSentinelReferer="
++                + json.dumps(str(referer or ""))
++                + ";const token=await window.SentinelSDK.token("
+@@ -1201,0 +1257,232 @@ class BrowserSentinelProvider:
++class PlaywrightSentinelProvider:
++    """Generate GoPay proofs in one persistent real Chromium context."""
++
++    def __init__(
++        self,
++        *,
++        access_token: str,
++        device_id: str,
++        session_id: str,
++        user_agent: str,
++        proxy: str,
++        transport_session: Any,
++        session_token: str = "",
++        language: str = "id-ID",
++        timezone: str = "Asia/Jakarta",
++        log: Any | None = None,
++    ) -> None:
++        self.access_token = str(access_token or "").strip()
++        self.device_id = str(device_id or "").strip()
++        self.session_id = str(session_id or "").strip()
++        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
++        self.proxy = str(proxy or "").strip()
++        try:
++            from .web.socks5_bridge import http_proxy_for
++
++            self.browser_proxy = http_proxy_for(self.proxy)
++        except Exception:
++            self.browser_proxy = self.proxy
++        self.transport_session = transport_session
++        self.session_token = str(session_token or "").strip()
++        self.language = str(language or "id-ID").strip() or "id-ID"
++        self.timezone = str(timezone or "Asia/Jakarta").strip() or "Asia/Jakarta"
++        self.log = log
++        self._lock = threading.RLock()
++        self._runtime_id = ""
++        self._attestation = ""
++        self._cookies = ""
++        self._profile_path = ""
++        self._browser_channel = ""
++        self._browser_version = ""
++        self._challenge_shapes: list[dict[str, Any]] = []
++        self._sdk_sha256 = ""
++        self._started = False
++        self._closed = False
++        self._failed = False
++
++    @property
++    def enabled(self) -> bool:
++        mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
++        if mode in {"0", "false", "off", "disabled", "no"}:
++            return False
++        try:
++            from .gopay_sentinel_playwright import get_playwright_daemon
++
++            return callable(get_playwright_daemon)
++        except Exception:
++            return False
++
++    @staticmethod
++    def _daemon() -> Any:
++        from .gopay_sentinel_playwright import get_playwright_daemon
++
++        return get_playwright_daemon()
++
++    def _apply_runtime(self, result: dict[str, Any]) -> None:
++        attestation = str(result.get("attestation") or "").strip()
++        if attestation:
++            self._attestation = attestation
++        cookies = str(result.get("cookie_header") or "").strip()
++        if cookies:
++            self._cookies = cookies
++        profile_path = str(result.get("profile_path") or "").strip()
++        if profile_path:
++            self._profile_path = profile_path
++        browser_channel = str(result.get("browser_channel") or "").strip()
++        if browser_channel:
++            self._browser_channel = browser_channel
++        browser_version = str(result.get("browser_version") or "").strip()
++        if browser_version:
++            self._browser_version = browser_version
++        challenge_shapes = result.get("challenge_shapes")
++        if isinstance(challenge_shapes, list):
++            self._challenge_shapes = [
++                dict(item) for item in challenge_shapes if isinstance(item, dict)
++            ]
++        sdk_sha256 = str(result.get("sdk_sha256") or "").strip()
++        if sdk_sha256:
++            self._sdk_sha256 = sdk_sha256
++        headers = getattr(self.transport_session, "headers", None)
++        if headers is not None:
++            if self._cookies:
++                headers["Cookie"] = self._cookies
++            headers["oai-device-id"] = self.device_id
++            if self._attestation:
++                headers["oai-web-deployment-attestation"] = self._attestation
++            receipt = str(result.get("latest_receipt") or "").strip()
++            if receipt:
++                headers["x-oai-is-pending-updates"] = json.dumps(
++                    {"v": 3, "updates": [receipt]}, separators=(",", ":")
++                )
++
++    def _start(self) -> None:
++        if not self.enabled:
++            raise RuntimeError("Playwright Sentinel provider is unavailable")
++        if self._closed:
++            raise RuntimeError("Playwright Sentinel provider is closed")
++        try:
++            opened = self._daemon().open_session(
++                access_token=self.access_token,
++                account_id=account_id(self.access_token),
++                device_id=self.device_id,
++                session_id=self.session_id,
++                user_agent=self.user_agent,
++                browser_proxy=self.browser_proxy,
++                session_token=self.session_token,
++                language=self.language,
++                timezone=self.timezone,
++            )
++            self._runtime_id = str(opened.get("runtime_id") or "")
++            if not self._runtime_id:
++                raise RuntimeError("Playwright Sentinel session did not start")
++            self._apply_runtime(opened)
++            self._started = True
++        except Exception:
++            self._failed = True
++            raise
++
++    def prepare(self) -> None:
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Playwright Sentinel provider failed during startup")
++            if not self._started:
++                self._start()
++
++    def prepare_flow(self, *, flow: str, referer: str) -> None:
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Playwright Sentinel provider failed during startup")
++            if not self._started:
++                self._start()
++            result = self._daemon().prepare_flow(
++                self._runtime_id,
++                BrowserSentinelProvider._normalize_flow(flow),
++                str(referer or "https://chatgpt.com"),
++            )
++            self._apply_runtime(result)
++            setattr(
++                self.transport_session,
++                "openai_sentinel_prepare_events",
++                list(result.get("request_events") or []),
++            )
++
++    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Playwright Sentinel provider failed during startup")
++            if not self._started:
++                self._start()
++            selected_flow = BrowserSentinelProvider._normalize_flow(flow)
++            generated = self._daemon().token(
++                self._runtime_id,
++                selected_flow,
++                str(referer or "https://chatgpt.com"),
++            )
++            self._apply_runtime(generated)
++            raw_token = generated.get("token")
++            if isinstance(raw_token, str):
++                token = raw_token.strip()
++            elif isinstance(raw_token, dict):
++                token = json.dumps(raw_token, separators=(",", ":"))
++            else:
++                token = ""
++            if not token:
++                raise RuntimeError("Playwright Chromium returned an empty Sentinel token")
++            timing = generated.get("timing")
++            if isinstance(timing, str):
++                try:
++                    timing = json.loads(timing)
++                except (TypeError, ValueError):
++                    timing = None
++            if not isinstance(timing, list) or len(timing) != 8:
++                timing = json.loads(
++                    browser_checkout_telemetry(
++                        "checkout" if selected_flow == "chatgpt_checkout" else "approve"
++                    )
++                )
++            setattr(
++                self.transport_session,
++                "openai_checkout_telemetry"
++                if selected_flow == "chatgpt_checkout"
++                else "openai_approve_telemetry",
++                json.dumps(timing, separators=(",", ":")),
++            )
++            setattr(
++                self.transport_session,
++                "openai_sentinel_token_events",
++                list(generated.get("request_events") or []),
++            )
++            result = {
++                "OpenAI-Sentinel-Token": token,
++                "oai-device-id": self.device_id,
++            }
++            if self._attestation:
++                result["oai-web-deployment-attestation"] = self._attestation
++            if self._cookies:
++                result["Cookie"] = self._cookies
++            return result
++
++    def set_cookie(self, name: str, value: str, *, http_only: bool = False) -> None:
++        with self._lock:
++            if not self._started:
++                self._start()
++            result = self._daemon().set_cookie(
++                self._runtime_id,
++                str(name),
++                str(value),
++                bool(http_only),
++            )
++            self._apply_runtime(result)
++
++    def close(self) -> None:
++        with self._lock:
++            if self._closed:
++                return
++            if self._runtime_id:
++                try:
++                    self._daemon().close_session(self._runtime_id)
++                except Exception:
++                    pass
++            self._closed = True
++
++
+@@ -1204 +1491,6 @@ class DefaultTransportFactory:
+-        device_id = str(uuid.uuid4())
++        payment_method = normalize_payment_method(config.payment_method)
++        device_id = (
++            str(uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-device:{config.access_token}"))
++            if payment_method == "gopay"
++            else str(uuid.uuid4())
++        )
+@@ -1207 +1498,0 @@ class DefaultTransportFactory:
+-        payment_method = normalize_payment_method(config.payment_method)
+@@ -1354 +1645,4 @@ class DefaultTransportFactory:
+-                session.openai_sentinel_provider = BrowserSentinelProvider(
++                provider_type = (
++                    PlaywrightSentinelProvider if is_gopay else BrowserSentinelProvider
++                )
++                session.openai_sentinel_provider = provider_type(
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index cec2cb2..c515b44 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -83,0 +84 @@ class TaskRecord:
++    checkout_opportunity_consumed: bool = False
+@@ -565,0 +567 @@ class TaskManager:
++                record.checkout_opportunity_consumed = False
+@@ -620,0 +623 @@ class TaskManager:
++                        and not (is_gopay and record.checkout_opportunity_consumed)
+@@ -729,0 +733,15 @@ class TaskManager:
++            if (
++                record.config.payment_method == "gopay"
++                and str(stage) == "checkout_committed"
++            ):
++                record.checkout_opportunity_consumed = True
++                self._publish_locked(
++                    task_id,
++                    "task.checkout_committed",
++                    {
++                        "status": record.status,
++                        "progress": record.progress,
++                        "checkout_opportunity_consumed": True,
++                    },
++                )
++                return
+@@ -800,0 +819 @@ class TaskManager:
++            "checkout_opportunity_consumed": record.checkout_opportunity_consumed,
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 90a6b38..56966fd 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -276,0 +277,41 @@ def test_gopay_401_stops_attempts_but_other_protocol_errors_retry() -> None:
++def test_gopay_checkout_boundary_consumes_account_and_blocks_retry() -> None:
++    calls: list[str] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        del cancel_event
++        calls.append(config.checkout_proxy)
++        stage_callback("eligibility_check")
++        stage_callback("eligibility_confirmed")
++        stage_callback("checkout")
++        stage_callback("checkout_committed")
++        stage_callback("payment_confirmation")
++        raise ProtocolError(409, "ChatGPT manual approval blocked")
++
++    proxies = (
++        "http://id-proxy-1.example:8080",
++        "http://id-proxy-2.example:8080",
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy=proxies[0],
++        update_proxy=proxies[0],
++        payment_method="gopay",
++        country="ID",
++        retry_count=1,
++        checkout_proxy_attempts=proxies,
++        update_proxy_attempts=proxies,
++        proxy_pool=proxies,
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++        assert snapshot["status"] == "failed"
++        assert snapshot["attempt"] == 1
++        assert snapshot["max_attempts"] == 2
++        assert snapshot["checkout_opportunity_consumed"] is True
++        assert len(calls) == 1
++    finally:
++        manager.close()
++
++
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index c5ca63a..3b589bb 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -12,0 +13 @@ from payment_link_extractor import gopay_cs_live
++from payment_link_extractor import gopay_stripe_common
+@@ -28,0 +30,4 @@ def test_gopay_sentinel_sdk_matches_both_complete_hars() -> None:
++    assert gopay_transport.SENTINEL_SDK_VERSION == "20260810913b"
++    injected = gopay_transport.BrowserSentinelProvider._build_sentinel_init_script()
++    assert "__opllSentinelReferer" in injected
++    assert "referrerPolicy: 'strict-origin-when-cross-origin'" in injected
+@@ -65,0 +71,4 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
++    assert isinstance(
++        session.openai_sentinel_provider,
++        gopay_transport.PlaywrightSentinelProvider,
++    )
+@@ -91,0 +101,121 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
++def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setattr(gopay_transport, "new_session", Session)
++
++    def build(token: str) -> str:
++        config = ExtractionConfig(
++            access_token=token,
++            checkout_proxy="http://proxy.example:8080",
++            update_proxy="http://proxy.example:8080",
++            country="ID",
++            payment_method="gopay",
++        )
++        return gopay_transport.GoPayTransportFactory().chatgpt(
++            config, config.checkout_proxy
++        ).headers["oai-device-id"]
++
++    assert build("fixture-token-a") == build("fixture-token-a")
++    assert build("fixture-token-a") != build("fixture-token-b")
++
++
++def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypatch) -> None:
++    calls: list[tuple[str, object]] = []
++
++    class Daemon:
++        def open_session(self, **kwargs):
++            calls.append(("open", kwargs["device_id"]))
++            return {
++                "runtime_id": "runtime-fixture",
++                "attestation": "a" * 291,
++                "cookie_header": "oai-did=device-fixture",
++                "latest_receipt": "receipt-fixture",
++                "profile_path": "C:/runtime/profile",
++            }
++
++        def prepare_flow(self, runtime_id, flow, page_url):
++            calls.append(("init", (runtime_id, flow, page_url)))
++            return {
++                "attestation": "a" * 291,
++                "cookie_header": "oai-did=device-fixture; __stripe_mid=muid-fixture",
++                "request_events": [
++                    {"path": "/backend-api/sentinel/req", "body_length": 700},
++                    {"path": "/backend-api/sentinel/ping", "body_length": 0},
++                ],
++            }
++
++        def token(self, runtime_id, flow, page_url):
++            calls.append(("token", (runtime_id, flow, page_url)))
++            return {
++                "token": "proof-fixture",
++                "timing": [1, 620.5, 7, 30, 26, 2, 0, 624],
++                "attestation": "a" * 291,
++                "cookie_header": "oai-did=device-fixture; __stripe_mid=muid-fixture",
++                "request_events": [
++                    {"path": "/backend-api/sentinel/ping", "body_length": 0}
++                ],
++            }
++
++        def set_cookie(self, runtime_id, name, value, http_only):
++            calls.append(("cookie", (runtime_id, name, value, http_only)))
++            return {
++                "cookie_header": (
++                    "oai-did=device-fixture; __stripe_mid=muid-fixture; "
++                    f"{name}={value}"
++                )
++            }
++
++        def close_session(self, runtime_id):
++            calls.append(("close", runtime_id))
++
++    daemon = Daemon()
++    monkeypatch.setattr(
++        gopay_transport.PlaywrightSentinelProvider,
++        "_daemon",
++        staticmethod(lambda: daemon),
++    )
++    session = SimpleNamespace(
++        headers={},
++        openai_sentinel_observer_enabled=False,
++    )
++    provider = gopay_transport.PlaywrightSentinelProvider(
++        access_token="fixture-token",
++        device_id="device-fixture",
++        session_id="session-fixture",
++        user_agent="fixture-agent",
++        proxy="http://proxy.example:8080",
++        transport_session=session,
++        language="id-ID",
++        timezone="Asia/Jakarta",
++    )
++    referer = "https://chatgpt.com/checkout/openai_llc/cs_fixture"
++    provider.prepare_flow(flow="checkout_session_approval", referer=referer)
++    headers = provider.headers("checkout_session_approval", referer=referer)
++    provider.set_cookie("__stripe_sid", "sid-fixture")
++    provider.close()
++
++    assert headers["OpenAI-Sentinel-Token"] == "proof-fixture"
++    assert len(headers["oai-web-deployment-attestation"]) == 291
++    assert session.openai_sentinel_prepare_events == [
++        {"path": "/backend-api/sentinel/req", "body_length": 700},
++        {"path": "/backend-api/sentinel/ping", "body_length": 0},
++    ]
++    assert session.openai_sentinel_token_events == [
++        {"path": "/backend-api/sentinel/ping", "body_length": 0}
++    ]
++    assert json.loads(session.openai_approve_telemetry) == [
++        1,
++        620.5,
++        7,
++        30,
++        26,
++        2,
++        0,
++        624,
++    ]
++    assert [name for name, _ in calls] == ["open", "init", "token", "cookie", "close"]
++
++
+@@ -101 +231,4 @@ def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
+-                headers = {"x-oai-is-update": "ois1.fixture"}
++                headers = {
++                    "x-oai-is-receipt": "ois1.fixture",
++                    "x-oai-is-update": "must-not-be-echoed",
++                }
+@@ -119,0 +253,25 @@ def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
++def test_gopay_transport_clears_pending_receipts_on_ack() -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers = {
++                "x-oai-is-pending-updates": '{"v":3,"updates":["old-receipt"]}'
++            }
++
++        def request(self, *_args, **_kwargs):
++            class Response:
++                status_code = 200
++                text = "{}"
++                headers = {
++                    "x-oai-is-receipt": "new-receipt",
++                    "x-oai-is-pending-updates-ack": "acknowledged",
++                }
++
++            return Response()
++
++    session = Session()
++    gopay_transport.stage_http_request(
++        session, "fixture", "POST", "https://chatgpt.com/backend-api/fixture"
++    )
++    assert session.headers["x-oai-is-pending-updates"] == '{"v":3,"updates":[]}'
++
++
+@@ -133,3 +291,3 @@ def test_gopay_browser_provider_syncs_pending_update_header(monkeypatch) -> None
+-                "requests": [
+-                    {"responseHeaders": {"x-oai-is-update": "ois1.browser-fixture"}}
+-                ]
++                    "requests": [
++                        {"responseHeaders": {"x-oai-is-receipt": "ois1.browser-fixture"}}
++                    ]
+@@ -145,0 +304,23 @@ def test_gopay_browser_provider_syncs_pending_update_header(monkeypatch) -> None
++def test_gopay_browser_provider_recovers_attestation_from_request_monitor(monkeypatch) -> None:
++    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
++    provider._attestation = ""
++    monkeypatch.setattr(provider, "_eval", lambda _expression: {})
++    monkeypatch.setattr(
++        provider,
++        "_run",
++        lambda _args, timeout=20: {
++            "data": {
++                "requests": [
++                    {
++                        "requestHeaders": {
++                            "OAI-Web-Deployment-Attestation": "a" * 291
++                        }
++                    }
++                ]
++            }
++        },
++    )
++    provider._capture_bootstrap()
++    assert provider._attestation == "a" * 291
++
++
+@@ -205,0 +387 @@ def test_gopay_browser_prepare_flow_uses_sdk_init_without_exporting_token(monkey
++    assert 'window.__opllSentinelReferer="https://chatgpt.com/checkout/openai_llc/cs_fixture"' in expressions[0]
+@@ -239,0 +422 @@ def test_gopay_stripe_metrics_seed_missing_browser_mid_cookie() -> None:
++    assert ctx["sid"] == "NA"
+@@ -291,0 +475 @@ def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
++                "oai-web-deployment-attestation": "a" * 291,
+@@ -317 +501,7 @@ def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
+-    checkout = gopay_checkout.create_checkout(config, Session(), None)
++    commits: list[str] = []
++    checkout = gopay_checkout.create_checkout(
++        config,
++        Session(),
++        None,
++        commit_callback=lambda: commits.append("checkout_committed"),
++    )
+@@ -328,0 +519,2 @@ def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
++    assert len(captured["headers"]["oai-web-deployment-attestation"]) == 291
++    assert commits == ["checkout_committed"]
+@@ -337,0 +530,33 @@ def test_gopay_required_sentinel_proof_fails_closed() -> None:
++def test_gopay_checkout_commits_with_required_playwright_token_without_attestation(monkeypatch) -> None:
++    class Provider:
++        def headers(self, _flow, **_kwargs):
++            return {"OpenAI-Sentinel-Token": "proof-fixture"}
++
++    session = SimpleNamespace(openai_sentinel_provider=Provider())
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    class Response:
++        status_code = 200
++        text = '{"checkout_session_id":"cs_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"checkout_session_id": "cs_fixture"}
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", lambda *_args, **_kwargs: Response())
++    committed: list[bool] = []
++    checkout = gopay_checkout.create_checkout(
++        config,
++        session,
++        None,
++        commit_callback=lambda: committed.append(True),
++    )
++    assert checkout["cs_id"] == "cs_fixture"
++    assert committed == [True]
++
++
+@@ -519,0 +745 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) ->
++                "oai-web-deployment-attestation": "a" * 291,
+@@ -636 +862,179 @@ def test_gopay_consumer_lookup_matches_both_har_parameter_sets(monkeypatch) -> N
+-    assert captured["headers"] == gopay_cs_live.cs_stripe_headers()
++    assert captured["headers"] == {
++        **gopay_cs_live.cs_stripe_headers(),
++        "Accept-Language": "en",
++    }
++
++
++def test_gopay_stripe_init_negotiates_manual_approval_on_first_request(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    class Response:
++        status_code = 200
++        text = '{"id":"ppage_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"id": "ppage_fixture"}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++    }
++    gopay_cs_live.stripe_init(config, checkout, None, object())
++    data = captured["data"]
++    assert data["_stripe_version"] == gopay_cs_live.STRIPE_VERSION_FULL
++    assert data["elements_session_client[client_betas][0]"] == "custom_checkout_server_updates_1"
++    assert data["elements_session_client[client_betas][1]"] == "custom_checkout_manual_approval_1"
++    assert len(data) == 13
++
++
++def test_gopay_stripe_init_retries_transport_on_same_checkout(monkeypatch) -> None:
++    calls: list[str] = []
++
++    class Response:
++        status_code = 200
++        text = '{"id":"ppage_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"id": "ppage_fixture"}
++
++    def fake_request(*args, **_kwargs):
++        calls.append(args[3])
++        if len(calls) < 3:
++            from payment_link_extractor.errors import NetworkError
++
++            raise NetworkError("Stripe payment_pages init", "fixture timeout")
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    monkeypatch.setattr(gopay_cs_live.time, "sleep", lambda _seconds: None)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++    }
++    gopay_cs_live.stripe_init(config, checkout, None, object())
++    assert calls == [
++        "https://api.stripe.com/v1/payment_pages/cs_live_fixture/init"
++    ] * 3
++
++
++def test_gopay_elements_uses_primary_locale_and_browser_timezone(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    class Response:
++        status_code = 200
++        text = '{"payment_method_types":["gopay"]}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"payment_method_types": ["gopay"]}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++        "payment_locale": "id-ID",
++        "browser_timezone": "Asia/Jakarta",
++        "currency": "IDR",
++    }
++    init_payload = {
++        "id": "ppage_fixture",
++        "config_id": "init-config",
++        "currency": "idr",
++        "total_summary": {"due": 0},
++        "payment_method_types": ["card", "gopay"],
++        "payment_method_configuration": {"id": "pmc_fixture"},
++    }
++    ctx = gopay_stripe_common.stripe_context(init_payload, checkout, "stripe-js-fixture")
++    gopay_cs_live.cs_elements_session(object(), checkout, init_payload, ctx, None)
++    assert ctx["locale"] == "id"
++    assert captured["params"]["locale"] == "id"
++    assert captured["params"]["browser_timezone"] == "Asia/Jakarta"
++    assert len(captured["params"]) == 19
++
++
++def test_gopay_confirm_splits_initial_and_latest_checkout_config_ids(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    class Response:
++        status_code = 200
++        text = "{}"
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++        "payment_locale": "id-ID",
++        "billing_country": "ID",
++        "checkout_state": {"email": "account@example.com"},
++    }
++    init_payload = {
++        "id": "ppage_fixture",
++        "config_id": "init-config",
++        "init_checksum": "a" * 32,
++        "currency": "idr",
++        "total_summary": {"due": 0},
++    }
++    ctx = gopay_stripe_common.stripe_context(init_payload, checkout, "stripe-js-fixture")
++    ctx.update(
++        {
++            "checkout_config_id": "latest-config",
++            "elements_session_id": "elements-session",
++            "elements_session_config_id": "elements-config",
++        }
++    )
++    billing = {
++        "name": "Budi Santoso",
++        "email": "static@example.invalid",
++        "country": "ID",
++        "line1": "Jl. Sudirman",
++        "city": "Jakarta",
++        "state": "Jambi",
++        "postal_code": "10220",
++    }
++    gopay_cs_live.stripe_confirm_cs_live(
++        object(),
++        checkout,
++        init_payload,
++        ctx,
++        "https://checkout.stripe.com/c/pay/cs_live_fixture",
++        "gopay",
++        billing,
++        None,
++    )
++    data = captured["data"]
++    assert data["client_attribution_metadata[checkout_config_id]"] == "latest-config"
++    assert data["payment_method_data[client_attribution_metadata][checkout_config_id]"] == "init-config"
++    assert data["payment_method_data[billing_details][email]"] == "account@example.com"
+@@ -659 +1063,4 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+-            return {"total_summary": {"total": 0}}
++            return {
++                "config_id": f"checkout-config-{len(requests)}",
++                "total_summary": {"total": 0},
++            }
+@@ -707,0 +1115,125 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
++    assert ctx["checkout_config_id"] == "checkout-config-5"
++
++
++def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) -> None:
++    events: list[str] = []
++
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "stripe_init",
++        lambda *_args: (
++            {
++                "stripe_hosted_url": "https://checkout.stripe.com/c/pay/cs_fixture",
++                "payment_method_types": ["gopay"],
++                "total_summary": {"due": 0},
++                "currency": "idr",
++            },
++            "stripe-js-fixture",
++        ),
++    )
++    monkeypatch.setattr(gopay_cs_live, "ensure_payment_method_offered", lambda *_args: None)
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "stripe_context",
++        lambda *_args, **_kwargs: {
++            "checkout_amount": 0,
++            "currency": "idr",
++            "stripe_js_id": "stripe-js-fixture",
++            "elements_session_id": "elements-fixture",
++            "elements_session_config_id": "elements-config",
++            "config_id": "init-config",
++            "checkout_config_id": "init-config",
++            "locale": "id",
++        },
++    )
++    monkeypatch.setattr(gopay_cs_live, "synchronize_stripe_browser_ids", lambda *_args: None)
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "cs_elements_session",
++        lambda *_args, **_kwargs: {"payment_method_types": ["gopay"]},
++    )
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "prefetch_checkout_approval_proof",
++        lambda *_args: events.append("approval_init"),
++    )
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "stripe_consumer_session_lookup",
++        lambda *_args: events.append("consumer_lookup") or {},
++    )
++
++    def tax_fields(_stripe, _checkout, _ctx, billing, _log, fields, accumulated=None):
++        current = dict(accumulated or {})
++        current.update({field: billing[field] for field in fields})
++        events.append("tax_region:" + ",".join(fields))
++        return {}, current
++
++    monkeypatch.setattr(gopay_cs_live, "_cs_update_tax_region_fields", tax_fields)
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "cs_snapshot_billing",
++        lambda *_args: events.append("snapshot"),
++    )
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "cs_checkout_taxes",
++        lambda *_args: events.append("taxes") or {},
++    )
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "cs_checkout_page_refresh",
++        lambda *_args: events.append("page_get") or {},
++    )
++    monkeypatch.setattr(gopay_cs_live, "stripe_confirm_cs_live", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "provider_redirect_after_confirm",
++        lambda *_args: "https://pm-redirects.stripe.com/authorize/fixture",
++    )
++    monkeypatch.setattr(
++        gopay_cs_live,
++        "resolve_external_redirect",
++        lambda *_args, **_kwargs: "https://app.midtrans.com/snap/v4/redirection/fixture",
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++        "payment_locale": "id-ID",
++        "billing_country": "ID",
++        "currency": "IDR",
++    }
++    billing = {
++        "name": "Budi Santoso",
++        "email": "account@example.com",
++        "phone": "000",
++        "country": "ID",
++        "line1": "Jl. Sudirman",
++        "city": "Jakarta",
++        "state": "Jambi",
++        "postal_code": "10220",
++    }
++    result = gopay_cs_live.extract_cs_live_provider(
++        config, object(), object(), checkout, billing, None
++    )
++    assert result["gopay_url"].startswith("https://app.midtrans.com/")
++    assert events == [
++        "approval_init",
++        "consumer_lookup",
++        "tax_region:country,line1,city",
++        "snapshot",
++        "tax_region:state",
++        "snapshot",
++        "taxes",
++        "page_get",
++        "tax_region:postal_code",
++        "taxes",
++        "page_get",
++    ]
+@@ -743 +1275 @@ def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch
+-        lambda *_args: {
++        lambda *_args, **_kwargs: {
+@@ -821,0 +1354 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++    monkeypatch.setattr(gopay_core, "account_email", lambda _token: "account@example.com")
+@@ -826 +1359 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
+-        lambda *_args: {
++        lambda *_args, **_kwargs: {
+@@ -835,5 +1368,10 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
+-    monkeypatch.setattr(
+-        gopay_core,
+-        "extract_cs_live_provider",
+-        lambda *_args, **_kwargs: {"provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture", "gopay_url": "https://app.midtrans.com/snap/v4/redirection/fixture"},
+-    )
++    captured_billing: dict[str, str] = {}
++
++    def provider(*args, **_kwargs):
++        captured_billing.update(args[4])
++        return {
++            "provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
++            "gopay_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
++        }
++
++    monkeypatch.setattr(gopay_core, "extract_cs_live_provider", provider)
+@@ -865,0 +1404,2 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++    assert captured_billing["email"] == "account@example.com"
++    assert result.billing.email == "account@example.com"
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+new file mode 100644
+index 0000000..3ec959d
+--- /dev/null
++++ b/tests/test_gopay_live_canary.py
+@@ -0,0 +1,57 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location(
++    "gopay_live_canary", ROOT / "tools/gopay_live_canary.py"
++)
++assert SPEC is not None and SPEC.loader is not None
++MODULE = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(MODULE)
++
++
++def test_canary_loaders_keep_token_and_proxy_slots_private(tmp_path: Path) -> None:
++    tokens = tmp_path / "tokens.txt"
++    tokens.write_text("eyJone.payload.signature\neyJtwo.payload.signature\n", encoding="utf-8")
++    assert MODULE.load_tokens(tokens) == [
++        "eyJone.payload.signature",
++        "eyJtwo.payload.signature",
++    ]
++
++    rollout = tmp_path / "rollout.jsonl"
++    rollout.write_text(
++        json.dumps(
++            {
++                "payload": {
++                    "type": "message",
++                    "role": "user",
++                    "content": [
++                        {
++                            "type": "input_text",
++                            "text": "id.example.com:8080:user:password",
++                        }
++                    ],
++                }
++            }
++        )
++        + "\n",
++        encoding="utf-8",
++    )
++    proxies = MODULE.load_rollout_proxies(rollout)
++    assert proxies == ["http://user:password@id.example.com:8080"]
++
++
++def test_canary_provider_shape_outputs_no_order_identifier() -> None:
++    shape = MODULE._provider_shape(
++        "https://app.midtrans.com/snap/v4/redirection/private-order-id"
++    )
++    assert shape == {
++        "present": True,
++        "host": "app.midtrans.com",
++        "path_prefix": "/snap/v4",
++    }
++    assert "private-order-id" not in json.dumps(shape)
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+new file mode 100644
+index 0000000..2d711ea
+--- /dev/null
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -0,0 +1,37 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from payment_link_extractor import gopay_sentinel_playwright as sentinel
++
++
++def test_playwright_proxy_and_profile_are_stable() -> None:
++    assert sentinel._proxy_options("http://user:pass@127.0.0.1:8080") == {
++        "server": "http://127.0.0.1:8080",
++        "username": "user",
++        "password": "pass",
++    }
++    first = sentinel._profile_key("device-fixture")
++    assert first == sentinel._profile_key("device-fixture")
++    assert first != sentinel._profile_key("other-device")
++
++
++def test_playwright_cookie_header_contains_no_empty_names() -> None:
++    assert sentinel._cookie_header(
++        [
++            {"name": "oai-did", "value": "device"},
++            {"name": "", "value": "ignored"},
++            {"name": "__stripe_mid", "value": "mid"},
++        ]
++    ) == "oai-did=device; __stripe_mid=mid"
++
++
++def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
++    source = Path(sentinel.__file__).read_text(encoding="utf-8")
++    assert "asyncio.run_coroutine_threadsafe" in source
++    assert "launch_persistent_context" in source
++    assert "gopay-sentinel-profiles" in source
++    assert "/sentinel/{SENTINEL_SDK_VERSION}/sdk.js" in source
++    assert '"headless": headless' in source
++    assert '"chrome"' in source
++    assert "jsdom" not in source.lower()
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+new file mode 100644
+index 0000000..bdaa990
+--- /dev/null
++++ b/tools/gopay_live_canary.py
+@@ -0,0 +1,198 @@
++from __future__ import annotations
++
++import argparse
++import json
++import re
++import sys
++from pathlib import Path
++from typing import Any
++from urllib.parse import urlsplit
++
++ROOT = Path(__file__).resolve().parents[1]
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++from payment_link_extractor.gopay_core import extract_gopay_payment_link
++from payment_link_extractor.gopay_transport import normalize_proxy_url
++from payment_link_extractor.models import ExtractionConfig
++
++
++JWT_RE = re.compile(r"eyJ[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]+){2}")
++PROXY_RE = re.compile(
++    r"(?:[A-Za-z0-9.-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^:\s]+"
++)
++
++
++def _unique(values: list[str]) -> list[str]:
++    result: list[str] = []
++    for value in values:
++        if value and value not in result:
++            result.append(value)
++    return result
++
++
++def load_tokens(path: Path) -> list[str]:
++    text = path.read_text(encoding="utf-8-sig")
++    return _unique([item.replace("\\_", "_") for item in JWT_RE.findall(text)])
++
++
++def load_rollout_proxies(path: Path) -> list[str]:
++    texts: list[str] = []
++    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
++        try:
++            item = json.loads(line)
++        except (TypeError, ValueError):
++            continue
++        payload = item.get("payload") if isinstance(item, dict) else None
++        if not isinstance(payload, dict):
++            continue
++        if payload.get("type") != "message" or payload.get("role") != "user":
++            continue
++        for content in payload.get("content") or []:
++            if isinstance(content, dict) and content.get("type") in {"input_text", "text"}:
++                texts.append(str(content.get("text") or ""))
++    raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall("\n".join(texts))])
++    return [normalize_proxy_url(item) for item in raw]
++
++
++def _safe_error(exc: BaseException) -> dict[str, Any]:
++    status = getattr(exc, "status_code", None)
++    try:
++        status = int(status) if status is not None else None
++    except (TypeError, ValueError):
++        status = None
++    message = str(exc).lower()
++    if "attestation" in message:
++        category = "attestation_missing"
++    elif "sentinel proof generation" in message or "sentinel provider" in message:
++        category = "sentinel_browser"
++    elif any(item in message for item in ("timeout", "connect", "proxy", "ssl")):
++        category = "network"
++    elif "not_eligible" in message or "not eligible" in message:
++        category = "promo_not_eligible"
++    elif "blocked" in message:
++        category = "approve_blocked"
++    else:
++        category = "protocol"
++    result = {
++        "type": type(exc).__name__,
++        "status_code": status,
++        "failure_mode": str(getattr(exc, "failure_mode", "") or ""),
++        "category": category,
++    }
++    safe_context = getattr(exc, "safe_context", None)
++    if isinstance(safe_context, dict):
++        result["safe_context"] = safe_context
++    return result
++
++
++def _provider_shape(value: str) -> dict[str, Any]:
++    parsed = urlsplit(str(value or ""))
++    return {
++        "present": bool(parsed.scheme in {"http", "https"} and parsed.netloc),
++        "host": parsed.hostname or "",
++        "path_prefix": "/".join(parsed.path.split("/")[:3]),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(
++        description="Run one GoPay account canary without retrying after Checkout commit"
++    )
++    parser.add_argument("--tokens-file", type=Path, required=True)
++    parser.add_argument("--proxy-rollout", type=Path, required=True)
++    parser.add_argument("--token-index", type=int, required=True, help="one-based token slot")
++    parser.add_argument("--start-proxy-slot", type=int, default=1)
++    args = parser.parse_args()
++
++    tokens = load_tokens(args.tokens_file)
++    proxies = load_rollout_proxies(args.proxy_rollout)
++    if not 1 <= args.token_index <= len(tokens):
++        print(json.dumps({"status": "input_error", "token_count": len(tokens)}))
++        return 2
++    if not proxies:
++        print(json.dumps({"status": "input_error", "proxy_count": 0}))
++        return 2
++
++    token = tokens[args.token_index - 1]
++    start = max(1, int(args.start_proxy_slot)) - 1
++    attempts: list[dict[str, Any]] = []
++    for proxy_index in range(start, len(proxies)):
++        proxy = proxies[proxy_index]
++        stages: list[str] = []
++        committed = False
++
++        def stage_callback(stage: str) -> None:
++            nonlocal committed
++            normalized = str(stage)
++            stages.append(normalized)
++            if normalized == "checkout_committed":
++                committed = True
++            print(
++                f"CANARY_STAGE token_slot={args.token_index} "
++                f"proxy_slot={proxy_index + 1} stage={normalized}",
++                flush=True,
++            )
++
++        config = ExtractionConfig(
++            access_token=token,
++            checkout_proxy=proxy,
++            update_proxy=proxy,
++            country="ID",
++            payment_method="gopay",
++            apply_checkout_update=True,
++            gopay_zero_trial_validation=True,
++            verbose=False,
++            retry_count=0,
++            checkout_proxy_attempts=(proxy,),
++            update_proxy_attempts=(proxy,),
++            proxy_pool=(proxy,),
++        )
++        try:
++            result = extract_gopay_payment_link(config, stage_callback=stage_callback)
++        except BaseException as exc:
++            error = _safe_error(exc)
++            attempt = {
++                "proxy_slot": proxy_index + 1,
++                "committed": committed,
++                "last_stage": stages[-1] if stages else "not_started",
++                "error": error,
++            }
++            attempts.append(attempt)
++            print("CANARY_ATTEMPT=" + json.dumps(attempt, separators=(",", ":")), flush=True)
++            if committed or error["status_code"] == 401:
++                final = {
++                    "status": "consumed_failure" if committed else "auth_failure",
++                    "token_slot": args.token_index,
++                    "attempts": attempts,
++                }
++                print("CANARY_RESULT=" + json.dumps(final, separators=(",", ":")), flush=True)
++                return 20 if committed else 21
++            continue
++
++        data = result.to_dict()
++        provider = str(data.get("gopay_url") or data.get("provider_url") or "")
++        final = {
++            "status": "success",
++            "token_slot": args.token_index,
++            "proxy_slot": proxy_index + 1,
++            "checkout_committed": committed,
++            "amount_due_minor": data.get("amount_due_minor"),
++            "currency": data.get("currency"),
++            "provider": _provider_shape(provider),
++            "stages": stages,
++        }
++        print("CANARY_RESULT=" + json.dumps(final, separators=(",", ":")), flush=True)
++        return 0
++
++    final = {
++        "status": "no_checkout_committed",
++        "token_slot": args.token_index,
++        "attempts": attempts,
++    }
++    print("CANARY_RESULT=" + json.dumps(final, separators=(",", ":")), flush=True)
++    return 22
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

@@ -1,0 +1,124 @@
+GoPay Playwright Sentinel 四账号修复验证
+============================================
+
+Changed branch/fields:
+- Git branch: main
+- Sentinel provider: GoPay now uses PlaywrightSentinelProvider with real Chrome 151.
+- Runtime: one persistent daemon thread, Proactor event loop and persistent browser context per full attempt.
+- Device profile: data/gopay-sentinel-profiles/<stable-device-id> (Git ignored).
+- Sentinel lifecycle: checkout req/ping/token; approval init(req/ping) -> token(ping), same runtime/browser.
+- Stripe: FULL beta init, initial/latest checkout_config_id split, primary locale/timezone, two tax rounds.
+- Task retry field: TaskRecord.checkout_opportunity_consumed prevents a second Checkout after commit.
+- Same-Checkout Stripe init network retry: three attempts, no proxy or Checkout rotation.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-playwright-sentinel-four-at-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-playwright-sentinel-four-at-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-playwright-sentinel-four-at-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-playwright-sentinel-four-at-20260830\ROLLBACK.sh
+
+Original baseline:
+- Commit: 2f6b95d121ba540ba1b3c87363312c8a8f054b4c
+- payment_link_extractor/gopay_transport.py SHA-256: a125ee849c7a99d78db8b984287b07305b8968ca23a82f8b3e0edc864d446efe
+- payment_link_extractor/gopay_cs_live.py SHA-256: 5b8a48242cd58277becd11c06de2d1aa5acb7460beac44ae033dbf7e97072268
+- payment_link_extractor/web/tasks.py SHA-256: 93f5c76c9cfc486b8ca6eeb16912162ab10fe0fc3957bd3b09a7b82cafdbc493
+
+Modified hashes:
+- payment_link_extractor/gopay_sentinel_playwright.py SHA-256: cb6f552ff159ce1fe09d64b1eee9546e070dce977597869805230aa90032ed07
+- payment_link_extractor/gopay_transport.py SHA-256: 29ff44794df30add7f522113397f2df87de59ac3e511b5a16bdb0c0de8d89424
+- payment_link_extractor/gopay_cs_live.py SHA-256: edd490ffac5954f4c7aab2ed546f0ca88fb211fe2a5cc886fb0948b7bfdd610b
+- DIFF_FILE SHA-256: 08ce461367da0c74d2d6d57e54a0a689dc1da6570cceb490d92d8321dbc879ba
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: Git baseline 2f6b95d121ba540ba1b3c87363312c8a8f054b4c before this repair.
+Literal output/result:
+........................................................................ [ 33%]
+........................................................................ [ 66%]
+.......................................................................  [100%]
+215 passed in 1.60s
+BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with real Playwright Chrome Sentinel, HAR field fixes, one-Checkout gate, canary tool and tests.
+Literal output/result:
+........................................................................ [ 31%]
+........................................................................ [ 62%]
+........................................................................ [ 93%]
+...............                                                          [100%]
+231 passed in 1.70s
+MODIFIED_FULL_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_playwright.py tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py
+Input: Playwright daemon/profile, Sentinel lifecycle, HAR parity and irreversible Checkout boundary tests.
+Literal output/result:
+..........................................................               [100%]
+58 passed in 0.43s
+MODIFIED_TARGET_EXIT=0
+Exit status: 0
+
+CHANNEL ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Input: PayPal/GoPay/GCash isolated adapters and fields.
+Literal output/result:
+........................                                                 [100%]
+24 passed in 0.28s
+CHANNEL_ISOLATION_EXIT=0
+Exit status: 0
+
+PLAYWRIGHT lifecycle probe command:
+.\.venv\Scripts\python.exe -u artifacts-local\playwright-sentinel-lifecycle.py
+Input: consumed diagnostic account, one fixed proxy, no Checkout creation.
+Literal output/result:
+PERSISTENT_RUNTIME_ID_PRESENT=True
+PLAYWRIGHT_BROWSER_CHANNEL=chrome
+PLAYWRIGHT_BROWSER_VERSION=151.0.7922.170
+CHECKOUT_TOKEN_PRESENT=True
+APPROVAL_TOKEN_PRESENT=True
+APPROVAL_INIT_EVENTS=req(body>0,frame) -> ping(body=0,checkout)
+APPROVAL_TOKEN_EVENTS=ping(body=0,checkout)
+SAME_RUNTIME_AFTER_TOKEN=True
+SDK_SHA256=49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd
+Exit status: 0
+
+FOUR ACCOUNT LIVE RESULT:
+- AT slot 1 / proxy slot 5 / Checkout count 1 / payment_confirmation / approve_blocked.
+- AT slot 2 / proxy slot 5 / Checkout count 1 / payment_confirmation / approve_blocked.
+- AT slot 3 / proxy slot 5 / Checkout count 1 / payment_confirmation / approve_blocked.
+- AT slot 4 / proxy slot 3 / Checkout count 1 / stripe_init / network error.
+- No account created a second Checkout; pre-Checkout not_eligible/network checks did not consume the opportunity.
+- AT-3 runtime confirmed real Chrome 151, persistent runtime/profile, exact SDK SHA, zero-body approval ping and empty pending envelope.
+- Remaining HAR gap: successful captures contain NextAuth session-token cookies and 291-byte deployment attestation; AT-only runtime did not.
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISSING_COUNT=0
+GCASH_MISMATCH_COUNT=0
+GCASH_EXTRA_NONCACHE_COUNT=0
+GCASH_BYTE_EQUAL=True
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-playwright-sentinel-four-at-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-playwright-sentinel-rollback-test-20260830-203453' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to payment_link_extractor/gopay_transport.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-playwright-sentinel-rollback-test-20260830-203453
+RESTORED_TRACKED_FILES=10
+REMOVED_NEW_FILES=5
+RESTORED_STATUS=PASS
+RESTORED_SHA256=a125ee849c7a99d78db8b984287b07305b8968ca23a82f8b3e0edc864d446efe
+EXPECTED_SHA256=a125ee849c7a99d78db8b984287b07305b8968ca23a82f8b3e0edc864d446efe
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all 10 tracked files byte-for-byte to 2f6b95d and removed all 5 new files.
+- The repository and MODIFIED_FILE remain on the real Playwright Sentinel implementation.
+- PayPal and the byte-identical 22-file GCash upstream copy remain unchanged.
+- Runtime credentials, cookies, proxy credentials, Checkout IDs and redirect nonces are absent from these artifacts.
