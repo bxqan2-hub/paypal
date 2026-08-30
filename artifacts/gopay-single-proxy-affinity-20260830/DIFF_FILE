@@ -1,0 +1,205 @@
+diff --git a/docs/2026-08-30_gopay-single-proxy-affinity-report.md b/docs/2026-08-30_gopay-single-proxy-affinity-report.md
+new file mode 100644
+index 0000000..30b7218
+--- /dev/null
++++ b/docs/2026-08-30_gopay-single-proxy-affinity-report.md
+@@ -0,0 +1,46 @@
++# GoPay 单次提链代理粘滞规则
++
++## 结论
++
++GoPay 现在强制执行“一个完整尝试只使用一个代理”。资格检查、Checkout 创建与更新、Stripe、税费、支付确认和 GoPay 长链解析全部绑定到本次尝试选中的同一代理。只有整个尝试失败，或开启金额校验后资格/金额检查失败，任务层才会选择下一个代理并从头创建新流程。
++
++```mermaid
++flowchart LR
++    A[任务随机选择代理 A] --> B[资格检查]
++    B --> C[Checkout]
++    C --> D[Stripe 与税费]
++    D --> E[确认与 GoPay 长链]
++    E -->|成功| F[结束]
++    B -->|失败| G[销毁本次流程]
++    C -->|失败| G
++    D -->|失败或金额校验失败| G
++    E -->|失败| G
++    G --> H[选择代理 B]
++    H --> B
++```
++
++## 实现
++
++- `payment_link_extractor/gopay_core.py` 在渠道入口将 `checkout_proxy` 固定为本次尝试代理，并把 `update_proxy` 及下游代理视图统一为该代理。
++- `payment_link_extractor/web/tasks.py` 对 GoPay 的代理池和旧版双代理尝试列表都执行同一规则：同一次尝试的 checkout/update 代理必须相等。
++- 重试仍由任务层执行；每次失败后重建浏览器、Checkout、Stripe 和 provider 状态，不在已开始的正常流程中热切换代理。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-001：GoPay 代理池路径原本已让 checkout/update 在同一尝试相等 | F-001：需要把该约束提升为核心不变量 | `payment_link_extractor/web/tasks.py` |
++| E-002：资格和 Checkout update 会读取 `update_proxy` | F-002：直接 API/旧配置仍可能在一次流程内切换代理 | `payment_link_extractor/gopay_checkout.py` |
++| E-003：渠道核心持有所有下游调用的统一配置 | F-003：在 GoPay 核心入口钉住代理可覆盖资格、Checkout、Stripe 与 provider | `payment_link_extractor/gopay_core.py` |
++
++## 验证
++
++```powershell
++.\.venv\Scripts\python.exe -m pytest -q `
++  tests\test_extraction_full_retry.py `
++  tests\test_gopay_isolated_optimization.py
++
++.\.venv\Scripts\python.exe -m pytest -q
++```
++
++测试覆盖代理池随机重试、旧版 checkout/update 双列表输入、资格检查成功后的后续流程，以及金额校验失败后的下一次完整尝试。
+diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
+index fa37d7f..825e939 100644
+--- a/payment_link_extractor/gopay_core.py
++++ b/payment_link_extractor/gopay_core.py
+@@ -9,0 +10 @@ import threading
++from dataclasses import replace
+@@ -33,0 +35,18 @@ GOPAY_RESULT_FIELD = "gopay_url"
++def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
++    """Bind every request in one GoPay attempt to its selected proxy.
++
++    The task manager may select a different proxy only when it starts a new
++    full attempt.  Downstream eligibility, Checkout, Stripe and provider code
++    receives a single-entry view so it cannot switch mid-attempt.
++    """
++    proxy = str(config.checkout_proxy or "").strip()
++    return replace(
++        config,
++        checkout_proxy=proxy,
++        update_proxy=proxy,
++        checkout_proxy_attempts=(proxy,),
++        update_proxy_attempts=(proxy,),
++        proxy_pool=(proxy,),
++    )
++
++
+@@ -97,0 +117,2 @@ def extract_gopay_payment_link(
++    config = pin_gopay_attempt_proxy(config)
++
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index d7bb710..cec2cb2 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -457 +457,5 @@ class TaskManager:
+-        if config.proxy_pool:
++        if config.payment_method == "gopay":
++            # GoPay owns one proxy for the entire current attempt. A new
++            # proxy is selected only when the attempt fails and the outer
++            # retry loop rebuilds the complete flow from the beginning.
++            candidates = config.proxy_pool or config.checkout_proxy_attempts
+@@ -459 +463 @@ class TaskManager:
+-                config.checkout_proxy, config.proxy_pool, total_attempts
++                config.checkout_proxy, candidates, total_attempts
+@@ -468 +472 @@ class TaskManager:
+-                proxy_pool=attempts,
++                proxy_pool=attempts if config.proxy_pool else (),
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 331cb79..90a6b38 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -312,0 +313,38 @@ def test_gopay_proxy_pool_attempts_are_random_and_same_proxy_per_attempt() -> No
++def test_gopay_legacy_attempt_lists_cannot_split_one_attempt_across_proxies() -> None:
++    calls: list[tuple[str, str]] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        calls.append((config.checkout_proxy, config.update_proxy))
++        if len(calls) == 1:
++            raise ProtocolError(409, "promo eligibility rejected: state=not_eligible")
++        return {"ok": True, "amount_due_minor": 0, "currency": "IDR"}
++
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://checkout-1.example:8080",
++        update_proxy="http://update-1.example:8080",
++        country="ID",
++        payment_method="gopay",
++        retry_count=1,
++        checkout_proxy_attempts=(
++            "http://checkout-1.example:8080",
++            "http://checkout-2.example:8080",
++        ),
++        update_proxy_attempts=(
++            "http://update-1.example:8080",
++            "http://update-2.example:8080",
++        ),
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++        assert snapshot["status"] == "succeeded"
++        assert calls == [
++            ("http://checkout-1.example:8080", "http://checkout-1.example:8080"),
++            ("http://checkout-2.example:8080", "http://checkout-2.example:8080"),
++        ]
++    finally:
++        manager.close()
++
++
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index c18c2e4..1cd9bcc 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -608,0 +609,60 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++def test_gopay_core_pins_eligibility_and_provider_to_one_attempt_proxy(monkeypatch) -> None:
++    selected = "http://selected-id-proxy.example:8080"
++    observed: list[tuple[str, str, str]] = []
++
++    class Session:
++        def close(self) -> None:
++            return None
++
++    class Factory:
++        def chatgpt(self, config, proxy):
++            observed.append(("chatgpt", config.update_proxy, proxy))
++            return Session()
++
++        def stripe(self, config):
++            observed.append(("stripe", config.update_proxy, config.checkout_proxy))
++            return Session()
++
++    def observe(name, result):
++        def call(config, *_args, **_kwargs):
++            observed.append((name, config.checkout_proxy, config.update_proxy))
++            return result
++
++        return call
++
++    checkout = {
++        "cs_id": "cs_fixture",
++        "session_kind": "stripe_checkout",
++        "billing_country": "ID",
++        "currency": "IDR",
++        "checkout_state": {"currency": "IDR", "total": {"total": {"minorUnitsAmount": 0}}},
++    }
++    monkeypatch.setattr(gopay_core, "check_coupon_eligibility", observe("eligibility", {"state": "eligible"}))
++    monkeypatch.setattr(gopay_core, "create_checkout", observe("checkout", checkout))
++    monkeypatch.setattr(gopay_core, "update_checkout", observe("update", {}))
++    monkeypatch.setattr(gopay_core, "require_country_currency", lambda *_args: None)
++    monkeypatch.setattr(
++        gopay_core,
++        "extract_cs_live_provider",
++        observe(
++            "provider",
++            {
++                "provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
++                "gopay_url": "https://app.midtrans.com/snap/v4/redirection/fixture",
++            },
++        ),
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy=selected,
++        update_proxy="http://must-not-be-used.example:8080",
++        country="ID",
++        payment_method="gopay",
++        proxy_pool=(selected, "http://future-retry-only.example:8080"),
++    )
++    result = gopay_core.extract_gopay_payment_link(config, transport_factory=Factory())
++    assert result.provider_value.endswith("/fixture")
++    assert observed
++    assert all(left == selected and right == selected for _, left, right in observed)
++
++
