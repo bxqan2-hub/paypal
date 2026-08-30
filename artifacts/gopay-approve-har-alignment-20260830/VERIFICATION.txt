@@ -1,0 +1,111 @@
+GoPay approve blocked 双 HAR 对齐验证
+=====================================
+
+Changed branch/field:
+- Git branch: main
+- Sentinel SDK: GoPay-only asset replaced by the identical /sentinel/20260810913b/sdk.js body from both complete HARs.
+- Approval lifecycle: Elements -> SentinelSDK.init(checkout_session_approval) -> Stripe/taxes/confirm -> SentinelSDK.token(checkout_session_approval) -> approve.
+- Dynamic fields: SDK ping-derived oai-telemetry, current browser Cookie, empty approve pending envelope, and Stripe confirm muid synchronized with __stripe_mid.
+- Request surface: taxes no longer mints Sentinel proof; GoPay confirm uses runtime b0f5e7abe5 and no longer calls the unused /v1/payment_methods endpoint.
+- PayPal and GCash source/constants/transports remain unchanged.
+
+HAR evidence:
+- C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-20260830-180333.summary.md
+  summary SHA-256: D63DECD46B73E81D7724A4AAE002796C6B3F70159A080E2F7805E87B9ABF9B7F
+  raw HAR SHA-256: 14280D53DBC2C9E3AB901BDC0C43A007474211D1B017F06B4CF8ABE1E426A2FE
+- C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.summary.md
+  summary SHA-256: 9CE7293B924D49CD0BC8FEE6D52D7F450BAE2EDBC3C11C0F7725156476633329
+  raw HAR SHA-256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
+- Both raw HARs contain the identical 33818-character Sentinel SDK, SHA-256 49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-approve-har-alignment-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-approve-har-alignment-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-approve-har-alignment-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-approve-har-alignment-20260830\ROLLBACK.sh
+
+Original Git baseline SHA-256 (HEAD 948af84):
+- payment_link_extractor/gopay_checkout.py: 91764f73f2439ba2add73a503d0b0e129595fceed242822479cfe32571bebf49
+- payment_link_extractor/gopay_cs_live.py: 52e4282e67d792f3d4d1bcaa4e3b21ee03acf1b21ccb9e85b467f2f98fc4037b
+- payment_link_extractor/gopay_transport.py: cd42e708e22d93d86f2f94fa1d0b10f8a4d490e634ae292b80ff661d9e695698
+- payment_link_extractor/sentinel_assets/sentinel_sdk.js: fc17445ab999849bf9d74eea5cd1d837840e4047a4e9e2ff0a7fe8889618237b
+- tests/test_gopay_isolated_optimization.py: f360a513c5f600e29af784d1291f1bf068fdb99c1398cf7d628d495c648a55a3
+
+Modified working-tree SHA-256:
+- payment_link_extractor/gopay_checkout.py: be6d00287152b05cdebda72f55191d4fc3a317fec8299dae83cee8e8db0ef183
+- payment_link_extractor/gopay_cs_live.py: a94378c3091e35ee22b8d45ba43be34e3f5c3248c170df31892833cff064fc84
+- payment_link_extractor/gopay_transport.py: c6ea8529f5bfd5e051f8054383331b1d289c84cc88f74f6b2fa957561ed1d4f0
+- payment_link_extractor/sentinel_assets/sentinel_sdk.js: 49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd
+- tests/test_gopay_isolated_optimization.py: c8edc3b05c93d5549ff72918761196f385d2b61235fd3029bddc201c8042c52d
+- docs/2026-08-30_gopay-approve-har-alignment-report.md: 494aa100815d6906594d2e0c21f8451594df2c7de5a68f927120b16e7745f5fc
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: source at Git baseline 948af84 before dual-HAR approve alignment.
+Literal output/result:
+........................................................................ [ 34%]
+........................................................................ [ 69%]
+...............................................................          [100%]
+207 passed in 1.61s
+BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with exact HAR SDK, init/token lifecycle, ping telemetry, Cookie/Stripe identity sync, request cleanup, tests and report.
+Literal output/result:
+........................................................................ [ 33%]
+........................................................................ [ 67%]
+......................................................................   [100%]
+214 passed in 1.60s
+TARGET_EXIT=0
+MODIFIED_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py
+Input: isolated GoPay HAR contract, Sentinel lifecycle, telemetry, Cookie identity, runtime and request-surface tests.
+Literal output/result:
+.............................                                            [100%]
+29 passed in 0.21s
+Exit status: 0
+
+CHANNEL command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Input: PayPal/GoPay/GCash adapter, result-field, transport and country isolation contracts.
+Literal output/result:
+........................                                                 [100%]
+24 passed in 0.28s
+CHANNEL_EXIT=0
+Exit status: 0
+
+SYNTAX command:
+& 'C:\Program Files\nodejs\node.exe' --check payment_link_extractor\sentinel_assets\sentinel_sdk.js; .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor tests
+Input: exact HAR Sentinel JavaScript plus modified Python source/test tree.
+Literal output/result:
+SDK_SHA256=49D0284BF3EEA8A59EBCAD0E6B5DD8A53EDD4C72606F15BBF51EBE5610A88EFD
+NODE_CHECK_EXIT=0
+PY_COMPILE_EXIT=0
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-approve-har-alignment-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-approve-har-alignment-rollback-test-20260830-1815' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy after appending an intentional mutation to payment_link_extractor/gopay_transport.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-approve-har-alignment-rollback-test-20260830-1815
+RESTORED_TRACKED_FILES=5
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+BEFORE_SHA256=712a79a530f27f7ab142c7d6c9a981137d4cbe4f18ca9fc852c2e5f09b454c91
+RESTORED_SHA256=cd42e708e22d93d86f2f94fa1d0b10f8a4d490e634ae292b80ff661d9e695698
+EXPECTED_SHA256=cd42e708e22d93d86f2f94fa1d0b10f8a4d490e634ae292b80ff661d9e695698
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all five tracked files byte-for-byte to 948af84 and removed the new report.
+- The repository working tree and MODIFIED_FILE remain changed.
+- Modified GoPay behavior uses the exact SDK and dual-HAR approve lifecycle; normal flow remains pinned to one proxy.
+- PayPal and GCash behavior remains unchanged.
+- No AT, proxy credential, Cookie, proof token, checkout id or redirect nonce is stored in Git artifacts.
