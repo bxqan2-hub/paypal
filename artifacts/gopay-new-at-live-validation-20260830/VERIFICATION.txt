@@ -1,0 +1,133 @@
+GoPay 新 AT 实时验证与账号机会保护
+====================================
+
+Changed branch/fields:
+- Git branch: main
+- JWT normalization removes residual repeated Markdown backslashes.
+- Canary parses JSONL user messages before matching JWT/proxy material.
+- Canary retries transient browser/network startup on the same proxy before Checkout commit and no longer catches KeyboardInterrupt.
+- Zero-trial Checkout readiness requires real Sentinel proof + NextAuth session-token Cookie + deployment attestation before Checkout POST.
+- Missing browser login material returns browser_session_incomplete and retryable=False without consuming Checkout.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-new-at-live-validation-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-new-at-live-validation-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-new-at-live-validation-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-new-at-live-validation-20260830\ROLLBACK.sh
+
+Original baseline:
+- Commit: 4b864982484f9b3170992120223594cd39bee056
+- payment_link_extractor/auth.py SHA-256: 0faded7542b6c15029b29ab1ea77b92bf6d549e35369f9d9ce5429aa9f391f15
+- payment_link_extractor/gopay_checkout.py SHA-256: cef77103ff47f4e506430b28b8b5ac3cf5e3419e8072425740acd4b6fc4ae385
+- tools/gopay_live_canary.py SHA-256: d6fb1318e0ba06779d26ddf85aa22d96ae8be2be77281a4519375b9f894343fc
+
+Modified hashes:
+- payment_link_extractor/auth.py SHA-256: fa8617ad826d68ef3bda79d5f435840b8404acd35f92770f238864f5be66e549
+- payment_link_extractor/gopay_checkout.py SHA-256: f2aee1d2ce87be855e961b71dc7203431a761a2179130abe9f5a20af76b52094
+- tools/gopay_live_canary.py SHA-256: 358beabd72661dab6bc95e0acf61cdc95dd866a5e8698dd8f6b2bc0e5cd254bc
+- DIFF_FILE SHA-256: 02bee9bc709c861f38e76b44a25b8f8b73321bb0a0de569dbe54935eb18b6716
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: Git baseline 4b864982484f9b3170992120223594cd39bee056 before token normalization/readiness repair.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 61%]
+........................................................................ [ 91%]
+....................                                                     [100%]
+236 passed in 1.70s
+NEW_AT_BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: normalized JWT loader, same-proxy precommit retry and browser-session readiness gate.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 90%]
+......................                                                   [100%]
+238 passed in 1.75s
+POSTLIVE_FULL_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_live_canary.py tests\test_gopay_isolated_optimization.py tests\test_gcash_support.py
+Input: JSONL/JWT normalization, readiness gate and GoPay browser contracts.
+Literal output/result:
+..................................................................       [100%]
+66 passed in 0.46s
+POSTLIVE_TARGET_EXIT=0
+Exit status: 0
+
+PROXY PREFLIGHT command:
+Runtime parser + payment_link_extractor.web.proxy_probe.probe_proxy over artifacts-local/gopay-new-at-runtime-input.jsonl.
+Input: 10 runtime-only proxy entries from the latest user message.
+Literal output/result:
+PROXY_COUNT=10
+PROXY_SLOT=1..10 STATUS=OK COUNTRY=ID ID_MATCH=True
+VALID_ID_SLOTS=1,2,3,4,5,6,7,8,9,10
+Exit status: 0
+
+LIVE command:
+.\.venv\Scripts\python.exe -u tools\gopay_live_canary.py --tokens-file 'artifacts-local\gopay-new-at-runtime-input.jsonl' --proxy-rollout 'artifacts-local\gopay-new-at-runtime-input.jsonl' --token-index 1 --start-proxy-slot 1 --precommit-retries 3
+Input: one normalized AT and ten new ID proxies; only proxy slot numbers enter output.
+Literal output/result:
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=eligibility_check
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=eligibility_confirmed
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=checkout
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=checkout_committed
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=checkout_kind:stripe_checkout
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=checkout_update
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=promotion_applied
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=stripe_init
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=elements_session
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=taxes
+CANARY_STAGE token_slot=1 proxy_slot=1 precommit_try=1 stage=payment_confirmation
+CANARY_RESULT status=consumed_failure category=approve_blocked checkout_count=1
+LIVE_EXIT=20
+Exit status: 20 (expected canary code for one committed flow that did not return a link).
+
+Live safe result:
+- Correct normalized AT SHA-256: EC33C0F2D5E0F7BFE93057C533F24A1D351C475CD3168EF93E3E4B0031963B0C
+- Correct segment lengths: 106/1464/342; RS256 signature bytes: 256.
+- Proxy slot 1 eligibility: eligible.
+- Same proxy was used for eligibility and the complete flow.
+- Checkout count: 1.
+- Real Chrome version: 151.0.7922.170.
+- Persistent runtime/profile: true/true.
+- Exact Sentinel SDK SHA-256: 49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd.
+- Approval init/token zero-body pings carried Checkout referer.
+- Approval token length: 4426.
+- Pending updates length: 20 (empty envelope).
+- NextAuth session Cookie: absent.
+- Deployment attestation length: 0.
+- Final result: approve blocked; no GoPay URL.
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISMATCH_COUNT=0
+GCASH_BYTE_EQUAL=True
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-new-at-live-validation-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-new-at-rollback-test-20260830-211919' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to tools/gopay_live_canary.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-new-at-rollback-test-20260830-211919
+RESTORED_TRACKED_FILES=6
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+RESTORED_SHA256=d6fb1318e0ba06779d26ddf85aa22d96ae8be2be77281a4519375b9f894343fc
+EXPECTED_SHA256=d6fb1318e0ba06779d26ddf85aa22d96ae8be2be77281a4519375b9f894343fc
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all 6 tracked files byte-for-byte to 4b86498 and removed the new report.
+- The repository and MODIFIED_FILE remain on the fixed loader and pre-Checkout readiness gate.
+- Future AT-only input without matching NextAuth session-token and deployment attestation stops before Checkout and preserves the account opportunity.
+- PayPal and the byte-identical 22-file GCash upstream copy remain unchanged.
+- Runtime AT, cookies, proxy credentials, Checkout ID and redirect nonce are absent from these artifacts.
