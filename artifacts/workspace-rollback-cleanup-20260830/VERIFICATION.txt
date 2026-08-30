@@ -1,0 +1,122 @@
+工作区回退与磁盘清理验证
+==========================
+
+Changed branch/fields:
+- Git branch: main
+- Code rollback: revert commit 4e273e10ff0262e7376e450c62e3cbee8f859277.
+- Rollback commit: 749bc6c3833dd13078a2d3b25be7919b2d5f2081.
+- Restored code tree: byte-identical to b6e4663a9c11f6cbec6147ea30a7188a68a89688.
+- Cleanup field: browser/profile caches, rollback/probe copies, Python caches, runtime credential inputs and disposable logs removed.
+- Git maintenance: git gc --prune=now.
+- Ignore field: *.har prevents untracked capture files from being staged accidentally.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\workspace-rollback-cleanup-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\workspace-rollback-cleanup-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\workspace-rollback-cleanup-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\workspace-rollback-cleanup-20260830\ROLLBACK.sh
+
+Original hashes:
+- Base .gitignore SHA-256: 734086bf88f059e1dda0213dd8097f5564901f33376fa14f7e5f59c1ddc25327
+
+Modified hashes:
+- .gitignore SHA-256: 63323f7a8028e4edb3077be212ad2cf023303ccde81f9dc99db1d823b25c5c16
+- cleanup report SHA-256: 318e4a31fd6c750fef264fc7bc110a93621073c8b277f09b8f69cc51566aedfa
+- DIFF_FILE SHA-256: 61a6e7c07bca410251c69e29642899907bd44d8bfdca4e872911d4561c83ab99
+
+CODE ROLLBACK command:
+git revert --no-edit 4e273e10ff0262e7376e450c62e3cbee8f859277
+git push origin main
+Input: main at GoPay Node Sentinel experiment commit 4e273e1.
+Literal output/result:
+[main 749bc6c] Revert "feat: add GoPay Node Sentinel experiment"
+31 files changed, 32 insertions(+), 11867 deletions(-)
+REVERT_EXIT=0
+REVERT_PUSH_EXIT=0
+Exit status: 0
+
+TREE VERIFY command:
+git diff --quiet b6e4663a9c11f6cbec6147ea30a7188a68a89688 749bc6c3833dd13078a2d3b25be7919b2d5f2081
+Literal output/result:
+TREE_EQUALS_B6=True
+TREE_COMPARE_EXIT=0
+Exit status: 0
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: reverted b6-equivalent source tree before cleanup metadata.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 90%]
+......................                                                   [100%]
+238 passed in 1.70s
+CLEANUP_BASELINE_EXIT=0
+Exit status: 0
+
+FILESYSTEM CLEANUP command:
+Verified Python cleanup restricted to C:\Users\Administrator\Desktop\提链, excluding .git, .venv, data/captures and reference-GPT-utral-platform.
+Input: ignored browser caches, local rollback/probe copies, __pycache__, .pytest_cache, runtime credential input and disposable logs.
+Literal output/result:
+CLEANUP_DELETED_DIRS=88
+CLEANUP_DELETED_FILES=14
+CLEANUP_DELETED_BYTES=333247466
+CLEANUP_DELETED_MIB=317.81
+CLEANUP_FAILURES=1
+Exit status: 1 because data/payment-link.log was held open; all other verified targets were deleted.
+
+LOCKED LOG retry command:
+Explicit verified unlink of C:\Users\Administrator\Desktop\提链\data\payment-link.log.
+Literal output/result:
+LOG_DELETE=FAIL ERROR_TYPE=PermissionError
+Exit status: 1
+
+GIT GC command:
+git gc --prune=now
+Input: local Git object database after revert.
+Literal output/result:
+GIT_BYTES_BEFORE=16461439
+GIT_GC_EXIT=0
+GIT_BYTES_AFTER=4836604
+GIT_BYTES_FREED=11624835
+Exit status: 0
+
+SIZE RESULT:
+- Initial workspace bytes: 822530876
+- Post-cleanup workspace bytes before small cleanup report/artifacts: 477070189
+- Total reduced bytes: 345460687
+- Total reduced MiB: 329.46
+- Reduction: approximately 42 percent.
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: reverted source plus .har ignore rule and cleanup documentation.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 90%]
+......................                                                   [100%]
+238 passed in 2.87s
+CLEANUP_MODIFIED_EXIT=0
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/workspace-rollback-cleanup-20260830/ROLLBACK.sh' 'C:/Users/Administrator/Desktop/提链/artifacts-local/workspace-cleanup-rollback-test-20260830-224631' 'C:/Users/Administrator/Desktop/提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to .gitignore.
+Literal output/result:
+ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/workspace-cleanup-rollback-test-20260830-224631
+RESTORED_TRACKED_FILES=1
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+RESTORED_SHA256=734086bf88f059e1dda0213dd8097f5564901f33376fa14f7e5f59c1ddc25327
+EXPECTED_SHA256=734086bf88f059e1dda0213dd8097f5564901f33376fa14f7e5f59c1ddc25327
+HASH_MATCH=True
+CLEANUP_ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored the original .gitignore byte-for-byte and removed the cleanup report.
+- The repository remains on the reverted b6-equivalent application behavior.
+- Cache cleanup does not change application source or protocol behavior; deleted cache files regenerate when needed.
+- .venv, data/captures, canonical GoPay HARs, the local reference source and persistent profile state were retained.
+- The locked 6.04 MiB payment-link.log remains until its holder exits.

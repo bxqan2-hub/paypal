@@ -1,0 +1,46 @@
+# 工作区回退与磁盘清理报告
+
+## 结果
+
+仓库已通过普通 `git revert` 回退 GoPay Node Sentinel 实验，未强推或改写历史。回退提交后的源码树与 `b6e4663a9c11f6cbec6147ea30a7188a68a89688` 逐文件一致。
+
+工作区总占用从 `822,530,876` 字节降至 `477,070,189` 字节，共释放 `345,460,687` 字节（约 `329.46 MiB`，约 42%）。
+
+## 已清理内容
+
+| 类别 | 内容 | 处理结果 |
+|---|---|---|
+| 浏览器缓存 | HAR capture profile 与 GoPay Sentinel profiles 内的 Cache、Code Cache、GPU/Shader Cache、模型缓存和 BrowserMetrics | 清理，保留 Cookie、Local Storage、profile 元数据 |
+| 临时验证副本 | `artifacts-local` 中 rollback-test、Node SDK probe、Playwright smoke profile 等 | 清理 |
+| Python 测试缓存 | 项目源码、tests、tools 下的 `__pycache__` 与 `.pytest_cache` | 清理 |
+| 运行时凭据输入 | 前两次实时验证的 ignored runtime JSON/JSONL | 清理 |
+| 运行日志 | `artifacts-local` 运行日志及可删除的 data 日志 | 清理 |
+| Git 松散对象 | `git gc --prune=now` | `.git` 从 16,461,439 降至 4,836,604 字节 |
+
+文件系统清理删除 `333,247,466` 字节；Git GC 另释放 `11,624,835` 字节。其余差额来自回退提交移除的 Node 实验源码及审计快照。
+
+## 明确保留内容
+
+| 内容 | 大小 | 保留原因 |
+|---|---:|---|
+| `.venv` | 143.69 MiB | 项目可运行 Python/Playwright 环境 |
+| `data/captures` | 172.98 MiB | GCash/Roxy 原始抓包证据；存在历史报告引用，未判定为垃圾 |
+| 两份完整 GoPay HAR | 42.44 MiB | 当前 GoPay 成功链对比基线，其中一份已标记 canonical |
+| `reference-GPT-utral-platform` | 41.30 MiB | 本地参考源码，不属于缓存 |
+| 清理后的浏览器 profiles | 27.51 MiB | 保留 Cookie、Local Storage 和设备档案，仅删除可再生成缓存 |
+| `artifacts` | 7.49 MiB | 已跟踪的历史验证材料，删除也不会在不改写历史时缩小远端 Git 历史 |
+| `m.gcash.com111.har` | 5.26 MiB | 用户原始抓包，未删除；新增 `*.har` 忽略规则防止误提交 |
+
+## 未清理项
+
+`data/payment-link.log` 为 6.04 MiB，当前被其他进程持有，删除尝试返回 `PermissionError`。它是剩余唯一被锁定的明显运行垃圾；服务停止后可直接删除。
+
+## 验证
+
+```powershell
+git diff --quiet b6e4663a9c11f6cbec6147ea30a7188a68a89688 749bc6c3833dd13078a2d3b25be7919b2d5f2081
+.\.venv\Scripts\python.exe -m pytest -q
+git gc --prune=now
+```
+
+清理过程没有修改本地 GCash 权威上游、站内 22 文件镜像、源码协议实现、`.venv`、保留的 HAR 或参考源码。
