@@ -1,0 +1,102 @@
+GoPay cccy 整链阶段对齐验证
+=============================
+
+Changed branch/fields:
+- Git branch: main
+- GoPay fail-fast threshold: amount <= 50 at Checkout/Promotion/Stripe bootstrap/taxes refresh; final result remains exactly 0.
+- Billing stages: country -> partial(line1) -> final(city+postal_code) -> state.
+- Elements: forced reuse_session=True after taxes, reusing one elements_session_id.
+- Logical proxy fields: gopay_checkout_proxy, gopay_promotion_proxy, gopay_provider_proxy, gopay_approve_proxy.
+- Default routing remains A/A/A/A; explicit values enable A/B/C/D without changing PayPal or GCash.
+- Checkout commit still disables full-chain retry; cccy ten-rebuild policy is not enabled.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-cccy-chain-alignment-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-cccy-chain-alignment-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-cccy-chain-alignment-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-cccy-chain-alignment-20260830\ROLLBACK.sh
+
+Original baseline:
+- Commit: 261f455eeff63ac3001ca364619c7b6c5b12b402
+- gopay_cs_live.py SHA-256: ec7661bb9874705f57a1f8162928de1111ac700140d35c9c5a206aefd6303872
+- gopay_core.py SHA-256: 7e2e4b6b1e7949981aef2510e91cf397ba2cecb9bb47a6d35d1fdf8a64e8ed5f
+- gopay_transport.py SHA-256: 29ff44794df30add7f522113397f2df87de59ac3e511b5a16bdb0c0de8d89424
+
+Modified hashes:
+- gopay_cs_live.py SHA-256: 6434ad29058360b7327c0f7609e6640cb23260aaec75b1b93588ebae2c62d2c7
+- gopay_core.py SHA-256: e08de95fdebf595609c217b2ea9685b0e1d69d5720526affaf0d32c82e9cd115
+- gopay_transport.py SHA-256: 8376f73ba1fb5b34ebde5e6094c3e96fcfde1e7ada89faeae6356a401403f72c
+- DIFF_FILE SHA-256: 27f923f1d89b34cb1bcc92b2adeb14b96a2d942d5dd622a607dd379c2315b19d
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: Git baseline 261f455eeff63ac3001ca364619c7b6c5b12b402 before cccy phase alignment.
+Literal output/result:
+........................................................................ [ 31%]
+........................................................................ [ 62%]
+........................................................................ [ 93%]
+...............                                                          [100%]
+231 passed in 1.68s
+CCCY_BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with fail-fast gates, four-step billing, forced Elements reuse and four logical proxy segments.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 61%]
+........................................................................ [ 91%]
+....................                                                     [100%]
+236 passed in 1.65s
+CCCY_MODIFIED_FULL_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_gopay_support.py tests\test_frontend_error_display.py
+Input: cccy phase mapping, threshold, billing groups, Elements reuse, segmented routes and UI stage labels.
+Literal output/result:
+..................................................................       [100%]
+66 passed in 0.50s
+CCCY_TARGET_EXIT=0
+Exit status: 0
+
+CHANNEL ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Literal output/result:
+........................                                                 [100%]
+24 passed in 0.30s
+CCCY_ISOLATION_EXIT=0
+Exit status: 0
+
+CCCY log finding:
+- Browser profile / four ID segments / Checkout / bootstrap / billing / taxes / Stripe confirm: reported stable, Stripe confirm 10/10 OK.
+- ChatGPT approve: reported 10/10 blocked.
+- Therefore Phase 3/4/5 were adopted as Stripe-stability improvements, not claimed as an approve-blocked cure.
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISMATCH_COUNT=0
+GCASH_BYTE_EQUAL=True
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-cccy-chain-alignment-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cccy-chain-rollback-test-20260830-210330' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to payment_link_extractor/gopay_cs_live.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cccy-chain-rollback-test-20260830-210330
+RESTORED_TRACKED_FILES=12
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+RESTORED_SHA256=ec7661bb9874705f57a1f8162928de1111ac700140d35c9c5a206aefd6303872
+EXPECTED_SHA256=ec7661bb9874705f57a1f8162928de1111ac700140d35c9c5a206aefd6303872
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all 12 tracked files byte-for-byte to 261f455 and removed the new report.
+- The repository and MODIFIED_FILE remain on the cccy-aligned GoPay stages.
+- Default GoPay routing remains one physical proxy A/A/A/A unless explicit segment fields are supplied.
+- PayPal and the byte-identical 22-file GCash upstream copy remain unchanged.

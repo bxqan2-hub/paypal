@@ -1,0 +1,777 @@
+diff --git a/.env.example b/.env.example
+index 78f29e3..bf448cf 100644
+--- a/.env.example
++++ b/.env.example
+@@ -22,0 +23,6 @@ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
++# Optional cccy-compatible GoPay route segments. Blank keeps A/A/A/A on the
++# selected attempt proxy; set explicitly only when each ID segment is sticky.
++OPLL_GOPAY_CHECKOUT_PROXY=
++OPLL_GOPAY_PROMOTION_PROXY=
++OPLL_GOPAY_PROVIDER_PROXY=
++OPLL_GOPAY_APPROVE_PROXY=
+diff --git a/docs/2026-08-30_gopay-cccy-chain-alignment-report.md b/docs/2026-08-30_gopay-cccy-chain-alignment-report.md
+new file mode 100644
+index 0000000..0f947f4
+--- /dev/null
++++ b/docs/2026-08-30_gopay-cccy-chain-alignment-report.md
+@@ -0,0 +1,73 @@
++# GoPay cccy 整链日志对齐报告
++
++## 结论
++
++cccy 日志最后一段适合用于提高 **Stripe GoPay 链路稳定性**，不能单独解释 ChatGPT `approve=blocked`：其统计已经明确显示 Stripe confirm `10/10 OK`，但 ChatGPT approve 仍为 `10/10 blocked`。
++
++本站已吸收其中可独立验证的三项：
++
++1. `amount <= 50` 的 bootstrap/promotion/taxes 多层 fail-fast；最终结果仍必须严格等于 0。
++2. billing 改为四个累积阶段：`country → partial(line1) → final(city+postal_code) → state`。
++3. Elements 在税费刷新后无条件携带原 `elements_session_id` 强制 reuse。
++4. 增加 GoPay 专属 Checkout/Promotion/Provider/Approve 四段逻辑代理；默认仍为 `A/A/A/A`，只有显式配置才拆分。
++
++cccy 的“失败后整链重建 10 次”没有直接启用。当前账号一旦发送 Checkout POST，仍禁止创建第二个 Checkout；网络重试只允许发生在同一个 Checkout 和同一个逻辑代理段内。
++
++## 日志映射
++
++| cccy 阶段 | 当前实现 | 结果 |
++|---|---|---|
++| Checkout inline promo | `gopay_checkout.create_checkout` | 保留 |
++| Custom Checkout amount gate | Checkout/Stripe init fail-fast | 新增 |
++| Promotion update/refresh gate | `update_checkout` 后金额守门 | 新增 |
++| Elements session | 初次创建 + 税费后强制 reuse | 已对齐 |
++| Billing address | country/partial/final/state | 已对齐 |
++| Taxes/final refresh | 两轮 snapshot/taxes/page GET + `<=50` | 已对齐 |
++| Stripe confirm | 同一 Stripe session/provider 段 | 保持 |
++| ChatGPT approve | 独立 approval Sentinel/HTTP 段 | 显式化 |
++| Full rebuild ×10 | Checkout 后禁止重建 | 未启用 |
++
++## 四段代理语义
++
++| 字段 | 作用 | 默认值 |
++|---|---|---|
++| `gopay_checkout_proxy` | 资格检测、Checkout、Checkout Sentinel | 本轮选中的代理 A |
++| `gopay_promotion_proxy` | Checkout update | A |
++| `gopay_provider_proxy` | Stripe、taxes/snapshot、confirm/poll | A |
++| `gopay_approve_proxy` | approval Playwright Sentinel、ChatGPT approve | A |
++
++显式配置 A/B/C/D 时：
++
++- 资格检测与 Checkout 永远使用 A。
++- Promotion 请求使用 B，结束后不改变其他段。
++- Stripe 与 ChatGPT taxes 使用 C；Elements session ID 和 Stripe HTTP session保持连续。
++- approval 预取时关闭 A 的浏览器 context，用同一持久 device profile 在 D 上创建 approval context；approve HTTP 也切到 D。
++
++## 金额守门
++
++```text
++Checkout response amount present  → require <= 50
++Promotion refresh amount present  → require <= 50
++Stripe custom checkout bootstrap  → require <= 50 and require present
++Each taxes/page refresh            → require <= 50 and require present
++Final returned GoPay link          → require == 0
++```
++
++`51+` 会在进入 confirm/approve 前抛出协议错误，避免继续消耗后续链路。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-101：cccy confirm 10/10，approve 0/10 | Phase 3–5 主要提高 Stripe 稳定性 | `gopay_cs_live.py` |
++| E-102：cccy 三处 amount refresh 均为 0 | 应在每个权威响应后 fail-fast | `gopay_core.py`、`gopay_cs_live.py` |
++| E-103：cccy billing 为累积阶段 | 一次性全字段不等价 | `gopay_cs_live.py` |
++| E-104：cccy 强制 reuse Elements | amount 未变化也应复用原 session ID | `gopay_cs_live.py` |
++| E-105：cccy 四段均为 ID sticky route | 四段应显式且整轮不可变 | `models.py`、`gopay_core.py`、`gopay_transport.py` |
++
++## 验证命令
++
++```powershell
++.\.venv\Scripts\python.exe -m pytest -q
++.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_gopay_support.py tests\test_frontend_error_display.py
++```
+diff --git a/payment_link_extractor/application.py b/payment_link_extractor/application.py
+index 372cb96..d958aa6 100644
+--- a/payment_link_extractor/application.py
++++ b/payment_link_extractor/application.py
+@@ -28 +28,9 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+-        and not str(config.update_proxy or "").strip()
++        and not str(
++            config.update_proxy
++            or (
++                config.gopay_promotion_proxy
++                if channel.name == "gopay"
++                else ""
++            )
++            or ""
++        ).strip()
+@@ -48 +56,8 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
+-        update_proxy=str(config.update_proxy).strip(),
++        update_proxy=str(
++            config.update_proxy
++            or (
++                config.gopay_promotion_proxy
++                if payment_method == "gopay"
++                else ""
++            )
++        ).strip(),
+@@ -53,0 +69,4 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
++        gopay_checkout_proxy=str(config.gopay_checkout_proxy or "").strip(),
++        gopay_promotion_proxy=str(config.gopay_promotion_proxy or "").strip(),
++        gopay_provider_proxy=str(config.gopay_provider_proxy or "").strip(),
++        gopay_approve_proxy=str(config.gopay_approve_proxy or "").strip(),
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 180932d..3d626c5 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -341,2 +341,5 @@ def probe_coupon_eligibility(
+-    if not str(config.update_proxy or "").strip():
+-        raise ConfigurationError("update proxy is required for eligibility check")
++    eligibility_proxy = str(
++        config.gopay_checkout_proxy or config.checkout_proxy
++    ).strip()
++    if not eligibility_proxy:
++        raise ConfigurationError("checkout proxy is required for eligibility check")
+@@ -346 +349 @@ def probe_coupon_eligibility(
+-    set_proxy_url(chatgpt, config.update_proxy)
++    set_proxy_url(chatgpt, eligibility_proxy)
+diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
+index 7e4c484..4cd0586 100644
+--- a/payment_link_extractor/gopay_core.py
++++ b/payment_link_extractor/gopay_core.py
+@@ -22 +22 @@ from .gopay_checkout import (
+-from .gopay_cs_live import extract_cs_live_provider
++from .gopay_cs_live import extract_cs_live_provider, require_gopay_fail_fast_amount
+@@ -36 +36 @@ def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
+-    """Bind every request in one GoPay attempt to its selected proxy.
++    """Resolve the four GoPay routing segments for one full attempt.
+@@ -38,3 +38,3 @@ def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
+-    The task manager may select a different proxy only when it starts a new
+-    full attempt.  Downstream eligibility, Checkout, Stripe and provider code
+-    receives a single-entry view so it cannot switch mid-attempt.
++    By default every segment inherits the selected attempt proxy. Explicit
++    cccy-compatible segment values may separate promotion/provider/approve,
++    but each segment remains sticky for the complete attempt.
+@@ -42,0 +43,4 @@ def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
++    checkout_proxy = str(config.gopay_checkout_proxy or proxy).strip()
++    promotion_proxy = str(config.gopay_promotion_proxy or checkout_proxy).strip()
++    provider_proxy = str(config.gopay_provider_proxy or checkout_proxy).strip()
++    approve_proxy = str(config.gopay_approve_proxy or checkout_proxy).strip()
+@@ -45,5 +49,9 @@ def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
+-        checkout_proxy=proxy,
+-        update_proxy=proxy,
+-        checkout_proxy_attempts=(proxy,),
+-        update_proxy_attempts=(proxy,),
+-        proxy_pool=(proxy,),
++        checkout_proxy=checkout_proxy,
++        update_proxy=promotion_proxy,
++        checkout_proxy_attempts=(checkout_proxy,),
++        update_proxy_attempts=(promotion_proxy,),
++        proxy_pool=(checkout_proxy,),
++        gopay_checkout_proxy=checkout_proxy,
++        gopay_promotion_proxy=promotion_proxy,
++        gopay_provider_proxy=provider_proxy,
++        gopay_approve_proxy=approve_proxy,
+@@ -153,0 +162,9 @@ def extract_gopay_payment_link(
++        if zero_trial_validation:
++            checkout_amount, _ = checkout_payable_amount_with_presence(checkout)
++            if checkout_amount is not None:
++                require_gopay_fail_fast_amount(
++                    checkout_amount,
++                    "checkout bootstrap",
++                    enabled=True,
++                )
++                checkpoint("checkout_amount_confirmed")
+@@ -164,0 +182,9 @@ def extract_gopay_payment_link(
++            if zero_trial_validation:
++                promotion_amount, _ = checkout_payable_amount_with_presence(checkout)
++                if promotion_amount is not None:
++                    require_gopay_fail_fast_amount(
++                        promotion_amount,
++                        "promotion refresh",
++                        enabled=True,
++                    )
++                    checkpoint("promotion_amount_confirmed")
+@@ -209,0 +236,9 @@ def extract_gopay_payment_link(
++                "gopay_segmented_proxy_routing": len(
++                    {
++                        config.gopay_checkout_proxy,
++                        config.gopay_promotion_proxy,
++                        config.gopay_provider_proxy,
++                        config.gopay_approve_proxy,
++                    }
++                )
++                > 1,
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index a7d7016..25d0fb6 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -55,0 +56 @@ from .gopay_transport import (
++    rotate_openai_approval_context,
+@@ -64,0 +66,23 @@ GOPAY_STRIPE_RUNTIME_VERSION = STRIPE_RV_BUILD[:10]
++GOPAY_FAIL_FAST_MAX_MINOR = 50
++
++
++def require_gopay_fail_fast_amount(
++    value: Any,
++    phase: str,
++    *,
++    enabled: bool,
++) -> int | None:
++    if not enabled:
++        return None
++    if value in (None, ""):
++        raise ProtocolError(409, f"{phase} amount is missing")
++    try:
++        amount = int(value)
++    except (TypeError, ValueError) as exc:
++        raise ProtocolError(409, f"{phase} amount is invalid") from exc
++    if amount > GOPAY_FAIL_FAST_MAX_MINOR:
++        raise ProtocolError(
++            409,
++            f"{phase} amount exceeds fail-fast threshold: {amount}",
++        )
++    return amount
+@@ -67,0 +92 @@ def prefetch_checkout_approval_proof(
++    config: ExtractionConfig,
+@@ -72,0 +98,5 @@ def prefetch_checkout_approval_proof(
++    rotate_openai_approval_context(
++        chatgpt,
++        config,
++        config.gopay_approve_proxy or config.checkout_proxy,
++    )
+@@ -208,4 +238,3 @@ def _cs_update_tax_region_fields(
+-    # Stripe's custom-checkout browser sends a cumulative five-step address
+-    # update (country → line1 → city → state → postal_code).  Keeping the
+-    # same Elements session and adding one field per request is important for
+-    # automatic-tax recalculation and for the confirm checksum contract.
++    # cccy sends cumulative address stages while retaining one payment-page
++    # session. A stage may add several fields atomically (for example the
++    # city+postal final stage) before state is committed last.
+@@ -221,28 +250,29 @@ def _cs_update_tax_region_fields(
+-        if not accumulated:
+-            continue
+-        data = dict(common)
+-        data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
+-        response = stage_http_request(
+-            stripe,
+-            f"Stripe tax_region ({field})",
+-            "POST",
+-            f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
+-            log,
+-            data=data,
+-            headers=cs_stripe_headers(),
+-            timeout=DEFAULT_TIMEOUT,
+-        )
+-        if response.status_code >= 400:
+-            emit_log(log, f"Stripe tax_region failed ({field}): {response.text[:300]}")
+-            return last_payload, accumulated
+-        payload = response_json(response, "Stripe tax_region")
+-        if isinstance(payload, dict):
+-            last_payload = payload
+-            checkout_config_id = str(payload.get("config_id") or "").strip()
+-            if checkout_config_id:
+-                ctx["checkout_config_id"] = checkout_config_id
+-            amount = (payload.get("total_summary") or {}).get("total")
+-            if amount is None:
+-                amount = (payload.get("total_summary") or {}).get("due")
+-            if amount is not None:
+-                ctx["checkout_amount"] = amount
++    if not accumulated:
++        return last_payload, accumulated
++    data = dict(common)
++    data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
++    stage_name = "+".join(fields)
++    response = stage_http_request(
++        stripe,
++        f"Stripe tax_region ({stage_name})",
++        "POST",
++        f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
++        log,
++        data=data,
++        headers=cs_stripe_headers(),
++        timeout=DEFAULT_TIMEOUT,
++    )
++    if response.status_code >= 400:
++        emit_log(log, f"Stripe tax_region failed ({stage_name}): {response.text[:300]}")
++        return last_payload, accumulated
++    payload = response_json(response, "Stripe tax_region")
++    if isinstance(payload, dict):
++        last_payload = payload
++        checkout_config_id = str(payload.get("config_id") or "").strip()
++        if checkout_config_id:
++            ctx["checkout_config_id"] = checkout_config_id
++        amount = (payload.get("total_summary") or {}).get("total")
++        if amount is None:
++            amount = (payload.get("total_summary") or {}).get("due")
++        if amount is not None:
++            ctx["checkout_amount"] = amount
+@@ -259,8 +289,19 @@ def cs_update_tax_region(
+-    payload, _ = _cs_update_tax_region_fields(
+-        stripe,
+-        checkout,
+-        ctx,
+-        billing,
+-        log,
+-        ("country", "line1", "city", "state", "postal_code"),
+-    )
++    accumulated: dict[str, str] = {}
++    payload: dict[str, Any] = {}
++    # cccy browser order: country -> partial -> final -> state. Each stage is
++    # cumulative and reuses one Stripe Elements/payment-page session.
++    for fields in (
++        ("country",),
++        ("line1",),
++        ("city", "postal_code"),
++        ("state",),
++    ):
++        payload, accumulated = _cs_update_tax_region_fields(
++            stripe,
++            checkout,
++            ctx,
++            billing,
++            log,
++            fields,
++            accumulated,
++        )
+@@ -591,0 +633,3 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
++    approve_proxy = str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip()
++    if approve_proxy:
++        set_proxy_url(chatgpt, approve_proxy)
+@@ -721,0 +766,5 @@ def extract_cs_live_provider(
++    require_gopay_fail_fast_amount(
++        totals.get("due"),
++        "custom checkout bootstrap",
++        enabled=bool(config.gopay_zero_trial_validation),
++    )
+@@ -728 +776,0 @@ def extract_cs_live_provider(
+-    initial_elements_amount = str(ctx.get("checkout_amount") or "0")
+@@ -734 +782,4 @@ def extract_cs_live_provider(
+-    prefetch_checkout_approval_proof(chatgpt, checkout, log)
++    prefetch_checkout_approval_proof(config, chatgpt, checkout, log)
++    provider_proxy = str(config.gopay_provider_proxy or config.checkout_proxy).strip()
++    if provider_proxy:
++        set_proxy_url(chatgpt, provider_proxy)
+@@ -738,25 +789,12 @@ def extract_cs_live_provider(
+-    # Reproduce the second complete HAR's deterministic address/tax cadence:
+-    # country -> line1 -> city -> snapshot -> state -> snapshot -> taxes ->
+-    # page refresh -> postal -> taxes -> page refresh.
+-    _, tax_region = _cs_update_tax_region_fields(
+-        stripe,
+-        checkout,
+-        ctx,
+-        billing,
+-        log,
+-        ("country", "line1", "city"),
+-    )
+-    cs_snapshot_billing(chatgpt, checkout, billing, log)
+-    _, tax_region = _cs_update_tax_region_fields(
+-        stripe,
+-        checkout,
+-        ctx,
+-        billing,
+-        log,
+-        ("state",),
+-        tax_region,
+-    )
+-    cs_snapshot_billing(chatgpt, checkout, billing, log)
+-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+-    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+-    _cs_update_tax_region_fields(
++    cs_update_tax_region(stripe, checkout, ctx, billing, log)
++    for _round in range(2):
++        cs_snapshot_billing(chatgpt, checkout, billing, log)
++        cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++        cs_checkout_page_refresh(stripe, checkout, ctx, log)
++        require_gopay_fail_fast_amount(
++            ctx.get("checkout_amount"),
++            "taxes refresh",
++            enabled=bool(config.gopay_zero_trial_validation),
++        )
++    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
++    refreshed_elements = cs_elements_session(
+@@ -764,0 +803 @@ def extract_cs_live_provider(
++        init_payload,
+@@ -766 +804,0 @@ def extract_cs_live_provider(
+-        billing,
+@@ -768,2 +806 @@ def extract_cs_live_provider(
+-        ("postal_code",),
+-        tax_region,
++        reuse_session=True,
+@@ -771,10 +808,6 @@ def extract_cs_live_provider(
+-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+-    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+-    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+-    final_elements_amount = str(ctx.get("checkout_amount") or "0")
+-    if final_elements_amount != initial_elements_amount:
+-        refreshed_elements = cs_elements_session(stripe, checkout, init_payload, ctx, log, reuse_session=True)
+-        if refreshed_elements:
+-            ensure_payment_method_offered(refreshed_elements, payment_method, "cs_live refreshed Elements session")
+-    else:
+-        emit_log(log, f"CS Elements refresh skipped: amount unchanged ({final_elements_amount})")
++    if refreshed_elements:
++        ensure_payment_method_offered(
++            refreshed_elements,
++            payment_method,
++            "cs_live forced-reuse Elements session",
++        )
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index d96bfb8..4d55bd0 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -496,0 +497,32 @@ def prepare_openai_browser_flow(
++def rotate_openai_approval_context(
++    session: Any,
++    config: ExtractionConfig,
++    proxy: str,
++) -> bool:
++    """Move approval Sentinel/HTTP traffic to its explicit sticky segment."""
++    normalized = normalize_proxy_url(proxy)
++    current = normalize_proxy_url(str(getattr(session, "openai_proxy", "") or ""))
++    if not normalized or normalized == current:
++        return False
++    previous = getattr(session, "openai_sentinel_provider", None)
++    close = getattr(previous, "close", None)
++    if callable(close):
++        close()
++    set_proxy_url(session, normalized)
++    session.openai_proxy = normalized
++    provider = PlaywrightSentinelProvider(
++        access_token=str(getattr(session, "openai_access_token", "") or config.access_token),
++        device_id=str(getattr(session, "openai_device_id", "") or ""),
++        session_id=str(getattr(session, "openai_session_id", "") or ""),
++        user_agent=str(getattr(session, "openai_user_agent", "") or DEFAULT_USER_AGENT),
++        proxy=normalized,
++        transport_session=session,
++        session_token=str(getattr(session, "openai_session_token", "") or config.session_token),
++        language=str(getattr(session, "openai_language", "") or country_locale(config)),
++        timezone=str(getattr(session, "openai_timezone", "") or country_timezone(config)),
++    )
++    session.openai_sentinel_provider = provider
++    session.openai_approve_proxy = normalized
++    return True
++
++
+@@ -1567,0 +1600,6 @@ class DefaultTransportFactory:
++        session.openai_access_token = config.access_token
++        session.openai_session_id = session_id
++        session.openai_user_agent = user_agent
++        session.openai_language = country_locale(config)
++        session.openai_timezone = country_timezone(config)
++        session.openai_session_token = str(getattr(config, "session_token", "") or "")
+@@ -1678 +1716,6 @@ class DefaultTransportFactory:
+-        set_proxy_url(session, config.checkout_proxy)
++        stripe_proxy = (
++            config.gopay_provider_proxy
++            if normalize_payment_method(config.payment_method) == "gopay"
++            else config.checkout_proxy
++        )
++        set_proxy_url(session, stripe_proxy or config.checkout_proxy)
+diff --git a/payment_link_extractor/models.py b/payment_link_extractor/models.py
+index d2d22be..b589b70 100644
+--- a/payment_link_extractor/models.py
++++ b/payment_link_extractor/models.py
+@@ -27,0 +28,6 @@ class ExtractionConfig:
++    # GoPay-only logical routing segments. Blank values inherit the selected
++    # attempt proxy, preserving the one-physical-proxy default.
++    gopay_checkout_proxy: str = ""
++    gopay_promotion_proxy: str = ""
++    gopay_provider_proxy: str = ""
++    gopay_approve_proxy: str = ""
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 9cf2779..68bef14 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -298,0 +299,13 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
++    gopay_segment_values: dict[str, str] = {}
++    for field, env_name in (
++        ("gopay_checkout_proxy", "OPLL_GOPAY_CHECKOUT_PROXY"),
++        ("gopay_promotion_proxy", "OPLL_GOPAY_PROMOTION_PROXY"),
++        ("gopay_provider_proxy", "OPLL_GOPAY_PROVIDER_PROXY"),
++        ("gopay_approve_proxy", "OPLL_GOPAY_APPROVE_PROXY"),
++    ):
++        value = payload.get(field, os.getenv(env_name, ""))
++        if value is not None and not isinstance(value, str):
++            raise ConfigurationError(f"{field} must be a string")
++        gopay_segment_values[field] = str(value or "").strip()
++    if payment_method == "gopay" and not str(update_proxy or "").strip():
++        update_proxy = gopay_segment_values["gopay_promotion_proxy"]
+@@ -340,0 +354 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
++        **gopay_segment_values,
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 02f40e0..be8e55a 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -1067 +1067 @@
+-      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout",
++      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout", checkout_amount_confirmed: "Checkout 金额守门通过",
+@@ -1069 +1069 @@
+-      checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", stripe_init: "初始化支付", elements_session: "准备支付方式",
++      checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", promotion_amount_confirmed: "优惠刷新金额守门通过", stripe_init: "初始化支付", elements_session: "准备支付方式",
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index c515b44..40caf21 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -30,0 +31 @@ STAGE_PROGRESS = {
++    "checkout_amount_confirmed": 22,
+@@ -32,0 +34 @@ STAGE_PROGRESS = {
++    "promotion_amount_confirmed": 32,
+@@ -854,0 +857,4 @@ class TaskManager:
++            config.gopay_checkout_proxy,
++            config.gopay_promotion_proxy,
++            config.gopay_provider_proxy,
++            config.gopay_approve_proxy,
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 56966fd..16769c3 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -244,0 +245,28 @@ def test_route_config_maps_mk_proxy_pool_to_every_payment_step() -> None:
++def test_route_config_accepts_explicit_gopay_four_segment_proxies() -> None:
++    config = _config_from_payload(
++        {
++            "access_token": "fixture-token",
++            "payment_method": "gopay",
++            "country": "ID",
++            "checkout_proxy": "http://legacy-entry.example:8080",
++            "update_proxy": "http://legacy-update.example:8080",
++            "gopay_checkout_proxy": "http://a.example:8080",
++            "gopay_promotion_proxy": "http://b.example:8080",
++            "gopay_provider_proxy": "http://c.example:8080",
++            "gopay_approve_proxy": "http://d.example:8080",
++            "retry_count": 0,
++        }
++    )
++    assert (
++        config.gopay_checkout_proxy,
++        config.gopay_promotion_proxy,
++        config.gopay_provider_proxy,
++        config.gopay_approve_proxy,
++    ) == (
++        "http://a.example:8080",
++        "http://b.example:8080",
++        "http://c.example:8080",
++        "http://d.example:8080",
++    )
++
++
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 3b589bb..7b63338 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -466,0 +467,41 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
++def test_gopay_eligibility_stays_on_checkout_segment(monkeypatch) -> None:
++    observed: list[dict[str, str]] = []
++
++    class Response:
++        status_code = 200
++        text = '{"state":"eligible"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"state": "eligible"}
++
++    class Session:
++        def __init__(self):
++            self.proxies: dict[str, str] = {}
++
++    session = Session()
++
++    def fake_request(owner, *_args, **_kwargs):
++        observed.append(dict(owner.proxies))
++        return Response()
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://a.example:8080",
++        update_proxy="http://b.example:8080",
++        country="ID",
++        payment_method="gopay",
++        gopay_checkout_proxy="http://a.example:8080",
++        gopay_promotion_proxy="http://b.example:8080",
++    )
++    result = gopay_checkout.probe_coupon_eligibility(config, session, None)
++    assert result["eligible"] is True
++    assert observed == [
++        {
++            "http": "http://a.example:8080",
++            "https": "http://a.example:8080",
++        }
++    ]
++
++
+@@ -754,0 +796 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) ->
++            self.openai_proxy = "http://proxy.example:8080"
+@@ -763 +805,9 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) ->
+-    gopay_cs_live.prefetch_checkout_approval_proof(session, checkout, None)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++        gopay_approve_proxy="http://proxy.example:8080",
++    )
++    gopay_cs_live.prefetch_checkout_approval_proof(config, session, checkout, None)
+@@ -1100 +1149,0 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+-        ["tax_region[country]", "tax_region[line1]", "tax_region[city]"],
+@@ -1105 +1154 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+-            "tax_region[state]",
++            "tax_region[postal_code]",
+@@ -1111 +1159,0 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+-            "tax_region[state]",
+@@ -1112,0 +1161 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
++            "tax_region[state]",
+@@ -1115 +1164,119 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
+-    assert ctx["checkout_config_id"] == "checkout-config-5"
++    assert ctx["checkout_config_id"] == "checkout-config-4"
++
++
++def test_gopay_cccy_fail_fast_threshold() -> None:
++    assert gopay_cs_live.require_gopay_fail_fast_amount(
++        0, "fixture", enabled=True
++    ) == 0
++    assert gopay_cs_live.require_gopay_fail_fast_amount(
++        50, "fixture", enabled=True
++    ) == 50
++    with pytest.raises(Exception, match="exceeds fail-fast threshold"):
++        gopay_cs_live.require_gopay_fail_fast_amount(
++            51, "fixture", enabled=True
++        )
++    with pytest.raises(Exception, match="amount is missing"):
++        gopay_cs_live.require_gopay_fail_fast_amount(
++            None, "fixture", enabled=True
++        )
++
++
++def test_gopay_four_segment_route_defaults_and_explicit_values() -> None:
++    base = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://entry.example:8080",
++        update_proxy="http://legacy-update-must-not-split.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    default = gopay_core.pin_gopay_attempt_proxy(base)
++    assert (
++        default.gopay_checkout_proxy,
++        default.gopay_promotion_proxy,
++        default.gopay_provider_proxy,
++        default.gopay_approve_proxy,
++    ) == ("http://entry.example:8080",) * 4
++
++    explicit = gopay_core.pin_gopay_attempt_proxy(
++        ExtractionConfig(
++            access_token="fixture-token",
++            checkout_proxy="http://entry.example:8080",
++            update_proxy="http://legacy.example:8080",
++            country="ID",
++            payment_method="gopay",
++            gopay_checkout_proxy="http://a.example:8080",
++            gopay_promotion_proxy="http://b.example:8080",
++            gopay_provider_proxy="http://c.example:8080",
++            gopay_approve_proxy="http://d.example:8080",
++        )
++    )
++    assert (
++        explicit.checkout_proxy,
++        explicit.update_proxy,
++        explicit.gopay_provider_proxy,
++        explicit.gopay_approve_proxy,
++    ) == (
++        "http://a.example:8080",
++        "http://b.example:8080",
++        "http://c.example:8080",
++        "http://d.example:8080",
++    )
++
++
++def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypatch) -> None:
++    class HttpSession:
++        def __init__(self):
++            self.headers = {}
++            self.proxies = {}
++
++    monkeypatch.setattr(gopay_transport, "new_session", HttpSession)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://a.example:8080",
++        update_proxy="http://b.example:8080",
++        country="ID",
++        payment_method="gopay",
++        gopay_provider_proxy="http://c.example:8080",
++        gopay_approve_proxy="http://d.example:8080",
++    )
++    stripe = gopay_transport.GoPayTransportFactory().stripe(config)
++    assert stripe.proxies == {
++        "http": "http://c.example:8080",
++        "https": "http://c.example:8080",
++    }
++
++    closed: list[bool] = []
++    created: list[str] = []
++
++    class OldProvider:
++        def close(self):
++            closed.append(True)
++
++    class NewProvider:
++        def __init__(self, **kwargs):
++            created.append(kwargs["proxy"])
++
++    monkeypatch.setattr(gopay_transport, "PlaywrightSentinelProvider", NewProvider)
++    chatgpt = SimpleNamespace(
++        openai_proxy="http://a.example:8080",
++        openai_sentinel_provider=OldProvider(),
++        openai_access_token="fixture-token",
++        openai_device_id="device-fixture",
++        openai_session_id="session-fixture",
++        openai_user_agent="fixture-agent",
++        openai_session_token="",
++        openai_language="id-ID",
++        openai_timezone="Asia/Jakarta",
++        headers={},
++        proxies={},
++    )
++    assert gopay_transport.rotate_openai_approval_context(
++        chatgpt, config, config.gopay_approve_proxy
++    ) is True
++    assert closed == [True]
++    assert created == ["http://d.example:8080"]
++    assert chatgpt.proxies == {
++        "http": "http://d.example:8080",
++        "https": "http://d.example:8080",
++    }
++    assert chatgpt.openai_approve_proxy == "http://d.example:8080"
+@@ -1119,0 +1287 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
++    elements_reuse: list[bool] = []
+@@ -1150,5 +1318,5 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-    monkeypatch.setattr(
+-        gopay_cs_live,
+-        "cs_elements_session",
+-        lambda *_args, **_kwargs: {"payment_method_types": ["gopay"]},
+-    )
++    def elements(*_args, **kwargs):
++        elements_reuse.append(bool(kwargs.get("reuse_session")))
++        return {"payment_method_types": ["gopay"]}
++
++    monkeypatch.setattr(gopay_cs_live, "cs_elements_session", elements)
+@@ -1224 +1392 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-        config, object(), object(), checkout, billing, None
++        config, SimpleNamespace(proxies={}), object(), checkout, billing, None
+@@ -1230,2 +1398,3 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-        "tax_region:country,line1,city",
+-        "snapshot",
++        "tax_region:country",
++        "tax_region:line1",
++        "tax_region:city,postal_code",
+@@ -1236 +1405 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+-        "tax_region:postal_code",
++        "snapshot",
+@@ -1239,0 +1409 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
++    assert elements_reuse == [False, True]
+@@ -1390 +1560 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
+-    assert stages[:6] == [
++    assert stages[:8] == [
+@@ -1394,0 +1565 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++        "checkout_amount_confirmed",
+@@ -1396,0 +1568 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++        "promotion_amount_confirmed",
