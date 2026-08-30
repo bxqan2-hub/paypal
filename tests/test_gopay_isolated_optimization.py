@@ -506,7 +506,7 @@ def test_gopay_eligibility_stays_on_checkout_segment(monkeypatch) -> None:
     ]
 
 
-def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
+def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class Provider:
@@ -550,14 +550,13 @@ def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
     )
     assert checkout["session_kind"] == "stripe_checkout"
     body = captured["json"]
-    assert body["promo_campaign"] == {
-        "promo_campaign_id": "plus-1-month-free",
-        "is_coupon_from_query_param": True,
-    }
-    assert body["check_card_proxy"] is True
-    assert captured["headers"]["Referer"].endswith(
-        "/?promo_campaign=plus-1-month-free"
-    )
+    assert sorted(body) == [
+        "billing_details",
+        "checkout_ui_mode",
+        "entry_point",
+        "plan_name",
+    ]
+    assert captured["headers"]["Referer"] == "https://chatgpt.com/"
     assert "OpenAI-Sentinel-SO-Token" not in captured["headers"]
     assert len(captured["headers"]["oai-web-deployment-attestation"]) == 291
     assert commits == ["checkout_committed"]
@@ -1559,12 +1558,13 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
     result = gopay_core.extract_gopay_payment_link(
         config, transport_factory=Factory(), stage_callback=stages.append
     )
-    assert stages[:8] == [
+    assert stages[:9] == [
         "eligibility_check",
         "eligibility_confirmed",
         "checkout",
         "checkout_kind:stripe_checkout",
         "checkout_amount_confirmed",
+        "checkout_browser_refresh",
         "checkout_update",
         "promotion_applied",
         "promotion_amount_confirmed",

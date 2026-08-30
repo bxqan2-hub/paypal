@@ -11,7 +11,11 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from .auth import account_email
-from .config import billing_for_country, currency_minor_scale
+from .config import (
+    billing_for_country,
+    currency_minor_scale,
+    processor_entity_for_country,
+)
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .gopay_checkout import (
     check_coupon_eligibility,
@@ -22,7 +26,12 @@ from .gopay_checkout import (
 from .gopay_cs_live import extract_cs_live_provider, require_gopay_fail_fast_amount
 from .gopay_oaics import extract_oaics_provider
 from .gopay_stripe_common import extract_checkout_totals
-from .gopay_transport import GoPayTransportFactory, TransportFactory, safe_close
+from .gopay_transport import (
+    GoPayTransportFactory,
+    TransportFactory,
+    prepare_openai_browser_flow,
+    safe_close,
+)
 from .logging_utils import stage_logger
 from .models import ExtractionConfig, PaymentLinkResult
 
@@ -171,6 +180,24 @@ def extract_gopay_payment_link(
         if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
             raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
         require_country_currency(checkout, config)
+        if zero_trial_validation:
+            # Successful browser captures perform a second chatgpt_checkout
+            # Sentinel init after Checkout and while loading the Checkout page.
+            checkpoint("checkout_browser_refresh")
+            processor = processor_entity_for_country(
+                str(checkout.get("billing_country") or GOPAY_COUNTRY),
+                str(checkout.get("processor_entity") or ""),
+            )
+            prepare_openai_browser_flow(
+                chatgpt,
+                flow="chatgpt_checkout",
+                referer=(
+                    f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
+                ),
+                required=bool(
+                    getattr(chatgpt, "openai_sentinel_provider", None)
+                ),
+            )
         if apply_checkout_update:
             checkpoint("checkout_update")
             update_checkout(config, chatgpt, checkout, log)
