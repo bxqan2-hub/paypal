@@ -1,0 +1,461 @@
+diff --git a/docs/2026-08-30_gopay-eligibility-only-stage-report.md b/docs/2026-08-30_gopay-eligibility-only-stage-report.md
+new file mode 100644
+index 0000000..220b07a
+--- /dev/null
++++ b/docs/2026-08-30_gopay-eligibility-only-stage-report.md
+@@ -0,0 +1,53 @@
++# GoPay 第一步：0 元试用资格独立检测
++
++## 结论
++
++GoPay 新增了独立的第一步检测入口 `probe_gopay_zero_trial_eligibility`。该入口只调用 ChatGPT 的优惠资格接口，不创建 Checkout、不初始化 Stripe、不更新账单、不确认支付，也不生成后续长链。
++
++检测会将账号、印度尼西亚 `ID/IDR` 配置和本次选中的 ID 代理绑定在同一会话中。代理池按任务随机、无放回尝试；遇到已验证但不具备资格的结果时继续下一个代理，遇到第一个 `state=eligible` 时立即停止并返回。
++
++## 参考实现
++
++参考仓库 `Torin-x/GPT-utral-platform` 的提交 `68a1f8faede7e41f10ac5f9af267465fa61d0e3d`：
++
++- `vendor/turb_gpt_free_register/core/subscription_status.py`：通过 `/backend-api/promo_campaign/check_coupon`、`coupon=plus-1-month-free`、`is_coupon_from_query_param=true` 判断 `state == eligible`。
++- 请求携带 Access Token、ChatGPT Account ID、设备 ID、Origin/Referer 和浏览器请求头，并使用指定代理。
++- `services/oai_chain_audit.py`：将 `trial_eligible`、`trial_state`、HTTP 状态和 offer 来源分开保存，避免把网络失败误判成无资格。
++
++本站仅采用上述资格检测契约，没有复制该项目的 Checkout、支付或其他套餐流程。
++
++## 本站实现
++
++- `payment_link_extractor/gopay_checkout.py`
++  - 新增只读 `probe_coupon_eligibility`。
++  - 返回 `coupon`、`http_status`、`state`、`eligible` 和非敏感 redemption 状态。
++  - 原 `check_coupon_eligibility` 保留为严格包装器，供完整提链在需要时使用。
++- `payment_link_extractor/gopay_eligibility.py`
++  - 新增独立代理池检测器。
++  - 一个代理只执行资格 GET；不进入第二步。
++  - 依次区分 `eligible=True`、已验证无资格 `False`、全是网络失败 `None`。
++  - 在任何网络访问前验证 JWT 结构和 payload。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-001：参考实现以 `state == eligible` 作为 Plus 一月免费资格 | F-001：第一步不需要创建 Checkout | `payment_link_extractor/gopay_checkout.py` |
++| E-002：参考实现区分 HTTP 成功无资格与网络失败 | F-002：本站结果必须支持 `True/False/None` 三态 | `payment_link_extractor/gopay_eligibility.py` |
++| E-003：用户要求多个 ID 代理检测但成功后立即结束 | F-003：代理池无放回随机尝试，第一个 eligible 立即返回 | `tests/test_gopay_eligibility.py` |
++
++## 验证
++
++```powershell
++.\.venv\Scripts\python.exe -m pytest -q `
++  tests\test_gopay_eligibility.py `
++  tests\test_gopay_isolated_optimization.py
++
++.\.venv\Scripts\python.exe -m pytest -q
++```
++
++测试明确禁止独立检测器调用 Stripe，并覆盖前两个代理无资格、第三个代理 eligible、全部已验证无资格、代理会话关闭以及格式错误 AT 在联网前终止。
++
++## 真实检测结果
++
++使用用户提供的运行时 AT 和现有 10 个 ID 代理执行独立第一步检测，随机计划的第 1 次请求即返回 `HTTP 200 / state=eligible`。最终结果为 `eligible=true`、`source=chatgpt_check_coupon`；检测过程中没有创建 Checkout、没有初始化 Stripe，也没有执行第二步及后续流程。完整 AT、代理凭据和账号标识未写入报告或 Git。
+diff --git a/payment_link_extractor/__init__.py b/payment_link_extractor/__init__.py
+index 59960c5..7b47609 100644
+--- a/payment_link_extractor/__init__.py
++++ b/payment_link_extractor/__init__.py
+@@ -3,0 +4 @@ from .application import extract_payment_link
++from .gopay_eligibility import probe_gopay_zero_trial_eligibility
+@@ -24,0 +26 @@ __all__ = [
++    "probe_gopay_zero_trial_eligibility",
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 71ef053..3919c18 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -329 +329 @@ def create_checkout(
+-def check_coupon_eligibility(
++def probe_coupon_eligibility(
+@@ -333,0 +334 @@ def check_coupon_eligibility(
++    """Read the Plus trial state without creating or updating Checkout."""
+@@ -337 +338,2 @@ def check_coupon_eligibility(
+-    url = f"https://chatgpt.com{path}?coupon=plus-1-month-free&is_coupon_from_query_param=true"
++    coupon = "plus-1-month-free"
++    url = f"https://chatgpt.com{path}?coupon={coupon}&is_coupon_from_query_param=true"
+@@ -340,4 +342,3 @@ def check_coupon_eligibility(
+-        # Match the established PayPal eligibility probe: this read-only GET
+-        # runs before any browser/Checkout state is created.  A non-eligible
+-        # proxy therefore stops here; the browser, fingerprint and Checkout
+-        # order are created only after the account returns ``eligible``.
++        # The reference account audit performs this authenticated GET as a
++        # standalone probe. The existing GoPay session already carries the
++        # account id, device id, ID locale and the selected attempt proxy.
+@@ -351 +352,2 @@ def check_coupon_eligibility(
+-                "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
++                "Accept": "application/json",
++                "Referer": "https://chatgpt.com/",
+@@ -367,9 +369,11 @@ def check_coupon_eligibility(
+-        state = payload.get("state")
+-        if state != "eligible":
+-            raise PromoEligibilityError(
+-                409,
+-                f"promo eligibility rejected: state={state or '?'}",
+-                failure_mode="promo_not_eligible",
+-                retryable=True,
+-            )
+-        return payload
++        state = str(payload.get("state") or "").strip().lower()
++        redemption = payload.get("redemption")
++        redemption = redemption if isinstance(redemption, dict) else {}
++        return {
++            "coupon": coupon,
++            "http_status": int(response.status_code),
++            "state": state,
++            "eligible": state == "eligible",
++            "redeemed": redemption.get("redeemed"),
++            "redeemed_by_user": redemption.get("redeemed_by_user"),
++        }
+@@ -379,0 +384,17 @@ def check_coupon_eligibility(
++def check_coupon_eligibility(
++    config: ExtractionConfig,
++    chatgpt: Any,
++    log: Any | None,
++) -> dict[str, Any]:
++    """Require the standalone Plus-trial probe to report eligible."""
++    result = probe_coupon_eligibility(config, chatgpt, log)
++    if not result["eligible"]:
++        raise PromoEligibilityError(
++            409,
++            f"promo eligibility rejected: state={result['state'] or '?'}",
++            failure_mode="promo_not_eligible",
++            retryable=True,
++        )
++    return result
++
++
+diff --git a/payment_link_extractor/gopay_eligibility.py b/payment_link_extractor/gopay_eligibility.py
+new file mode 100644
+index 0000000..658740c
+--- /dev/null
++++ b/payment_link_extractor/gopay_eligibility.py
+@@ -0,0 +1,157 @@
++from __future__ import annotations
++
++"""Standalone GoPay-region Plus zero-trial eligibility detection."""
++
++from dataclasses import replace
++import random
++import threading
++from typing import Any, Callable
++
++from .auth import decode_jwt_payload, normalize_access_token
++from .config import normalize_payment_method
++from .errors import ConfigurationError, ExtractionCancelled
++from .gopay_checkout import PromoEligibilityError, probe_coupon_eligibility
++from .gopay_transport import GoPayTransportFactory, TransportFactory, safe_close
++from .logging_utils import stage_logger
++from .models import ExtractionConfig
++
++
++GOPAY_TRIAL_COUPON = "plus-1-month-free"
++
++
++def _proxy_candidates(config: ExtractionConfig) -> tuple[str, ...]:
++    values = config.proxy_pool or config.checkout_proxy_attempts or (config.checkout_proxy,)
++    return tuple(
++        dict.fromkeys(str(value).strip() for value in values if str(value).strip())
++    )
++
++
++def _randomized_proxy_plan(config: ExtractionConfig) -> tuple[str, ...]:
++    values = list(_proxy_candidates(config))
++    random.SystemRandom().shuffle(values)
++    return tuple(values)
++
++
++def _attempt_config(config: ExtractionConfig, proxy: str) -> ExtractionConfig:
++    return replace(
++        config,
++        checkout_proxy=proxy,
++        update_proxy=proxy,
++        checkout_proxy_attempts=(proxy,),
++        update_proxy_attempts=(proxy,),
++        proxy_pool=(proxy,),
++    )
++
++
++def probe_gopay_zero_trial_eligibility(
++    config: ExtractionConfig,
++    *,
++    transport_factory: TransportFactory | None = None,
++    cancel_event: threading.Event | None = None,
++    stage_callback: Callable[[str], None] | None = None,
++) -> dict[str, Any]:
++    """Try ID proxies without replacement and stop at the first eligible result.
++
++    This function performs only the coupon GET. It never creates Checkout,
++    initializes Stripe, updates billing, confirms payment, or resolves a link.
++    """
++    if normalize_payment_method(config.payment_method) != "gopay":
++        raise ConfigurationError("GoPay eligibility probe requires payment_method=gopay")
++    if str(config.country or "").strip().upper() != "ID":
++        raise ConfigurationError("GoPay eligibility probe requires country=ID")
++    token = normalize_access_token(config.access_token)
++    if not token:
++        raise ConfigurationError("AT is required")
++    if len(token.split(".")) == 3 and not decode_jwt_payload(token):
++        raise ConfigurationError("AT payload is invalid")
++    config = replace(config, access_token=token)
++    proxies = _randomized_proxy_plan(config)
++    if not proxies:
++        raise ConfigurationError("checkout proxy is required")
++
++    factory = transport_factory or GoPayTransportFactory()
++    log = stage_logger(config.verbose)
++    probes: list[dict[str, Any]] = []
++    verified = False
++    last_state = ""
++    for index, proxy in enumerate(proxies, start=1):
++        if cancel_event is not None and cancel_event.is_set():
++            raise ExtractionCancelled("task cancellation requested")
++        if stage_callback is not None:
++            stage_callback(f"eligibility_proxy:{index}")
++        attempt = _attempt_config(config, proxy)
++        chatgpt = factory.chatgpt(attempt, proxy)
++        try:
++            result = probe_coupon_eligibility(attempt, chatgpt, log)
++            state = str(result.get("state") or "")
++            eligible = bool(result.get("eligible"))
++            verified = verified or bool(result.get("http_status"))
++            last_state = state or last_state
++            probes.append(
++                {
++                    "attempt": index,
++                    "proxy_slot": index,
++                    "http_status": int(result.get("http_status") or 0),
++                    "state": state,
++                    "eligible": eligible,
++                    "coupon": GOPAY_TRIAL_COUPON,
++                }
++            )
++            if eligible:
++                if stage_callback is not None:
++                    stage_callback("eligibility_confirmed")
++                return {
++                    "ok": True,
++                    "eligible": True,
++                    "state": state,
++                    "coupon": GOPAY_TRIAL_COUPON,
++                    "country": "ID",
++                    "currency": "IDR",
++                    "attempt": index,
++                    "max_attempts": len(proxies),
++                    "proxy_slot": index,
++                    "source": "chatgpt_check_coupon",
++                    "probes": probes,
++                }
++        except PromoEligibilityError as exc:
++            if int(exc.status_code) == 401:
++                raise
++            probes.append(
++                {
++                    "attempt": index,
++                    "proxy_slot": index,
++                    "http_status": int(exc.status_code),
++                    "state": "",
++                    "eligible": False,
++                    "coupon": GOPAY_TRIAL_COUPON,
++                    "failure_mode": exc.failure_mode,
++                }
++            )
++        except Exception as exc:
++            probes.append(
++                {
++                    "attempt": index,
++                    "proxy_slot": index,
++                    "http_status": 0,
++                    "state": "",
++                    "eligible": False,
++                    "coupon": GOPAY_TRIAL_COUPON,
++                    "failure_mode": type(exc).__name__,
++                }
++            )
++        finally:
++            safe_close(chatgpt)
++
++    return {
++        "ok": verified,
++        "eligible": False if verified else None,
++        "state": last_state,
++        "coupon": GOPAY_TRIAL_COUPON,
++        "country": "ID",
++        "currency": "IDR",
++        "attempt": len(probes),
++        "max_attempts": len(proxies),
++        "proxy_slot": None,
++        "source": "chatgpt_check_coupon",
++        "probes": probes,
++    }
+diff --git a/tests/test_gopay_eligibility.py b/tests/test_gopay_eligibility.py
+new file mode 100644
+index 0000000..a4e1a62
+--- /dev/null
++++ b/tests/test_gopay_eligibility.py
+@@ -0,0 +1,141 @@
++from __future__ import annotations
++
++from dataclasses import replace
++from types import SimpleNamespace
++
++import pytest
++
++from payment_link_extractor import gopay_eligibility
++from payment_link_extractor.errors import ConfigurationError
++from payment_link_extractor.models import ExtractionConfig
++
++
++def _config() -> ExtractionConfig:
++    pool = tuple(f"http://proxy-{index}.example:8080" for index in range(1, 5))
++    return ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy=pool[0],
++        update_proxy=pool[0],
++        country="ID",
++        payment_method="gopay",
++        proxy_pool=pool,
++        verbose=False,
++    )
++
++
++def test_standalone_gopay_eligibility_stops_at_first_eligible_proxy(monkeypatch) -> None:
++    config = _config()
++    plan = config.proxy_pool
++    sessions: list[SimpleNamespace] = []
++    configs: list[ExtractionConfig] = []
++
++    class Factory:
++        def chatgpt(self, attempt_config, proxy):
++            assert attempt_config.checkout_proxy == proxy
++            assert attempt_config.update_proxy == proxy
++            assert attempt_config.proxy_pool == (proxy,)
++            configs.append(attempt_config)
++            session = SimpleNamespace(proxy=proxy, closed=False)
++            session.close = lambda: setattr(session, "closed", True)
++            sessions.append(session)
++            return session
++
++        def stripe(self, _config):
++            raise AssertionError("eligibility-only flow must not initialize Stripe")
++
++    states = iter(("not_eligible", "ineligible", "eligible", "eligible"))
++
++    def fake_probe(_config, _session, _log):
++        state = next(states)
++        return {
++            "coupon": "plus-1-month-free",
++            "http_status": 200,
++            "state": state,
++            "eligible": state == "eligible",
++        }
++
++    monkeypatch.setattr(gopay_eligibility, "_randomized_proxy_plan", lambda _config: plan)
++    monkeypatch.setattr(gopay_eligibility, "probe_coupon_eligibility", fake_probe)
++    stages: list[str] = []
++    result = gopay_eligibility.probe_gopay_zero_trial_eligibility(
++        config,
++        transport_factory=Factory(),
++        stage_callback=stages.append,
++    )
++
++    assert result == {
++        "ok": True,
++        "eligible": True,
++        "state": "eligible",
++        "coupon": "plus-1-month-free",
++        "country": "ID",
++        "currency": "IDR",
++        "attempt": 3,
++        "max_attempts": 4,
++        "proxy_slot": 3,
++        "source": "chatgpt_check_coupon",
++        "probes": [
++            {"attempt": 1, "proxy_slot": 1, "http_status": 200, "state": "not_eligible", "eligible": False, "coupon": "plus-1-month-free"},
++            {"attempt": 2, "proxy_slot": 2, "http_status": 200, "state": "ineligible", "eligible": False, "coupon": "plus-1-month-free"},
++            {"attempt": 3, "proxy_slot": 3, "http_status": 200, "state": "eligible", "eligible": True, "coupon": "plus-1-month-free"},
++        ],
++    }
++    assert len(configs) == 3
++    assert all(session.closed for session in sessions)
++    assert stages == [
++        "eligibility_proxy:1",
++        "eligibility_proxy:2",
++        "eligibility_proxy:3",
++        "eligibility_confirmed",
++    ]
++
++
++def test_standalone_gopay_eligibility_returns_verified_ineligible_without_checkout(monkeypatch) -> None:
++    config = _config()
++
++    class Factory:
++        def chatgpt(self, _config, proxy):
++            return SimpleNamespace(proxy=proxy, close=lambda: None)
++
++        def stripe(self, _config):
++            raise AssertionError("eligibility-only flow must not initialize Stripe")
++
++    monkeypatch.setattr(
++        gopay_eligibility,
++        "_randomized_proxy_plan",
++        lambda _config: config.proxy_pool[:2],
++    )
++    monkeypatch.setattr(
++        gopay_eligibility,
++        "probe_coupon_eligibility",
++        lambda *_args: {
++            "coupon": "plus-1-month-free",
++            "http_status": 200,
++            "state": "ineligible",
++            "eligible": False,
++        },
++    )
++
++    result = gopay_eligibility.probe_gopay_zero_trial_eligibility(
++        config, transport_factory=Factory()
++    )
++    assert result["ok"] is True
++    assert result["eligible"] is False
++    assert result["state"] == "ineligible"
++    assert result["attempt"] == 2
++    assert result["proxy_slot"] is None
++    assert len(result["probes"]) == 2
++
++
++def test_standalone_gopay_eligibility_rejects_malformed_jwt_before_using_proxy() -> None:
++    config = _config()
++    config = replace(config, access_token="header.eA.signature")
++
++    class ForbiddenFactory:
++        def chatgpt(self, _config, _proxy):
++            raise AssertionError("malformed AT must stop before opening a proxy session")
++
++    with pytest.raises(ConfigurationError, match="AT payload is invalid"):
++        gopay_eligibility.probe_gopay_zero_trial_eligibility(
++            config, transport_factory=ForbiddenFactory()
++        )
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 1cd9bcc..1585437 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -127,0 +128 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
++    captured: dict[str, object] = {}
+@@ -144 +145,5 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
+-    monkeypatch.setattr(gopay_checkout, "stage_http_request", lambda *_args, **_kwargs: Response())
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
+@@ -153,0 +159,6 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
++    assert result["eligible"] is True
++    assert result["coupon"] == "plus-1-month-free"
++    assert result["http_status"] == 200
++    assert captured["headers"]["Accept"] == "application/json"
++    assert captured["headers"]["Referer"] == "https://chatgpt.com/"
++    assert captured["headers"]["x-openai-target-path"] == "/backend-api/promo_campaign/check_coupon"
