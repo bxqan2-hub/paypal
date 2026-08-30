@@ -1,0 +1,89 @@
+GoPay exhaustive ID-proxy preflight verification
+==============================================
+
+Changed branch/field:
+- payment_link_extractor.gopay_core.extract_gopay_payment_link: run eligibility_check and require eligibility_confirmed before Checkout.
+- payment_link_extractor.gopay_checkout.check_coupon_eligibility: use the established direct PayPal-style GET on the selected ID proxy; do not create browser/Checkout state for a negative first-round result.
+- payment_link_extractor.web.tasks.TaskManager._total_attempts: a GoPay task with a proxy pool randomizes and exhausts every unique pool entry once, ignoring the generic 0-10 retry cap; HTTP 401 remains terminal.
+- The selected ID proxy remains fixed across eligibility, Checkout, promo, Stripe and GoPay for one attempt. Every later failure creates a new attempt, proxy, browser fingerprint and order.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-exhaustive-id-preflight-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-exhaustive-id-preflight-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-exhaustive-id-preflight-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-exhaustive-id-preflight-20260830\ROLLBACK.sh
+
+Original SHA-256 (HEAD 59b4b8c):
+- payment_link_extractor/gopay_core.py: fb93ec430271becd0efde0e1741b1c72f2f76fe883dfc0734b93b767b03bb981
+- payment_link_extractor/gopay_checkout.py: 951c3ebc778c4d91713ca4bae2d171fff9276edf094e7c6118853304e4998218
+- payment_link_extractor/web/tasks.py: 008c95e39e0ad0f148fa1d89de73eab817313d6901a58cfcaa58343240b41555
+- tests/test_extraction_full_retry.py: 141cb2b1c4ce7fa388eb130d801374ba2f90c58a2c7fa404c9b0875fec81253d
+- tests/test_gopay_isolated_optimization.py: 80aa939a1363136d3f401e262b195b5e9ac911203b995be1d976fbc50ffaa007
+- docs/2026-08-30_gopay-missing-parameter-fix.md: e44e22df5d12a061812ec9b4246d65f807078f1955a7b0e4c8d5c3ef27b25fe2
+
+Modified snapshot SHA-256:
+- payment_link_extractor/gopay_core.py: d17b824b5ef683594ff6a8e38f57602475f244485c43aeb515f4e2b08e8b4fdc
+- payment_link_extractor/gopay_checkout.py: 7459c2f48d1b64c77e6d7fcb5fca97696ec9425f36153e2831d5b8c02e50e549
+- payment_link_extractor/web/tasks.py: 6d5fb1113297b30a344235b28034319003ed07d1e6ebf60141d0a2395c3bee56
+- tests/test_extraction_full_retry.py: 4c9ab0a1e12235e303c8dca3d87f2412483892eb88923577e4ec7dccc6101d91
+- tests/test_gopay_isolated_optimization.py: 549813dfc8e243e78697f540e31ea8296935407be135984e3450ece29c32771b
+- docs/2026-08-30_gopay-missing-parameter-fix.md: df954b63d384e5860e9b10967921c425e2f97a732c5fc27ce0bcf374134f0a90
+- DIFF_FILE: 1258250662cf5e1d90b6f49d3a54b7695409b2475d411a4f8ed403394ad50b28
+- ROLLBACK.sh: 5c4cfde07a324b6088176a2043d88a4a987cf6d87183340c5de33f0c16c3e3c9
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: pushed source at HEAD 59b4b8c before restoring the first-round qualification gate and exhaustive GoPay pool policy.
+Literal output/result: 199 passed in 1.93s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with direct first-round eligibility, same-ID-proxy continuation and 100-entry exhaustive GoPay pool coverage.
+Literal output/result: 200 passed in 1.66s
+Exit status: 0
+
+TARGET_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_channel_isolation.py
+Input: GoPay qualification, 100-proxy exhaustion, retry semantics and channel isolation tests.
+Literal output/result: 36 passed in 0.35s
+Exit status: 0
+
+HAR_COMPARE command:
+.\.venv\Scripts\python.exe -
+Input: offline script reading C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har; no HAR request was replayed.
+Literal output/result: HAR_SHA256=8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50 CHECK_COUPON_COUNT=0 CHECKOUT_UPDATE_COUNT=0 CHECKOUT_REQUEST_KEYS=billing_details,checkout_ui_mode,entry_point,plan_name ONE_CLICK_TRIAL_ELIGIBLE=false TAX_AMOUNT_TOTALS=34900000,34900000
+Exit status: 0
+
+LIVE commands:
+.\.venv\Scripts\python.exe -u artifacts-local\run_at_slot.py 1
+.\.venv\Scripts\python.exe -u artifacts-local\run_at_slot.py 2
+Input: two available AT slots; two independently randomized sets of 100 unique ID-proxy exits; no replacement within an AT; stop only at a verified 0 IDR URL, HTTP 401, or pool exhaustion.
+Literal output/result:
+- Newest two pasted input files each contained 100 unique proxy entries and zero AT/JWT entries, so the intended two new AT values were not present in those files. The live run used the latest two locally available AT slots without persisting their values.
+- AT-1: 100/100 unique exits used; 87 explicit HTTP 409 state=not_eligible; 13 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
+- AT-2: 100/100 unique exits used; 93 explicit HTTP 409 state=not_eligible; 7 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
+- Combined: 200 attempts, 180 explicit not_eligible responses, 20 network failures, 0 eligible responses, 0 Checkout orders, 0 amount checks, 0 final GoPay URLs.
+Exit status: 0 for both normal pool-exhaustion processes.
+
+Probability analysis:
+- High: the intended two new AT values are absent from the newest files. The 180 authoritative state=not_eligible results therefore describe the latest locally available AT slots, not the missing new ATs.
+- High: the former browser bootstrap ran before qualification and introduced unnecessary browser/proxy failure points. The corrected direct GET now matches the established PayPal probe and does not build an order until eligible.
+- Medium: 20/200 attempts were genuine network/TLS/connect failures. These are distinct from the 180 successful HTTP responses that explicitly returned not_eligible.
+- Low: the supplied canonical GoPay HAR is a non-trial paid flow. It contains no check_coupon, no checkout/update, one_click_trial_eligible=false and 34900000 totals; it verifies headers/Sentinel/pending-update/Stripe-GoPay sequencing but cannot reveal a missing zero-promo parameter.
+
+ROLLBACK command:
+& "C:\Program Files\Git\bin\bash.exe" "C:/Users/Administrator/Desktop/提链/artifacts/gopay-exhaustive-id-preflight-20260830/ROLLBACK.sh" "C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-exhaustive-rollback-test-6" "C:/Users/Administrator/Desktop/提链/artifacts/gopay-exhaustive-id-preflight-20260830/DIFF_FILE"
+Input: independent copy of MODIFIED_FILE; the live working tree was not rolled back.
+Literal output/result:
+ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-exhaustive-rollback-test-6
+RESTORED_FILES=6
+RESTORED_STATUS=PASS
+ROLLBACK_HASH_MATCH=true (all six files exactly matched the recorded HEAD SHA-256 values)
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored HEAD 59b4b8c behavior and exact source hashes.
+- The live MODIFIED_FILE and working tree remain changed: negative qualification does not create Checkout, an eligible result continues on the same ID proxy, and GoPay exhausts each unique pool exit until success or exhaustion.
+- PayPal, GoPay and GCash still dispatch to distinct adapters and distinct result fields; GoPay/GCash do not reuse PayPal provider results.
+- No AT, proxy credential, cookie, Sentinel token, client secret, order id or final redirect nonce is persisted in the committed artifacts.

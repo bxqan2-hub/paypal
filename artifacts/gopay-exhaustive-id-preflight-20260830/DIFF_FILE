@@ -1,0 +1,151 @@
+diff --git a/docs/2026-08-30_gopay-missing-parameter-fix.md b/docs/2026-08-30_gopay-missing-parameter-fix.md
+index 7b333c9..372edcf 100644
+--- a/docs/2026-08-30_gopay-missing-parameter-fix.md
++++ b/docs/2026-08-30_gopay-missing-parameter-fix.md
+@@ -18 +18 @@
+-4. GoPay 旧实现额外沿用了 PayPal 的独立 `GET /backend-api/promo_campaign/check_coupon?...is_coupon_from_query_param=true` 预检；但下载项目 `C:\\Users\\Administrator\\Downloads\\GoPay-印尼0元优惠百分百提链` 的状态机没有该预检，而是“创建 Checkout → 应用 promo → 用 taxes 金额判断 0 元”。
++4. 下载项目是离线夹具，`indonesia_proxy`/`thailand_proxy` 只校验输入标签，`LocalFixtureProvider` 不访问网络，因此不能作为真实跨区代理依据。本站实际流程固定使用同一条 ID 代理：先使用 PayPal 已验证的无浏览器 `check_coupon` GET 读取账号资格；只有 `eligible` 才创建浏览器、随机指纹与 Checkout，并在同一条 ID 代理上继续。
+@@ -32 +32 @@ HAR 的 `checkout/approve` 也携带八项动态 `oai-telemetry`。此前 transp
+-本轮实测中并非全部是网络错误：多数响应是 HTTP 200 + `state=not_eligible`，少数才是 SOCKS/TLS/连接超时。因此不能把所有结果归因于代理未连通；GoPay 现在改为使用下载项目的“promo 应用后金额判定”路径，资格状态以 Stripe/税费权威金额为准。
++本轮实测中并非全部是网络错误：多数响应是 HTTP 200 + `state=not_eligible`，少数才是 SOCKS/TLS/连接超时。因此不能把所有结果归因于代理未连通；首轮资格以 `check_coupon` 为准，后续仍以 Stripe/税费权威金额做第二次零元门禁。
+@@ -62 +62 @@ GoPay 副本现在复用同一个 Elements session/Stripe JS id，逐步发送
+-GoPay 任务的 proxy pool 现在在每个 AT 任务开始时独立随机打乱；每次完整尝试固定使用该次选中的代理，不会在 promo 应用后中途换出口。promo 未落地、非零金额、网络失败或其它协议失败会在配置的重试次数内新建 Checkout/浏览器会话并选择下一个随机池项；GoPay AT 返回 HTTP 401 则终止当前 AT，不再浪费代理重试次数。
++GoPay 任务的 proxy pool 现在在每个 AT 任务开始时独立随机打乱；每次完整尝试固定使用该次选中的 ID 代理，不会在资格确认或 promo 应用后中途换出口。首轮未检测到优惠时不开始 Checkout；资格未通过、promo 未落地、非零金额、网络失败或其它协议失败会新建 Checkout/浏览器会话并选择下一个随机 ID 代理。GoPay 不再使用 0–10 的通用重试上限：有 proxy pool 时对去重后每个出口最多尝试一次，直到零元成功或池耗尽；GoPay AT 返回 HTTP 401 则终止当前 AT。
+@@ -68 +68 @@ GoPay 任务的 proxy pool 现在在每个 AT 任务开始时独立随机打乱
+-切换为下载项目的 promo-flow 后，再用另一组 10 条 t-30 代理完成同样的 3×6 次复测：绝大多数尝试已经进入 `checkout → checkout_update → promotion_applied → Stripe → taxes`，证明旧的独立资格预检确实是错误阻断点；但所有到达金额门禁的尝试都返回 `34900000 IDR`，另有少量 Sentinel、unusual_activity、连接或外部超时，最终仍未生成零金额链接。
++诊断期间曾临时跳过首轮预检，用另一组 10 条 t-30 ID 代理完成 3×6 次复测：绝大多数尝试进入 `checkout → checkout_update → promotion_applied → Stripe → taxes`，但所有到达金额门禁的尝试都返回 `34900000 IDR`。该实验只证明后续链路可达；正式 GoPay 流程现已恢复“首轮 `check_coupon` 非 eligible 就不建单”的要求。
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 7d15d6f..71ef053 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -13 +12,0 @@ from .gopay_transport import (
+-    prepare_openai_browser_session,
+@@ -341,4 +340,4 @@ def check_coupon_eligibility(
+-        # Bootstrap the same browser origin before probing eligibility so the
+-        # request inherits the current `x-oai-is-pending-updates` receipt seen
+-        # in the PayPal/GCash HAR captures.
+-        prepare_openai_browser_session(chatgpt)
++        # Match the established PayPal eligibility probe: this read-only GET
++        # runs before any browser/Checkout state is created.  A non-eligible
++        # proxy therefore stops here; the browser, fingerprint and Checkout
++        # order are created only after the account returns ``eligible``.
+diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
+index 951ca41..06ab442 100644
+--- a/payment_link_extractor/gopay_core.py
++++ b/payment_link_extractor/gopay_core.py
+@@ -15,0 +16 @@ from .gopay_checkout import (
++    check_coupon_eligibility,
+@@ -109,0 +111,7 @@ def extract_gopay_payment_link(
++        if apply_checkout_update:
++            # Probe the account offer with the same ID proxy/session that will
++            # be retained for Checkout. A negative result stops this attempt;
++            # the task retry layer rebuilds state on another random ID proxy.
++            checkpoint("eligibility_check")
++            check_coupon_eligibility(config, chatgpt, log)
++            checkpoint("eligibility_confirmed")
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index d7b856d..fce0b0b 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -186 +186,3 @@ class TaskManager:
+-            total_attempts = max(1, min(11, int(retry_config.retry_count) + 1))
++            if proxy_pool is not None:
++                retry_config = replace(retry_config, proxy_pool=proxy_pool)
++            total_attempts = self._total_attempts(retry_config)
+@@ -235,0 +238 @@ class TaskManager:
++        total_attempts = self._total_attempts(record.config)
+@@ -243,2 +246,2 @@ class TaskManager:
+-            "retry_count": max(0, min(10, int(record.config.retry_count))),
+-            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
++            "retry_count": total_attempts - 1,
++            "max_attempts": total_attempts,
+@@ -451 +454 @@ class TaskManager:
+-        total_attempts = max(1, min(11, int(config.retry_count) + 1))
++        total_attempts = cls._total_attempts(config)
+@@ -480,0 +484,16 @@ class TaskManager:
++    @staticmethod
++    def _total_attempts(config: ExtractionConfig) -> int:
++        """Return the channel-specific full-attempt budget.
++
++        GoPay treats a supplied proxy pool as an exhaustive, without-
++        replacement attempt set. Other channels retain the existing bounded
++        retry_count contract.
++        """
++        if config.payment_method == "gopay" and config.proxy_pool:
++            unique = {
++                str(item).strip() for item in config.proxy_pool if str(item).strip()
++            }
++            if unique:
++                return len(unique)
++        return max(1, min(11, int(config.retry_count) + 1))
++
+@@ -512,2 +531,2 @@ class TaskManager:
+-            retry_count = max(0, min(10, int(retry_plan.retry_count)))
+-            total_attempts = retry_count + 1
++            total_attempts = self._total_attempts(retry_plan)
++            retry_count = total_attempts - 1
+@@ -759,0 +779 @@ class TaskManager:
++        total_attempts = self._total_attempts(record.config)
+@@ -773,2 +793,2 @@ class TaskManager:
+-            "retry_count": max(0, min(10, int(record.config.retry_count))),
+-            "max_attempts": max(1, min(11, int(record.config.retry_count) + 1)),
++            "retry_count": total_attempts - 1,
++            "max_attempts": total_attempts,
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 16ac2e7..331cb79 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -310,0 +311,31 @@ def test_gopay_proxy_pool_attempts_are_random_and_same_proxy_per_attempt() -> No
++
++
++def test_gopay_exhausts_unique_proxy_pool_without_retry_cap() -> None:
++    calls: list[str] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        calls.append(config.checkout_proxy)
++        raise ProtocolError(409, "promo eligibility rejected: state=not_eligible")
++
++    pool = tuple(f"http://proxy-{index}.example:8080" for index in range(1, 101))
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy=pool[0],
++        update_proxy=pool[0],
++        country="ID",
++        payment_method="gopay",
++        retry_count=0,
++        proxy_pool=pool,
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        created = manager.create(config)
++        assert created["max_attempts"] == len(pool)
++        snapshot = _wait_for_terminal(manager, created["task_id"])
++        assert snapshot["status"] == "failed"
++        assert snapshot["attempt"] == len(pool)
++        assert snapshot["max_attempts"] == len(pool)
++        assert len(calls) == len(pool)
++        assert set(calls) == set(pool)
++    finally:
++        manager.close()
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 893fa41..e8571e4 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -126 +126 @@ def test_gopay_browser_provider_syncs_pending_update_header(monkeypatch) -> None
+-def test_gopay_promo_probe_prepares_browser_session(monkeypatch) -> None:
++def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -> None:
+@@ -154 +154 @@ def test_gopay_promo_probe_prepares_browser_session(monkeypatch) -> None:
+-    assert calls == ["prepare"]
++    assert calls == []
+@@ -510,0 +511 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
++    monkeypatch.setattr(gopay_core, "check_coupon_eligibility", lambda *_args: {"state": "eligible"})
+@@ -541 +542,8 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
+-    assert stages[:4] == ["checkout", "checkout_kind:stripe_checkout", "checkout_update", "promotion_applied"]
++    assert stages[:6] == [
++        "eligibility_check",
++        "eligibility_confirmed",
++        "checkout",
++        "checkout_kind:stripe_checkout",
++        "checkout_update",
++        "promotion_applied",
++    ]
