@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from collections import deque
 
-from tools.har_capture_browser_attach import BrowserConnection, _capture_completeness_audit, build_parser
+from tools.har_capture_browser_attach import (
+    AUTO_ATTACH_PARAMS,
+    BrowserConnection,
+    CHILD_AUTO_ATTACH_PARAMS,
+    TargetRecorder,
+    _capture_completeness_audit,
+    build_parser,
+)
 
 
 def test_browser_connection_dispatches_flattened_target_events() -> None:
@@ -31,6 +38,26 @@ def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
     assert args.no_fetch_responses is False
     assert args.heartbeat_seconds == 5.0
     assert args.duration == 0
+
+
+def test_target_enable_pauses_new_targets_until_network_is_ready() -> None:
+    calls: list[tuple[str, dict | None]] = []
+
+    class FakeRecorder:
+        max_body_bytes = 1024
+
+        def command(self, method: str, params: dict | None = None) -> dict:
+            calls.append((method, params))
+            return {}
+
+    target = TargetRecorder.__new__(TargetRecorder)
+    target.recorder = FakeRecorder()
+    target.fetch_responses = False
+    target.enable()
+    assert AUTO_ATTACH_PARAMS["waitForDebuggerOnStart"] is True
+    assert CHILD_AUTO_ATTACH_PARAMS["waitForDebuggerOnStart"] is False
+    assert ("Target.setAutoAttach", CHILD_AUTO_ATTACH_PARAMS) in calls
+    assert calls[-1] == ("Runtime.runIfWaitingForDebugger", None)
 
 
 def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:

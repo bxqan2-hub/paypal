@@ -255,8 +255,18 @@ def run_capture(args: argparse.Namespace) -> int:
     ]
     if args.duration > 0:
         command.extend(["--duration", str(args.duration)])
-    capture = subprocess.run(command, cwd=WORKSPACE, check=False)
-    status = capture.returncode or (0 if output.is_file() else 2)
+    capture = subprocess.Popen(command, cwd=WORKSPACE)
+    try:
+        capture_code = capture.wait()
+    except KeyboardInterrupt:
+        # On Windows Ctrl+C reaches both this wrapper and the recorder.  The
+        # recorder catches it and flushes the HAR; keep waiting here so the
+        # analyzer and return-to-main steps still run after that flush.
+        try:
+            capture_code = capture.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            capture_code = 130
+    status = capture_code or (0 if output.is_file() else 2)
     if status == 0:
         summary = output.with_suffix(".summary.md")
         analysis = subprocess.run(

@@ -192,6 +192,52 @@ def test_capture_flushes_in_flight_request_and_keeps_post_data() -> None:
     assert recorder.entries[0]["request"]["postData"]["text"] == '{"ok":true}'
 
 
+def test_capture_flush_ignores_late_network_events_in_body_command() -> None:
+    recorder = HARRecorder(object())  # type: ignore[arg-type]
+    recorder.states["pending"] = {
+        "request_id": "pending",
+        "request_event": {"wallTime": 0, "timestamp": 1},
+        "request": {"method": "GET", "url": "https://example.com/pending", "headers": {}},
+        "response": {"status": 200, "mimeType": "application/json", "headers": {}},
+        "body": "",
+        "base64Encoded": False,
+    }
+    calls: list[str] = []
+
+    def fake_command(method: str, params: dict | None = None) -> dict:
+        calls.append(method)
+        if method == "Network.getResponseBody":
+            recorder.handle(
+                {
+                    "method": "Network.requestWillBeSent",
+                    "params": {
+                        "requestId": "late",
+                        "timestamp": 2,
+                        "wallTime": 0,
+                        "request": {"method": "GET", "url": "https://example.com/late", "headers": {}},
+                    },
+                }
+            )
+            recorder.handle(
+                {
+                    "method": "Network.responseReceived",
+                    "params": {
+                        "requestId": "late",
+                        "response": {"status": 200, "mimeType": "application/json", "headers": {}},
+                    },
+                }
+            )
+            return {"body": '{"saved":true}', "base64Encoded": False}
+        return {}
+
+    recorder.command = fake_command  # type: ignore[method-assign]
+    recorder.flush_pending()
+    assert calls == ["Network.getResponseBody"]
+    assert recorder.states == {}
+    assert len(recorder.entries) == 1
+    assert recorder.entries[0]["response"]["content"]["text"] == '{"saved":true}'
+
+
 def test_capture_recovers_post_data_omitted_by_request_event() -> None:
     recorder = HARRecorder(object())  # type: ignore[arg-type]
 

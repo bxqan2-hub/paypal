@@ -53,3 +53,28 @@ def test_prepare_parser_accepts_explicit_profile(tmp_path: Path) -> None:
 def test_capture_parser_accepts_explicit_return_url() -> None:
     args = build_parser().parse_args(["capture", "--return-url", "about:blank"])
     assert args.return_url == "about:blank"
+
+
+def test_recorder_interrupt_waits_for_clean_child_exit(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from tools import playwright_capture_session as module
+
+    output = tmp_path / "capture.har"
+    output.write_text('{"log":{"entries":[]}}', encoding="utf-8")
+
+    class FakeProcess:
+        calls = 0
+
+        def wait(self, timeout: int | None = None) -> int:
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            assert timeout == 120
+            return 7
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    args = module.build_parser().parse_args(["capture", "--output", str(output), "--return-url", "about:blank"])
+    monkeypatch.setattr(module, "ensure_session", lambda _: SimpleNamespace(port=61908))
+    monkeypatch.setattr(module, "return_to_main", lambda *_: "about:blank")
+    assert module.run_capture(args) == 7
