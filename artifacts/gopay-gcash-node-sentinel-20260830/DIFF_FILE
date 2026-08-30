@@ -1,0 +1,2214 @@
+diff --git a/.env.example b/.env.example
+index bf448cf..aa75212 100644
+--- a/.env.example
++++ b/.env.example
+@@ -22,0 +23,3 @@ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
++# GoPay proof runtime: gcash_node starts a fresh Node/V8 shim process per token;
++# playwright keeps the prior persistent real-Chrome implementation.
++OPLL_GOPAY_SENTINEL_PROVIDER=gcash_node
+diff --git a/.gitignore b/.gitignore
+index a455e8a..ea7f8bd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,0 +14 @@ artifacts/screenshots/
++*.har
+diff --git a/docs/2026-08-30_gopay-gcash-node-sentinel-live-report.md b/docs/2026-08-30_gopay-gcash-node-sentinel-live-report.md
+new file mode 100644
+index 0000000..e4100f1
+--- /dev/null
++++ b/docs/2026-08-30_gopay-gcash-node-sentinel-live-report.md
+@@ -0,0 +1,102 @@
++# GoPay GCash 风格 Node Sentinel 双账号实时验证报告
++
++## 结论
++
++GoPay 已增加独立的 GCash 风格 Sentinel 运行方式：真实 SDK 在 Node/V8 浏览器 shim 中执行，PoW 和 main token 外层由 Node bridge 组装，每次 Checkout/Approval token 均启动一个全新的 Node 进程，不保留浏览器、VM、连接或 profile 运行态。旧的持久 Playwright Chrome provider 仍可通过环境变量显式切回。
++
++两个新账号均只创建一次 Checkout。第一个账号在代理槽位 2、第二个账号在代理槽位 5 完成 Checkout、Promotion、Stripe init、Elements、billing、taxes 和 Stripe confirm，最终 ChatGPT approve 均返回 `blocked`，没有生成 GoPay 长链。
++
++因此本次 A/B 实验证明：**将 GoPay Sentinel 改为 GCash 的无状态 Node shim 方式不能解决当前 `approve=blocked`**。两个账号的 Node main token 都包含有效 flow/device/c/PoW，frame warm-up 为 HTTP 200，且每条完整链恰好启动两个 Node 进程；稳定缺失项仍是浏览器 NextAuth session Cookie 与 deployment attestation。
++
++## 实现范围
++
++- 新增 GoPay 独立 Node provider：`payment_link_extractor/gopay_sentinel_node.py`。
++- 新增 GoPay 独立 bridge/assets 目录；初始 bridge、bootstrap、SDK 与本地 GCash 权威上游逐字节一致，但运行时不导入或调用 GCash 核心。
++- 默认 `OPLL_GOPAY_SENTINEL_PROVIDER=gcash_node`。
++- 保留 `OPLL_GOPAY_SENTINEL_PROVIDER=playwright` 快速回退。
++- `prepare_flow()` 只记录阶段；每次 `headers()` 新建 Node 进程。
++- Node 模式只要求通过严格的 main token/process/device/proxy readiness，不伪造 NextAuth Cookie 或 attestation。
++- Node 模式不读取旧环境 attestation/SO fallback，防止陈旧材料污染实时验证。
++- Checkout 与 approve 仅在 Node SDK 实际生成 SO token 时发送 SO；本次两账号均为 `has_so=false`。
++- PayPal、GCash 核心、渠道注册项和结果字段没有改动。
++
++## Node 证明链
++
++```mermaid
++sequenceDiagram
++    participant Core as GoPay core
++    participant Node1 as Node process 1
++    participant Sentinel as Sentinel endpoints
++    participant Stripe as Stripe
++    participant Node2 as Node process 2
++    participant Approve as ChatGPT approve
++    Core->>Node1: chatgpt_checkout(device/proxy/cookies)
++    Node1->>Sentinel: frame GET + req POST
++    Node1-->>Core: main token (+ optional SO)
++    Core->>Core: Checkout POST and promotion
++    Core->>Stripe: init/elements/billing/taxes/confirm
++    Core->>Node2: checkout_session_approval(device/proxy/cookies)
++    Node2->>Sentinel: frame GET + req POST
++    Node2-->>Core: new main token (+ optional SO)
++    Core->>Approve: checkout/approve
++    Approve-->>Core: blocked
++```
++
++## 第一个账号结果
++
++| 项目 | 结果 |
++|---|---|
++| 代理槽位 1 | `promo_not_eligible`，未创建 Checkout |
++| 固定提链代理 | 槽位 2 |
++| Checkout 次数 | 1 |
++| Node 进程数 | 2（Checkout/Approval 各 1） |
++| Checkout token | 长度 4333，PoW 存在，frame ping 200 |
++| Approval token | 长度 4490，PoW 存在，frame ping 200 |
++| SDK driver | `pow_required=true`、`has_t=true`、`has_so=false` |
++| Stripe confirm | 已完成 |
++| 最终结果 | `approve_blocked` |
++
++第一个账号失败后新增：oai-did 与 device 强绑定、Node proxy 与 HTTP proxy 强绑定、main `p/c/id/flow` 校验、SO 结构校验、环境 attestation/SO 隔离、严格 AT 输入校验和脱敏 bridge 异常。
++
++## 第二个账号结果
++
++| 项目 | 结果 |
++|---|---|
++| 代理槽位 3、4 | `promo_not_eligible`，未创建 Checkout |
++| 固定提链代理 | 槽位 5 |
++| Checkout 次数 | 1 |
++| Node 进程数 | 2（Checkout/Approval 各 1） |
++| Checkout token | 长度 4389，PoW 存在，frame ping 200 |
++| Approval token | 长度 4530，PoW 存在，frame ping 200 |
++| SDK driver | `pow_required=true`、`has_t=true`、`has_so=false` |
++| Stripe confirm | 已完成 |
++| 最终结果 | `approve_blocked` |
++
++## 实验解释
++
++GCash 风格 Node assets 使用 SDK `20260219f9f6`，SHA-256 为 `69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8`。两份成功 GoPay HAR 对应的是 SDK `20260810913b`，SHA-256 为 `49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd`。
++
++当前 GoPay SDK 不暴露 GCash bridge 使用的内部 `__proto2`，直接替换后会缺少该接口；在 shim 内改走公开 `init/token` 的离线兼容探针超时。因此本次保留的是“GCash 原始 bridge + 原始 SDK”的完整实验变量，没有把不同版本强行拼接。
++
++本机 Node 无 npm `undici`，带代理时 bridge 使用系统 curl fallback。它保证相同 sticky 代理出口，但不具备 curl_cffi/浏览器 TLS 连接和 VM 运行态连续性。这正是用户要求验证的无状态模式，双账号结果表明该差异没有解除 approve block。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| E-301：GoPay Node bridge/assets 与 GCash 权威文件 SHA 一致 | GCash 算法方式被准确复制到 GoPay 独立目录 | `gopay_sentinel_node_assets` |
++| E-302：每次 headers 对应一个 subprocess，两个 flow 共两个进程 | Node proof 不存在跨 token 运行态 | `gopay_sentinel_node.py` |
++| E-303：10 个新代理均为 ID 出口 | A/B 结果不由国家出口错误解释 | 本地脱敏 proxy preflight |
++| E-304：账号 1 完成 confirm 后 approve blocked | Node shim 首次实测未解除 block | live canary slot 1 |
++| E-305：绑定校验强化后账号 2 仍 blocked | DID/proxy/PoW 外层修正仍非充分条件 | live canary slot 2 |
++| E-306：两次 approval 均无 NextAuth Cookie/attestation | 剩余稳定差异仍是浏览器登录态 | `gopay_cs_live.py` safe context |
++| E-307：GCash 22 个上游文件保持逐字节一致 | 修改没有反向污染只读上游 | upstream SHA-256 audit |
++
++## 验证命令
++
++```powershell
++.\.venv\Scripts\python.exe -m pytest -q
++.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_node.py tests\test_gopay_isolated_optimization.py tests\test_gopay_live_canary.py tests\test_channel_isolation.py tests\test_gcash_support.py
++```
++
++实时输入只存在于 Git 忽略的 `artifacts-local`。本报告不包含 AT、Cookie、代理凭据、Checkout ID、订单 ID 或跳转 nonce。
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index ecf31c9..6acc53e 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -293,3 +293,6 @@ def create_checkout(
+-    # Neither complete GoPay HAR sends the optional observer token on the
+-    # protected checkout/approve requests.
+-    sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
++    provider = getattr(chatgpt, "openai_sentinel_provider", None)
++    # The persistent-browser path follows the complete GoPay HARs and omits
++    # the observer token.  The experimental GCash Node/V8 path preserves the
++    # upstream bridge's main+SO pair exactly when the SDK produced both.
++    if not bool(getattr(provider, "send_observer_token", False)):
++        sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
+@@ -319 +322,27 @@ def create_checkout(
+-        if not has_session_token or attestation_length < 64:
++        requires_browser_session = bool(
++            getattr(provider, "requires_browser_session", True)
++        )
++        proof_mode = str(getattr(provider, "proof_mode", "browser") or "browser")
++        sentinel_token_length = len(
++            str(sentinel_headers.get("OpenAI-Sentinel-Token") or "")
++        )
++        node_process_count = int(
++            getattr(provider, "_node_process_count", 0) or 0
++        )
++        node_readiness_error = ""
++        readiness_validator = getattr(provider, "validate_checkout_readiness", None)
++        if not requires_browser_session and callable(readiness_validator):
++            try:
++                readiness_validator(sentinel_headers)
++            except Exception as exc:
++                node_readiness_error = type(exc).__name__
++        browser_incomplete = requires_browser_session and (
++            not has_session_token or attestation_length < 64
++        )
++        node_incomplete = not requires_browser_session and (
++            sentinel_token_length <= 0
++            or node_process_count <= 0
++            or not callable(readiness_validator)
++            or bool(node_readiness_error)
++        )
++        if browser_incomplete or node_incomplete:
+@@ -321 +350 @@ def create_checkout(
+-            if not has_session_token:
++            if requires_browser_session and not has_session_token:
+@@ -323 +352 @@ def create_checkout(
+-            if attestation_length < 64:
++            if requires_browser_session and attestation_length < 64:
+@@ -324,0 +354,8 @@ def create_checkout(
++            if not requires_browser_session and sentinel_token_length <= 0:
++                missing.append("node_main_token")
++            if not requires_browser_session and node_process_count <= 0:
++                missing.append("node_process")
++            if not requires_browser_session and node_readiness_error:
++                missing.append("node_binding")
++            if not requires_browser_session and not callable(readiness_validator):
++                missing.append("node_capability")
+@@ -327 +364,11 @@ def create_checkout(
+-                "GoPay browser checkout readiness missing: " + ",".join(missing),
++                (
++                    "GoPay browser checkout readiness missing: "
++                    if requires_browser_session
++                    else "GoPay Node Sentinel readiness missing: "
++                )
++                + ",".join(missing),
++            )
++            error.failure_mode = (
++                "browser_session_incomplete"
++                if requires_browser_session
++                else "sentinel_node_incomplete"
+@@ -329 +375,0 @@ def create_checkout(
+-            error.failure_mode = "browser_session_incomplete"
+@@ -334,3 +380,3 @@ def create_checkout(
+-                "sentinel_token_length": len(
+-                    str(sentinel_headers.get("OpenAI-Sentinel-Token") or "")
+-                ),
++                "sentinel_token_length": sentinel_token_length,
++                "proof_mode": proof_mode,
++                "node_process_count": node_process_count,
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 25d0fb6..8d37a40 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -97 +97,6 @@ def prefetch_checkout_approval_proof(
+-    """Prefetch the approval challenge at the browser-HAR position."""
++    """Prepare approval proof state at the browser-HAR position.
++
++    Persistent browser providers prefetch a challenge here.  The GoPay Node
++    shim only records phase metadata and starts its fresh process later when
++    ``chatgpt_approve`` requests the final token.
++    """
+@@ -636,3 +641,2 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+-    # SentinelSDK.token(flow) consumes the challenge prefetched after
+-    # Elements, performs the final browser ping, and exposes the exact ping
+-    # telemetry. It does not issue another /sentinel/req on this path.
++    # Persistent browser providers consume the challenge prepared after
++    # Elements. The Node shim instead starts its one fresh req/PoW process now.
+@@ -645,0 +650,8 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
++    allowed_approval_headers = {
++        "OpenAI-Sentinel-Token",
++        "oai-web-deployment-attestation",
++        "oai-device-id",
++    }
++    provider = getattr(chatgpt, "openai_sentinel_provider", None)
++    if bool(getattr(provider, "send_observer_token", False)):
++        allowed_approval_headers.add("OpenAI-Sentinel-SO-Token")
+@@ -649,7 +661 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+-        if key
+-        in {
+-            "OpenAI-Sentinel-Token",
+-            "oai-web-deployment-attestation",
+-            "oai-device-id",
+-        }
+-        and value
++        if key in allowed_approval_headers and value
+@@ -688,0 +695,14 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
++            "proof_mode": str(getattr(provider, "proof_mode", "") or ""),
++            "process_model": str(getattr(provider, "process_model", "") or ""),
++            "node_process_count": int(
++                getattr(provider, "_node_process_count", 0) or 0
++            ),
++            "bridge_sha256": str(
++                getattr(provider, "_bridge_sha256", "") or ""
++            ),
++            "last_ping_status": int(
++                getattr(provider, "_last_ping_status", 0) or 0
++            ),
++            "last_ping_error_present": bool(
++                getattr(provider, "_last_ping_error_present", False)
++            ),
+diff --git a/payment_link_extractor/gopay_sentinel_node.py b/payment_link_extractor/gopay_sentinel_node.py
+new file mode 100644
+index 0000000..e3bd1a8
+--- /dev/null
++++ b/payment_link_extractor/gopay_sentinel_node.py
+@@ -0,0 +1,419 @@
++from __future__ import annotations
++
++"""GoPay Sentinel adapter backed by the byte-identical GCash Node/V8 bridge.
++
++The upstream bridge intentionally starts a fresh Node process for every token.
++It runs the bundled real SDK inside a browser shim, performs the outer PoW/token
++assembly in Node, and does not retain a browser runtime between flows.
++"""
++
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import threading
++from typing import Any
++
++from .config import DEFAULT_USER_AGENT
++
++
++_BRIDGE_VERSION = "20260219f9f6"
++_ASSET_ROOT = Path(__file__).resolve().parent / "gopay_sentinel_node_assets"
++_SDK_PATH = _ASSET_ROOT / "sentinel_assets" / "sentinel_sdk.js"
++_BRIDGE_PATH = _ASSET_ROOT / "sentinel_bridge.js"
++
++
++def _resolve_node_executable() -> str:
++    candidates = (os.environ.get("SENTINEL_NODE", "").strip(), "node", "nodejs")
++    for candidate in candidates:
++        if not candidate:
++            continue
++        executable = shutil.which(candidate)
++        if executable:
++            return executable
++    raise RuntimeError("GoPay Node Sentinel requires Node.js")
++
++
++def mint_gopay_sentinel_sync(
++    *,
++    flow: str,
++    device_id: str,
++    user_agent: str,
++    proxy: str = "",
++    cores: int = 16,
++    page_url: str = "https://chatgpt.com/",
++    language: str = "id-ID",
++    timezone: str = "Asia/Jakarta",
++    cookie_header: str = "",
++    timeout_s: float = 120.0,
++    diagnostics: dict[str, object] | None = None,
++) -> tuple[str, str]:
++    """Run the GoPay-owned copy of the one-process Node/V8 SDK bridge."""
++    payload = json.dumps(
++        {
++            "ua": user_agent,
++            "cores": cores,
++            "deviceId": device_id,
++            "flow": flow,
++            "proxy": proxy,
++            "version": _BRIDGE_VERSION,
++            "pageUrl": page_url,
++            "language": language,
++            "timezone": timezone,
++            "cookieHeader": cookie_header,
++            "sentinelOrigin": "https://chatgpt.com",
++        },
++        separators=(",", ":"),
++    ).encode()
++    try:
++        process = subprocess.run(
++            [_resolve_node_executable(), str(_BRIDGE_PATH)],
++            input=payload,
++            capture_output=True,
++            timeout=timeout_s,
++            check=False,
++        )
++    except FileNotFoundError as exc:
++        raise RuntimeError("GoPay Node Sentinel requires Node.js") from exc
++    except subprocess.TimeoutExpired as exc:
++        raise TimeoutError(
++            f"GoPay Node Sentinel timed out after {timeout_s:.0f}s"
++        ) from exc
++
++    output = (process.stdout or b"").decode("utf-8", "replace").strip()
++    if not output:
++        raise RuntimeError(
++            "GoPay Node Sentinel bridge returned no output "
++            f"(exit={process.returncode}, stderr_bytes={len(process.stderr or b'')})"
++        )
++    try:
++        result = json.loads(output)
++    except json.JSONDecodeError as exc:
++        raise RuntimeError(
++            "GoPay Node Sentinel bridge returned invalid JSON "
++            f"(exit={process.returncode}, stdout_bytes={len(process.stdout or b'')})"
++        ) from exc
++    if result.get("error"):
++        raise RuntimeError("GoPay Node Sentinel bridge reported an SDK error")
++    if process.returncode:
++        raise RuntimeError(
++            f"GoPay Node Sentinel bridge exited unexpectedly (exit={process.returncode})"
++        )
++    if diagnostics is not None:
++        diagnostics.update(
++            ping_status=int(result.get("pingStatus") or 0),
++            ping_ms=int(result.get("pingMs") or 0),
++            ping_error=str(result.get("pingError") or "")[:200],
++            pow_required=bool(result.get("powReq")),
++            has_t=bool(result.get("hasT")),
++            has_so=bool(result.get("hasSo")),
++            so_error_present=bool(result.get("soErr")),
++        )
++    main = str(result.get("main") or "")
++    if not main:
++        raise RuntimeError("GoPay Node Sentinel bridge returned no main token")
++    try:
++        token_payload = json.loads(main)
++    except json.JSONDecodeError as exc:
++        raise RuntimeError("GoPay Node Sentinel main token is invalid JSON") from exc
++    if (
++        token_payload.get("id") != device_id
++        or token_payload.get("flow") != flow
++        or not token_payload.get("c")
++        or not token_payload.get("p")
++    ):
++        raise RuntimeError("GoPay Node Sentinel token binding mismatch")
++    observer = str(result.get("so") or "")
++    if observer:
++        try:
++            observer_payload = json.loads(observer)
++        except json.JSONDecodeError as exc:
++            raise RuntimeError("GoPay Node Sentinel SO token is invalid JSON") from exc
++        if (
++            observer_payload.get("id") != device_id
++            or observer_payload.get("flow") != flow
++            or not observer_payload.get("c")
++        ):
++            raise RuntimeError("GoPay Node Sentinel SO token binding mismatch")
++    return main, observer
++
++
++def _sha256_file(path: Path) -> str:
++    try:
++        return hashlib.sha256(path.read_bytes()).hexdigest()
++    except OSError:
++        return ""
++
++
++def _session_cookie_header(session: Any) -> str:
++    merged: dict[str, str] = {}
++    headers = getattr(session, "headers", None)
++    if headers is not None:
++        try:
++            value = str(headers.get("Cookie") or headers.get("cookie") or "").strip()
++        except Exception:
++            value = ""
++        if value:
++            for item in value.split(";"):
++                name, separator, selected = item.strip().partition("=")
++                if separator and name:
++                    merged[name] = selected
++    jar = getattr(session, "cookies", None)
++    get_dict = getattr(jar, "get_dict", None)
++    if callable(get_dict):
++        try:
++            values = get_dict()
++        except Exception:
++            values = {}
++        if isinstance(values, dict):
++            for name, value in values.items():
++                if str(name).strip():
++                    # The session jar reflects response Set-Cookie updates and
++                    # therefore wins over a stale copied Header value.
++                    merged[str(name)] = str(value)
++    return "; ".join(f"{name}={value}" for name, value in merged.items())
++
++
++def _set_session_cookie(session: Any, name: str, value: str) -> None:
++    selected_name = str(name or "").strip()
++    selected_value = str(value or "").strip()
++    if not selected_name or not selected_value:
++        return
++    jar = getattr(session, "cookies", None)
++    setter = getattr(jar, "set", None)
++    if callable(setter):
++        try:
++            setter(selected_name, selected_value, domain=".chatgpt.com", path="/")
++        except Exception:
++            try:
++                setter(selected_name, selected_value)
++            except Exception:
++                pass
++    headers = getattr(session, "headers", None)
++    if headers is None:
++        return
++    current = _session_cookie_header(session)
++    parts: list[tuple[str, str]] = []
++    replaced = False
++    for item in current.split(";"):
++        key, separator, existing = item.strip().partition("=")
++        if not separator or not key:
++            continue
++        if key == selected_name:
++            parts.append((selected_name, selected_value))
++            replaced = True
++        else:
++            parts.append((key, existing))
++    if not replaced:
++        parts.append((selected_name, selected_value))
++    headers["Cookie"] = "; ".join(f"{key}={item}" for key, item in parts)
++
++
++class GoPayNodeSentinelProvider:
++    """Mint each GoPay proof in a new GCash-compatible Node/V8 process."""
++
++    requires_browser_session = False
++    send_observer_token = True
++    allow_environment_attestation = False
++    allow_environment_observer_token = False
++    proof_mode = "gopay_node_shim"
++    process_model = "one_process_per_token"
++
++    def __init__(
++        self,
++        *,
++        access_token: str,
++        device_id: str,
++        session_id: str,
++        user_agent: str,
++        proxy: str,
++        transport_session: Any,
++        session_token: str = "",
++        language: str = "id-ID",
++        timezone: str = "Asia/Jakarta",
++        log: Any | None = None,
++    ) -> None:
++        self.access_token = str(access_token or "").strip()
++        self.device_id = str(device_id or "").strip()
++        self.session_id = str(session_id or "").strip()
++        self.user_agent = str(user_agent or DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
++        self.proxy = str(proxy or "").strip()
++        self.transport_session = transport_session
++        self.session_token = str(session_token or "").strip()
++        self.language = str(language or "id-ID").strip() or "id-ID"
++        self.timezone = str(timezone or "Asia/Jakarta").strip() or "Asia/Jakarta"
++        self.log = log
++        self._lock = threading.RLock()
++        self._closed = False
++        self._prepared_flow = ""
++        self._prepared_referer = ""
++        self._node_process_count = 0
++        self._last_ping_status = 0
++        self._last_ping_ms = 0
++        self._last_ping_error_present = False
++        self._last_token_length = 0
++        self._last_so_token_length = 0
++        self._challenge_shapes: list[dict[str, Any]] = []
++        self._sdk_sha256 = _sha256_file(_SDK_PATH)
++        self._bridge_sha256 = _sha256_file(_BRIDGE_PATH)
++        self._browser_channel = "node-v8-shim"
++        self._browser_version = ""
++        self._runtime_id = ""
++        self._profile_path = ""
++        if self.session_token:
++            _set_session_cookie(
++                self.transport_session,
++                "__Secure-next-auth.session-token",
++                self.session_token,
++            )
++        _set_session_cookie(self.transport_session, "oai-did", self.device_id)
++
++    @property
++    def enabled(self) -> bool:
++        return _SDK_PATH.is_file() and _BRIDGE_PATH.is_file()
++
++    @staticmethod
++    def _normalize_flow(flow: str) -> str:
++        selected = str(flow or "").strip()
++        if selected.lower() in {"", "default", "__default__"}:
++            return "chatgpt_checkout"
++        return selected
++
++    def prepare(self) -> None:
++        if self._closed:
++            raise RuntimeError("GCash Node Sentinel provider is closed")
++
++    def prepare_flow(self, *, flow: str, referer: str) -> None:
++        """Record phase metadata without creating a persistent runtime."""
++        with self._lock:
++            self.prepare()
++            self._prepared_flow = self._normalize_flow(flow)
++            self._prepared_referer = str(referer or "https://chatgpt.com/")
++
++    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
++        with self._lock:
++            self.prepare()
++            _set_session_cookie(self.transport_session, "oai-did", self.device_id)
++            cookie_header = _session_cookie_header(self.transport_session)
++            cookie_device = ""
++            for item in cookie_header.split(";"):
++                name, separator, value = item.strip().partition("=")
++                if separator and name == "oai-did":
++                    cookie_device = value
++                    break
++            if cookie_device != self.device_id:
++                raise RuntimeError("GoPay Node Sentinel oai-did binding mismatch")
++            proxies = getattr(self.transport_session, "proxies", None)
++            if isinstance(proxies, dict):
++                active_proxy = str(
++                    proxies.get("https") or proxies.get("http") or ""
++                ).strip()
++                if active_proxy and active_proxy != self.proxy:
++                    raise RuntimeError("GoPay Node Sentinel proxy binding mismatch")
++            selected_flow = self._normalize_flow(flow)
++            selected_referer = str(
++                referer
++                or (
++                    self._prepared_referer
++                    if self._prepared_flow == selected_flow
++                    else ""
++                )
++                or "https://chatgpt.com/"
++            )
++            diagnostics: dict[str, object] = {}
++            main, observer = mint_gopay_sentinel_sync(
++                flow=selected_flow,
++                device_id=self.device_id,
++                user_agent=self.user_agent,
++                proxy=self.proxy,
++                page_url=selected_referer,
++                language=self.language,
++                timezone=self.timezone,
++                cookie_header=cookie_header,
++                timeout_s=120,
++                diagnostics=diagnostics,
++            )
++            # The upstream wrapper already validates id/flow/c. Keep a local
++            # assertion so provider failures remain explicit at this boundary.
++            try:
++                payload = json.loads(main)
++            except (TypeError, ValueError) as exc:
++                raise RuntimeError("GCash Node Sentinel returned invalid main token") from exc
++            if (
++                payload.get("id") != self.device_id
++                or payload.get("flow") != selected_flow
++                or not payload.get("c")
++            ):
++                raise RuntimeError("GCash Node Sentinel token binding mismatch")
++            self._node_process_count += 1
++            self._last_ping_status = int(diagnostics.get("ping_status") or 0)
++            self._last_ping_ms = int(diagnostics.get("ping_ms") or 0)
++            self._last_ping_error_present = bool(diagnostics.get("ping_error"))
++            self._last_token_length = len(main)
++            self._last_so_token_length = len(observer)
++            self._challenge_shapes.append(
++                {
++                    "flow": selected_flow,
++                    "token_length": len(main),
++                    "so_token_length": len(observer),
++                    "pow_present": bool(payload.get("p")),
++                    "ping_status": self._last_ping_status,
++                    "ping_error_present": self._last_ping_error_present,
++                    "pow_required": bool(diagnostics.get("pow_required")),
++                    "has_t": bool(diagnostics.get("has_t")),
++                    "has_so": bool(diagnostics.get("has_so")),
++                    "so_error_present": bool(
++                        diagnostics.get("so_error_present")
++                    ),
++                }
++            )
++            telemetry_field = (
++                "openai_checkout_telemetry"
++                if selected_flow == "chatgpt_checkout"
++                else "openai_approve_telemetry"
++            )
++            setattr(self.transport_session, telemetry_field, "[1,null]")
++            result = {
++                "OpenAI-Sentinel-Token": main,
++                "oai-device-id": self.device_id,
++            }
++            if observer:
++                result["OpenAI-Sentinel-SO-Token"] = observer
++            return result
++
++    def validate_checkout_readiness(self, headers: dict[str, str]) -> dict[str, Any]:
++        """Validate the explicit Node/process/device/proxy checkout boundary."""
++        token = str(headers.get("OpenAI-Sentinel-Token") or "").strip()
++        if not token or self._node_process_count <= 0:
++            raise RuntimeError("GoPay Node Sentinel checkout proof is incomplete")
++        try:
++            payload = json.loads(token)
++        except (TypeError, ValueError) as exc:
++            raise RuntimeError("GoPay Node Sentinel checkout proof is invalid") from exc
++        if (
++            payload.get("id") != self.device_id
++            or payload.get("flow") != "chatgpt_checkout"
++            or not payload.get("c")
++            or not payload.get("p")
++        ):
++            raise RuntimeError("GoPay Node Sentinel checkout proof binding mismatch")
++        return {
++            "proof_mode": self.proof_mode,
++            "node_process_count": self._node_process_count,
++            "token_length": len(token),
++            "observer_token_length": len(
++                str(headers.get("OpenAI-Sentinel-SO-Token") or "")
++            ),
++        }
++
++    def set_cookie(self, name: str, value: str, *, http_only: bool = False) -> None:
++        del http_only
++        with self._lock:
++            self.prepare()
++            _set_session_cookie(self.transport_session, name, value)
++
++    def close(self) -> None:
++        with self._lock:
++            self._closed = True
+diff --git a/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_bootstrap.js b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_bootstrap.js
+new file mode 100644
+index 0000000..d62ac79
+--- /dev/null
++++ b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_bootstrap.js
+@@ -0,0 +1,465 @@
++// sentinel_bootstrap.js — 在加载真·sdk.js 之前铺好浏览器环境 shim。
++// 只提供 sdk.js 实际会读到的对象/方法，值对齐 Edge 150 / zh-CN。
++(function () {
++  "use strict";
++  var g = globalThis;
++
++  // sdk 里的“自我防篡改”陷阱会对函数源码跑灾难性回溯正则 (((.+)+)+)+$。
++  // 真浏览器 V8 上瞬间命中；goja/regexp2 会指数级卡死。这里对该固定模式短路，
++  // 返回与真浏览器一致的结果（非空串必命中→返回 0），不影响 token 计算。
++  var _search = String.prototype.search;
++  String.prototype.search = function (re) {
++    try {
++      var s = (re && re.source) ? re.source : String(re);
++      if (s.indexOf("(((.+)+)+)+") !== -1) return this.length ? 0 : -1;
++    } catch (e) {}
++    return _search.call(this, re);
++  };
++
++  // goja 抛 TypeError 用旧版措辞 "Cannot read property 'x' of undefined/null"，
++  // V8/Chrome 用 "Cannot read properties of undefined/null (reading 'x')"。
++  // collector 会把访问 undefined 属性时的错误串作为指纹熵记录（如 clientBootstrap），
++  // 措辞不一致会暴露非 V8 引擎。覆写 Error.toString 把 goja 文案改写成 V8 文案。
++  var _errToString = Error.prototype.toString;
++  Error.prototype.toString = function () {
++    var s = _errToString.call(this);
++    try {
++      s = s.replace(/Cannot read property '([^']*)' of undefined/g, "Cannot read properties of undefined (reading '$1')")
++           .replace(/Cannot read property '([^']*)' of null/g, "Cannot read properties of null (reading '$1')");
++    } catch (e) {}
++    return s;
++  };
++
++  // sdk 里有基于 setInterval 的反调试轮询（每隔几秒检测 debugger）。
++  // 在 eventloop 下这个循环定时器会让事件循环永不清空 → loop 卡死。
++  // 一次性 token 计算不需要它，直接置空；setTimeout 保留（dx VM 会用）。
++  g.setInterval = function () { return 0; };
++  g.clearInterval = function () {};
++
++  // crypto.getRandomValues（uuid v4 生成 sentinel deviceId 时需要）
++  g.crypto = g.crypto || {};
++  if (typeof g.crypto.getRandomValues !== "function") {
++    g.crypto.getRandomValues = function (arr) {
++      for (var i = 0; i < arr.length; i++) arr[i] = (Math.random() * 256) | 0;
++      return arr;
++    };
++  }
++  if (typeof g.crypto.randomUUID !== "function") {
++    g.crypto.randomUUID = function () {
++      var b = new Uint8Array(16);
++      g.crypto.getRandomValues(b);
++      b[6] = (b[6] & 0x0f) | 0x40;
++      b[8] = (b[8] & 0x3f) | 0x80;
++      var h = [];
++      for (var i = 0; i < 16; i++) h.push((b[i] + 0x100).toString(16).slice(1));
++      return h[0] + h[1] + h[2] + h[3] + "-" + h[4] + h[5] + "-" + h[6] + h[7] +
++        "-" + h[8] + h[9] + "-" + h[10] + h[11] + h[12] + h[13] + h[14] + h[15];
++    };
++  }
++
++  // window / self 自引用
++  g.window = g;
++  g.self = g;
++  g.top = g;
++  g.parent = g;
++
++  // ---- Date 覆写：输出与当前出口国家一致的时区 ----
++  var _DateToString = Date.prototype.toString;
++  Date.prototype.toString = function () {
++    try {
++      var timezone = g.__TIMEZONE__ || "America/New_York";
++      var source = new Date(this.getTime());
++      var parts = new Intl.DateTimeFormat("en-US", {
++        timeZone: timezone,
++        year: "numeric", month: "2-digit", day: "2-digit",
++        hour: "2-digit", minute: "2-digit", second: "2-digit",
++        hourCycle: "h23"
++      }).formatToParts(source).reduce(function (out, part) {
++        if (part.type !== "literal") out[part.type] = Number(part.value);
++        return out;
++      }, {});
++      var localAsUtc = Date.UTC(
++        parts.year, parts.month - 1, parts.day,
++        parts.hour, parts.minute, parts.second
++      );
++      var offsetMinutes = Math.round((localAsUtc - source.getTime()) / 60000);
++      var d = new Date(source.getTime() + offsetMinutes * 60000);
++      var wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
++      var mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()];
++      function p(n) { return (n < 10 ? "0" : "") + n; }
++      var sign = offsetMinutes >= 0 ? "+" : "-";
++      var offset = Math.abs(offsetMinutes);
++      return wd + " " + mo + " " + p(d.getUTCDate()) + " " + d.getUTCFullYear() +
++        " " + p(d.getUTCHours()) + ":" + p(d.getUTCMinutes()) + ":" + p(d.getUTCSeconds()) +
++        " GMT" + sign + p(Math.floor(offset / 60)) + p(offset % 60) + " (" + timezone + ")";
++    } catch (e) {
++      return _DateToString.call(this);
++    }
++  };
++
++  // ---- 构造原生方法：toString() 返回 "function name() { [native code] }" ----
++  function nativeFn(name) {
++    var f = function () {};
++    try { Object.defineProperty(f, "name", { value: name, configurable: true }); } catch (e) {}
++    f.toString = function () { return "function " + name + "() { [native code] }"; };
++    return f;
++  }
++
++  // Navigator 原型：一批 Chromium/Edge 150 上真实存在的方法 + 若干属性 getter。
++  var navProtoMethods = [
++    "clearOriginJoinedAdInterestGroups", "joinAdInterestGroup", "leaveAdInterestGroup",
++    "runAdAuction", "createAuctionNonce", "deprecatedReplaceInURN", "deprecatedURNToURL",
++    "updateAdInterestGroups", "canShare", "share", "requestMIDIAccess",
++    "requestMediaKeySystemAccess", "getGamepads", "getBattery", "sendBeacon", "vibrate",
++    "registerProtocolHandler", "unregisterProtocolHandler", "setAppBadge", "clearAppBadge",
++    "getInstalledRelatedApps", "javaEnabled", "taintEnabled", "getUserMedia",
++    "webkitGetUserMedia"
++  ];
++  var NavigatorProto = {};
++  navProtoMethods.forEach(function (m) { NavigatorProto[m] = nativeFn(m); });
++  // 少量属性(有些 Tt() 随机命中时返回其值的字符串形态)
++  NavigatorProto.cookieEnabled = true;
++  NavigatorProto.onLine = true;
++  NavigatorProto.pdfViewerEnabled = true;
++  NavigatorProto.webdriver = false;
++
++  var navigator = Object.create(NavigatorProto);
++  navigator.userAgent = g.__UA__;
++  navigator.appVersion = g.__UA__.replace("Mozilla/", "");
++  navigator.appName = "Netscape";
++  navigator.appCodeName = "Mozilla";
++  navigator.platform = "Win32";
++  navigator.product = "Gecko";
++  navigator.productSub = "20030107";
++  navigator.vendor = "Google Inc.";
++  navigator.vendorSub = "";
++  navigator.language = g.__LANGUAGE__ || "en-US";
++  navigator.languages = g.__LANGUAGES__ || [navigator.language, "en-US", "en"];
++  navigator.hardwareConcurrency = g.__CORES__;
++  navigator.deviceMemory = 8;
++  navigator.maxTouchPoints = 0;
++  navigator.doNotTrack = null;
++  // 常见 WebAPI 子对象 (collector_dx 会探测)
++  var noop = function () {};
++  var noopPromise = function () { return Promise.resolve(); };
++  navigator.connection = { effectiveType: "4g", rtt: 50, downlink: 10, saveData: false, type: "wifi" };
++  navigator.plugins = { length: 5, item: noop, namedItem: noop, refresh: noop };
++  navigator.mimeTypes = { length: 4, item: noop, namedItem: noop };
++  navigator.permissions = { query: function () { return Promise.resolve({ state: "prompt" }); } };
++  navigator.mediaDevices = { enumerateDevices: function () { return Promise.resolve([]); }, getUserMedia: noopPromise };
++  navigator.credentials = { get: noopPromise, store: noopPromise, create: noopPromise, preventSilentAccess: noopPromise };
++  navigator.serviceWorker = { controller: null, ready: Promise.resolve({ active: null }), register: noopPromise, getRegistrations: function () { return Promise.resolve([]); } };
++  navigator.storage = { estimate: function () { return Promise.resolve({ quota: 2e11, usage: 5e7 }); }, getDirectory: noopPromise, persisted: function () { return Promise.resolve(false); }, persist: function () { return Promise.resolve(false); } };
++  navigator.clipboard = { read: noopPromise, readText: noopPromise, write: noopPromise, writeText: noopPromise };
++  navigator.locks = { request: noopPromise, query: function () { return Promise.resolve({ held: [], pending: [] }); } };
++  navigator.mediaCapabilities = { decodingInfo: function () { return Promise.resolve({ supported: true, smooth: true, powerEfficient: true }); } };
++  navigator.userAgentData = { brands: [{ brand: "Google Chrome", version: "136" }, { brand: "Chromium", version: "136" }, { brand: "Not.A/Brand", version: "99" }], mobile: false, platform: "Windows", getHighEntropyValues: function () { return Promise.resolve({}); } };
++  navigator.scheduling = { isInputPending: function () { return false; } };
++  navigator.ink = { requestPresenter: noopPromise };
++  navigator.gpu = { requestAdapter: noopPromise };
++  navigator.hid = { getDevices: function () { return Promise.resolve([]); }, requestDevice: noopPromise };
++  navigator.serial = { getPorts: function () { return Promise.resolve([]); }, requestPort: noopPromise };
++  navigator.usb = { getDevices: function () { return Promise.resolve([]); }, requestDevice: noopPromise };
++  navigator.bluetooth = { getAvailability: function () { return Promise.resolve(false); }, requestDevice: noopPromise };
++  navigator.xr = { isSessionSupported: function () { return Promise.resolve(false); }, requestSession: noopPromise };
++  navigator.wakeLock = { request: noopPromise };
++  navigator.geolocation = { getCurrentPosition: noop, watchPosition: noop, clearWatch: noop };
++  navigator.mediaSession = { metadata: null, playbackState: "none", setActionHandler: noop };
++  g.navigator = navigator;
++
++  // ---- screen ----
++  g.screen = {
++    width: 1920, height: 1080, availWidth: 1920, availHeight: 1032,
++    colorDepth: 24, pixelDepth: 24, availLeft: 0, availTop: 0
++  };
++  g.innerWidth = 1920; g.innerHeight = 945;
++  g.outerWidth = 1920; g.outerHeight = 1032;
++  g.devicePixelRatio = 1;
++
++  // ---- history / location ----
++  // collector 会记录当前页 URL 作为指纹熵。真实注册流在 /about-you 页触发 create_account
++  // 的 sentinel；Go 侧可用 __PAGE_URL__ 按具体 flow 覆写，默认对齐 about-you。
++  g.history = { length: 2, scrollRestoration: "auto", state: null };
++  var _pageUrl = g.__PAGE_URL__ || "https://auth.openai.com/about-you";
++  var _parsedPageUrl = new URL(_pageUrl);
++  g.location = {
++    href: _pageUrl, origin: _parsedPageUrl.origin,
++    protocol: _parsedPageUrl.protocol, host: _parsedPageUrl.host, hostname: _parsedPageUrl.hostname,
++    port: _parsedPageUrl.port, pathname: _parsedPageUrl.pathname,
++    search: _parsedPageUrl.search, hash: _parsedPageUrl.hash,
++    assign: function () {}, replace: function () {}, reload: function () {}, toString: function () { return _pageUrl; }
++  };
++
++  // ---- performance ----
++  // collector 会读导航性能条目的 name（= 当前页 URL）作为指纹熵，真实页在此产出
++  // "https://auth.openai.com/about-you"。缺 getEntriesByType 时该测点为空 → 少一项。
++  var _t0 = Date.now();
++  var _navEntry = {
++    name: _pageUrl, entryType: "navigation", startTime: 0, duration: 420.5, type: "navigate",
++    initiatorType: "navigation", nextHopProtocol: "h2", redirectCount: 0,
++    domComplete: 410.2, domContentLoadedEventEnd: 300.1, domInteractive: 280.4,
++    loadEventEnd: 418.9, responseEnd: 190.3, responseStart: 150.7, requestStart: 60.2,
++    fetchStart: 5.1, connectEnd: 40.8, connectStart: 20.3, domainLookupEnd: 15.2,
++    domainLookupStart: 10.1, secureConnectionStart: 25.6, transferSize: 18240, encodedBodySize: 17010, decodedBodySize: 61200
++  };
++  g.performance = {
++    timeOrigin: _t0,
++    now: function () { return (Date.now() - _t0) + Math.random(); },
++    memory: { jsHeapSizeLimit: 4294705152, totalJSHeapSize: 35000000, usedJSHeapSize: 22000000 },
++    getEntries: function () { return [_navEntry]; },
++    getEntriesByType: function (t) { return t === "navigation" ? [_navEntry] : []; },
++    getEntriesByName: function (n) { return _navEntry.name === n ? [_navEntry] : []; },
++    mark: function () {}, measure: function () {}, clearMarks: function () {}, clearMeasures: function () {},
++    clearResourceTimings: function () {}, setResourceTimingBufferSize: function () {}
++  };
++
++  // ---- localStorage ----
++  // collector_dx 会枚举 Object.keys(localStorage) 作为指纹熵。真实 auth 页在
++  // statsig 客户端 SDK 初始化后会写入一批 statsig.* 键；goja 环境无该 SDK，
++  // 需按真实结构预置这些键，且方法要不可枚举，否则 keys 会枚举出方法名。
++  (function () {
++    function digits(n) { var s = ""; for (var i = 0; i < n; i++) s += (Math.random() * 10) | 0; if (s[0] === "0") s = "1" + s.slice(1); return s; }
++    function hex(n) { var h = "0123456789abcdef", s = ""; for (var i = 0; i < n; i++) s += h[(Math.random() * 16) | 0]; return s; }
++    var stable = digits(9);
++    var ls = {};
++    var seed = [
++      "statsig.cached.evaluations." + digits(8),
++      "statsig.cached.evaluations." + digits(9),
++      "statsig.cached.evaluations." + digits(10),
++      "statsig.last_modified_time.evaluations",
++      hex(16),
++      "statsig.cached.evaluations." + digits(10),
++      "statsig.session_id." + stable,
++      "statsig.cached.evaluations." + digits(10),
++      "statsig.cached.evaluations." + digits(10),
++      "statsig.cached.evaluations." + digits(10),
++      "statsig.stable_id." + stable
++    ];
++    seed.forEach(function (k) { ls[k] = "1"; });
++    if (g.__SEED_DID_KEY__ && g.__SEED_DID_VAL__) ls[g.__SEED_DID_KEY__] = g.__SEED_DID_VAL__;
++    function def(name, fn) { Object.defineProperty(ls, name, { value: fn, enumerable: false, writable: true, configurable: true }); }
++    def("getItem", function (k) { return Object.prototype.hasOwnProperty.call(ls, k) ? ls[k] : null; });
++    def("setItem", function (k, v) { ls[k] = "" + v; });
++    def("removeItem", function (k) { delete ls[k]; });
++    def("clear", function () { Object.keys(ls).forEach(function (k) { delete ls[k]; }); });
++    def("key", function (i) { return Object.keys(ls)[i] || null; });
++    Object.defineProperty(ls, "length", { get: function () { return Object.keys(ls).length; }, enumerable: false, configurable: true });
++    g.localStorage = ls;
++  })();
++
++  // ---- document（sdk 读 scripts / documentElement / cookie / keys / body 文本量测指纹）----
++  var sdkScript = { src: g.__SDK_URL__, getAttribute: function () { return null; }, type: "text/javascript" };
++  var docElement = { getAttribute: function () { return null; }, tagName: "HTML", lang: g.__LANGUAGE__ || "en-US" };
++  var _cookie = g.__COOKIE_HEADER__ || ((g.__SEED_DID_KEY__ && g.__SEED_DID_VAL__) ? (g.__SEED_DID_KEY__ + "=" + g.__SEED_DID_VAL__) : "");
++
++  // 可写 style 壳：collector 的文本指纹会 Reflect.set(style, "fontFamily"/"fontSize"/... )
++  function makeStyle() {
++    var st = {};
++    st.setProperty = function (k, v) { st[k] = "" + v; };
++    st.getPropertyValue = function (k) { return Object.prototype.hasOwnProperty.call(st, k) ? st[k] : ""; };
++    st.removeProperty = function (k) { var v = st[k]; delete st[k]; return v; };
++    st.cssText = "";
++    return st;
++  }
++
++  // DOM 元素壳：createElement("div") 后设 style/innerText，appendChild 到 body，
++  // 再 getBoundingClientRect()（结果会被 JSON.stringify），最后 removeChild。
++  function makeElement(tag) {
++    var el = {
++      tagName: ("" + tag).toUpperCase(),
++      nodeName: ("" + tag).toUpperCase(),
++      nodeType: 1,
++      style: makeStyle(),
++      innerText: "", textContent: "", innerHTML: "",
++      className: "", id: "", ariaHidden: null, hidden: false,
++      clientWidth: 0, clientHeight: 0, offsetWidth: 0, offsetHeight: 0,
++      scrollWidth: 0, scrollHeight: 0, offsetLeft: 0, offsetTop: 0,
++      children: [], childNodes: [], parentNode: null,
++      setAttribute: function () {}, getAttribute: function () { return null; },
++      removeAttribute: function () {}, hasAttribute: function () { return false; },
++      addEventListener: function () {}, removeEventListener: function () {},
++      appendChild: function (c) { this.children.push(c); this.childNodes.push(c); if (c) c.parentNode = this; return c; },
++      removeChild: function (c) {
++        var i = this.children.indexOf(c);
++        if (i >= 0) { this.children.splice(i, 1); this.childNodes.splice(i, 1); }
++        if (c) c.parentNode = null;
++        return c;
++      },
++      insertBefore: function (c) { this.children.push(c); this.childNodes.push(c); return c; },
++      remove: function () {},
++      querySelector: function () { return null; },
++      querySelectorAll: function () { return []; },
++      getClientRects: function () { return [this.getBoundingClientRect()]; },
++      getBoundingClientRect: function () {
++        // 无真实排版：按文本长度给出稳定的亚像素宽度（Impact 15px 近似），
++        // 结果仅作为指纹熵被服务端记录。
++        var t = "" + (this.innerText || "");
++        var w = t.length ? (t.length * 7.34 + 0.421875) : 0;
++        var h = t.length ? 17.5 : 0;
++        return { x: 8, y: 8, width: w, height: h, top: 8, right: 8 + w, bottom: 8 + h, left: 8 };
++      }
++    };
++    return el;
++  }
++
++  var bodyEl = makeElement("body");
++  var headEl = makeElement("head");
++  g.document = {
++    scripts: [sdkScript],
++    documentElement: docElement,
++    body: bodyEl,
++    head: headEl,
++    getElementsByTagName: function (t) {
++      t = String(t).toLowerCase();
++      if (t === "script") return [sdkScript];
++      if (t === "body") return [bodyEl];
++      if (t === "head") return [headEl];
++      return [];
++    },
++    getElementById: function () { return null; },
++    querySelector: function () { return null; },
++    querySelectorAll: function () { return []; },
++    createElement: function (tag) { return makeElement(tag || "div"); },
++    createTextNode: function (t) { return { nodeType: 3, textContent: "" + t }; },
++    referrer: "",
++    location: g.location,
++    URL: _pageUrl,
++    documentURI: _pageUrl,
++    baseURI: _pageUrl,
++    title: "",
++    readyState: "complete",
++    hidden: false,
++    visibilityState: "visible",
++    characterSet: "UTF-8",
++    contentType: "text/html",
++    get cookie() { return _cookie; },
++    set cookie(v) { _cookie = "" + v; }
++  };
++
++  // ---- __reactRouterContext ----
++  // collector 会 try-读 ctx.state.loaderData.root.clientBootstrap 的地理字段。
++  // 真实 auth 注册页此处 root 为 undefined，读其属性会连环抛错并被作为指纹熵记录。
++  // 保持 root 缺失（与真实同形态、同测点数量），错误文案由上方 Error.toString
++  // 覆写统一改成 V8 措辞，避免暴露非 V8 引擎。
++  g.__reactRouterContext = { state: { loaderData: {} } };
++
++  // ---- requestIdleCallback 保持 undefined → sdk 走 setTimeout 兜底 ----
++  // ---- 常见空壳，避免 sdk 里偶发访问抛错 ----
++  g.addEventListener = function () {};
++  g.removeEventListener = function () {};
++  g.dispatchEvent = function () { return true; };
++  g.matchMedia = function () { return { matches: false, addListener: function () {}, removeListener: function () {}, addEventListener: function () {}, removeEventListener: function () {} }; };
++  if (typeof g.console === "undefined") g.console = { log: function () {}, warn: function () {}, error: function () {} };
++
++  // ---- 更多 collector_dx 常见探测对象 ----
++  g.chrome = { runtime: { id: undefined, connect: function () {}, sendMessage: function () {} }, csi: function () { return {}; }, loadTimes: function () { return {}; } };
++  g.caches = { open: function () { return Promise.resolve({ match: function () { return Promise.resolve(); } }); }, keys: function () { return Promise.resolve([]); }, has: function () { return Promise.resolve(false); }, match: function () { return Promise.resolve(); } };
++  g.indexedDB = { open: function () { return { result: null, onerror: null, onsuccess: null }; }, databases: function () { return Promise.resolve([]); } };
++  g.speechSynthesis = { getVoices: function () { return []; }, speak: function () {}, cancel: function () {}, pause: function () {}, resume: function () {} };
++  g.visualViewport = { width: 1920, height: 945, offsetLeft: 0, offsetTop: 0, scale: 1, pageLeft: 0, pageTop: 0, addEventListener: function () {} };
++  g.origin = "https://auth.openai.com";
++  g.isSecureContext = true;
++  g.crossOriginIsolated = false;
++  g.originAgentCluster = false;
++  g.credentialless = false;
++  g.scheduler = { postTask: function (fn) { return Promise.resolve(fn()); } };
++  g.trustedTypes = { createPolicy: function () { return { createHTML: function (s) { return s; } }; } };
++  g.cookieStore = { get: function () { return Promise.resolve(null); }, getAll: function () { return Promise.resolve([]); }, set: function () { return Promise.resolve(); } };
++  g.AbortController = function () { this.signal = { aborted: false }; this.abort = function () { this.signal.aborted = true; }; };
++  g.AbortSignal = { abort: function () { return { aborted: true }; }, timeout: function () { return { aborted: false }; } };
++  g.URL = g.URL || function (u) { this.href = u; this.toString = function () { return u; }; };
++  g.URLSearchParams = g.URLSearchParams || function () { this.get = function () { return null; }; this.set = function () {}; this.toString = function () { return ""; }; };
++  g.Blob = g.Blob || function () { this.size = 0; this.type = ""; };
++  g.File = g.File || function () { this.name = ""; this.size = 0; };
++  g.FileReader = g.FileReader || function () { this.readAsText = function () {}; this.readAsArrayBuffer = function () {}; };
++  g.FormData = g.FormData || function () { this.append = function () {}; this.get = function () { return null; }; };
++  g.Headers = g.Headers || function () { this.get = function () { return null; }; this.set = function () {}; };
++  g.Request = g.Request || function (u) { this.url = u; this.method = "GET"; };
++  g.Response = g.Response || function () { this.ok = true; this.status = 200; this.json = function () { return Promise.resolve({}); }; };
++  g.MutationObserver = g.MutationObserver || function () { this.observe = function () {}; this.disconnect = function () {}; this.takeRecords = function () { return []; }; };
++  g.IntersectionObserver = g.IntersectionObserver || function () { this.observe = function () {}; this.disconnect = function () {}; this.unobserve = function () {}; };
++  g.ResizeObserver = g.ResizeObserver || function () { this.observe = function () {}; this.disconnect = function () {}; this.unobserve = function () {}; };
++  g.PerformanceObserver = g.PerformanceObserver || function () { this.observe = function () {}; this.disconnect = function () {}; };
++  g.MessageChannel = g.MessageChannel || function () { this.port1 = { postMessage: function () {}, onmessage: null }; this.port2 = { postMessage: function () {}, onmessage: null }; };
++  g.BroadcastChannel = g.BroadcastChannel || function () { this.postMessage = function () {}; this.close = function () {}; };
++  g.Worker = g.Worker || function () { this.postMessage = function () {}; this.terminate = function () {}; };
++  g.SharedWorker = g.SharedWorker || function () { this.port = { postMessage: function () {} }; };
++  g.WebSocket = g.WebSocket || function () { this.send = function () {}; this.close = function () {}; this.readyState = 3; };
++  g.XMLHttpRequest = g.XMLHttpRequest || function () { this.open = function () {}; this.send = function () {}; this.setRequestHeader = function () {}; this.status = 0; this.responseText = ""; };
++  g.Image = g.Image || function () { this.src = ""; this.onload = null; this.onerror = null; };
++  g.HTMLElement = g.HTMLElement || function () {};
++  g.HTMLDocument = g.HTMLDocument || function () {};
++  g.Event = g.Event || function (t) { this.type = t; this.bubbles = false; this.cancelable = false; };
++  g.CustomEvent = g.CustomEvent || function (t) { this.type = t; this.detail = null; };
++  g.DOMParser = g.DOMParser || function () { this.parseFromString = function () { return { documentElement: g.document.documentElement }; }; };
++  g.getComputedStyle = g.getComputedStyle || function () { return { getPropertyValue: function () { return ""; } }; };
++  g.requestAnimationFrame = g.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
++  g.cancelAnimationFrame = g.cancelAnimationFrame || function (id) { clearTimeout(id); };
++  g.queueMicrotask = g.queueMicrotask || function (fn) { Promise.resolve().then(fn); };
++  g.structuredClone = g.structuredClone || function (v) { return JSON.parse(JSON.stringify(v)); };
++
++  // ---- __oai_so_*：会话行为遥测累加器 ----
++  // create_account 需要第二个 sentinel 头 openai-sentinel-so-token，其内容由
++  // /sentinel/req 里的 so.collector_dx + so.snapshot_dx 两段 DX 程序读取一批
++  // window.__oai_so_* 累加器算出（真实页面通过 keydown/pointermove/click/scroll/
++  // wheel 事件监听器实时累计）。协议模式无真实事件，这里按“人在 about-you 页停留
++  // ~8 秒、输入姓名+生日、移动鼠标、点击”预置自洽的人类行为值，保证 collector
++  // 不读到 undefined 且产出结构完整的 so-token。
++  (function () {
++    var nowP = (g.performance && g.performance.now) ? g.performance.now() : 1500;
++    var t0 = nowP - 8085.5;              // 进页到采集约 8 秒
++    // keydown 事件序列（输入姓名 "Anna Wilson" + 生日 ~ 12 次按键）
++    var kd = [];
++    var keys = ["A","n","n","a"," ","W","i","l","s","o","n","2"];
++    var kt = t0 + 1200;
++    for (var i = 0; i < keys.length; i++) {
++      kt += 140 + Math.random() * 90;
++      kd.push({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: (i === 0 || i === 5), key: keys[i], type: "keydown", t: kt });
++    }
++    // pointermove 事件序列（鼠标移动，累计路径长度）
++    var pm = [];
++    var px = 640, py = 360, pt = t0 + 300, htot = 0, pcnt = 0;
++    for (var j = 0; j < 30; j++) {
++      var dx = (Math.random() - 0.5) * 40, dy = (Math.random() - 0.5) * 30;
++      px += dx; py += dy; pt += 60 + Math.random() * 80;
++      htot += Math.hypot(dx, dy); pcnt++;
++      pm.push({ clientX: Math.round(px), clientY: Math.round(py), type: "pointermove", t: pt });
++    }
++    g.__oai_so_t0 = t0;
++    g.__oai_so_h = kd;          // keydown 事件数组
++    g.__oai_so_hi = kd.length;
++    g.__oai_so_hp = 0;
++    g.__oai_so_hw = 0;
++    g.__oai_so_s = 0;
++    g.__oai_so_k = kd.length;   // 按键计数
++    g.__oai_so_kp = 0;
++    g.__oai_so_we = 0;          // wheel 事件数
++    g.__oai_so_wb = 0;
++    g.__oai_so_wl = 0;
++    g.__oai_so_fs = 0;
++    g.__oai_so_fs2 = 0;
++    g.__oai_so_fn = 0;
++    g.__oai_so_p = pm;          // pointer 事件数组
++    g.__oai_so_pc = pcnt;       // pointer 计数
++    g.__oai_so_i = [];          // input 事件数组
++    g.__oai_so_m = pm.length;   // mousemove 计数
++    g.__oai_so_ht = htot;       // 鼠标路径总长（hypot 累加）
++    g.__oai_so_hc = pcnt;       // hypot 计数
++    g.__oai_so_bc = 2;          // click 计数
++    g.__oai_so_bm = 0;
++    g.__oai_so_ss = 0;          // scroll 累加
++    g.__oai_so_ss2 = 0;
++    g.__oai_so_sn = 0;          // scroll 计数
++    g.__oai_so_cs = 0;          // click 累加
++    g.__oai_so_cs2 = 0;
++    g.__oai_so_cn = 2;          // click 计数
++    g.__oai_so_st = 0;          // scrollTop
++    g.__oai_so_sw = 0;
++    g.__oai_so_sp = 0;
++    g.__oai_so_spt = 0;
++    g.__oai_so_sx0 = 640;
++    g.__oai_so_sy0 = 360;
++    g.__oai_so_lx = Math.round(px);
++    g.__oai_so_ly = Math.round(py);
++  })();
++})();
+diff --git a/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_sdk.js b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_sdk.js
+new file mode 100644
+index 0000000..7d2a75f
+--- /dev/null
++++ b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_sdk.js
+@@ -0,0 +1,20 @@
++var SentinelSDK=function(t){"use strict";function n(t,e){const r=c();return(n=function(t,n){return r[t-=0]})(t,e)}const e=n,r=function(){let t=!0;return function(e,r){const o=t?function(){if(r){const t=r[n(3)](e,arguments);return r=null,t}}:function(){};return t=!1,o}}(),o=r(void 0,(function(){const t=n;return o[t(0)]().search("(((.+)+)+)+$").toString()[t(4)](o).search("(((.+)+)+)+$")}));o();const i=[];function c(){const t=["toString","Stringified UUID is invalid","push","apply","constructor","toLowerCase"];return(c=function(){return t})()}for(let t=0;t<256;++t)i[e(2)]((t+256)[e(0)](16).slice(1));const s=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e.apply(n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),u=s(void 0,(function(){const t=l;return u[t(3)]()[t(1)](t(5)).toString()[t(4)](u)[t(1)]("(((.+)+)+)+$")}));let a;function f(){const t=["getRandomValues","search","crypto.getRandomValues() not supported. See https://github.com/uuidjs/uuid#getrandomvalues-not-supported","toString","constructor","(((.+)+)+)+$"];return(f=function(){return t})()}function l(t,n){const e=f();return(l=function(t,n){return e[t-=0]})(t,n)}u();const d=new Uint8Array(16);const h=g,p=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e[g(6)](n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),m=p(void 0,(function(){const t=g;return m[t(2)]()[t(3)]("(((.+)+)+)+$").toString()[t(5)](m)[t(3)](t(1))}));function g(t,n){const e=w();return(g=function(t,n){return e[t-=0]})(t,n)}function w(){const t=["randomUUID","(((.+)+)+)+$","toString","search","undefined","constructor","apply"];return(w=function(){return t})()}m();var y={randomUUID:typeof crypto!==h(4)&&crypto[h(0)]&&crypto[h(0)].bind(crypto)};const v=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e.apply(n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),b=v(void 0,(function(){const t=S;return b[t(0)]()[t(2)](t(5)).toString()[t(1)](b)[t(2)]("(((.+)+)+)+$")}));function k(){const t=["toString","constructor","search"," is out of buffer bounds","randomUUID","(((.+)+)+)+$","Random bytes length must be >= 16","length"];return(k=function(){return t})()}function S(t,n){const e=k();return(S=function(t,n){return e[t-=0]})(t,n)}function C(t,n,r){const o=S;if(y[o(4)]&&!t)return y[o(4)]();const c=(t=t||{}).random??t.rng?.()??function(){const t=l;if(!a){if("undefined"==typeof crypto||!crypto.getRandomValues)throw new Error(t(2));a=crypto[t(0)].bind(crypto)}return a(d)}();if(c[o(7)]<16)throw new Error(o(6));return c[6]=15&c[6]|64,c[8]=63&c[8]|128,function(t,n=0){const r=e;return(i[t[n+0]]+i[t[n+1]]+i[t[n+2]]+i[t[n+3]]+"-"+i[t[n+4]]+i[t[n+5]]+"-"+i[t[n+6]]+i[t[n+7]]+"-"+i[t[n+8]]+i[t[n+9]]+"-"+i[t[n+10]]+i[t[n+11]]+i[t[n+12]]+i[t[n+13]]+i[t[n+14]]+i[t[n+15]])[r(5)]()}(c)}b();const A=j;function O(){const t=["cache","constructor","startEnforcement","length","userAgent","getEnforcementTokenSync","string","memory","fromCharCode","forceSync","data","getEnforcementToken","getRequirementsTokenBlocking","apply","documentElement","languages","encode","TextEncoder","_runCheck","getConfig","wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D","language","(((.+)+)+)+$","random","filter","errorPrefix","set","imul","has","hardwareConcurrency","join","data-build","timeOrigin","InstallTrigger","toString","_generateAnswerSync","stringify","map","search","requirementsSeed","location","solana","sid","proofofwork","required","gAAAAAB","_generateAnswerAsync","buildGenerateFailMessage","keys","initializeAndGatherData","src","getAttribute","then","_getAnswer","getRequirementsToken","maxAttempts","requestIdleCallback","scripts","createPRNG","jsHeapSizeLimit","dump","answers","_generateRequirementsTokenAnswerBlocking","match","now","get","substring"];return(O=function(){return t})()}class _{[A(61)]=new Map;[A(55)]=5e5;[A(39)]=function(){const t=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e[j(13)](n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),n=t(this,(function(){const t=j;return n[t(34)]()[t(38)]("(((.+)+)+)+$").toString()[t(1)](n)[t(38)](t(22))}));return n(),""+Math.random()}();[A(42)]=C();[A(25)]=A(20);async[A(49)](t){this[A(53)](t)}async[A(2)](t){this[A(53)](t)}[A(5)](t){const n=A,e=this._getAnswer(t);return typeof e===n(6)?e:null}async[A(11)](t,n){const e=A;return this._getAnswer(t,n?.[e(9)])}async[A(54)](){const t=A;return!this[t(61)][t(28)](this.requirementsSeed)&&this[t(61)][t(26)](this.requirementsSeed,this[t(46)](this[t(39)],"0")),"gAAAAAC"+await this.answers[t(65)](this[t(39)])}[A(12)](){return"gAAAAAC"+this[A(62)]()}[A(53)](t,n=!1){const e=A,r=e(45);if(!t?.[e(43)]?.[e(44)])return null;const{seed:o,difficulty:i}=t.proofofwork;if(typeof o!==e(6)||typeof i!==e(6))return null;const c=this.answers[e(65)](o);if(typeof c===e(6))return c;if(n){const t=this[e(35)](o,i),n=r+t;return this[e(61)][e(26)](o,n),n}return!this[e(61)][e(28)](o)&&this.answers.set(o,this[e(46)](o,i)),Promise.resolve()[e(52)]((async()=>{const t=e;return r+await this[t(61)][t(65)](o)})).then((t=>{const n=e;return this[n(61)][n(26)](o,t),t}))}[A(18)]=(t,n,e,r,o)=>{const i=A;r[3]=o,r[9]=Math.round(performance[i(64)]()-t);const c=N(r),s=function(t){const n=j;let e=2166136261;for(let r=0;r<t.length;r++)e^=t.charCodeAt(r),e=Math[n(27)](e,16777619)>>>0;return e^=e>>>16,e=Math[n(27)](e,2246822507)>>>0,e^=e>>>13,e=Math[n(27)](e,3266489909)>>>0,e^=e>>>16,(e>>>0)[n(34)](16).padStart(8,"0")}(n+c);return s[i(66)](0,e[i(3)])<=e?c+"~S":null};[A(47)](t){return this[A(25)]+N(String(t??"e"))}_generateAnswerSync(t,n){const e=A,r=performance[e(64)]();try{const o=this[e(19)]();for(let i=0;i<this[e(55)];i++){const c=this[e(18)](r,t,n,o,i);if(c)return c}}catch(t){return this[e(47)](t)}return this.buildGenerateFailMessage()}async[A(46)](t,n){const e=A,r=performance[e(64)]();try{let o=null;const i=this[e(19)]();for(let c=0;c<this.maxAttempts;c++){(!o||o.timeRemaining()<=0)&&(o=await new Promise((t=>{const n=j,e=window[n(56)]||q;e((n=>{t(n)}),{timeout:10})})));const s=this[e(18)](r,t,n,i,c);if(s)return s}}catch(t){return this[e(47)](t)}return this[e(47)]()}[A(62)](){const t=A;let n="e";const e=performance[t(64)]();try{const n=this[t(19)]();return n[3]=1,n[9]=performance[t(64)]()-e,N(n)}catch(t){n=N(String(t))}return this[t(25)]+n}[A(19)](){const t=A;return[screen?.width+screen?.height,""+new Date,performance?.[t(7)]?.[t(59)],Math?.[t(23)](),navigator[t(4)],R(Array.from(document[t(57)])[t(37)]((n=>n?.[t(50)])).filter((t=>t))),(Array.from(document[t(57)]||[])[t(37)]((n=>n?.[t(50)]?.[t(63)]("c/[^/]*/_")))[t(24)]((n=>n?.[t(3)]))[0]??[])[0]??document[t(14)][t(51)](t(31)),navigator[t(21)],navigator[t(15)]?.[t(30)](","),Math?.[t(23)](),T(),R(Object[t(48)](document)),R(Object.keys(window)),performance[t(64)](),this.sid,[...new URLSearchParams(window[t(40)][t(38)])[t(48)]()].join(","),navigator?.[t(29)],performance[t(32)],Number("ai"in window),Number(t(58)in window),Number(t(0)in window),Number(t(10)in window),Number(t(41)in window),Number(t(60)in window),Number(t(33)in window)]}}function R(t){const n=A;return t[Math.floor(Math[n(23)]()*t[n(3)])]}function T(){const t=R(Object.keys(Object.getPrototypeOf(navigator)));try{return t+"−"+navigator[t].toString()}catch{return""+t}}function N(t){const n=A;return t=JSON[n(36)](t),window[n(17)]?btoa(String[n(8)](...(new TextEncoder)[n(16)](t))):btoa(unescape(encodeURIComponent(t)))}function j(t,n){const e=O();return(j=function(t,n){return e[t-=0]})(t,n)}function q(t){return setTimeout((()=>{t({timeRemaining:()=>1,didTimeout:!1})}),0),0}var P=new _;function x(t,n){const e=U();return(x=function(t,n){return e[t-=0]})(t,n)}const E=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e[x(5)](n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),M=E(void 0,(function(){const t=x;return M.toString()[t(1)](t(4))[t(2)]()[t(3)](M)[t(1)](t(4))}));function U(){const t=["get","search","toString","constructor","(((.+)+)+)+$","apply"];return(U=function(){return t})()}M();const I=new WeakMap;function D(t,n){I.set(t,n)}function $(t){return I[x(0)](t)}const F=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e[xt(19)](n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),L=F(void 0,(function(){const t=xt;return L[t(2)]().search(t(26))[t(2)]().constructor(L).search(t(26))}));L();const J=0,G=1,W=2,z=3,H=4,V=5,B=6,Z=24,K=7,Q=8,Y=9,X=10,tt=11,nt=12,et=13,rt=14,ot=15,it=16,ct=17,st=18,ut=19,at=23,ft=20,lt=21,dt=22,ht=25,pt=26,mt=27,gt=28,wt=29,yt=30,vt=33,bt=34,kt=35,St=new Map;let Ct=0,At=Promise.resolve();function Ot(t){const n=xt,e=At[n(13)](t,t);return At=e[n(13)]((()=>{}),(()=>{})),e}async function _t(){const t=xt;for(;St[t(25)](Y).length>0;){const[n,...e]=St[t(25)](Y).shift(),r=St.get(n)(...e);r&&typeof r[t(13)]===t(17)&&await r,Ct++}}function Rt(t,n){const e=xt;let r="";for(let o=0;o<t[e(7)];o++)r+=String[e(6)](t[e(22)](o)^n[e(22)](o%n[e(7)]));return r}function Tt(){const t=["abs","snapshot_dx","toString","src","splice","isArray","fromCharCode","length","clear","map","set","session_observer_vm_timeout","collector_dx","then","parse","match","filter","function","finally","apply","resolve","indexOf","charCodeAt","bind","catch","get","(((.+)+)+)+$"];return(Tt=function(){return t})()}function Nt(t){return Ot((()=>jt(t)))}function jt(t,n){return new Promise(((e,r)=>{const o=xt;void 0!==n&&(function(){const t=xt;St[t(8)](),St.set(J,Nt),St[t(10)](G,((n,e)=>St[t(10)](n,Rt(""+St[t(25)](n),""+St.get(e))))),St[t(10)](W,((n,e)=>St[t(10)](n,e))),St[t(10)](V,((n,e)=>{const r=t,o=St[r(25)](n);Array[r(5)](o)?o.push(St[r(25)](e)):St.set(n,o+St.get(e))})),St.set(mt,((n,e)=>{const r=t,o=St.get(n);Array.isArray(o)?o[r(4)](o[r(21)](St.get(e)),1):St[r(10)](n,o-St[r(25)](e))})),St.set(wt,((n,e,r)=>St.set(n,St[t(25)](e)<St[t(25)](r)))),St.set(vt,((n,e,r)=>{const o=t,i=Number(St[o(25)](e)),c=Number(St[o(25)](r));St[o(10)](n,i*c)})),St.set(kt,((n,e,r)=>{const o=t,i=Number(St.get(e)),c=Number(St[o(25)](r));St[o(10)](n,0===c?0:i/c)})),St[t(10)](B,((n,e,r)=>St.set(n,St[t(25)](e)[St.get(r)]))),St.set(K,((n,...e)=>St[t(25)](n)(...e[t(9)]((n=>St[t(25)](n)))))),St[t(10)](ct,((n,e,...r)=>{const o=t;try{const t=St[o(25)](e)(...r[o(9)]((t=>St[o(25)](t))));if(t&&typeof t.then===o(17))return t[o(13)]((t=>{St.set(n,t)})).catch((t=>{St.set(n,""+t)}));St[o(10)](n,t)}catch(t){St[o(10)](n,""+t)}})),St[t(10)](et,((n,e,...r)=>{const o=t;try{St[o(25)](e)(...r)}catch(t){St[o(10)](n,""+t)}})),St.set(Q,((n,e)=>St[t(10)](n,St[t(25)](e)))),St[t(10)](X,window),St[t(10)](tt,((n,e)=>St[t(10)](n,(Array.from(document.scripts||[])[t(9)]((n=>n?.[t(3)]?.[t(15)](St[t(25)](e))))[t(16)]((n=>n?.[t(7)]))[0]??[])[0]??null))),St[t(10)](nt,(n=>St[t(10)](n,St))),St[t(10)](rt,((n,e)=>St[t(10)](n,JSON[t(14)](""+St[t(25)](e))))),St.set(ot,((n,e)=>St[t(10)](n,JSON.stringify(St.get(e))))),St[t(10)](st,(n=>St[t(10)](n,atob(""+St[t(25)](n))))),St[t(10)](ut,(n=>St[t(10)](n,btoa(""+St[t(25)](n))))),St[t(10)](ft,((n,e,r,...o)=>St[t(25)](n)===St[t(25)](e)?St[t(25)](r)(...o):null)),St[t(10)](lt,((n,e,r,o,...i)=>Math[t(0)](St[t(25)](n)-St.get(e))>St[t(25)](r)?St[t(25)](o)(...i):null)),St[t(10)](at,((n,e,...r)=>void 0!==St[t(25)](n)?St[t(25)](e)(...r):null)),St[t(10)](Z,((n,e,r)=>St[t(10)](n,St.get(e)[St.get(r)][t(23)](St.get(e))))),St[t(10)](bt,((n,e)=>{const r=t;try{const t=St[r(25)](e);return Promise[r(20)](t)[r(13)]((t=>{St.set(n,t)}))}catch{return}})),St[t(10)](dt,((n,e)=>{const r=t,o=[...St[r(25)](Y)];return St[r(10)](Y,[...e]),_t()[r(24)]((t=>{St[r(10)](n,""+t)}))[r(18)]((()=>{St[r(10)](Y,o)}))})),St[t(10)](gt,(()=>{})),St.set(pt,(()=>{})),St[t(10)](ht,(()=>{}))}(),Ct=0,St.set(it,n));let i=!1;const c=setTimeout((()=>{!i&&(i=!0,r(new Error(xt(11))))}),6e4),s=t=>{i||(i=!0,clearTimeout(c),e(t))};St[o(10)](z,(t=>{s(btoa(""+t))})),St.set(H,(t=>{(t=>{i||(i=!0,clearTimeout(c),r(t))})(btoa(""+t))})),St[o(10)](yt,((t,n,e,r)=>{const i=o,c=Array[i(5)](r),s=c?e:[],u=(c?r:e)||[];St[i(10)](t,((...t)=>{const e=i,r=[...St[e(25)](Y)];if(c)for(let n=0;n<s[e(7)];n++){const r=s[n],o=t[n];St[e(10)](r,o)}return St[e(10)](Y,[...u]),_t()[e(13)]((()=>St.get(n)))[e(24)]((t=>""+t))[e(18)]((()=>{St.set(Y,r)}))}))}));try{St[o(10)](Y,JSON[o(14)](Rt(atob(t),""+St[o(25)](it)))),_t()[o(24)]((t=>{s(btoa(Ct+": "+t))}))}catch(t){s(btoa(Ct+": "+t))}}))}function qt(t){return t?.so??null}function Pt(t){return!0===t?.required}function xt(t,n){const e=Tt();return(xt=function(t,n){return e[t-=0]})(t,n)}function Et(t){const n=xt,e=qt(t);t&&Pt(e)&&e?.[n(12)]&&function(t,n){const e=$(t??{})??"";return Ot((()=>jt(n,e)))}(t,e.collector_dx)[n(24)]((()=>{}))}const Mt=Rn,Ut=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e[Rn(7)](n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),It=Ut(void 0,(function(){const t=Rn;return It[t(3)]()[t(24)](t(0))[t(3)]()[t(13)](It)[t(24)](t(0))}));function Dt(){const t=["(((.+)+)+)+$","fromCharCode","resolve","toString","set","match","clear","apply","abs","function","get","map","push","constructor","parse","charCodeAt","log","isArray","stringify","from","scripts","then","shift","filter","search","indexOf","length","finally","bind","catch"];return(Dt=function(){return t})()}It();const $t=0,Ft=1,Lt=2,Jt=3,Gt=4,Wt=5,zt=6,Ht=24,Vt=7,Bt=8,Zt=9,Kt=10,Qt=11,Yt=12,Xt=13,tn=14,nn=15,en=16,rn=17,on=18,cn=19,sn=23,un=20,an=21,fn=22,ln=25,dn=26,hn=27,pn=28,mn=29,gn=30,wn=33,yn=34,vn=35,bn=new Map;let kn=0,Sn=Promise[Mt(2)]();function Cn(t){const n=Sn[Mt(21)](t,t);return Sn=n.then((()=>{}),(()=>{})),n}async function An(){const t=Mt;for(;bn[t(10)](Zt)[t(26)]>0;){const[n,...e]=bn[t(10)](Zt)[t(22)](),r=bn[t(10)](n)(...e);r&&typeof r[t(21)]===t(9)&&await r,kn++}}function On(t){return Cn((()=>new Promise(((n,e)=>{const r=Rn;let o=!1;setTimeout((()=>{o=!0,n(""+kn)}),500),bn[r(4)](Jt,(t=>{!o&&(o=!0,n(btoa(""+t)))})),bn.set(Gt,(t=>{!o&&(o=!0,e(btoa(""+t)))})),bn[r(4)](gn,((t,n,e,i)=>{const c=r,s=Array[c(17)](i),u=s?e:[],a=(s?i:e)||[];bn.set(t,((...t)=>{const e=c;if(o)return;const r=[...bn[e(10)](Zt)];if(s)for(let n=0;n<u[e(26)];n++){const e=u[n],r=t[n];bn.set(e,r)}return bn.set(Zt,[...a]),An()[e(21)]((()=>bn.get(n)))[e(29)]((t=>""+t))[e(27)]((()=>{bn.set(Zt,r)}))}))}));try{bn[r(4)](Zt,JSON[r(14)](Tn(atob(t),""+bn[r(10)](en)))),An()[r(29)]((t=>{n(btoa(kn+": "+t))}))}catch(t){n(btoa(kn+": "+t))}}))))}function _n(t,n){return Cn((()=>new Promise(((e,r)=>{const o=Rn,i=$(t??{})??"";(function(){const t=Mt;bn[t(6)](),bn[t(4)]($t,On),bn[t(4)](Ft,((n,e)=>bn.set(n,Tn(""+bn[t(10)](n),""+bn[t(10)](e))))),bn[t(4)](Lt,((n,e)=>bn[t(4)](n,e))),bn[t(4)](Wt,((n,e)=>{const r=t,o=bn[r(10)](n);Array[r(17)](o)?o[r(12)](bn[r(10)](e)):bn[r(4)](n,o+bn.get(e))})),bn[t(4)](hn,((n,e)=>{const r=t,o=bn[r(10)](n);Array[r(17)](o)?o.splice(o[r(25)](bn[r(10)](e)),1):bn[r(4)](n,o-bn[r(10)](e))})),bn[t(4)](mn,((n,e,r)=>bn[t(4)](n,bn[t(10)](e)<bn.get(r)))),bn.set(wn,((n,e,r)=>{const o=t,i=Number(bn[o(10)](e)),c=Number(bn.get(r));bn[o(4)](n,i*c)})),bn[t(4)](vn,((n,e,r)=>{const o=t,i=Number(bn[o(10)](e)),c=Number(bn[o(10)](r));bn[o(4)](n,0===c?0:i/c)})),bn[t(4)](zt,((n,e,r)=>bn.set(n,bn[t(10)](e)[bn[t(10)](r)]))),bn[t(4)](Vt,((n,...e)=>bn[t(10)](n)(...e[t(11)]((n=>bn[t(10)](n)))))),bn.set(rn,((n,e,...r)=>{const o=t;try{const t=bn[o(10)](e)(...r[o(11)]((t=>bn[o(10)](t))));if(t&&typeof t.then===o(9))return t[o(21)]((t=>{bn[o(4)](n,t)}))[o(29)]((t=>{bn[o(4)](n,""+t)}));bn[o(4)](n,t)}catch(t){bn[o(4)](n,""+t)}})),bn[t(4)](Xt,((n,e,...r)=>{const o=t;try{bn[o(10)](e)(...r)}catch(t){bn[o(4)](n,""+t)}})),bn[t(4)](Bt,((n,e)=>bn[t(4)](n,bn[t(10)](e)))),bn.set(Kt,window),bn.set(Qt,((n,e)=>bn[t(4)](n,(Array[t(19)](document[t(20)]||[])[t(11)]((n=>n?.src?.[t(5)](bn.get(e))))[t(23)]((n=>n?.[t(26)]))[0]??[])[0]??null))),bn[t(4)](Yt,(n=>bn[t(4)](n,bn))),bn[t(4)](tn,((n,e)=>bn[t(4)](n,JSON[t(14)](""+bn[t(10)](e))))),bn.set(nn,((n,e)=>bn[t(4)](n,JSON[t(18)](bn.get(e))))),bn[t(4)](on,(n=>bn[t(4)](n,atob(""+bn[t(10)](n))))),bn.set(cn,(n=>bn[t(4)](n,btoa(""+bn.get(n))))),bn[t(4)](un,((n,e,r,...o)=>bn[t(10)](n)===bn.get(e)?bn.get(r)(...o):null)),bn.set(an,((n,e,r,o,...i)=>Math[t(8)](bn[t(10)](n)-bn[t(10)](e))>bn[t(10)](r)?bn.get(o)(...i):null)),bn[t(4)](sn,((n,e,...r)=>void 0!==bn[t(10)](n)?bn[t(10)](e)(...r):null)),bn[t(4)](Ht,((n,e,r)=>bn[t(4)](n,bn[t(10)](e)[bn[t(10)](r)][t(28)](bn.get(e))))),bn.set(yn,((n,e)=>{const r=t;try{const t=bn.get(e);return Promise[r(2)](t).then((t=>{bn[r(4)](n,t)}))}catch(t){return}})),bn[t(4)](fn,((n,e)=>{const r=t,o=[...bn[r(10)](Zt)];return bn[r(4)](Zt,[...e]),An()[r(29)]((t=>{bn.set(n,""+t)}))[r(27)]((()=>{bn.set(Zt,o)}))})),bn[t(4)](pn,(()=>{})),bn.set(dn,(()=>{})),bn.set(ln,(()=>{}))})(),kn=0,bn[o(4)](en,i);let c=!1;setTimeout((()=>{c=!0,e(""+kn)}),500),bn[o(4)](Jt,(t=>{!c&&(c=!0,e(btoa(""+t)))})),bn[o(4)](Gt,(t=>{!c&&(c=!0,r(btoa(""+t)))})),bn[o(4)](gn,((t,n,e,r)=>{const i=o,s=Array[i(17)](r),u=s?e:[],a=(s?r:e)||[];bn[i(4)](t,((...t)=>{const e=i;if(c)return;const r=[...bn[e(10)](Zt)];if(s)for(let n=0;n<u.length;n++){const e=u[n],r=t[n];bn.set(e,r)}return bn[e(4)](Zt,[...a]),An().then((()=>bn[e(10)](n)))[e(29)]((t=>""+t)).finally((()=>{bn.set(Zt,r)}))}))}));try{bn[o(4)](Zt,JSON.parse(Tn(atob(n),""+bn[o(10)](en)))),An()[o(29)]((t=>{e(btoa(kn+": "+t))}))}catch(t){e(btoa(kn+": "+t))}}))))}function Rn(t,n){const e=Dt();return(Rn=function(t,n){return e[t-=0]})(t,n)}function Tn(t,n){const e=Mt;let r="";for(let o=0;o<t[e(26)];o++)r+=String[e(1)](t[e(15)](o)^n[e(15)](o%n[e(26)]));return r}var Nn="undefined"!=typeof globalThis?globalThis:"undefined"!=typeof window?window:"undefined"!=typeof global?global:"undefined"!=typeof self?self:{};var jn=Object.freeze({__proto__:null,commonjsGlobal:Nn,getAugmentedNamespace:function(t){if(t.__esModule)return t;var n=t.default;if("function"==typeof n){var e=function t(){if(this instanceof t){var e=[null];return e.push.apply(e,arguments),new(Function.bind.apply(n,e))}return n.apply(this,arguments)};e.prototype=n.prototype}else e={};return Object.defineProperty(e,"__esModule",{value:!0}),Object.keys(t).forEach((function(n){var r=Object.getOwnPropertyDescriptor(t,n);Object.defineProperty(e,n,r.get?r:{enumerable:!0,get:function(){return t[n]}})})),e},getDefaultExportFromCjs:function(t){return t&&t.__esModule&&Object.prototype.hasOwnProperty.call(t,"default")?t.default:t},getDefaultExportFromNamespaceIfNotNamed:function(t){return t&&Object.prototype.hasOwnProperty.call(t,"default")&&1===Object.keys(t).length?t.default:t},getDefaultExportFromNamespaceIfPresent:function(t){return t&&Object.prototype.hasOwnProperty.call(t,"default")?t.default:t}}),qn={},Pn={};function xn(){var t=["argument str must be a string","test","function","(((.+)+)+)+$","serialize","path","indexOf","slice","length","parse","domain","lax","split","substring","argument val is invalid","toString","option expires is invalid","string","; SameSite=Strict","encode","search","argument name is invalid","; Max-Age=","; Secure","decode","; SameSite=None","sameSite","trim","maxAge","; Expires=","; SameSite=Lax","apply","option domain is invalid","expires","; HttpOnly","option maxAge is invalid","toLowerCase","secure","option path is invalid"];return(xn=function(){return t})()}var En,Mn=Dn,Un=(En=!0,function(t,n){var e=En?function(){if(n){var e=n[Dn(31)](t,arguments);return n=null,e}}:function(){};return En=!1,e}),In=Un(void 0,(function(){var t=Dn;return In[t(15)]()[t(20)](t(3))[t(15)]().constructor(In).search(t(3))}));function Dn(t,n){var e=xn();return(Dn=function(t,n){return e[t-=0]})(t,n)}In(),Pn[Mn(9)]=function(t,n){var e=Mn;if(typeof t!==e(17))throw new TypeError(e(0));for(var r={},o=n||{},i=t[e(12)](";"),c=o[e(24)]||$n,s=0;s<i[e(8)];s++){var u=i[s],a=u[e(6)]("=");if(!(a<0)){var f=u[e(13)](0,a)[e(27)]();if(null==r[f]){var l=u[e(13)](a+1,u[e(8)])[e(27)]();'"'===l[0]&&(l=l[e(7)](1,-1)),r[f]=Jn(l,c)}}}return r},Pn[Mn(4)]=function(t,n,e){var r=Mn,o=e||{},i=o[r(19)]||Fn;if(typeof i!==r(2))throw new TypeError("option encode is invalid");if(!Ln.test(t))throw new TypeError(r(21));var c=i(n);if(c&&!Ln[r(1)](c))throw new TypeError(r(14));var s=t+"="+c;if(null!=o[r(28)]){var u=o.maxAge-0;if(isNaN(u)||!isFinite(u))throw new TypeError(r(35));s+=r(22)+Math.floor(u)}if(o[r(10)]){if(!Ln[r(1)](o[r(10)]))throw new TypeError(r(32));s+="; Domain="+o.domain}if(o[r(5)]){if(!Ln[r(1)](o[r(5)]))throw new TypeError(r(38));s+="; Path="+o[r(5)]}if(o.expires){if("function"!=typeof o[r(33)].toUTCString)throw new TypeError(r(16));s+=r(29)+o[r(33)].toUTCString()}if(o.httpOnly&&(s+=r(34)),o[r(37)]&&(s+=r(23)),o[r(26)]){switch(typeof o[r(26)]===r(17)?o[r(26)][r(36)]():o[r(26)]){case!0:s+=r(18);break;case r(11):s+=r(30);break;case"strict":s+=r(18);break;case"none":s+=r(25);break;default:throw new TypeError("option sameSite is invalid")}}return s};var $n=decodeURIComponent,Fn=encodeURIComponent,Ln=/^[\u0009\u0020-\u007e\u0080-\u00ff]+$/;function Jn(t,n){try{return n(t)}catch(n){return t}}var Gn=zn;function Wn(){var t=["undefined","indexOf","checkCookies","__assign","concat","call","search","join","replace","slice","(((.+)+)+)+$","constructor","cookie","test","toString","length","getHeader","headers","[WARN]: checkCookies was deprecated. It will be deleted in the new version. Use hasCookie instead.","removeCookies","hasOwnProperty","parse","commonjsGlobal","res","split","getCookies","false","deleteCookie","warn","prototype","getDefaultExportFromCjs","cookies","apply","stringify","null","serialize","setCookies","getCookie","setHeader","__rest","req","isArray","setCookie","true","Set-Cookie","[WARN]: setCookies was deprecated. It will be deleted in the new version. Use setCookie instead.","[WARN]: removeCookies was deprecated. It will be deleted in the new version. Use deleteCookie instead.","getOwnPropertySymbols","hasCookie"];return(Wn=function(){return t})()}function zn(t,n){var e=Wn();return(zn=function(t,n){return e[t-=0]})(t,n)}!function(t){var n,e=zn,r=(n=!0,function(t,e){var r=n?function(){if(e){var n=e[zn(32)](t,arguments);return e=null,n}}:function(){};return n=!1,r}),o=r(this,(function(){var t=zn;return o[t(14)]()[t(6)](t(10))[t(14)]()[t(11)](o)[t(6)](t(10))}));o();var i=jn[e(22)]&&jn[e(22)][e(3)]||function(){var t=e;return i=Object.assign||function(t){for(var n,e=zn,r=1,o=arguments.length;r<o;r++)for(var i in n=arguments[r])Object[e(29)][e(20)][e(5)](n,i)&&(t[i]=n[i]);return t},i[t(32)](this,arguments)},c=jn[e(22)]&&jn[e(22)][e(39)]||function(t,n){var r=e,o={};for(var i in t)Object[r(29)][r(20)][r(5)](t,i)&&n.indexOf(i)<0&&(o[i]=t[i]);if(null!=t&&"function"==typeof Object[r(47)]){var c=0;for(i=Object[r(47)](t);c<i[r(15)];c++)n[r(1)](i[c])<0&&Object[r(29)].propertyIsEnumerable[r(5)](t,i[c])&&(o[i[c]]=t[i[c]])}return o};Object.defineProperty(t,"__esModule",{value:!0}),t.checkCookies=t[e(48)]=t.removeCookies=t.deleteCookie=t[e(36)]=t.setCookie=t[e(37)]=t[e(25)]=void 0;var s=Pn,u=function(){return typeof window!==e(0)},a=function(t){var n=e;void 0===t&&(t="");try{var r=JSON[n(33)](t);return/^[\{\[]/[n(13)](r)?r:t}catch(n){return t}};t[e(25)]=function(t){var n,r=e;if(t&&(n=t[r(40)]),!u())return n&&n.cookies?n[r(31)]:n&&n.headers&&n[r(17)][r(12)]?(0,s.parse)(n[r(17)][r(12)]):{};for(var o={},i=document.cookie?document[r(12)].split("; "):[],c=0,a=i[r(15)];c<a;c++){var f=i[c][r(24)]("="),l=f[r(9)](1)[r(7)]("=");o[f[0]]=l}return o};t.getCookie=function(n,r){var o=(0,t[e(25)])(r)[n];if(void 0!==o)return function(t){var n=e;return t===n(43)||t!==n(26)&&("undefined"!==t?t===n(34)?null:t:void 0)}(function(t){return t?t[e(8)](/(%[0-9A-Z]{2})+/g,decodeURIComponent):t}(o))};t[e(42)]=function(t,n,r){var o,f,l,d=e;r&&(f=r[d(40)],l=r[d(23)],o=c(r,["req","res"]));var h=(0,s[d(35)])(t,a(n),i({path:"/"},o));if(u())document[d(12)]=h;else if(l&&f){var p=l[d(16)](d(44));if(!Array[d(41)](p)&&(p=p?[String(p)]:[]),l[d(38)]("Set-Cookie",p.concat(h)),f&&f.cookies){var m=f[d(31)];""===n?delete m[t]:m[t]=a(n)}if(f&&f[d(17)]&&f.headers.cookie){m=(0,s[d(21)])(f[d(17)][d(12)]);""===n?delete m[t]:m[t]=a(n),f[d(17)][d(12)]=Object.entries(m).reduce((function(t,n){var e=d;return t[e(4)](""[e(4)](n[0],"=")[e(4)](n[1],";"))}),"")}}};t[e(36)]=function(n,r,o){var i=e;return console[i(28)](i(45)),(0,t[i(42)])(n,r,o)};t[e(27)]=function(n,e){return(0,t.setCookie)(n,"",i(i({},e),{maxAge:-1}))};t[e(19)]=function(n,r){var o=e;return console[o(28)](o(46)),(0,t.deleteCookie)(n,r)};t[e(48)]=function(n,r){var o=e;return!!n&&(0,t[o(25)])(r)[o(20)](n)};t[e(2)]=function(n,r){var o=e;return console[o(28)](o(18)),(0,t[o(48)])(n,r)}}(qn),jn[Gn(30)](qn);const Hn=Vn;function Vn(t,n){const e=pe();return(Vn=function(t,n){return e[t-=0]})(t,n)}const Bn=function(){const t=Vn;if(typeof document!==t(47)){const n=document[t(8)];if(n?.[t(1)])try{const e=new URL(n[t(1)]);if(e[t(7)].includes(t(41)))return e.origin+t(0)}catch{}}return"https://chatgpt.com/backend-api/sentinel/"}(),Zn=function(){const t=Vn,n=function(){let t=!0;return function(n,e){const r=t?function(){if(e){const t=e.apply(n,arguments);return e=null,t}}:function(){};return t=!1,r}}(),e=n(this,(function(){const t=Vn;return e[t(23)]()[t(31)](t(61))[t(23)]().constructor(e)[t(31)](t(61))}));if(e(),typeof document===t(47))return null;const r=document[t(8)];if(!r?.src)return null;try{const n=new URL(r[t(1)])[t(7)][t(34)](/\/sentinel\/([^/]+)\/sdk\.js$/);return n?.[1]?decodeURIComponent(n[1]):null}catch{return null}}(),Kn=Zn?"frame.html?sv="+encodeURIComponent(Zn):"frame.html",Qn=new URL(Kn,Bn),Yn=(()=>{const t=Vn;if(window[t(52)]===window)return!1;try{const n=new URL(window[t(62)].href);return Qn.pathname===n[t(7)]}catch{return!1}})();const Xn=5e3,te=Hn(36),ne=new Map,ee=new Map;function re(t){const n=Hn;let e=ne[n(59)](t);return!e&&(e={cachedProof:null,cachedChatReq:null,lastFetchTime:0,sessionObserverCollectorActive:!1,cachedSOChatReq:null},ne[n(28)](t,e)),e}function oe(t){const n=Hn;let e=ee[n(59)](t);return!e&&(e={cachedProof:null,cachedChatReq:null,lastFetchTime:0},ee[n(28)](t,e)),e}const ie=t=>t?t[Hn(58)](/(%[0-9A-Z]{2})+/g,decodeURIComponent):t;function ce(t,n){const e=Hn;return t.id=function(){const t=Hn,n=qn.getCookies()[t(9)];return void 0===n?void 0:ie(n)}(),t[e(46)]=n,JSON[e(40)](t)}function se(t,n){const e=Hn,r=re(t);if(!r.sessionObserverCollectorActive)return function(t){const n=Hn,e=t?.so;return!0===e?.[n(26)]&&typeof e.collector_dx===n(35)&&typeof e[n(43)]===n(35)}(n)?(r[e(16)]=n,r[e(57)]=!0,void Et(n)):(r[e(16)]=null,void(r[e(57)]=!1))}async function ue(t,n){const e=Hn,r=oe(t);r[e(54)]=n;for(let o=0;o<3;o++)try{const o=await fetch(Bn+e(39),{method:"POST",body:ce({p:n},t),credentials:e(21)})[e(30)]((t=>t[e(27)]()));return r[e(4)]=Date[e(15)](),r[e(32)]=o,{cachedChatReq:r[e(32)],cachedProof:r[e(54)]}}catch(r){if(o>=2)return ce({e:r[e(37)],p:n,a:o},t)}}const ae=Qn[Hn(48)];let fe=null,le=!1;const de=new Map;let he=0;function pe(){const t=["/backend-api/sentinel/","src","forEach","display","lastFetchTime","elapsed","getRequirementsToken","pathname","currentScript","oai-did","response","getEnforcementToken","race","href","contentWindow","now","cachedSOChatReq","delete","__sentinel_init_pending","req_","body","include","length","toString","load","appendChild","required","json","set","turnstile","then","search","cachedChatReq","data","match","string","__default__","message","postMessage","req","stringify","/sentinel/","init","snapshot_dx","createElement","source","flow","undefined","origin","sessionObserverToken() should not be called from within an iframe.","has","init() should not be called from within an iframe.","top","addEventListener","cachedProof","style","__sentinel_token_pending","sessionObserverCollectorActive","replace","get","apply","(((.+)+)+)+$","location","token"];return(pe=function(){return t})()}function me(){const t=Hn,n=document[t(44)]("iframe");return n[t(55)][t(3)]="none",n.src=Qn[t(13)],document[t(20)][t(25)](n),n}function ge(t,n,e){return new Promise(((r,o)=>{const i=Vn;function c(){const i=Vn,c=Hn(19)+ ++he;de[i(28)](c,{resolve:r,reject:o}),fe?.contentWindow?.[i(38)]({type:t,flow:n,requestId:c,...e},ae)}fe?le?c():fe[i(53)]("load",(()=>{le=!0,c()})):(fe=me(),fe[i(53)](i(24),(()=>{le=!0,c()})))}))}async function we(t){if(Yn)throw new Error(Hn(51));return async function(t,n){const e=Hn,r=re(t),o=await ge("init",t,{p:n});return null==o?null:"string"==typeof o?o:(r[e(54)]=o[e(54)],D(o.cachedChatReq,o[e(54)]),r[e(32)]=null,r[e(4)]=0,se(t,o[e(32)]),null)}(t,await P.getRequirementsToken())}async function ye(t){const n=Hn;if(Yn)throw new Error("token() should not be called from within an iframe.");const e=re(t),r=Date[n(15)]();if(!e.cachedChatReq||r-e[n(4)]>54e4){const r=await P[n(6)]();e[n(54)]=r;const o=await ge(n(63),t,{p:r});if(typeof o===n(35))return o;e.cachedChatReq=o[n(32)],e[n(54)]=o[n(54)],D(o[n(32)],o[n(54)]),e[n(4)]=Date[n(15)]()}se(t,e.cachedChatReq);try{const r=await P[n(11)](e[n(32)]),o=ce({p:r,t:e[n(32)]?.[n(29)]?.dx?await _n(e[n(32)],e[n(32)].turnstile.dx):null,c:e[n(32)].token},t);return e[n(32)]=null,setTimeout((async()=>{const n=await P.getRequirementsToken();re(t).cachedProof=n,ge("init",t,{p:n})}),Xn),o}catch(r){const o=ce({e:r.message,p:e[n(54)]},t);return e[n(32)]=null,o}}return Yn?function(){const t=Hn;window[t(53)](t(37),(async n=>{const e=t;if(n[e(45)]===window)return;const{type:r,flow:o,requestId:i,p:c}=n[e(33)]??{};if("init"!==r&&r!==e(63))return;const s="string"==typeof o&&o[e(22)]>0?o:te;try{let t;r===e(42)?t=await ue(s,c):"token"===r&&(t=await async function(t,n){const e=Hn,r=oe(t),o=Date[e(15)]();if(!r[e(32)]||o-r[e(4)]>54e4||r[e(54)]!==n){const r=await Promise[e(12)]([ue(t,n),new Promise((r=>setTimeout((()=>r(ce({e:e(5),p:n},t))),4e3)))]);if("string"==typeof r)return r}return r.lastFetchTime=0,{cachedChatReq:r.cachedChatReq,cachedProof:r[e(54)]}}(s,c)),n[e(45)]?.[e(38)]({type:e(10),requestId:i,result:t},{targetOrigin:n.origin})}catch(t){n[e(45)]?.[e(38)]({type:"response",requestId:i,error:t[e(37)]},{targetOrigin:n[e(48)]})}}))}():function(){const t=Hn;window[t(53)](t(37),(n=>{const e=t;if(n[e(45)]===fe?.[e(14)]){const{type:t,requestId:r,result:o,error:i}=n[e(33)];if(t===e(10)&&r&&de[e(50)](r)){const{resolve:t,reject:n}=de[e(59)](r);i?n(i):t(o),de[e(17)](r)}}})),!fe&&(fe=me(),fe[t(53)]("load",(()=>{le=!0})))}(),function(){const t=Vn;(!window?.[t(56)]||0===window?.__sentinel_token_pending.length)&&(window?.[t(18)]?.[t(2)]((({args:n,resolve:e})=>{const r=t;we[r(60)](null,n)[r(30)](e)})),window[t(18)]=[]),window?.[t(56)]?.[t(2)]((({args:n,resolve:e})=>{const r=t;ye.apply(null,n)[r(30)](e)})),window.__sentinel_token_pending=[]}(),t.init=we,t.sessionObserverToken=async function(t){const n=Hn;if(Yn)throw new Error(n(49));const e=ne[n(59)](t);if(!e)return null;const r=e[n(16)];e.cachedSOChatReq=null,e[n(57)]=!1;const o=await async function(t){const n=xt,e=qt(t);if(!t||!Pt(e)||!e?.[n(1)])return null;try{return await Nt(e[n(1)])}catch{return null}}(r);return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t.__proto2=async function(fl){
++var flow=fl||te;
++var pow=await P.getRequirementsToken();
++var fetched=await ue(flow,pow);
++if(typeof fetched==="string")throw new Error("reqfail:"+fetched);
++var cr=fetched.cachedChatReq;
++if(!cr||typeof cr==="string")throw new Error("nochatreq:"+cr);
++D(cr,pow);
++var tf=(cr.turnstile&&cr.turnstile.dx)?await _n(cr,cr.turnstile.dx):"";
++var so="",soErr=null;
++try{
++ if(cr.so&&cr.so.required&&cr.so.collector_dx&&cr.so.snapshot_dx){
++  await jt(cr.so.collector_dx,$(cr));
++  var _so=await Nt(cr.so.snapshot_dx);
++  if(_so)so=_so;
++ }
++}catch(e){soErr=""+(e&&e.stack||e);}
++var pw=(cr&&cr.proofofwork)||{};
++return JSON.stringify({t:tf||"",so:so||"",c:cr.token,seed:pw.seed||"",diff:pw.difficulty||"",powReq:!!pw.required,soErr:soErr});
++},t}({});
+\ No newline at end of file
+diff --git a/payment_link_extractor/gopay_sentinel_node_assets/sentinel_bridge.js b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_bridge.js
+new file mode 100644
+index 0000000..4ca398c
+--- /dev/null
++++ b/payment_link_extractor/gopay_sentinel_node_assets/sentinel_bridge.js
+@@ -0,0 +1,442 @@
++#!/usr/bin/env node
++/**
++ * sentinel_bridge.js —— 用真·sdk.js（Node/V8 运行）生成 create_account 需要的
++ * openai-sentinel-token（真 t）+ openai-sentinel-so-token（真 so 设备指纹）。
++ *
++ * 纯 Python/httpx 拿不到 so-token（它由混淆 sdk.js 采集浏览器传感器算出），
++ * 这里在 Node 里铺好浏览器 shim（sentinel_bootstrap.js）+ 加载真 sdk.js，
++ * 调 SentinelSDK.__proto2(flow) 拿 {t, so, c, seed, diff, powReq}，
++ * Node 侧解 PoW 拼装两个 header 值，JSON 打到 stdout。
++ *
++ * 用法：把 {ua, cores, deviceId, flow, proxy, version} 以 JSON 从 stdin 传入。
++ */
++"use strict";
++
++const fs = require("fs");
++const path = require("path");
++const vm = require("vm");
++
++function readStdin() {
++  return new Promise((resolve) => {
++    let buf = "";
++    process.stdin.setEncoding("utf8");
++    process.stdin.on("data", (d) => (buf += d));
++    process.stdin.on("end", () => resolve(buf));
++  });
++}
++
++// ---- PoW（对齐 sentinel.go：configArray(answer=true) + fnv1a32 + b64） ----
++function fnv1a32(buf) {
++  let h = 0x811c9dc5 >>> 0;
++  for (let i = 0; i < buf.length; i++) {
++    h ^= buf[i];
++    h = Math.imul(h, 0x01000193) >>> 0;
++  }
++  h ^= h >>> 16;
++  h = Math.imul(h, 2246822507) >>> 0;
++  h ^= h >>> 13;
++  h = Math.imul(h, 3266489909) >>> 0;
++  h ^= h >>> 16;
++  return h >>> 0;
++}
++
++function b64Compact(v) {
++  return Buffer.from(JSON.stringify(v), "utf8").toString("base64");
++}
++
++function uuidv4() {
++  const b = require("crypto").randomBytes(16);
++  b[6] = (b[6] & 0x0f) | 0x40;
++  b[8] = (b[8] & 0x3f) | 0x80;
++  const h = [...b].map((x) => (x + 0x100).toString(16).slice(1));
++  return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
++}
++
++const SEP = "\u2212"; // U+2212 MINUS SIGN
++const ANS_SDK_URL = "https://sentinel.openai.com/backend-api/sentinel/sdk.js";
++
++function makeGenerator(ua, cores, language, timezone) {
++  const initialPerformance = 350.0 + Math.random() * 2200.0;
++  return {
++    ua,
++    cores: cores || 16,
++    language: language || "en-US",
++    languages: [language || "en-US", "en-US", "en"],
++    timezone: timezone || "America/New_York",
++    sid: uuidv4(),
++    heapLimit: 4395630592,
++    screenNum: 3000,
++    nine: 0,
++    loadTs: Date.now() - initialPerformance,
++    initialPerformance,
++    startedAt: Date.now(),
++    probeNav: "getBattery" + SEP + "function getBattery() { [native code] }",
++    reactKey: "location",
++    eventName: "onbeforeunload",
++  };
++}
++
++function configArray(g) {
++  const perfNow = g.initialPerformance + Math.max(0, Date.now() - g.startedAt);
++  const now = new Date();
++  let offsetMinutes = 0;
++  try {
++    const parts = new Intl.DateTimeFormat("en-US", {
++      timeZone: g.timezone,
++      year: "numeric", month: "2-digit", day: "2-digit",
++      hour: "2-digit", minute: "2-digit", second: "2-digit",
++      hourCycle: "h23",
++    }).formatToParts(now).reduce((out, part) => {
++      if (part.type !== "literal") out[part.type] = Number(part.value);
++      return out;
++    }, {});
++    const localAsUtc = Date.UTC(
++      parts.year, parts.month - 1, parts.day,
++      parts.hour, parts.minute, parts.second
++    );
++    offsetMinutes = Math.round((localAsUtc - now.getTime()) / 60000);
++  } catch (_) {}
++  const d = new Date(now.getTime() + offsetMinutes * 60000);
++  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
++  const mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()];
++  const p2 = (n) => (n < 10 ? "0" : "") + n;
++  const sign = offsetMinutes >= 0 ? "+" : "-";
++  const offset = Math.abs(offsetMinutes);
++  const tstr =
++    `${wd} ${mo} ${p2(d.getUTCDate())} ${d.getUTCFullYear()} ` +
++    `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())} ` +
++    `GMT${sign}${p2(Math.floor(offset / 60))}${p2(offset % 60)} (${g.timezone})`;
++  return [
++    g.screenNum, // 0
++    tstr, // 1
++    g.heapLimit, // 2
++    0, // 3 PoW 计数器
++    g.ua, // 4
++    ANS_SDK_URL, // 5
++    null, // 6
++    g.language, // 7
++    g.languages.join(","), // 8
++    g.nine, // 9
++    g.probeNav, // 10
++    g.reactKey, // 11
++    g.eventName, // 12
++    perfNow, // 13
++    g.sid, // 14
++    "", // 15
++    g.cores, // 16
++    g.loadTs, // 17
++    0, 0, 0, 0, 0, 0, 0, // 18..24
++  ];
++}
++
++const MAX_ATTEMPTS = 500000;
++const ERR_PREFIX = "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D";
++
++function solvePoW(g, seed, difficulty) {
++  if (!difficulty) difficulty = "0";
++  const data = configArray(g);
++  const seedB = Buffer.from(seed, "ascii");
++  const dl = difficulty.length;
++  const startedAt = Date.now();
++  for (let i = 0; i < MAX_ATTEMPTS; i++) {
++    data[3] = i;
++    data[9] = Math.round(Date.now() - startedAt);
++    const payload = b64Compact(data);
++    const h = fnv1a32(Buffer.concat([seedB, Buffer.from(payload, "ascii")]));
++    const hex = h.toString(16).padStart(8, "0");
++    const cmpLen = Math.min(dl, hex.length);
++    if (hex.slice(0, cmpLen) <= difficulty.slice(0, cmpLen)) {
++      return "gAAAAAB" + payload + "~S";
++    }
++  }
++  return "gAAAAAB" + ERR_PREFIX + b64Compact(null) + "~S";
++}
++
++function makeFetch(ua, language, cookieHeader, dispatcher, fetchImpl, sentinelOrigin, frameUrl) {
++  // sdk 里的 fetch 桥到 fetchImpl：改写 URL 到 sentinel.openai.com、补头、走代理。
++  // 关键：dispatcher 与 fetchImpl 必须来自同一个 undici 版本，否则 Node 内置 fetch
++  // 校验外部 dispatcher 的 Request handler 会报 "invalid onRequestStart method"。
++  return function (url, opts) {
++    opts = opts || {};
++    let u = String(url);
++    if (u.indexOf("/backend-api/sentinel/req") !== -1) {
++      u = sentinelOrigin + "/backend-api/sentinel/req";
++    } else if (u.charAt(0) === "/") {
++      u = sentinelOrigin + u;
++    }
++    const headers = Object.assign(
++      {
++        "content-type": "text/plain;charset=UTF-8",
++        origin: sentinelOrigin,
++        referer: frameUrl,
++        "user-agent": ua,
++        accept: "*/*",
++        "accept-language": `${language},${language.split("-")[0]};q=0.9,en;q=0.8`,
++        ...(cookieHeader ? { cookie: cookieHeader } : {}),
++      },
++      opts.headers || {}
++    );
++    const fopts = { method: opts.method || "GET", headers };
++    if (opts.body != null) fopts.body = opts.body;
++    if (dispatcher) fopts.dispatcher = dispatcher;
++    return fetchImpl(u, fopts);
++  };
++}
++
++function makeCurlFetch(proxy) {
++  const { spawn } = require("child_process");
++  const marker = "\n__SENTINEL_HTTP_STATUS__:";
++  return function curlFetch(url, opts) {
++    opts = opts || {};
++    return new Promise((resolve, reject) => {
++      const args = [
++        "-sS",
++        "--compressed",
++        "--connect-timeout", "30",
++        "--max-time", "120",
++        "--proxy", proxy,
++        "-X", opts.method || "GET",
++      ];
++      Object.entries(opts.headers || {}).forEach(([name, value]) => {
++        args.push("-H", `${name}: ${value}`);
++      });
++      if (opts.body != null) {
++        args.push("--data-binary", String(opts.body));
++      }
++      args.push("-w", marker + "%{http_code}", String(url));
++      const child = spawn(process.env.SENTINEL_CURL || "curl", args, {
++        stdio: ["ignore", "pipe", "pipe"],
++      });
++      const stdout = [];
++      const stderr = [];
++      child.stdout.on("data", (chunk) => stdout.push(chunk));
++      child.stderr.on("data", (chunk) => stderr.push(chunk));
++      child.on("error", reject);
++      child.on("close", (code) => {
++        const raw = Buffer.concat(stdout).toString("utf8");
++        const markerAt = raw.lastIndexOf(marker);
++        const body = markerAt >= 0 ? raw.slice(0, markerAt) : raw;
++        const status = markerAt >= 0 ? Number(raw.slice(markerAt + marker.length)) : 0;
++        if (code !== 0) {
++          reject(new Error(Buffer.concat(stderr).toString("utf8").slice(0, 500) || `curl exit ${code}`));
++          return;
++        }
++        resolve({
++          status,
++          ok: status >= 200 && status < 300,
++          headers: { get: () => null },
++          text: async () => body,
++          json: async () => JSON.parse(body),
++        });
++      });
++    });
++  };
++}
++
++async function main() {
++  const raw = await readStdin();
++  let args;
++  try {
++    args = JSON.parse(raw || "{}");
++  } catch (e) {
++    process.stdout.write(JSON.stringify({ error: "bad args json: " + e.message }));
++    process.exit(1);
++    return;
++  }
++
++  const ua = args.ua || "";
++  const cores = args.cores || 16;
++  const deviceId = args.deviceId || "";
++  const flow = args.flow || "oauth_create_account";
++  const proxy = args.proxy || "";
++  const version = args.version || "20260219f9f6";
++  const pageUrl = args.pageUrl || "https://auth.openai.com/about-you";
++  const language = args.language || "en-US";
++  const timezone = args.timezone || "America/New_York";
++  const cookieHeader = args.cookieHeader || "";
++  const sentinelOrigin = args.sentinelOrigin || "https://chatgpt.com";
++  const frameUrl = `${sentinelOrigin}/backend-api/sentinel/frame.html?sv=${version}`;
++
++  // fetch + ProxyAgent 必须同源（同一 undici 版本）。优先用 npm undici；
++  // 无代理且 undici 缺失时退回 Node 内置全局 fetch。
++  let undici = null;
++  try {
++    undici = require("undici");
++  } catch (_) {}
++
++  // 代理（undici ProxyAgent）——与注册同 IP 命中 /sentinel/req。
++  // 注意：undici 不会自动解析 URL 里的 user:pass@，必须显式给 Proxy-Authorization token。
++  let dispatcher = null;
++  let fetchImpl = undici && undici.fetch ? undici.fetch : fetch;
++  if (proxy) {
++    if (undici && /^https?:/i.test(proxy)) {
++      try {
++        const pu = new URL(proxy);
++        const opts = { uri: pu.origin }; // http://host:port（去掉 userinfo）
++        if (pu.username || pu.password) {
++          const auth = decodeURIComponent(pu.username) + ":" + decodeURIComponent(pu.password);
++          opts.token = "Basic " + Buffer.from(auth, "utf8").toString("base64");
++        }
++        dispatcher = new undici.ProxyAgent(opts);
++      } catch (e) {
++        process.stdout.write(JSON.stringify({ error: "ProxyAgent 构造失败：" + ((e && e.message) || e) }));
++        process.exit(1);
++        return;
++      }
++    } else {
++      fetchImpl = makeCurlFetch(proxy);
++    }
++  }
++
++  const assetsDir = path.join(__dirname, "sentinel_assets");
++  const bootstrapSrc = fs.readFileSync(path.join(assetsDir, "sentinel_bootstrap.js"), "utf8");
++  const sdkSrc = fs.readFileSync(path.join(assetsDir, "sentinel_sdk.js"), "utf8");
++
++  // Node 的 crypto/navigator/performance/self 是只读全局，会和 bootstrap 的赋值冲突。
++  // 用独立 vm 沙箱（全新 global），只注入 sdk 实际需要的 host 能力。
++  const sandbox = {
++    console,
++    setTimeout,
++    clearTimeout,
++    setInterval,
++    clearInterval,
++    queueMicrotask,
++    fetch: makeFetch(
++      ua,
++      language,
++      cookieHeader,
++      dispatcher,
++      fetchImpl,
++      sentinelOrigin,
++      frameUrl
++    ),
++    TextEncoder,
++    TextDecoder,
++    btoa: (s) => Buffer.from(String(s), "latin1").toString("base64"),
++    atob: (s) => Buffer.from(String(s), "base64").toString("latin1"),
++    crypto: globalThis.crypto, // webcrypto：subtle + getRandomValues + randomUUID
++    URL,
++    URLSearchParams,
++    __UA__: ua,
++    __CORES__: cores,
++    __SDK_URL__: `${sentinelOrigin}/sentinel/${version}/sdk.js`,
++    __SEED_DID_KEY__: "oai-did",
++    __SEED_DID_VAL__: deviceId,
++    __PAGE_URL__: pageUrl,
++    __LANGUAGE__: language,
++    __LANGUAGES__: [language, "en-US", "en"],
++    __TIMEZONE__: timezone,
++    __COOKIE_HEADER__: cookieHeader,
++  };
++  vm.createContext(sandbox);
++
++  try {
++    vm.runInContext(bootstrapSrc, sandbox, { filename: "sentinel_bootstrap.js" });
++  } catch (e) {
++    process.stdout.write(JSON.stringify({ error: "bootstrap: " + ((e && e.stack) || e) }));
++    process.exit(1);
++    return;
++  }
++  try {
++    vm.runInContext(sdkSrc + "\n;globalThis.__SENTINEL_SDK__ = SentinelSDK;", sandbox, { filename: "sentinel_sdk.js" });
++  } catch (e) {
++    process.stdout.write(JSON.stringify({ error: "sdk: " + ((e && e.stack) || e) }));
++    process.exit(1);
++    return;
++  }
++
++  const SDK = sandbox.__SENTINEL_SDK__;
++  if (!SDK || typeof SDK.__proto2 !== "function") {
++    process.stdout.write(JSON.stringify({ error: "sdk.__proto2 未定义" }));
++    process.exit(1);
++    return;
++  }
++
++  // Warm the exact proxy/dispatcher before the proof request. This keeps the
++  // frame and /sentinel/req on one browser-like transport context.
++  const pingStartedAt = Date.now();
++  let pingStatus = 0;
++  let pingError = "";
++  try {
++    const pingResponse = await sandbox.fetch(frameUrl, { method: "GET" });
++    pingStatus = Number(pingResponse && pingResponse.status || 0);
++    if (pingResponse && typeof pingResponse.text === "function") {
++      await pingResponse.text();
++    }
++  } catch (e) {
++    pingError = String(e && e.message || e).slice(0, 200);
++  }
++  const pingMs = Date.now() - pingStartedAt;
++
++  let rawDriver;
++  try {
++    const p = SDK.__proto2(flow);
++    rawDriver = await Promise.resolve(p);
++  } catch (e) {
++    process.stdout.write(JSON.stringify({ error: "proto2: " + (e && e.stack || e) }));
++    process.exit(1);
++    return;
++  }
++
++  let rd;
++  try {
++    rd = JSON.parse(String(rawDriver));
++  } catch (e) {
++    process.stdout.write(JSON.stringify({ error: "driver decode: " + e.message, raw: String(rawDriver).slice(0, 300) }));
++    process.exit(1);
++    return;
++  }
++
++  if (!rd.c) {
++    process.stdout.write(JSON.stringify({ error: "driver 无 c", soErr: rd.soErr || "", raw: String(rawDriver).slice(0, 300) }));
++    process.exit(1);
++    return;
++  }
++
++  const g = makeGenerator(ua, cores, language, timezone);
++  let p;
++  if (rd.powReq && rd.seed) {
++    p = solvePoW(g, rd.seed, rd.diff);
++  } else {
++    const data0 = configArray(g);
++    data0[3] = 1;
++    p = "gAAAAAB" + b64Compact(data0) + "~S";
++  }
++
++  const mainTok = JSON.stringify({ p, t: rd.t || "", c: rd.c, id: deviceId, flow });
++  let so = "";
++  if (rd.so) {
++    so = JSON.stringify({ so: rd.so, c: rd.c, id: deviceId, flow });
++  }
++
++  const out = JSON.stringify({
++    main: mainTok,
++    so,
++    soErr: rd.soErr || "",
++    powReq: !!rd.powReq,
++    hasT: !!rd.t,
++    hasSo: !!rd.so,
++    pingStatus,
++    pingMs,
++    pingError,
++  });
++
++  // token 已写完，优雅关闭 undici 连接后自然退出，避开 Windows libuv 退出断言
++  // （该断言发生在 stdout 写出之后，不影响结果；但会让子进程 exit code 变脏）。
++  await new Promise((r) => process.stdout.write(out, r));
++  try {
++    const u = require("undici");
++    await Promise.resolve(u.getGlobalDispatcher().close()).catch(() => {});
++  } catch (_) {}
++  if (dispatcher && typeof dispatcher.close === "function") {
++    try {
++      await Promise.resolve(dispatcher.close()).catch(() => {});
++    } catch (_) {}
++  }
++  // 兜底：若仍有 ref 句柄卡住事件循环，2s 后硬退出（unref 不阻塞正常退出）。
++  setTimeout(() => process.exit(0), 2000).unref();
++}
++
++main().catch((e) => {
++  process.stdout.write(JSON.stringify({ error: "fatal: " + ((e && e.stack) || e) }), () => process.exit(1));
++});
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 4d55bd0..0396bcf 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -28,0 +29 @@ from .models import ExtractionConfig
++from .gopay_sentinel_node import GoPayNodeSentinelProvider
+@@ -34,0 +36,17 @@ SENTINEL_SDK_VERSION = "20260810913b"
++def gopay_sentinel_provider_type() -> type[Any]:
++    """Select the isolated GoPay proof runtime.
++
++    The GCash Node/V8 bridge is the default experimental GoPay provider.  The
++    persistent Playwright implementation remains available for comparison and
++    rollback through ``OPLL_GOPAY_SENTINEL_PROVIDER=playwright``.
++    """
++    mode = os.getenv("OPLL_GOPAY_SENTINEL_PROVIDER", "gcash_node").strip().lower()
++    if mode in {"gcash_node", "gcash-node", "node", "node_shim", "shim"}:
++        return GoPayNodeSentinelProvider
++    if mode in {"playwright", "chrome", "persistent_chrome"}:
++        return PlaywrightSentinelProvider
++    raise ConfigurationError(
++        "OPLL_GOPAY_SENTINEL_PROVIDER must be gcash_node or playwright"
++    )
++
++
+@@ -443 +461,6 @@ def openai_sentinel_headers(
+-                if "oai-web-deployment-attestation" not in headers:
++                if (
++                    "oai-web-deployment-attestation" not in headers
++                    and bool(
++                        getattr(provider, "allow_environment_attestation", True)
++                    )
++                ):
+@@ -447 +470,10 @@ def openai_sentinel_headers(
+-                if "OpenAI-Sentinel-SO-Token" not in headers:
++                if (
++                    "OpenAI-Sentinel-SO-Token" not in headers
++                    and bool(
++                        getattr(
++                            provider,
++                            "allow_environment_observer_token",
++                            True,
++                        )
++                    )
++                ):
+@@ -513 +545,4 @@ def rotate_openai_approval_context(
+-    provider = PlaywrightSentinelProvider(
++    provider_type = getattr(session, "openai_sentinel_provider_type", None)
++    if not callable(provider_type):
++        provider_type = gopay_sentinel_provider_type()
++    provider = provider_type(
+@@ -524,0 +560 @@ def rotate_openai_approval_context(
++    session.openai_sentinel_provider_type = provider_type
+@@ -1669,0 +1706,3 @@ class DefaultTransportFactory:
++        selected_gopay_provider = (
++            gopay_sentinel_provider_type() if is_gopay else None
++        )
+@@ -1671 +1710 @@ class DefaultTransportFactory:
+-        if attestation:
++        if attestation and selected_gopay_provider is not GoPayNodeSentinelProvider:
+@@ -1684 +1723,3 @@ class DefaultTransportFactory:
+-                    PlaywrightSentinelProvider if is_gopay else BrowserSentinelProvider
++                    selected_gopay_provider or gopay_sentinel_provider_type()
++                    if is_gopay
++                    else BrowserSentinelProvider
+@@ -1696,0 +1738 @@ class DefaultTransportFactory:
++                session.openai_sentinel_provider_type = provider_type
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 4bfdba5..0b2b323 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -73 +73 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
+-        gopay_transport.PlaywrightSentinelProvider,
++        gopay_transport.GoPayNodeSentinelProvider,
+@@ -100,0 +101,48 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
++def test_gopay_playwright_provider_remains_an_explicit_rollback(monkeypatch) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "playwright")
++    monkeypatch.setattr(gopay_transport, "new_session", Session)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    session = gopay_transport.GoPayTransportFactory().chatgpt(
++        config, config.checkout_proxy
++    )
++    assert isinstance(
++        session.openai_sentinel_provider,
++        gopay_transport.PlaywrightSentinelProvider,
++    )
++
++
++def test_gopay_node_factory_does_not_inject_environment_attestation(
++    monkeypatch,
++) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "gcash_node")
++    monkeypatch.setenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "stale-fixture")
++    monkeypatch.setattr(gopay_transport, "new_session", Session)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    session = gopay_transport.GoPayTransportFactory().chatgpt(
++        config, config.checkout_proxy
++    )
++    assert "oai-web-deployment-attestation" not in session.headers
++
++
+@@ -1259,0 +1308 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
++    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "playwright")
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+index 5e8f57c..c8995c3 100644
+--- a/tests/test_gopay_live_canary.py
++++ b/tests/test_gopay_live_canary.py
+@@ -3,0 +4 @@ import importlib.util
++import base64
+@@ -5,0 +7,3 @@ from pathlib import Path
++import time
++
++import pytest
+@@ -16,0 +21,21 @@ SPEC.loader.exec_module(MODULE)
++def _live_token(*, exp_offset: int = 3600, nbf_offset: int = -60) -> str:
++    def part(value) -> str:
++        return base64.urlsafe_b64encode(
++            json.dumps(value, separators=(",", ":")).encode()
++        ).decode().rstrip("=")
++
++    now = int(time.time())
++    header = part({"alg": "RS256", "typ": "JWT"})
++    payload = part(
++        {
++            "exp": now + exp_offset,
++            "nbf": now + nbf_offset,
++            "https://api.openai.com/auth": {
++                "chatgpt_account_id": "account-fixture"
++            },
++        }
++    )
++    signature = base64.urlsafe_b64encode(b"s" * 256).decode().rstrip("=")
++    return f"{header}.{payload}.{signature}"
++
++
+@@ -92,0 +118,35 @@ def test_canary_loader_parses_jsonl_before_matching_token(tmp_path: Path) -> Non
++
++
++def test_canary_loader_repairs_markdown_star_without_truncating_signature(
++    tmp_path: Path,
++) -> None:
++    tokens = tmp_path / "star.txt"
++    tokens.write_text(
++        "eyJheader.payload.sig*part*tail",
++        encoding="utf-8",
++    )
++    assert MODULE.load_tokens(tokens) == [
++        "eyJheader.payload.sig_part_tail"
++    ]
++
++
++def test_canary_proxy_loader_accepts_runtime_json(tmp_path: Path) -> None:
++    runtime = tmp_path / "runtime.json"
++    runtime.write_text(
++        json.dumps({"proxies": ["id.example.com:8080:user:password"]}),
++        encoding="utf-8",
++    )
++    assert MODULE.load_rollout_proxies(runtime) == [
++        "http://user:password@id.example.com:8080"
++    ]
++
++
++def test_canary_strict_runtime_token_validation() -> None:
++    metadata = MODULE.validate_runtime_token(_live_token())
++    assert metadata["signature_bytes"] == 256
++    with pytest.raises(ValueError):
++        MODULE.validate_runtime_token(_live_token(exp_offset=-1))
++    with pytest.raises(ValueError):
++        MODULE.validate_runtime_token(_live_token(nbf_offset=3600))
++    with pytest.raises(ValueError):
++        MODULE.validate_runtime_token("eyJtruncated.payload.signature")
+diff --git a/tests/test_gopay_sentinel_node.py b/tests/test_gopay_sentinel_node.py
+new file mode 100644
+index 0000000..dc347ca
+--- /dev/null
++++ b/tests/test_gopay_sentinel_node.py
+@@ -0,0 +1,295 @@
++from __future__ import annotations
++
++import json
++import hashlib
++from pathlib import Path
++import subprocess
++from types import SimpleNamespace
++
++import pytest
++
++from payment_link_extractor import gopay_checkout
++from payment_link_extractor import gopay_sentinel_node
++from payment_link_extractor import gopay_transport
++from payment_link_extractor.gopay_sentinel_node import GoPayNodeSentinelProvider
++from payment_link_extractor.models import ExtractionConfig
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def _main_token(device_id: str, flow: str) -> str:
++    return json.dumps(
++        {
++            "p": "pow-fixture",
++            "t": "sdk-fixture",
++            "c": "challenge-fixture",
++            "id": device_id,
++            "flow": flow,
++        },
++        separators=(",", ":"),
++    )
++
++
++def test_node_bridge_is_gopay_owned_and_matches_reference_assets() -> None:
++    source = (
++        ROOT / "payment_link_extractor/gopay_sentinel_node.py"
++    ).read_text(encoding="utf-8")
++    assert "mk_gcash_open_source" not in source
++    expected = {
++        "sentinel_bridge.js": "ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357",
++        "sentinel_assets/sentinel_bootstrap.js": "9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced",
++        "sentinel_assets/sentinel_sdk.js": "69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8",
++    }
++    root = ROOT / "payment_link_extractor/gopay_sentinel_node_assets"
++    for relative, digest in expected.items():
++        assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest
++
++
++def test_node_wrapper_starts_a_new_subprocess_for_each_call(monkeypatch) -> None:
++    calls: list[dict[str, object]] = []
++
++    def fake_run(command, **kwargs):
++        payload = json.loads(kwargs["input"])
++        calls.append({"command": command, "payload": payload, **kwargs})
++        output = {
++            "main": _main_token(payload["deviceId"], payload["flow"]),
++            "so": json.dumps(
++                {
++                    "so": "observer-fixture",
++                    "c": "challenge-fixture",
++                    "id": payload["deviceId"],
++                    "flow": payload["flow"],
++                },
++                separators=(",", ":"),
++            ),
++            "pingStatus": 200,
++            "pingMs": 19,
++            "pingError": "",
++            "powReq": True,
++            "hasT": True,
++            "hasSo": True,
++            "soErr": "",
++        }
++        return subprocess.CompletedProcess(command, 0, json.dumps(output).encode(), b"")
++
++    monkeypatch.setattr(gopay_sentinel_node, "_resolve_node_executable", lambda: "node-fixture")
++    monkeypatch.setattr(gopay_sentinel_node.subprocess, "run", fake_run)
++    diagnostics: dict[str, object] = {}
++    for flow in ("chatgpt_checkout", "checkout_session_approval"):
++        main, observer = gopay_sentinel_node.mint_gopay_sentinel_sync(
++            flow=flow,
++            device_id="device-fixture",
++            user_agent="agent-fixture",
++            proxy="http://proxy.example:8080",
++            page_url="https://chatgpt.com/checkout/fixture",
++            language="id-ID",
++            timezone="Asia/Jakarta",
++            cookie_header="oai-did=device-fixture",
++            diagnostics=diagnostics,
++        )
++        assert json.loads(main)["flow"] == flow
++        assert json.loads(observer)["flow"] == flow
++
++    assert len(calls) == 2
++    assert all(item["command"][0] == "node-fixture" for item in calls)
++    assert all(item["check"] is False for item in calls)
++    assert all(item["capture_output"] is True for item in calls)
++    assert [item["payload"]["flow"] for item in calls] == [
++        "chatgpt_checkout",
++        "checkout_session_approval",
++    ]
++    assert diagnostics == {
++        "ping_status": 200,
++        "ping_ms": 19,
++        "ping_error": "",
++        "pow_required": True,
++        "has_t": True,
++        "has_so": True,
++        "so_error_present": False,
++    }
++
++
++def test_node_provider_mints_one_fresh_process_per_token(monkeypatch) -> None:
++    calls: list[dict[str, object]] = []
++
++    def fake_mint(**kwargs):
++        calls.append(dict(kwargs))
++        kwargs["diagnostics"].update(
++            ping_status=200,
++            ping_ms=37,
++            ping_error="",
++        )
++        return _main_token(str(kwargs["device_id"]), str(kwargs["flow"])), "so-fixture"
++
++    monkeypatch.setattr(
++        gopay_sentinel_node, "mint_gopay_sentinel_sync", fake_mint
++    )
++    session = SimpleNamespace(
++        headers={"Cookie": "oai-did=device-fixture; session-cookie=value"}
++    )
++    provider = GoPayNodeSentinelProvider(
++        access_token="fixture-token",
++        device_id="device-fixture",
++        session_id="session-fixture",
++        user_agent="fixture-agent",
++        proxy="http://proxy.example:8080",
++        transport_session=session,
++        language="id-ID",
++        timezone="Asia/Jakarta",
++    )
++    provider.prepare_flow(
++        flow="checkout_session_approval",
++        referer="https://chatgpt.com/checkout/openai_ie/cs_fixture",
++    )
++    checkout = provider.headers(
++        "chatgpt_checkout",
++        referer="https://chatgpt.com/?promo_campaign=plus-1-month-free",
++    )
++    approval = provider.headers(
++        "checkout_session_approval",
++        referer="https://chatgpt.com/checkout/openai_ie/cs_fixture",
++    )
++
++    assert len(calls) == 2
++    assert [item["flow"] for item in calls] == [
++        "chatgpt_checkout",
++        "checkout_session_approval",
++    ]
++    assert all(item["device_id"] == "device-fixture" for item in calls)
++    assert all(item["proxy"] == "http://proxy.example:8080" for item in calls)
++    assert all(item["language"] == "id-ID" for item in calls)
++    assert all(item["timezone"] == "Asia/Jakarta" for item in calls)
++    assert all("session-cookie=value" in str(item["cookie_header"]) for item in calls)
++    assert checkout["OpenAI-Sentinel-SO-Token"] == "so-fixture"
++    assert approval["OpenAI-Sentinel-SO-Token"] == "so-fixture"
++    assert provider._node_process_count == 2
++    assert provider._runtime_id == ""
++    assert provider.process_model == "one_process_per_token"
++    assert session.openai_checkout_telemetry == "[1,null]"
++    assert session.openai_approve_telemetry == "[1,null]"
++
++
++def test_node_provider_merges_cookie_header_and_fresher_cookie_jar() -> None:
++    class CookieJar:
++        def get_dict(self):
++            return {
++                "oai-did": "jar-device",
++                "__Secure-next-auth.session-token.0": "chunk-zero",
++                "__Secure-next-auth.session-token.1": "chunk-one",
++            }
++
++    session = SimpleNamespace(
++        headers={"Cookie": "oai-did=stale-device; extra=header-value"},
++        cookies=CookieJar(),
++    )
++    merged = gopay_sentinel_node._session_cookie_header(session)
++    assert "oai-did=jar-device" in merged
++    assert "oai-did=stale-device" not in merged
++    assert "extra=header-value" in merged
++    assert "__Secure-next-auth.session-token.0=chunk-zero" in merged
++    assert "__Secure-next-auth.session-token.1=chunk-one" in merged
++
++
++def test_node_mode_ignores_stale_environment_attestation(monkeypatch) -> None:
++    class Provider:
++        allow_environment_attestation = False
++        allow_environment_observer_token = False
++
++        def headers(self, _flow, **_kwargs):
++            return {"OpenAI-Sentinel-Token": "main-fixture"}
++
++    monkeypatch.setenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "stale-attestation")
++    monkeypatch.setenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "stale-observer")
++    session = SimpleNamespace(
++        openai_sentinel_provider=Provider(),
++        headers={},
++    )
++    result = gopay_transport.openai_sentinel_headers(
++        session,
++        flow="chatgpt_checkout",
++        referer="https://chatgpt.com/",
++        required=True,
++    )
++    assert "oai-web-deployment-attestation" not in result
++    assert "OpenAI-Sentinel-SO-Token" not in result
++
++
++def test_node_wrapper_error_does_not_echo_subprocess_output(monkeypatch) -> None:
++    secret = "private-token-cookie-proxy-secret"
++    process = subprocess.CompletedProcess(
++        ["node-fixture"],
++        1,
++        ("not-json-" + secret).encode(),
++        ("stderr-" + secret).encode(),
++    )
++    monkeypatch.setattr(gopay_sentinel_node, "_resolve_node_executable", lambda: "node-fixture")
++    monkeypatch.setattr(
++        gopay_sentinel_node.subprocess,
++        "run",
++        lambda *_args, **_kwargs: process,
++    )
++    with pytest.raises(RuntimeError) as caught:
++        gopay_sentinel_node.mint_gopay_sentinel_sync(
++            flow="chatgpt_checkout",
++            device_id="device-fixture",
++            user_agent="agent-fixture",
++        )
++    assert secret not in str(caught.value)
++
++
++def test_node_provider_allows_checkout_without_persistent_browser_material(
++    monkeypatch,
++) -> None:
++    class Response:
++        status_code = 200
++        text = '{"checkout_session_id":"cs_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"checkout_session_id": "cs_fixture"}
++
++    captured: dict[str, object] = {}
++    session = SimpleNamespace(headers={})
++    provider = SimpleNamespace(
++        requires_browser_session=False,
++        send_observer_token=True,
++        proof_mode="gopay_node_shim",
++        _node_process_count=1,
++        validate_checkout_readiness=lambda _headers: {
++            "proof_mode": "gopay_node_shim"
++        },
++        headers=lambda *_args, **_kwargs: {
++            "OpenAI-Sentinel-Token": _main_token(
++                "device-fixture", "chatgpt_checkout"
++            ),
++            "OpenAI-Sentinel-SO-Token": "so-fixture",
++            "oai-device-id": "device-fixture",
++        },
++    )
++    session.openai_sentinel_provider = provider
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    committed: list[bool] = []
++    checkout = gopay_checkout.create_checkout(
++        config,
++        session,
++        None,
++        commit_callback=lambda: committed.append(True),
++    )
++
++    assert checkout["session_kind"] == "stripe_checkout"
++    assert committed == [True]
++    assert captured["headers"]["OpenAI-Sentinel-SO-Token"] == "so-fixture"
++    assert "oai-web-deployment-attestation" not in captured["headers"]
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+index 1ffe71f..7a5976b 100644
+--- a/tools/gopay_live_canary.py
++++ b/tools/gopay_live_canary.py
+@@ -3,0 +4 @@ import argparse
++import base64
+@@ -6,0 +8 @@ import sys
++import time
+@@ -20 +22,7 @@ from payment_link_extractor.models import ExtractionConfig
+-JWT_RE = re.compile(r"eyJ[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]+){2}")
++# Chat/Markdown exports can escape '_' or replace paired '_' emphasis markers
++# with '*'. Include those characters in the complete match so a token is never
++# silently truncated before its signature is validated by the target.
++JWT_RE = re.compile(
++    r"eyJ[A-Za-z0-9_\\*\-]+(?:\.[A-Za-z0-9_\\*\-]+){2}"
++    r"(?![A-Za-z0-9_\\*\-])"
++)
+@@ -60 +68,3 @@ def load_tokens(path: Path) -> list[str]:
+-    return _unique([item.replace("\\", "") for item in JWT_RE.findall(text)])
++    return _unique(
++        [item.replace("\\", "").replace("*", "_") for item in JWT_RE.findall(text)]
++    )
+@@ -65 +75,17 @@ def load_rollout_proxies(path: Path) -> list[str]:
+-    raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall("\n".join(texts))])
++    if not texts:
++        text = path.read_text(encoding="utf-8-sig", errors="ignore")
++        try:
++            payload = json.loads(text)
++        except (TypeError, ValueError):
++            payload = None
++        if isinstance(payload, dict) and isinstance(payload.get("proxies"), list):
++            return _unique(
++                [
++                    normalize_proxy_url(str(item))
++                    for item in payload["proxies"]
++                    if str(item).strip()
++                ]
++            )
++    else:
++        text = "\n".join(texts)
++    raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall(text)])
+@@ -76 +102,3 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
+-    if "browser checkout readiness" in message:
++    if "node sentinel readiness" in message:
++        category = "sentinel_node"
++    elif "browser checkout readiness" in message:
+@@ -108,0 +137,36 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
++def validate_runtime_token(token: str) -> dict[str, int]:
++    """Fail before network I/O when a live canary token is malformed/stale."""
++    selected = str(token or "").strip()
++    parts = selected.split(".")
++    if len(parts) != 3 or not all(
++        re.fullmatch(r"[A-Za-z0-9_-]+", part or "") for part in parts
++    ):
++        raise ValueError("invalid compact JWT shape")
++
++    def decode(part: str) -> Any:
++        return json.loads(
++            base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)).decode(
++                "utf-8"
++            )
++        )
++
++    try:
++        header = decode(parts[0])
++        payload = decode(parts[1])
++        signature = base64.urlsafe_b64decode(
++            parts[2] + "=" * (-len(parts[2]) % 4)
++        )
++    except Exception as exc:
++        raise ValueError("invalid compact JWT encoding") from exc
++    if not isinstance(header, dict) or not isinstance(payload, dict):
++        raise ValueError("invalid compact JWT JSON")
++    now = int(time.time())
++    exp = int(payload.get("exp") or 0)
++    nbf = int(payload.get("nbf") or 0)
++    auth = payload.get("https://api.openai.com/auth")
++    account = str(auth.get("chatgpt_account_id") or "") if isinstance(auth, dict) else ""
++    if not account or exp <= now or (nbf and nbf > now) or len(signature) < 128:
++        raise ValueError("compact JWT is not live-canary ready")
++    return {"exp": exp, "nbf": nbf, "signature_bytes": len(signature)}
++
++
+@@ -143,0 +208,13 @@ def main() -> int:
++    try:
++        validate_runtime_token(token)
++    except ValueError:
++        print(
++            json.dumps(
++                {
++                    "status": "input_error",
++                    "token_slot": args.token_index,
++                    "reason": "token_validation",
++                }
++            )
++        )
++        return 2

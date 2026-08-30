@@ -1,0 +1,178 @@
+GoPay GCash 风格 Node Sentinel 双账号验证
+===========================================
+
+Changed branch/fields:
+- Git branch: main
+- Baseline commit: b6e4663a9c11f6cbec6147ea30a7188a68a89688
+- GoPay openai_sentinel_provider default:
+  PlaywrightSentinelProvider persistent Chrome runtime
+  -> GoPayNodeSentinelProvider, one fresh Node/V8 shim process per token.
+- Node proof mode: gopay_node_shim.
+- Checkout/Approval: two independent Node processes; no browser runtime/profile continuity.
+- Node binding: main p/c/id/flow, oai-did/device and Node/HTTP proxy must match.
+- Node environment isolation: no stale OPLL attestation/SO fallback.
+- Live canary input: Markdown star/backslash repair plus strict JWT expiry/nbf/account/signature validation.
+- PayPal and GCash adapters, state and result fields remain separate.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-gcash-node-sentinel-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-gcash-node-sentinel-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-gcash-node-sentinel-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-gcash-node-sentinel-20260830\ROLLBACK.sh
+
+Original baseline hashes:
+- payment_link_extractor/gopay_checkout.py: efdbccaa7d78b698778ae91fbaa8816c4df1e08b35fd90aa953e482993ec7dac
+- payment_link_extractor/gopay_cs_live.py: b43f82649af01ed788d2395e3a3cfe1509263e99046feeb7f0c3bf2208a68f6e
+- payment_link_extractor/gopay_transport.py: 8376f73ba1fb5b34ebde5e6094c3e96fcfde1e7ada89faeae6356a401403f72c
+- tools/gopay_live_canary.py: 358beabd72661dab6bc95e0acf61cdc95dd866a5e8698dd8f6b2bc0e5cd254bc
+
+Modified hashes:
+- payment_link_extractor/gopay_checkout.py: d4f33c4342ecda997f450bf516b5f7b88ebb3ffc32a860c535f28cf01ef4fc27
+- payment_link_extractor/gopay_cs_live.py: 50d1e1cf6f7895d640fce312a611af89a12a2f48875986b497c491dd3ae33087
+- payment_link_extractor/gopay_transport.py: 00b34cca3db8d2662aee272dfa39a7ac16e72089661207812c70f42842a299e4
+- payment_link_extractor/gopay_sentinel_node.py: 3867b55bed80be78377b86c2e15b8fc82d96bc068deb25b9f60fc6af00c52bab
+- GoPay Node bridge: ea943dd28c0158c289c7aad6446c034290098c8f12d2f2569fce9432019dd357
+- GoPay Node bootstrap: 9ffa5bac4236da35bf2da0063f56aea500a6a23e78350b3ac085a1572345fced
+- GoPay Node SDK: 69b60c5f0f6212100ca760d8c0ef478f089f039b2ec489200b35d794243e90a8
+- DIFF_FILE: ceb4b04ce784f6c67bb1a7908151d2d96c6f114eaa4c57fd5551cf9dd6ee43b0
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: Git baseline b6e4663 before the GoPay Node/V8 shim experiment.
+Literal output/result:
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 90%]
+......................                                                   [100%]
+238 passed in 1.79s
+BASELINE_FULL_EXIT=0
+Exit status: 0
+
+BASELINE TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_gopay_sentinel_playwright.py tests\test_gcash_support.py tests\test_channel_isolation.py
+Input: baseline persistent Playwright Sentinel and channel isolation contracts.
+Literal output/result:
+....................................................................     [100%]
+68 passed in 0.41s
+BASELINE_TARGET_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: GoPay-owned Node/V8 provider/assets, readiness/binding hardening, canary validation and tests.
+Literal output/result:
+........................................................................ [ 28%]
+........................................................................ [ 57%]
+........................................................................ [ 86%]
+..................................                                       [100%]
+250 passed in 1.76s
+MODIFIED_FULL_EXIT=0
+Exit status: 0
+
+MODIFIED TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_node.py tests\test_gopay_isolated_optimization.py tests\test_gopay_live_canary.py tests\test_channel_isolation.py tests\test_gcash_support.py
+Input: Node subprocess/process-count, proof/device/proxy/cookie bindings, provider rollback, input parsing and channel isolation.
+Literal output/result:
+........................................................................ [ 88%]
+.........                                                                [100%]
+81 passed in 0.49s
+MODIFIED_TARGET_EXIT=0
+Exit status: 0
+
+NODE SYNTAX command:
+node --check payment_link_extractor/gopay_sentinel_node_assets/sentinel_bridge.js
+node --check payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_bootstrap.js
+node --check payment_link_extractor/gopay_sentinel_node_assets/sentinel_assets/sentinel_sdk.js
+Literal output/result:
+NODE_CHECK_EXITS=0,0,0
+Exit status: 0
+
+PROXY PREFLIGHT command:
+Runtime-only proxy_probe over artifacts-local/gopay-node-shim-live-input-20260830.json.
+Input: ten supplied proxy slots; no proxy values enter output.
+Literal output/result:
+PROXY_SLOT=1..10 STATUS=OK COUNTRY=ID ID_MATCH=True
+VALID_ID_SLOTS=1,2,3,4,5,6,7,8,9,10
+PROXY_PREFLIGHT_EXIT=0
+Exit status: 0
+
+LIVE ACCOUNT 1 command:
+.\.venv\Scripts\python.exe -u tools\gopay_live_canary.py --tokens-file artifacts-local\gopay-node-shim-live-input-20260830.json --proxy-rollout artifacts-local\gopay-node-shim-live-input-20260830.json --token-index 1 --start-proxy-slot 1 --precommit-retries 3
+Input: runtime-only token slot 1 and ten ID proxy slots.
+Literal output/result:
+proxy_slot=1 promo_not_eligible checkout_count=0
+proxy_slot=2 eligibility_confirmed checkout_count=1
+checkout_token_length=4333 approval_token_length=4490
+node_process_count=2 pow_required=true has_t=true has_so=false ping_status=200
+Stripe payment_confirmation completed
+CANARY_RESULT status=consumed_failure category=approve_blocked
+AT1_NODE_CANARY_EXIT=20
+Exit status: 20 (expected canary status for a committed flow without a link).
+
+FIRST-ACCOUNT OPTIMIZATION:
+- Enforced oai-did == provider.device_id before every Node process.
+- Enforced provider proxy == ChatGPT HTTPS proxy.
+- Required main p/c/id/flow and validated optional SO id/flow/c.
+- Disabled stale environment attestation/SO in Node mode.
+- Added pow/has_t/has_so and ping diagnostics without raw token material.
+- Added strict runtime JWT validation and secret-free bridge exceptions.
+
+LIVE ACCOUNT 2 command:
+.\.venv\Scripts\python.exe -u tools\gopay_live_canary.py --tokens-file artifacts-local\gopay-node-shim-live-input-20260830.json --proxy-rollout artifacts-local\gopay-node-shim-live-input-20260830.json --token-index 2 --start-proxy-slot 3 --precommit-retries 3
+Input: normalized and strictly validated runtime-only token slot 2 and unused proxy slots.
+Literal output/result:
+proxy_slot=3 promo_not_eligible checkout_count=0
+proxy_slot=4 promo_not_eligible checkout_count=0
+proxy_slot=5 eligibility_confirmed checkout_count=1
+checkout_token_length=4389 approval_token_length=4530
+node_process_count=2 pow_required=true has_t=true has_so=false ping_status=200
+Stripe payment_confirmation completed
+CANARY_RESULT status=consumed_failure category=approve_blocked
+AT2_NODE_CANARY_EXIT=20
+Exit status: 20 (expected canary status for a committed flow without a link).
+
+Live conclusion:
+- Each account created exactly one Checkout; neither account was retried after commit.
+- Both Node proofs were freshly generated and correctly bound, but approve remained blocked.
+- The GCash-style stateless Node/V8 proof mode did not fix GoPay approve_blocked.
+- Both runs still lacked NextAuth session Cookie and deployment attestation.
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISSING_COUNT=0
+GCASH_MISMATCH_COUNT=0
+GCASH_EXTRA_NONCACHE_COUNT=0
+GCASH_BYTE_EQUAL=True
+GOPAY_IMPORTS_GCASH_CORE=False
+Exit status: 0
+
+CHANNEL ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Literal output/result:
+........................                                                 [100%]
+24 passed in 0.30s
+CHANNEL_ISOLATION_EXIT=0
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-gcash-node-sentinel-20260830/ROLLBACK.sh' 'C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-node-shim-rollback-test-20260830-223546' 'C:/Users/Administrator/Desktop/提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to payment_link_extractor/gopay_transport.py.
+Literal output/result:
+ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-node-shim-rollback-test-20260830-223546
+RESTORED_TRACKED_FILES=8
+REMOVED_NEW_FILES=6
+RESTORED_STATUS=PASS
+RESTORED_SHA256=8376f73ba1fb5b34ebde5e6094c3e96fcfde1e7ada89faeae6356a401403f72c
+EXPECTED_SHA256=8376f73ba1fb5b34ebde5e6094c3e96fcfde1e7ada89faeae6356a401403f72c
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all eight tracked files byte-for-byte to b6e4663.
+- It removed all six new GoPay Node provider/assets/test/report files.
+- The restored provider default is the original persistent Playwright Chrome implementation.
+- The repository and MODIFIED_FILE remain on the GoPay Node/V8 shim implementation.
+- PayPal and the byte-identical 22-file GCash upstream copy remain unchanged.
+- Runtime ATs, cookies, proxy credentials, Checkout IDs and redirect nonces are absent from all four artifacts.
