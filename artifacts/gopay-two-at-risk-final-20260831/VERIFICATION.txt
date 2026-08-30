@@ -1,0 +1,148 @@
+GoPay 两个新增 AT 最终风控验证
+===============================
+
+Changed branch/fields:
+- Git branch: main
+- Baseline commit: ee145a8efacc4c537f9a136ed9b2b27195d39851
+- Checkout request: exact successful-HAR four-key body and root Referer.
+- Checkout page: second chatgpt_checkout browser init before promo update.
+- Canary runtime state: attestation-only file accepted in addition to matching auth-cookie state.
+- Payment HTTP transport: unchanged.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-two-at-risk-final-20260831\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-two-at-risk-final-20260831\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-two-at-risk-final-20260831\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-two-at-risk-final-20260831\ROLLBACK.sh
+
+Original hashes:
+- gopay_checkout.py: 7e78dbc16e29e6320ad1673b3ce194f34718475a88c40727954ee408b1868706
+- gopay_core.py: e08de95fdebf595609c217b2ea9685b0e1d69d5720526affaf0d32c82e9cd115
+- tools/gopay_live_canary.py: 8b157926e7407e85ae61ac88e1f725b7fb65698141012597d52d4c3b7a7e62a8
+- tests/test_gopay_isolated_optimization.py: 0484dd0ddfc5043ee5fefd43a91995f8ce7a30e784d4d2593c8c484f315c8aa0
+- tests/test_gopay_live_canary.py: 87ff1fe2c4dfd88a54ec61cecaa4c0e0ba76298f709a592e1faf4a11db6c1e33
+
+Modified hashes:
+- gopay_checkout.py: 9d4ff55b939d5bfb86eb7a7fb1896cd3077f93ae402e2ecb1a0ab38f9f758db8
+- gopay_core.py: 099537448d24a81d1b0b11b48e6b4851998eb836a2a028aeeb1d82d552594c6b
+- tools/gopay_live_canary.py: 0f1937f9bf1337fa6ce8f134c1379c7df9ec24f72958f76e206599da0a0180a5
+- tests/test_gopay_isolated_optimization.py: cb079143d07130050f74d775f29faf98a879b3b79c159ef7c71c427bcd66b107
+- tests/test_gopay_live_canary.py: 1534d7bf953065d5048e239d0e7e4f2ac94b5fedcaa597216167563c32d46932
+- DIFF_FILE: 77d14e32045ecde5ed208d42161f12fbbf115b7a0646c15324b016b50b9aeadc
+
+INPUT VALIDATION:
+TOKEN_COUNT=2
+TOKEN_SLOT=1 SIGNATURE_BYTES=256 LIVE_READY=True
+TOKEN_SLOT=2 SIGNATURE_BYTES=256 LIVE_READY=True
+PROXY_COUNT=10
+Exit status: 0
+
+LIVE BROWSER SESSION SCAN:
+COMMAND=Playwright connect_over_cdp http://127.0.0.1:61908
+Literal output/result:
+CDP_READY=True
+COOKIE_COUNT=30
+NEXTAUTH_CHUNKS=2
+SESSION_STATUS=200
+MATCHED_TOKEN_SLOTS=[]
+Exit status: 0
+
+LIVE ATTESTATION CAPTURE:
+COMMAND=observe the logged browser normal Checkout request, persist only attestation in ignored runtime JSON, then return to main.
+Literal output/result:
+ATTESTATION_CAPTURED=True
+ATTESTATION_LENGTH=291
+BROWSER_RETURNED_MAIN=True
+BROWSER_PRESERVED=1
+LIVE_ATTESTATION_CAPTURE_EXIT=0
+Exit status: 0
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: ee145a8 before successful-HAR Checkout entry and attestation-only support.
+Literal output/result:
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+.....................................                                    [100%]
+253 passed in 1.75s
+CONTINUATION_POST_COMMIT_FULL_EXIT=0
+Exit status: 0
+
+LIVE NEW ACCOUNT 1:
+- proxy slot 1 not_eligible; slot 2 eligible.
+- successful-HAR Checkout body and root Referer used.
+- second chatgpt_checkout browser refresh completed.
+- Checkout through Stripe confirm completed.
+- approve_blocked; attestation length 0; no NextAuth session chunks.
+- canary exit 20; no post-block retry.
+
+LIVE NEW ACCOUNT 2:
+- proxy slot 1 not_eligible; slot 2 eligible.
+- fresh runtime attestation length 291 injected.
+- Checkout through Stripe confirm completed.
+- approve_blocked with account binding true and attestation length 291.
+- no NextAuth session chunks.
+- canary exit 20; no post-block retry.
+
+LIVE CONCLUSION:
+- Both new accounts reached final approve_blocked and stopped.
+- Fresh attestation alone did not remove the final risk result.
+- The remaining stable difference is a matching-account NextAuth browser session.
+- Logged browser session did not match either task account and was not replayed.
+- Runtime credential/attestation files were removed after testing.
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: final Checkout browser-entry and runtime-attestation support.
+Literal output/result:
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+......................................                                   [100%]
+254 passed in 1.66s
+TWO_AT_FULL_EXIT=0
+Exit status: 0
+
+MODIFIED TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_gopay_live_canary.py
+Literal output/result:
+..................................................                       [100%]
+TWO_AT_TARGET_EXIT=0
+Exit status: 0
+
+CHANNEL ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_gcash_support.py tests\test_gopay_support.py
+Literal output/result:
+........................                                                 [100%]
+TWO_AT_ISOLATION_EXIT=0
+Exit status: 0
+
+GCASH upstream verification:
+GCASH_UPSTREAM_COMMIT=2607d879ce2005ef9a9c6cdfa1ec747c6f26d4d5
+GCASH_TRACKED_COUNT=22
+GCASH_MISMATCH_COUNT=0
+GCASH_EXTRA_NONCACHE_COUNT=0
+GCASH_BYTE_EQUAL=True
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-two-at-risk-final-20260831/ROLLBACK.sh' 'C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-two-at-rollback-test-20260831-003856' 'C:/Users/Administrator/Desktop/提链'
+Input: independent MODIFIED_FILE copy with an intentional mutation appended to payment_link_extractor/gopay_core.py.
+Literal output/result:
+ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-two-at-rollback-test-20260831-003856
+RESTORED_TRACKED_FILES=5
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+RESTORED_SHA256=e08de95fdebf595609c217b2ea9685b0e1d69d5720526affaf0d32c82e9cd115
+EXPECTED_SHA256=e08de95fdebf595609c217b2ea9685b0e1d69d5720526affaf0d32c82e9cd115
+HASH_MATCH=True
+TWO_AT_ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- Independent rollback restored all five tracked files to ee145a8 and removed the new report.
+- Repository and MODIFIED_FILE remain on final implementation.
+- Browser remains alive on the ChatGPT main page.
+- PayPal and byte-identical 22-file GCash upstream remain unchanged.
+- No AT, Cookie, attestation value, proxy credential, Checkout ID, or redirect nonce is present in artifacts.
