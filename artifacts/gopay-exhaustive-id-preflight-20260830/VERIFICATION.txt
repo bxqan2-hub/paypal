@@ -79,7 +79,7 @@ Literal output/result:
 ROLLBACK_TARGET=C:/Users/Administrator/Desktop/提链/artifacts-local/gopay-exhaustive-rollback-test-6
 RESTORED_FILES=6
 RESTORED_STATUS=PASS
-ROLLBACK_HASH_MATCH=true (all six files exactly matched the recorded HEAD SHA-256 values)
+ROLLBACK_HASH_MATCH=true
 Exit status: 0
 
 Restored behavior/status:
