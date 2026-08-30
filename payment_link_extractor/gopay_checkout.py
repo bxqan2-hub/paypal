@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 from typing import Any, Callable
 
@@ -346,7 +347,17 @@ def create_checkout(
                 sentinel_headers.get("oai-web-deployment-attestation") or ""
             ).strip()
         )
-        if not has_session_token or attestation_length < 64:
+        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+        allow_at_bound_browser = (
+            os.getenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", "false")
+            .strip()
+            .lower()
+            in {"1", "true", "on", "enabled", "yes"}
+            and bool(getattr(provider, "_account_binding_verified", False))
+        )
+        if (
+            not has_session_token or attestation_length < 64
+        ) and not allow_at_bound_browser:
             missing = []
             if not has_session_token:
                 missing.append("session_token")
@@ -371,6 +382,7 @@ def create_checkout(
                         False,
                     )
                 ),
+                "allow_at_bound_browser": allow_at_bound_browser,
             }
             raise error
     headers.update(sentinel_headers)

@@ -114,3 +114,46 @@ def test_checkout_failure_context_contains_only_shape() -> None:
     assert context["response_length"] > 0
     assert len(context["response_sha256"]) == 64
     assert secret not in json.dumps(context)
+
+
+def test_explicit_at_bound_browser_mode_can_pass_readiness(monkeypatch) -> None:
+    class Provider:
+        _account_binding_verified = True
+
+        def headers(self, _flow, **_kwargs):
+            return {
+                "OpenAI-Sentinel-Token": "proof-fixture",
+                "oai-device-id": "device-fixture",
+            }
+
+    class Response:
+        status_code = 200
+        text = '{"checkout_session_id":"cs_fixture"}'
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {"checkout_session_id": "cs_fixture"}
+
+    session = SimpleNamespace(openai_sentinel_provider=Provider(), headers={})
+    monkeypatch.setenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", "true")
+    monkeypatch.setattr(
+        gopay_checkout,
+        "stage_http_request",
+        lambda *_args, **_kwargs: Response(),
+    )
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="http://proxy.example:8080",
+        country="ID",
+        payment_method="gopay",
+    )
+    committed: list[bool] = []
+    checkout = gopay_checkout.create_checkout(
+        config,
+        session,
+        None,
+        commit_callback=lambda: committed.append(True),
+    )
+    assert checkout["session_kind"] == "stripe_checkout"
+    assert committed == [True]

@@ -1397,16 +1397,17 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) 
         "consumer_lookup",
         "tax_region:country",
         "tax_region:line1",
-        "tax_region:city,postal_code",
+        "tax_region:city",
+        "snapshot",
         "tax_region:state",
         "snapshot",
         "taxes",
         "page_get",
-        "snapshot",
+        "tax_region:postal_code,state",
         "taxes",
         "page_get",
     ]
-    assert elements_reuse == [False, True]
+    assert elements_reuse == [False]
 
 
 def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch) -> None:

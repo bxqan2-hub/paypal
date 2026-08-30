@@ -308,6 +308,31 @@ def cs_update_tax_region(
     return payload
 
 
+def cs_update_tax_region_stages(
+    stripe: Any,
+    checkout: CheckoutData,
+    ctx: StripeContext,
+    billing: dict[str, str],
+    log: Any | None,
+    stages: tuple[tuple[str, ...], ...],
+    accumulated: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Apply selected cumulative tax-region stages in observed HAR order."""
+    current = dict(accumulated or {})
+    payload: dict[str, Any] = {}
+    for fields in stages:
+        payload, current = _cs_update_tax_region_fields(
+            stripe,
+            checkout,
+            ctx,
+            billing,
+            log,
+            fields,
+            current,
+        )
+    return payload, current
+
+
 def cs_snapshot_billing(
     chatgpt: Any,
     checkout: CheckoutData,
@@ -789,31 +814,54 @@ def extract_cs_live_provider(
     stripe_consumer_session_lookup(stripe, checkout, billing, log)
     if stage_callback:
         stage_callback("taxes")
-    cs_update_tax_region(stripe, checkout, ctx, billing, log)
-    for _round in range(2):
-        cs_snapshot_billing(chatgpt, checkout, billing, log)
-        cs_checkout_taxes(config, chatgpt, checkout, billing, log)
-        cs_checkout_page_refresh(stripe, checkout, ctx, log)
-        require_gopay_fail_fast_amount(
-            ctx.get("checkout_amount"),
-            "taxes refresh",
-            enabled=bool(config.gopay_zero_trial_validation),
-        )
-    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
-    refreshed_elements = cs_elements_session(
+    # Both successful HARs use one Elements session, then build tax_region as
+    # country -> line1 -> city before interleaving snapshot/taxes/page GET.
+    accumulated: dict[str, str] = {}
+    _, accumulated = cs_update_tax_region_stages(
         stripe,
         checkout,
-        init_payload,
         ctx,
+        billing,
         log,
-        reuse_session=True,
+        (("country",), ("line1",), ("city",)),
+        accumulated,
     )
-    if refreshed_elements:
-        ensure_payment_method_offered(
-            refreshed_elements,
-            payment_method,
-            "cs_live forced-reuse Elements session",
-        )
+    cs_snapshot_billing(chatgpt, checkout, billing, log)
+    # The browser-targets HAR commits state before the second snapshot.
+    _, accumulated = cs_update_tax_region_stages(
+        stripe,
+        checkout,
+        ctx,
+        billing,
+        log,
+        (("state",),),
+        accumulated,
+    )
+    cs_snapshot_billing(chatgpt, checkout, billing, log)
+    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+    require_gopay_fail_fast_amount(
+        ctx.get("checkout_amount"),
+        "taxes refresh 1",
+        enabled=bool(config.gopay_zero_trial_validation),
+    )
+    _, accumulated = cs_update_tax_region_stages(
+        stripe,
+        checkout,
+        ctx,
+        billing,
+        log,
+        (("postal_code", "state"),),
+        accumulated,
+    )
+    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+    require_gopay_fail_fast_amount(
+        ctx.get("checkout_amount"),
+        "taxes refresh 2",
+        enabled=bool(config.gopay_zero_trial_validation),
+    )
+    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
     if stage_callback:
         stage_callback("payment_confirmation")
     confirm_payload = stripe_confirm_cs_live(
