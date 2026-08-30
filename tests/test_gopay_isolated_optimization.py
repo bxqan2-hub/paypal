@@ -75,6 +75,7 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
     assert session.headers["oai-language"] == "id-ID"
     assert session.headers["oai-client-build-number"] == "10012890"
     assert session.headers["oai-client-version"] == "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+    assert "chatgpt-account-id" not in session.headers
     session.openai_checkout_telemetry = "[1,627.5,21,23,28,2,0,631]"
     telemetry = session.refresh_openai_request_headers(
         "POST", "https://chatgpt.com/backend-api/payments/checkout"

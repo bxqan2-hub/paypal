@@ -1648,7 +1648,7 @@ class DefaultTransportFactory:
             }
         )
         account = stable_account_id
-        if account:
+        if account and not is_gopay:
             session.headers["chatgpt-account-id"] = account
         # Keep these values on the session for the browser Sentinel adapter
         # and diagnostics without putting identifiers into request URLs/logs.
