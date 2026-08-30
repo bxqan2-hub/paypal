@@ -61,9 +61,9 @@ LIVE commands:
 Input: two available AT slots; two independently randomized sets of 100 unique ID-proxy exits; no replacement within an AT; stop only at a verified 0 IDR URL, HTTP 401, or pool exhaustion.
 Literal output/result:
 - Newest two pasted input files each contained 100 unique proxy entries and zero AT/JWT entries, so the intended two new AT values were not present in those files. The live run used the latest two locally available AT slots without persisting their values.
-- AT-1: 100/100 unique exits used; 87 explicit HTTP 409 state=not_eligible; 13 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
-- AT-2: 100/100 unique exits used; 93 explicit HTTP 409 state=not_eligible; 7 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
-- Combined: 200 attempts, 180 explicit not_eligible responses, 20 network failures, 0 eligible responses, 0 Checkout orders, 0 amount checks, 0 final GoPay URLs.
+- AT-1: 100/100 unique exits used; 87 connected responses with state=not_eligible (locally classified status 409); 13 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
+- AT-2: 100/100 unique exits used; 93 connected responses with state=not_eligible (locally classified status 409); 7 network/TLS/connect failures; 0 eligibility_confirmed; 0 Checkout starts; terminal marker AT_PROXY_EXHAUSTED.
+- Combined: 200 attempts, 180 connected not_eligible responses, 20 network failures, 0 eligible responses, 0 Checkout orders, 0 amount checks, 0 final GoPay URLs.
 Exit status: 0 for both normal pool-exhaustion processes.
 
 Probability analysis:
