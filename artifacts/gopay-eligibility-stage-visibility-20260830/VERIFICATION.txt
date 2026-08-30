@@ -1,0 +1,78 @@
+GoPay eligibility-to-checkout stage visibility verification
+==========================================================
+
+Changed branch/field:
+- GoPay task stage events now distinguish `eligibility_check` from `eligibility_confirmed` and subsequent `checkout`.
+- UI stage label now says `试用资格已确认，继续创建 Checkout` before `创建 Checkout`.
+- Source remains isolated to GoPay/task UI; PayPal and GCash protocol calls are unchanged.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\ROLLBACK.sh
+
+Original Git baseline SHA-256 (HEAD e8c3907):
+- payment_link_extractor/gopay_core.py: a9fef6b68781b0f9db289050ca9634a8c1f9d7ffa7921f2a7f1625e9d274aa71
+- payment_link_extractor/web/tasks.py: 9cf86f0f171bb5b048e65a50143577eddf0729b15e60179aacaf8635748fdd02
+- payment_link_extractor/web/static/app.js: b5d69c410f492cb9a434105c36c04ca7944a6924ae9e79bb4fa9f8594b0fbf3d
+- tests/test_gopay_isolated_optimization.py: af583e3857a72c5f304ebe03787b241cdcb89fbfcf5a397ec38e74969a6f2539
+- docs/2026-08-30_gopay-missing-parameter-fix.md: 73bc2e83014d7c456f9842b40911e995cd6b1e3a494d7373785961cdb4047c6c
+Modified snapshot SHA-256:
+- payment_link_extractor/gopay_core.py: 263ed3644e2ea4f241fc2003cbf61c3608692e430e08249fa817ea3f381bd7c3
+- payment_link_extractor/web/tasks.py: c4a9c090a52fe2fee44eb45d8a1f53ca64516801a18e2b4161e8bb456e92a0d5
+- payment_link_extractor/web/static/app.js: f0e93f40fa2ebdaed93d576bf5faacb41f083ace8e3cd9d7b698ce79451f55b4
+- tests/test_gopay_isolated_optimization.py: 761ce54eb27df109ae9e09211cf7225d8418e9a390833a1b7b64d229380fc020
+- docs/2026-08-30_gopay-missing-parameter-fix.md: 599a912f2fae806777539e2c99a73ac9381982413ff5f978fb0208c703eae1e1
+- DIFF_FILE: 8e56d1ac75a40fe144a80caccc34477f41d5a5131605480241d2f9a82edfea43
+- ROLLBACK.sh: 2a4c0939a3aaf851233d3b6599d05811b9dacb1589ee964b5e5e1c282485d75a
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: repository at pushed commit e8c3907 before stage-visibility change
+Literal output/result:
+........................................................................ [ 38%]
+........................................................................ [ 76%]
+.............................................                            [100%]
+189 passed in 1.49s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with eligibility_confirmed stage event and UI label
+Literal output/result:
+........................................................................ [ 37%]
+........................................................................ [ 75%]
+..............................................                           [100%]
+190 passed in 1.52s
+Exit status: 0
+
+TARGET_TEST command:
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_isolated_optimization.py tests/test_gopay_support.py
+Literal output/result: 16 passed in 0.35s
+Exit status: 0
+
+LIVE_OBSERVATION command:
+.\.venv\Scripts\python.exe -u -c "<AT-1 qualification then full extraction with per-proxy timeout>"
+Input: AT-1 attachment plus 8 supplied t-30 proxies; values held in process memory.
+Literal output/result:
+Qualification probes returned eligible on several proxy indices in the initial pass. The subsequent full-extraction attempts used new sessions; those sessions returned not_eligible or network errors, and one browser attempt exceeded the external timeout. No gopay_url was emitted.
+Exit status: 1 (no successful link)
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\ROLLBACK.sh C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-eligibility-stage-rollback-test C:\Users\Administrator\Desktop\提链\artifacts\gopay-eligibility-stage-visibility-20260830\MODIFIED_FILE"
+Input: independent MODIFIED_FILE copy after an intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-eligibility-stage-rollback-test
+RESTORED_FILES=5
+RESTORED_STATUS=PASS
+BEFORE_SHA256=3bb159cbae378386daa2deaaf2c8c095d56b880c88288a1cf40698f93ba5cef4
+RESTORED_SHA256=263ed3644e2ea4f241fc2003cbf61c3608692e430e08249fa817ea3f381bd7c3
+EXPECTED_SHA256=263ed3644e2ea4f241fc2003cbf61c3608692e430e08249fa817ea3f381bd7c3
+HASH_MATCH=True
+Exit status: 0
+
+Restored behavior/status:
+- `eligibility_confirmed` proves that the qualification request returned eligible; `checkout` is a separate subsequent stage.
+- The UI no longer presents qualification as if a provider link already exists.
+- MODIFIED_FILE remains changed; rollback was tested on another copy.

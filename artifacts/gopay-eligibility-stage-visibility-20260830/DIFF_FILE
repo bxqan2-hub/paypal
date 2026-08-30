@@ -1,0 +1,98 @@
+diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
+index 22b97eb..6e8f863 100644
+--- a/payment_link_extractor/gopay_core.py
++++ b/payment_link_extractor/gopay_core.py
+@@ -111,6 +111,11 @@ def extract_gopay_payment_link(
+         if apply_checkout_update:
+             checkpoint("eligibility_check")
+             check_coupon_eligibility(config, chatgpt, log)
++            # Distinguish a successful qualification probe from the later
++            # Checkout/Stripe stages in task events. This keeps the UI from
++            # looking stalled when a browser proof or proxy connection fails
++            # immediately after eligibility is confirmed.
++            checkpoint("eligibility_confirmed")
+         checkpoint("checkout")
+         checkout = create_checkout(config, chatgpt, log)
+         checkpoint(f"checkout_kind:{checkout['session_kind']}")
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 53d69d3..e6cbcb6 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -1059,7 +1059,7 @@
+ 
+   function stageLabel(stage) {
+     const labels = {
+-      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", checkout: "创建 Checkout",
++      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout",
+       retrying: "更换代理 IP 后完整重试",
+       checkout_update: "更新 Checkout", stripe_init: "初始化支付", elements_session: "准备支付方式",
+       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 7dc9213..6ada148 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -25,6 +25,7 @@ STAGE_PROGRESS = {
+     "running": 5,
+     "retrying": 0,
+     "eligibility_check": 10,
++    "eligibility_confirmed": 12,
+     "checkout": 15,
+     "checkout_update": 25,
+     "stripe_init": 35,
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 22a7427..3bd92df 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -368,6 +368,52 @@ def test_gopay_core_mock_flow_uses_own_factory_and_result_field(monkeypatch) ->
+     assert factory.chatgpt_calls == 1 and factory.stripe_calls == 1
+ 
+ 
++def test_gopay_core_marks_eligibility_before_checkout(monkeypatch) -> None:
++    class Session:
++        def close(self) -> None:
++            return None
++
++    class Factory:
++        def chatgpt(self, _config, _proxy):
++            return Session()
++
++        def stripe(self, _config):
++            return Session()
++
++    monkeypatch.setattr(gopay_core, "check_coupon_eligibility", lambda *_args: {"state": "eligible"})
++    monkeypatch.setattr(gopay_core, "update_checkout", lambda *_args: {})
++    monkeypatch.setattr(
++        gopay_core,
++        "create_checkout",
++        lambda *_args: {
++            "cs_id": "cs_fixture",
++            "session_kind": "stripe_checkout",
++            "billing_country": "ID",
++            "currency": "IDR",
++            "checkout_state": {"currency": "IDR", "total": {"total": {"minorUnitsAmount": 0}}},
++        },
++    )
++    monkeypatch.setattr(gopay_core, "require_country_currency", lambda *_args: None)
++    monkeypatch.setattr(
++        gopay_core,
++        "extract_cs_live_provider",
++        lambda *_args, **_kwargs: {"provider_url": "https://app.midtrans.com/snap/v4/redirection/fixture", "gopay_url": "https://app.midtrans.com/snap/v4/redirection/fixture"},
++    )
++    stages: list[str] = []
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++        apply_checkout_update=True,
++    )
++    gopay_core.extract_gopay_payment_link(
++        config, transport_factory=Factory(), stage_callback=stages.append
++    )
++    assert stages[:3] == ["eligibility_check", "eligibility_confirmed", "checkout"]
++
++
+ def test_gopay_batch_validation_keeps_failure_modes_separate() -> None:
+     report = validate_checkout_batch(
+         [
