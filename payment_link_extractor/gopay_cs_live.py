@@ -94,12 +94,7 @@ def prefetch_checkout_approval_proof(
     checkout: CheckoutData,
     log: Any | None,
 ) -> None:
-    """Prepare approval proof state at the browser-HAR position.
-
-    Persistent browser providers prefetch a challenge here.  The GoPay Node
-    shim only records phase metadata and starts its fresh process later when
-    ``chatgpt_approve`` requests the final token.
-    """
+    """Prefetch the approval challenge at the browser-HAR position."""
     rotate_openai_approval_context(
         chatgpt,
         config,
@@ -638,8 +633,9 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
     approve_proxy = str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip()
     if approve_proxy:
         set_proxy_url(chatgpt, approve_proxy)
-    # Persistent browser providers consume the challenge prepared after
-    # Elements. The Node shim instead starts its one fresh req/PoW process now.
+    # SentinelSDK.token(flow) consumes the challenge prefetched after
+    # Elements, performs the final browser ping, and exposes the exact ping
+    # telemetry. It does not issue another /sentinel/req on this path.
     generated = openai_sentinel_headers(
         chatgpt,
         flow="checkout_session_approval",
@@ -647,18 +643,16 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
         log=log,
         required=True,
     )
-    allowed_approval_headers = {
-        "OpenAI-Sentinel-Token",
-        "oai-web-deployment-attestation",
-        "oai-device-id",
-    }
-    provider = getattr(chatgpt, "openai_sentinel_provider", None)
-    if bool(getattr(provider, "send_observer_token", False)):
-        allowed_approval_headers.add("OpenAI-Sentinel-SO-Token")
     approval_headers = {
         key: value
         for key, value in generated.items()
-        if key in allowed_approval_headers and value
+        if key
+        in {
+            "OpenAI-Sentinel-Token",
+            "oai-web-deployment-attestation",
+            "oai-device-id",
+        }
+        and value
     }
     response = stage_http_request(
         chatgpt,
@@ -692,20 +686,6 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
         error = ProtocolError(409, "ChatGPT manual approval blocked")
         error.safe_context = {
             "sentinel_provider": type(provider).__name__ if provider is not None else "",
-            "proof_mode": str(getattr(provider, "proof_mode", "") or ""),
-            "process_model": str(getattr(provider, "process_model", "") or ""),
-            "node_process_count": int(
-                getattr(provider, "_node_process_count", 0) or 0
-            ),
-            "bridge_sha256": str(
-                getattr(provider, "_bridge_sha256", "") or ""
-            ),
-            "last_ping_status": int(
-                getattr(provider, "_last_ping_status", 0) or 0
-            ),
-            "last_ping_error_present": bool(
-                getattr(provider, "_last_ping_error_present", False)
-            ),
             "browser_channel": str(getattr(provider, "_browser_channel", "") or ""),
             "browser_version": str(getattr(provider, "_browser_version", "") or ""),
             "persistent_runtime": bool(getattr(provider, "_runtime_id", "")),

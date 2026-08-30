@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import re
 import sys
-import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -19,13 +17,7 @@ from payment_link_extractor.gopay_transport import normalize_proxy_url
 from payment_link_extractor.models import ExtractionConfig
 
 
-# Chat/Markdown exports can escape '_' or replace paired '_' emphasis markers
-# with '*'. Include those characters in the complete match so a token is never
-# silently truncated before its signature is validated by the target.
-JWT_RE = re.compile(
-    r"eyJ[A-Za-z0-9_\\*\-]+(?:\.[A-Za-z0-9_\\*\-]+){2}"
-    r"(?![A-Za-z0-9_\\*\-])"
-)
+JWT_RE = re.compile(r"eyJ[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]+){2}")
 PROXY_RE = re.compile(
     r"(?:[A-Za-z0-9.-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^:\s]+"
 )
@@ -65,30 +57,12 @@ def load_tokens(path: Path) -> list[str]:
     text = "\n".join(rollout_texts) if rollout_texts else path.read_text(
         encoding="utf-8-sig"
     )
-    return _unique(
-        [item.replace("\\", "").replace("*", "_") for item in JWT_RE.findall(text)]
-    )
+    return _unique([item.replace("\\", "") for item in JWT_RE.findall(text)])
 
 
 def load_rollout_proxies(path: Path) -> list[str]:
     texts = _rollout_user_texts(path)
-    if not texts:
-        text = path.read_text(encoding="utf-8-sig", errors="ignore")
-        try:
-            payload = json.loads(text)
-        except (TypeError, ValueError):
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("proxies"), list):
-            return _unique(
-                [
-                    normalize_proxy_url(str(item))
-                    for item in payload["proxies"]
-                    if str(item).strip()
-                ]
-            )
-    else:
-        text = "\n".join(texts)
-    raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall(text)])
+    raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall("\n".join(texts))])
     return [normalize_proxy_url(item) for item in raw]
 
 
@@ -99,9 +73,7 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
     except (TypeError, ValueError):
         status = None
     message = str(exc).lower()
-    if "node sentinel readiness" in message:
-        category = "sentinel_node"
-    elif "browser checkout readiness" in message:
+    if "browser checkout readiness" in message:
         category = "browser_session_incomplete"
     elif "attestation" in message:
         category = "attestation_missing"
@@ -132,42 +104,6 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
     if causes:
         result["cause_types"] = causes
     return result
-
-
-def validate_runtime_token(token: str) -> dict[str, int]:
-    """Fail before network I/O when a live canary token is malformed/stale."""
-    selected = str(token or "").strip()
-    parts = selected.split(".")
-    if len(parts) != 3 or not all(
-        re.fullmatch(r"[A-Za-z0-9_-]+", part or "") for part in parts
-    ):
-        raise ValueError("invalid compact JWT shape")
-
-    def decode(part: str) -> Any:
-        return json.loads(
-            base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)).decode(
-                "utf-8"
-            )
-        )
-
-    try:
-        header = decode(parts[0])
-        payload = decode(parts[1])
-        signature = base64.urlsafe_b64decode(
-            parts[2] + "=" * (-len(parts[2]) % 4)
-        )
-    except Exception as exc:
-        raise ValueError("invalid compact JWT encoding") from exc
-    if not isinstance(header, dict) or not isinstance(payload, dict):
-        raise ValueError("invalid compact JWT JSON")
-    now = int(time.time())
-    exp = int(payload.get("exp") or 0)
-    nbf = int(payload.get("nbf") or 0)
-    auth = payload.get("https://api.openai.com/auth")
-    account = str(auth.get("chatgpt_account_id") or "") if isinstance(auth, dict) else ""
-    if not account or exp <= now or (nbf and nbf > now) or len(signature) < 128:
-        raise ValueError("compact JWT is not live-canary ready")
-    return {"exp": exp, "nbf": nbf, "signature_bytes": len(signature)}
 
 
 def _provider_shape(value: str) -> dict[str, Any]:
@@ -205,19 +141,6 @@ def main() -> int:
         return 2
 
     token = tokens[args.token_index - 1]
-    try:
-        validate_runtime_token(token)
-    except ValueError:
-        print(
-            json.dumps(
-                {
-                    "status": "input_error",
-                    "token_slot": args.token_index,
-                    "reason": "token_validation",
-                }
-            )
-        )
-        return 2
     start = max(1, int(args.start_proxy_slot)) - 1
     attempts: list[dict[str, Any]] = []
     for proxy_index in range(start, len(proxies)):

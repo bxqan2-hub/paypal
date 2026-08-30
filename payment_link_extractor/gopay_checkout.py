@@ -290,12 +290,9 @@ def create_checkout(
         log=log,
         required=True,
     )
-    provider = getattr(chatgpt, "openai_sentinel_provider", None)
-    # The persistent-browser path follows the complete GoPay HARs and omits
-    # the observer token.  The experimental GCash Node/V8 path preserves the
-    # upstream bridge's main+SO pair exactly when the SDK produced both.
-    if not bool(getattr(provider, "send_observer_token", False)):
-        sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
+    # Neither complete GoPay HAR sends the optional observer token on the
+    # protected checkout/approve requests.
+    sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
     if config.gopay_zero_trial_validation:
         cookie_header = str(
             sentinel_headers.get("Cookie")
@@ -319,67 +316,24 @@ def create_checkout(
                 sentinel_headers.get("oai-web-deployment-attestation") or ""
             ).strip()
         )
-        requires_browser_session = bool(
-            getattr(provider, "requires_browser_session", True)
-        )
-        proof_mode = str(getattr(provider, "proof_mode", "browser") or "browser")
-        sentinel_token_length = len(
-            str(sentinel_headers.get("OpenAI-Sentinel-Token") or "")
-        )
-        node_process_count = int(
-            getattr(provider, "_node_process_count", 0) or 0
-        )
-        node_readiness_error = ""
-        readiness_validator = getattr(provider, "validate_checkout_readiness", None)
-        if not requires_browser_session and callable(readiness_validator):
-            try:
-                readiness_validator(sentinel_headers)
-            except Exception as exc:
-                node_readiness_error = type(exc).__name__
-        browser_incomplete = requires_browser_session and (
-            not has_session_token or attestation_length < 64
-        )
-        node_incomplete = not requires_browser_session and (
-            sentinel_token_length <= 0
-            or node_process_count <= 0
-            or not callable(readiness_validator)
-            or bool(node_readiness_error)
-        )
-        if browser_incomplete or node_incomplete:
+        if not has_session_token or attestation_length < 64:
             missing = []
-            if requires_browser_session and not has_session_token:
+            if not has_session_token:
                 missing.append("session_token")
-            if requires_browser_session and attestation_length < 64:
+            if attestation_length < 64:
                 missing.append("attestation")
-            if not requires_browser_session and sentinel_token_length <= 0:
-                missing.append("node_main_token")
-            if not requires_browser_session and node_process_count <= 0:
-                missing.append("node_process")
-            if not requires_browser_session and node_readiness_error:
-                missing.append("node_binding")
-            if not requires_browser_session and not callable(readiness_validator):
-                missing.append("node_capability")
             error = ProtocolError(
                 412,
-                (
-                    "GoPay browser checkout readiness missing: "
-                    if requires_browser_session
-                    else "GoPay Node Sentinel readiness missing: "
-                )
-                + ",".join(missing),
+                "GoPay browser checkout readiness missing: " + ",".join(missing),
             )
-            error.failure_mode = (
-                "browser_session_incomplete"
-                if requires_browser_session
-                else "sentinel_node_incomplete"
-            )
+            error.failure_mode = "browser_session_incomplete"
             error.retryable = False
             error.safe_context = {
                 "cookie_names": cookie_names,
                 "attestation_length": attestation_length,
-                "sentinel_token_length": sentinel_token_length,
-                "proof_mode": proof_mode,
-                "node_process_count": node_process_count,
+                "sentinel_token_length": len(
+                    str(sentinel_headers.get("OpenAI-Sentinel-Token") or "")
+                ),
             }
             raise error
     headers.update(sentinel_headers)

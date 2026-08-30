@@ -26,28 +26,10 @@ from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_metho
 from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
 from .models import ExtractionConfig
-from .gopay_sentinel_node import GoPayNodeSentinelProvider
 
 
 EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
 SENTINEL_SDK_VERSION = "20260810913b"
-
-
-def gopay_sentinel_provider_type() -> type[Any]:
-    """Select the isolated GoPay proof runtime.
-
-    The GCash Node/V8 bridge is the default experimental GoPay provider.  The
-    persistent Playwright implementation remains available for comparison and
-    rollback through ``OPLL_GOPAY_SENTINEL_PROVIDER=playwright``.
-    """
-    mode = os.getenv("OPLL_GOPAY_SENTINEL_PROVIDER", "gcash_node").strip().lower()
-    if mode in {"gcash_node", "gcash-node", "node", "node_shim", "shim"}:
-        return GoPayNodeSentinelProvider
-    if mode in {"playwright", "chrome", "persistent_chrome"}:
-        return PlaywrightSentinelProvider
-    raise ConfigurationError(
-        "OPLL_GOPAY_SENTINEL_PROVIDER must be gcash_node or playwright"
-    )
 
 
 def browser_checkout_telemetry(action: str) -> str:
@@ -458,25 +440,11 @@ def openai_sentinel_headers(
                 # Preserve an explicitly injected fresh attestation/SO token
                 # when the browser page is unauthenticated and cannot expose
                 # its bootstrap field yet.
-                if (
-                    "oai-web-deployment-attestation" not in headers
-                    and bool(
-                        getattr(provider, "allow_environment_attestation", True)
-                    )
-                ):
+                if "oai-web-deployment-attestation" not in headers:
                     fallback_attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
                     if fallback_attestation:
                         headers["oai-web-deployment-attestation"] = fallback_attestation
-                if (
-                    "OpenAI-Sentinel-SO-Token" not in headers
-                    and bool(
-                        getattr(
-                            provider,
-                            "allow_environment_observer_token",
-                            True,
-                        )
-                    )
-                ):
+                if "OpenAI-Sentinel-SO-Token" not in headers:
                     fallback_so = openai_sentinel_so_token(session)
                     if fallback_so:
                         headers["OpenAI-Sentinel-SO-Token"] = fallback_so
@@ -542,10 +510,7 @@ def rotate_openai_approval_context(
         close()
     set_proxy_url(session, normalized)
     session.openai_proxy = normalized
-    provider_type = getattr(session, "openai_sentinel_provider_type", None)
-    if not callable(provider_type):
-        provider_type = gopay_sentinel_provider_type()
-    provider = provider_type(
+    provider = PlaywrightSentinelProvider(
         access_token=str(getattr(session, "openai_access_token", "") or config.access_token),
         device_id=str(getattr(session, "openai_device_id", "") or ""),
         session_id=str(getattr(session, "openai_session_id", "") or ""),
@@ -557,7 +522,6 @@ def rotate_openai_approval_context(
         timezone=str(getattr(session, "openai_timezone", "") or country_timezone(config)),
     )
     session.openai_sentinel_provider = provider
-    session.openai_sentinel_provider_type = provider_type
     session.openai_approve_proxy = normalized
     return True
 
@@ -1703,11 +1667,8 @@ class DefaultTransportFactory:
         # Deployment attestation is browser-generated and optional.  Never
         # bake a captured value into the repository; operators can inject a
         # fresh value for environments that enforce it.
-        selected_gopay_provider = (
-            gopay_sentinel_provider_type() if is_gopay else None
-        )
         attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
-        if attestation and selected_gopay_provider is not GoPayNodeSentinelProvider:
+        if attestation:
             session.headers["oai-web-deployment-attestation"] = attestation
         sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
         if sentinel:
@@ -1720,9 +1681,7 @@ class DefaultTransportFactory:
             mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
             if mode not in {"0", "false", "off", "disabled", "no"}:
                 provider_type = (
-                    selected_gopay_provider or gopay_sentinel_provider_type()
-                    if is_gopay
-                    else BrowserSentinelProvider
+                    PlaywrightSentinelProvider if is_gopay else BrowserSentinelProvider
                 )
                 session.openai_sentinel_provider = provider_type(
                     access_token=config.access_token,
@@ -1735,7 +1694,6 @@ class DefaultTransportFactory:
                     language=country_locale(config),
                     timezone=country_timezone(config),
                 )
-                session.openai_sentinel_provider_type = provider_type
         session.proxies = (
             {"http": normalized_proxy, "https": normalized_proxy}
             if normalized_proxy

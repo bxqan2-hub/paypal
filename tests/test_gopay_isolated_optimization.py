@@ -70,7 +70,7 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
     session = gopay_transport.GoPayTransportFactory().chatgpt(config, config.checkout_proxy)
     assert isinstance(
         session.openai_sentinel_provider,
-        gopay_transport.GoPayNodeSentinelProvider,
+        gopay_transport.PlaywrightSentinelProvider,
     )
     assert session.headers["oai-language"] == "id-ID"
     assert session.headers["oai-client-build-number"] == "10012890"
@@ -96,54 +96,6 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
     assert 3 <= approve_values[7] - approve_values[1] <= 5
     assert approve_values == [1, 725.3, 113, 28, 59, 2, 0, 729]
     assert approve_headers["x-oai-is-pending-updates"] == '{"v":3,"updates":[]}'
-
-
-def test_gopay_playwright_provider_remains_an_explicit_rollback(monkeypatch) -> None:
-    class Session:
-        def __init__(self) -> None:
-            self.headers: dict[str, str] = {}
-            self.proxies: dict[str, str] = {}
-
-    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "playwright")
-    monkeypatch.setattr(gopay_transport, "new_session", Session)
-    config = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://proxy.example:8080",
-        update_proxy="http://proxy.example:8080",
-        country="ID",
-        payment_method="gopay",
-    )
-    session = gopay_transport.GoPayTransportFactory().chatgpt(
-        config, config.checkout_proxy
-    )
-    assert isinstance(
-        session.openai_sentinel_provider,
-        gopay_transport.PlaywrightSentinelProvider,
-    )
-
-
-def test_gopay_node_factory_does_not_inject_environment_attestation(
-    monkeypatch,
-) -> None:
-    class Session:
-        def __init__(self) -> None:
-            self.headers: dict[str, str] = {}
-            self.proxies: dict[str, str] = {}
-
-    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "gcash_node")
-    monkeypatch.setenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "stale-fixture")
-    monkeypatch.setattr(gopay_transport, "new_session", Session)
-    config = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://proxy.example:8080",
-        update_proxy="http://proxy.example:8080",
-        country="ID",
-        payment_method="gopay",
-    )
-    session = gopay_transport.GoPayTransportFactory().chatgpt(
-        config, config.checkout_proxy
-    )
-    assert "oai-web-deployment-attestation" not in session.headers
 
 
 def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
@@ -1305,7 +1257,6 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
             created.append(kwargs["proxy"])
 
     monkeypatch.setattr(gopay_transport, "PlaywrightSentinelProvider", NewProvider)
-    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROVIDER", "playwright")
     chatgpt = SimpleNamespace(
         openai_proxy="http://a.example:8080",
         openai_sentinel_provider=OldProvider(),
