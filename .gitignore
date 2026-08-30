@@ -9,6 +9,7 @@ __pycache__/
 data/*.log
 data/captures/
 data/har-capture-profile/
+data/playwright-capture-profile/
 data/gopay-sentinel-profiles/
 artifacts/screenshots/
 *.har

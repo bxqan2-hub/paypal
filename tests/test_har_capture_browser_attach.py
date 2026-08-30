@@ -30,6 +30,7 @@ def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
     assert args.fetch_responses is False
     assert args.no_fetch_responses is False
     assert args.heartbeat_seconds == 5.0
+    assert args.duration == 0
 
 
 def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:

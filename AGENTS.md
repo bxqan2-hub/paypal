@@ -25,6 +25,7 @@
 # 抓包工具快速准备规则
 
 - 当用户说“抓包”“开始抓包”“准备抓包”或“继续抓包”时，先扫描当前浏览器的 `DevToolsActivePort`，确认可用 CDP 端口和页面，再准备记录器；不创建新的浏览器配置，除非用户明确要求。
+- 用户已明确授权维护 Playwright 抓包配置：扫描不到可用 CDP 浏览器时，使用 `tools\playwright_capture_session.py prepare` 自动启动 `data\playwright-capture-profile`；抓包使用其 `capture --channel <渠道>` 入口，连接、profile 准备、保存和脱敏分析均自动执行。
 - GoPay 默认使用浏览器级多目标记录器：
   `C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_capture_browser_attach.py --cdp-port <CDP_PORT> --output artifacts-local\gopay-cdp-capture-<YYYYMMDD-HHMMSS>.har`
   该模式使用 `Target.setAutoAttach(flatten=true)`，覆盖 page/iframe/worker，并默认采用非阻塞响应体采集。

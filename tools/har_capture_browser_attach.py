@@ -350,6 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-fetch-responses", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--heartbeat-seconds", type=float, default=5.0)
+    parser.add_argument("--duration", type=float, default=0, help="automatic capture seconds; 0 waits for Ctrl+C")
     return parser
 
 
@@ -431,7 +432,11 @@ def main() -> int:
         print("CAPTURE_ACTION=perform the complete GoPay flow; send the stop instruction when finished", flush=True)
         heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
         last_heartbeat = time.monotonic()
+        deadline = time.monotonic() + args.duration if args.duration > 0 else None
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                print("CAPTURE_STOP_REASON=duration", flush=True)
+                break
             try:
                 session_id, message = browser.recv_any()
             except socket.timeout:
