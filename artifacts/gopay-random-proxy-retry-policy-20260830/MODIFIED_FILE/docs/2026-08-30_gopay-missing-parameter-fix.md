@@ -42,11 +42,11 @@ GoPay 副本现在复用同一个 Elements session/Stripe JS id，逐步发送�
 
 ## 实时尝试
 
-本轮从附件读取到 3 个 AT，并按代理池轮换测试：
+此前从附件读取到 3 个 AT，并按旧代理池轮换测试：
 
-- AT-1 的 Checkout 返回 `401 access_denied` / `no_organization`。
-- AT-2 在部分节点的资格探测返回 `eligible`，说明资格探测与出口节点有关；完整链路曾进入 Stripe，税后权威金额为 `0`，但 `checkout/approve` 返回 `{"result":"blocked"}`。
-- AT-2 其它节点返回 `not_eligible` 或代理连接超时；AT-3 的资格探测也返回 `not_eligible`。
+- AT-1 曾在部分出口返回 `401 access_denied` / `no_organization`。
+- AT-2 曾在部分节点的资格探测返回 `eligible`，完整链路进入 Stripe，税后权威金额为 `0`，但 `checkout/approve` 返回 `{"result":"blocked"}`。
+- 其它出口返回 `not_eligible` 或代理连接超时；AT-3 也曾返回 `not_eligible`。
 
 完整 HAR 的 approve 请求包含 `oai-telemetry`，此前 GoPay transport 未覆盖 `/backend-api/payments/checkout/approve`。现已补齐动态八项 telemetry，并让 approve 请求使用 `checkout_session_approval` proof。实时尝试没有得到最终 `gopay_url`，但金额门禁和离线 HAR 契约均保持有效。
 
@@ -57,3 +57,5 @@ GoPay 副本现在复用同一个 Elements session/Stripe JS id，逐步发送�
 GoPay 任务的 proxy pool 现在在每个 AT 任务开始时独立随机打乱；每次完整尝试固定使用该次选中的代理，不会在资格通过后中途换出口。资格未通过、非零金额、网络失败或其它协议失败会在配置的重试次数内新建 Checkout/浏览器会话并选择下一个随机池项；GoPay AT 返回 HTTP 401 则终止当前 AT，不再浪费代理重试次数。
 
 `blocked` 属于非 401 的协议失败，因此会触发新的完整尝试；多 AT 批处理应在该事件后由上层选择下一个 AT，同时使用新的随机代理和新浏览器指纹。
+
+使用新一组 10 条 t-30 代理和 3 个 AT、每个 AT 重试 5 次（6 次总尝试）复测时，三个 AT 各自随机抽取 6 条不同出口；本轮每次均在资格检测阶段得到 `not_eligible` 或网络错误，没有进入 Checkout，因此没有产生链接。该结果表示本轮抽样未观察到 `eligible`，不表示剩余未抽取出口永久无资格。

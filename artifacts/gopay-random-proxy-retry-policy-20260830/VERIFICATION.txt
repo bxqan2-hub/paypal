@@ -23,7 +23,7 @@ Modified snapshot SHA-256:
 - payment_link_extractor/web/tasks.py: 104b80e8478821506158360baf7169e0f3998030a7cd5604b7dd3cfb2e434b88
 - tests/test_gopay_isolated_optimization.py: 4fb8de5003b97feef521d955d1ad39c00400cb64194e0353379fd9672f22d93e
 - tests/test_extraction_full_retry.py: 141cb2b1c4ce7fa388eb130d801374ba2f90c58a2c7fa404c9b0875fec81253d
-- docs/2026-08-30_gopay-missing-parameter-fix.md: 63a05d48d30481ee98be4bce62de144ad8a2344e624384295815eff975b511a8
+- docs/2026-08-30_gopay-missing-parameter-fix.md: afe9e8a01069ce954e9c90925ecfc2cd459304f73213b611dcd9cee7499d0f8b
 - DIFF_FILE: 3c7e70a6be8f2d0597250f2ff3ae416c7279fcbcfe62ef05a724c18b57ddf5e2
 - ROLLBACK.sh: 701142d787da1c7b908ff27612a82aee1f827b598b0651352df294a9cd429e06
 
