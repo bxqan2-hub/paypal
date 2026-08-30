@@ -1568,11 +1568,17 @@ class DefaultTransportFactory:
     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
         payment_method = normalize_payment_method(config.payment_method)
         stable_account_id = account_id(config.access_token)
+        device_attempt_nonce = os.getenv(
+            "OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", ""
+        ).strip()
+        device_seed = stable_account_id or config.access_token
+        if payment_method == "gopay" and device_attempt_nonce:
+            device_seed += ":attempt:" + device_attempt_nonce
         device_id = (
             str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
-                    f"gopay-device:{stable_account_id or config.access_token}",
+                    f"gopay-device:{device_seed}",
                 )
             )
             if payment_method == "gopay"

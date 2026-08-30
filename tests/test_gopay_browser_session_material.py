@@ -103,6 +103,36 @@ def test_device_profile_is_stable_across_refreshed_at_for_same_account(
     assert device(first) != device(other)
 
 
+def test_device_attempt_nonce_rotates_profile_for_precheckout_rebuild(
+    monkeypatch,
+) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+
+    monkeypatch.setattr(gopay_transport, "new_session", Session)
+    token = _token("account-same", "user-same", "signature")
+    config = ExtractionConfig(
+        access_token=token,
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="http://proxy.example:8080",
+        country="ID",
+        payment_method="gopay",
+    )
+
+    def current() -> str:
+        return gopay_transport.GoPayTransportFactory().chatgpt(
+            config, config.checkout_proxy
+        ).headers["oai-device-id"]
+
+    monkeypatch.setenv("OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", "attempt-one")
+    first = current()
+    assert current() == first
+    monkeypatch.setenv("OPLL_GOPAY_DEVICE_ATTEMPT_NONCE", "attempt-two")
+    assert current() != first
+
+
 def test_checkout_failure_context_contains_only_shape() -> None:
     secret = "private-checkout-identifier"
     response = SimpleNamespace(
