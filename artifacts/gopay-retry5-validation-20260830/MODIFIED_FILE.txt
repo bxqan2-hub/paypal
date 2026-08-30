@@ -1,0 +1,24 @@
+GoPay retry=5 validation (2026-08-30)
+=====================================
+
+Changed branch/field:
+- Test orchestration uses 5 retries (6 total attempts) per AT.
+- One attempt keeps the same AT/proxy after `eligibility_confirmed` and runs the complete flow.
+- Non-eligibility, non-zero amount, or network failure advances to the next proxy and creates a new process/order/fingerprint.
+- A `blocked` result is classified for the next attempt as next proxy plus next AT.
+
+Inputs:
+- AT attachment: C:\Users\Administrator\.codex\attachments\a36eda5e-1820-4459-a8f7-537600d2a4cc\pasted-text.txt (3 ATs; values not persisted)
+- Proxy pool: 10 t-30 1024Proxy entries (values not persisted)
+- HAR: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+
+Observed retry=5 run:
+- AT-1: attempts 1..6; all stopped at `eligibility_check` with `not_eligible` or a network error; no Checkout started.
+- AT-2: attempts 1..6; all stopped at `eligibility_check` with `not_eligible` or network errors in this run.
+- AT-3: attempts 1..6; all stopped at `eligibility_check` with `not_eligible` or a network error.
+- No final gopay_url was returned.
+
+Earlier integrated evidence retained in the preceding report:
+- An eligible attempt continued through checkout/update/Stripe and was rejected by the zero-amount gate when the final amount was 34900000.
+- Another eligible attempt continued through payment confirmation and returned `ChatGPT manual approval blocked`.
+- Those outcomes are retry triggers; the next attempt must build a new order/fingerprint and rotate proxy, and blocked additionally rotates AT.

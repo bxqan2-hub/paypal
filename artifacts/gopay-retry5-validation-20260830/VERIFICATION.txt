@@ -1,0 +1,58 @@
+GoPay retry=5 validation verification
+====================================
+
+Changed branch/field:
+- Five retries configured per AT (six total attempts).
+- Same AT/proxy is kept for the complete flow after `eligibility_confirmed`.
+- Non-zero, not-eligible, network error, or blocked advances to a fresh order/fingerprint; blocked also advances AT.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\MODIFIED_FILE.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\ROLLBACK.sh
+
+Snapshot SHA-256:
+- MODIFIED_FILE.txt: 0e07d1f194651df60fa7d54ac7eea8787e35042be144d144ddda15c69716d739
+- DIFF_FILE: 97983a160739d82180ba8d5c9ac8d3c229b0a1116fba40f0466b5e94c03e5c2e
+- ROLLBACK.sh: 43d37e34c6c42c694b9b1045aa572955f5a188dd6e09dd0448c7afcc6ac00369
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: pushed source at commit a243a4b
+Literal output/result: 190 passed in 1.52s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: same source during retry=5 validation
+Literal output/result: 190 passed in 1.51s
+Exit status: 0
+
+RETRY5_TEST command:
+.\.venv\Scripts\python.exe -u artifacts-local\run_retry5_gopay_test.py
+Input: 3 ATs from the attachment and 10 supplied t-30 proxies; each attempt used a new process/session.
+Literal output/result:
+AT-1: attempts 1..6; not_eligible/network outcomes; stopped after 5 retries.
+AT-2: attempts 1..6; not_eligible/network outcomes; stopped after 5 retries.
+AT-3: attempts 1..6; not_eligible/network outcomes; stopped after 5 retries.
+Earlier integrated run evidence: an eligible AT-2 attempt continued on the same proxy until final amount 34900000, then switched; an eligible AT-3 attempt continued until `manual approval blocked`, which is a proxy+AT rotation trigger.
+Final gopay_url: not produced.
+Exit status: 1 (no successful link)
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\ROLLBACK.sh C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-retry5-rollback-test.txt C:\Users\Administrator\Desktop\提链\artifacts\gopay-retry5-validation-20260830\MODIFIED_FILE.txt"
+Input: independent report copy after an intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-retry5-rollback-test.txt
+RESTORED_STATUS=PASS
+BEFORE_SHA256=f2d4ffda061eae5cf128a0532d851eeb92762bbe5054c3e51cde337ebaa28466
+RESTORED_SHA256=0e07d1f194651df60fa7d54ac7eea8787e35042be144d144ddda15c69716d739
+EXPECTED_SHA256=0e07d1f194651df60fa7d54ac7eea8787e35042be144d144ddda15c69716d739
+HASH_MATCH=True
+Exit status: 0
+
+Restored behavior/status:
+- Each retry starts a new order/browser fingerprint.
+- Non-zero amount and blocked are retry conditions; blocked additionally changes token slot.
+- MODIFIED_FILE remains changed; rollback was tested on another copy.
