@@ -1,0 +1,129 @@
+GoPay 0 元试用与 0 元链接校验开关验证
+========================================
+
+Changed branch/field:
+- Git branch: main
+- Field: ExtractionConfig.gopay_zero_trial_validation (default True)
+- Enabled branch: eligibility_check -> existing Checkout/provider flow -> zero_amount_validation -> zero_amount_confirmed.
+- Disabled branch: skips only eligibility_check/eligibility_confirmed and zero_amount_validation/zero_amount_confirmed; existing Checkout, checkout/update, GoPay provider generation, redirect resolution and long-link return remain active.
+- Result field remains the GoPay-only gopay_url; PayPal and GCash adapters, result fields and transport boundaries are unchanged.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-trial-toggle-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-trial-toggle-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-trial-toggle-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-trial-toggle-20260830\ROLLBACK.sh
+
+Source HAR:
+- Path: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+- SHA-256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
+- Size: 16491140 bytes
+- Entries: 483
+- Parsed result: complete GoPay Checkout/Stripe/approve/redirect/Midtrans sequence; ChatGPT amount_total=34900000 and Midtrans gross_amount=349000 IDR; no standalone /promo_campaign/check_coupon request.
+
+Original Git baseline SHA-256 (HEAD dc752c3):
+- .env.example: 98b5edb5a413bc478f5417875ece63b74dce67766e00e9ee0f71c07c1b684f10
+- payment_link_extractor/gopay_core.py: d17b824b5ef683594ff6a8e38f57602475f244485c43aeb515f4e2b08e8b4fdc
+- payment_link_extractor/models.py: 1a8608021d971b09dfe4206e8c15e4ac0e6f24110126af2a7de58cde857e6568
+- payment_link_extractor/web/routes.py: aa335e85a256afe592592edcdfb892f05cc42f9863370245482b830bcd345500
+- payment_link_extractor/web/tasks.py: 3248569b2ebf548f34a32630e11780cf5947ba92082f6e9c7b72a7cf131d3ae1
+- payment_link_extractor/web/templates/index.html: a97a1ebd29800b381c560a6531602ef3fe6e898dc3d5006dd7351df7ea09f721
+- payment_link_extractor/web/static/app.js: 95114eaeb148e157f2651334db6a675321f44f2e7d959fd3664b69e33b8628ca
+- payment_link_extractor/web/static/styles.css: 4270da4dddf3e4b2299f07c195e402b85818828a27fadb3ab205c281f3695652
+- tests/test_gopay_isolated_optimization.py: 549813dfc8e243e78697f540e31ea8296935407be135984e3450ece29c32771b
+- tests/test_gopay_support.py: 656025447b7912b69491bdc5f976cc522b0ff6c17673441976380afc98df7e4c
+- tests/test_frontend_error_display.py: 1d86f96fdba84fbb83855d0dc9f70ae9beec6a3a2e0d1ad13c2d465755f079d7
+
+Modified working-tree SHA-256:
+- .env.example: 048c7cdb60da71ad3ac965f03783d4cccfa083af2d7fc66090b8de0014b73a4f
+- payment_link_extractor/gopay_core.py: 3472c98f5d3f77f7e0b3c2bc682ca545273be2823f9a9db786caff8a8dfee08b
+- payment_link_extractor/models.py: 93f990443e26568d45bd1596a6462325108362baf99a711f39d70e0ae5f9efcf
+- payment_link_extractor/web/routes.py: 99ee07768e907e14b91c31c38cde0d9c7025259516bf8ce1b04d8d40ef4fc136
+- payment_link_extractor/web/tasks.py: 100728c0fce8e212c13390b56ba58acccea5ddfa94b314409339cedc8a615369
+- payment_link_extractor/web/templates/index.html: 15b77ffe3eacfaac83bac45b86f2e9937e08f2e7685c538cd6d1729a49bd1d49
+- payment_link_extractor/web/static/app.js: eccae30a44bf7e1cf3e7b8d7b3ff24b89fb4d279b1ad6f25262cf45570068012
+- payment_link_extractor/web/static/styles.css: 90d6a89d11de5265b3e55cce64f9a3eb905cbc3aee4a0e13a6767cda125f59eb
+- tests/test_gopay_isolated_optimization.py: a4296da413c0cc26a6bb085c1a5ac31da5f89d75fe8f2ffafa7a9512e0cfe995
+- tests/test_gopay_support.py: 8125ed51f662f21b7078dbbd1f2f50013231e652a9fde729b926da3db722db3e
+- tests/test_frontend_error_display.py: 3563794cb152a3c7b2db95b98a18e2a3235a961668ff199717a2f433860bb94c
+- docs/2026-08-30_gopay-zero-trial-validation-toggle-report.md: 1d7ccbd691a79aabb67bcb99339f4c72b042049751a7b5579e06575badbdb016
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: source at Git baseline dc752c3 before the GoPay switch change.
+Literal output/result:
+........................................................................ [ 36%]
+........................................................................ [ 72%]
+........................................................                 [100%]
+200 passed in 1.57s
+BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with the GoPay-only switch, enabled/disabled branches, UI, API validation, tests and report.
+Literal output/result:
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+.........................................................                [100%]
+201 passed in 1.62s
+MODIFIED_TEST_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py tests\test_gopay_support.py tests\test_frontend_error_display.py
+Input: GoPay core, route/default and frontend switch contracts.
+Literal output/result:
+..........................                                               [100%]
+26 passed in 0.39s
+TARGET_EXIT=0
+Exit status: 0
+
+CHANNEL_ISOLATION command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_channel_isolation.py tests\test_mk_gcash_replacement.py tests\test_mk_gcash_upstream_protocol.py
+Input: all channel registration/result-field boundaries and read-only local GCash upstream checks.
+Literal output/result:
+...............                                                          [100%]
+15 passed in 0.16s
+CHANNEL_ISOLATION_EXIT=0
+Exit status: 0
+
+SYNTAX command:
+& 'C:\Program Files\nodejs\node.exe' --check payment_link_extractor\web\static\app.js; .\.venv\Scripts\python.exe -m compileall -q payment_link_extractor tests
+Input: modified frontend JavaScript and Python source/test tree.
+Literal output/result:
+NODE_CHECK_EXIT=0
+PY_COMPILE_EXIT=0
+Exit status: 0
+
+HAR command:
+.\.venv\Scripts\python.exe tools\har_cdp_gopay_summary.py 'artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har' --output 'artifacts-local\gopay-zero-toggle-source-summary.json'
+Input: supplied 16491140-byte GoPay browser-target HAR.
+Literal output/result:
+HAR_CDP_SUMMARY=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-zero-toggle-source-summary.json
+HAR_SUMMARY_EXIT=0
+Coverage finding: critical GoPay completeness audit complete; no critical checkpoint missing.
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-zero-trial-toggle-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-zero-trial-toggle-rollback-test-20260830-1633' 'C:\Users\Administrator\Desktop\提链'
+Input: independent copy of MODIFIED_FILE after appending an intentional mutation to payment_link_extractor/gopay_core.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-zero-trial-toggle-rollback-test-20260830-1633
+RESTORED_TRACKED_FILES=11
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+BEFORE_SHA256=f587cdddbd9793e2c454d9a3f11ebb8a08bb1c55e9f618a2465c2f4d5df410f7
+RESTORED_SHA256=d17b824b5ef683594ff6a8e38f57602475f244485c43aeb515f4e2b08e8b4fdc
+EXPECTED_SHA256=d17b824b5ef683594ff6a8e38f57602475f244485c43aeb515f4e2b08e8b4fdc
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The rollback test copy restored all 11 pre-existing files byte-for-byte to Git baseline dc752c3 and removed the one newly added report.
+- The repository working tree and MODIFIED_FILE remain on the changed behavior.
+- Switch enabled: the account eligibility probe runs before Checkout and an authoritative missing/non-zero amount fails before success.
+- Switch disabled: steps 1 and 6 are absent; steps 2–5 still run, and the tested amount_due_minor=34900000 returns the GoPay-only long link.
+- PayPal, GoPay and GCash continue to use unique adapters and result fields; GoPay/GCash do not construct PayPal legacy transport.
+- No access token, proxy credential, cookie, Sentinel token, checkout ID or redirect nonce is stored in these artifacts.
