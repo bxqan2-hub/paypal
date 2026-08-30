@@ -1,0 +1,37 @@
+Capture quick-start rules verification
+======================================
+
+Changed branch/field:
+AGENTS.md -> capture tool discovery, start/stop readiness, canonical retention and secret handling rules.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\capture-rules-update-20260830\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\capture-rules-update-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\capture-rules-update-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\capture-rules-update-20260830\ROLLBACK.sh
+
+BASELINE command:
+.\\.venv\\Scripts\\python.exe -m pytest -q
+Input: repository before rule update
+Literal output/result: 190 passed in 1.50s
+Exit status: 0
+
+MODIFIED command:
+.\\.venv\\Scripts\\python.exe -m pytest -q
+Input: repository after AGENTS.md capture rules update
+Literal output/result: 190 passed in 1.58s; rules are documentation-only.
+Exit status: 0
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "cp artifacts/capture-rules-update-20260830/MODIFIED_FILE artifacts-local/capture-rules-rollback-test.json; printf '\\nMUTATION' >> artifacts-local/capture-rules-rollback-test.json; chmod +x artifacts/capture-rules-update-20260830/ROLLBACK.sh; artifacts/capture-rules-update-20260830/ROLLBACK.sh artifacts-local/capture-rules-rollback-test.json artifacts/capture-rules-update-20260830/MODIFIED_FILE"
+Input: mutated rollback-test copy
+Literal output/result: ROLLBACK_TARGET=artifacts-local/capture-rules-rollback-test.json; BEFORE_SHA256=d2e04e6c2c94d6afb0d3799cd88fe92428c018fb5c32d178110be68d45df2bf1; RESTORED_SHA256=30b86c101a90b78598f257a3b960dd0b93d2e5b63bd136ddcc237cd3b5987a84; EXPECTED_SHA256=30b86c101a90b78598f257a3b960dd0b93d2e5b63bd136ddcc237cd3b5987a84; RESTORED_STATUS=PASS
+Exit status: 0
+
+Hash preservation:
+- MODIFIED_FILE baseline SHA-256: B761A5571FB3E9302CD0460B84A3ED9A225EEBA395C7C0E64D0384A6FB00B7DC
+- MODIFIED_FILE final SHA-256: 30B86C101A90B78598F257A3B960DD0B93D2E5B63BD136DDCC237CD3B5987A84
+- AGENTS.md final SHA-256: D4CF2593D0092FFC9A9E14178FB2CF55B17B0652C25628D5ACDD8BF4CB9680BB
+
+Restored behavior/status:
+Future capture requests can use the documented CDP discovery and GoPay browser-level entrypoint, wait for CAPTURE_READY=1, stop on user instruction, audit completeness, and retain only the most complete same-channel HAR. Secrets remain runtime-only.

@@ -21,3 +21,15 @@
 - `application.py` 只负责配置规范化与按注册表分发，不承载任何具体渠道协议；具体协议修改只能进入对应渠道模块。
 - 新增渠道时必须先在渠道注册表声明唯一名称、适配器入口、结果字段、国家/币种和是否使用旧 Checkout 更新，再单独接入 UI 与测试；不得通过继续堆叠交叉条件分支混入已有渠道。
 - 每次修改渠道后必须验证：三个现有渠道指向不同适配器、结果字段互不相同、GoPay/GCash 不构造 PayPal 旧传输、UI 选项与渠道注册表一致。
+
+# 抓包工具快速准备规则
+
+- 当用户说“抓包”“开始抓包”“准备抓包”或“继续抓包”时，先扫描当前浏览器的 `DevToolsActivePort`，确认可用 CDP 端口和页面，再准备记录器；不创建新的浏览器配置，除非用户明确要求。
+- GoPay 默认使用浏览器级多目标记录器：
+  `C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_capture_browser_attach.py --cdp-port <CDP_PORT> --output artifacts-local\gopay-cdp-capture-<YYYYMMDD-HHMMSS>.har`
+  该模式使用 `Target.setAutoAttach(flatten=true)`，覆盖 page/iframe/worker，并默认采用非阻塞响应体采集。
+- RoxyBrowser 页面默认使用 `tools\roxy_har_capture.py`；普通独立 Chrome 页面使用 `tools\har_capture.py`。根据用户指定渠道选择对应入口，不交叉复用渠道记录器。
+- 启动后必须确认并返回 `CAPTURE_READY=1`、`CAPTURE_CDP`、`CAPTURE_OUTPUT` 和首个 `CAPTURE_TARGET_ATTACHED`；记录器保持运行，等待用户完成操作。用户说“停止抓包”后发送 Ctrl+C，确认 `CAPTURE_SAVED`、`CAPTURE_ENTRIES`、`CAPTURE_SHA256`、`CAPTURE_COMPLETENESS` 和 `CAPTURE_MISSING`。
+- 停止后自动生成脱敏摘要并执行完整性审计；GoPay 至少核对 checkout、taxes、snapshot、Stripe init/elements/confirm、approve、redirect 和 Midtrans transaction。仅将完整性最高的同渠道 HAR 标记为 canonical，旧的同渠道原始 HAR 删除，其他渠道 HAR 保持隔离。
+- AT、Cookie、Sentinel、代理用户名/密码和订单标识只允许从本地环境变量或运行时会话读取，不写入规则、日志、Git、摘要或回复；禁止重放 HAR 内请求。
+- 每次抓包准备或停止后记录绝对路径、SHA-256、完整性结果和下一步；源码、规则或文档发生修改时遵循本文件的提交并推送规则。

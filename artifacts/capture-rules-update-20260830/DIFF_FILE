@@ -1,0 +1,7 @@
+--- baseline
+- no capture quick-start rule
++++ modified
++ trigger phrases map to automatic CDP discovery and recorder selection
++ GoPay defaults to browser-level Target.setAutoAttach(flatten=true)
++ start/stop readiness and completeness fields are mandatory
++ same-channel canonical HAR selection and secret handling are recorded

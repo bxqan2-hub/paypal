@@ -1,0 +1,11 @@
+{
+  "status": "updated",
+  "capture_rules": true,
+  "rule_source": "AGENTS.md",
+  "triggers": ["抓包", "开始抓包", "准备抓包", "继续抓包", "停止抓包"],
+  "gopay_entrypoint": "tools/har_capture_browser_attach.py",
+  "default_mode": "browser-auto-attach-flatten",
+  "output_root": "artifacts-local",
+  "post_stop": ["CAPTURE_SAVED", "CAPTURE_SHA256", "CAPTURE_COMPLETENESS", "CAPTURE_MISSING", "redacted_summary", "canonical_selection"],
+  "secret_handling": "runtime-only; never write AT, cookies, Sentinel tokens, proxy credentials, or order identifiers"
+}
