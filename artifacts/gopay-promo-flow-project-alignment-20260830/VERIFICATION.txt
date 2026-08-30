@@ -2,13 +2,14 @@ GoPay promo-flow project alignment verification
 ===============================================
 
 Changed branch/field:
-- GoPay eligibility no longer gates the flow with the standalone PayPal-style check_coupon request.
-- GoPay follows the downloaded project state machine: create Checkout -> submit promo update -> Stripe/taxes authoritative amount check.
-- Existing browser pending-update synchronization, random proxy retry policy, and zero-amount gate remain active.
+- Removed the standalone PayPal-style check_coupon gate from the GoPay path.
+- GoPay follows the downloaded project sequence: create Checkout with promo context -> checkout/update -> Stripe/taxes authoritative amount -> confirm.
+- Added initial `promo_campaign` with query-param=true, promo-page Referer and `check_card_proxy=true` to the GoPay Checkout request.
+- Existing pending-update synchronization, random proxy retry policy, and zero-amount gate remain active.
 
 Reference project:
 - C:\Users\Administrator\Downloads\GoPay-印尼0元优惠百分百提链
-- Its LocalFixtureProvider confirms the intended sequence: create_checkout, apply_promotion, amount==0, confirm; it performs no external calls.
+- Its LocalFixtureProvider is offline, but its state machine is create_checkout -> apply_promotion -> amount==0 -> confirm; it has no standalone check_coupon gate.
 
 Artifacts:
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-promo-flow-project-alignment-20260830\MODIFIED_FILE
@@ -16,62 +17,61 @@ Artifacts:
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-promo-flow-project-alignment-20260830\VERIFICATION.txt
 - C:\Users\Administrator\Desktop\提链\artifacts\gopay-promo-flow-project-alignment-20260830\ROLLBACK.sh
 
-Original Git baseline SHA-256 (HEAD f69cc3a):
-- payment_link_extractor/gopay_core.py: 263ed3644e2ea4f241fc2003cbf61c3608692e430e08249fa817ea3f381bd7c3
+Original Git baseline SHA-256 (HEAD b80fd5c):
+- payment_link_extractor/gopay_core.py: fb93ec430271becd0efde0e1741b1c72f2f76fe883dfc0734b93b767b03bb981
 - payment_link_extractor/gopay_checkout.py: 1a281729c32d7fade28a68f44001335d20884fe574b3c53b10ba5ebebf9f8fce
 - payment_link_extractor/gopay_transport.py: cd42e708e22d93d86f2f94fa1d0b10f8a4d490e634ae292b80ff661d9e695698
-- payment_link_extractor/web/tasks.py: c9591089549906d3f6890b872122e80faf71f02d7b9ebc047207aea9a4701fc1
-- payment_link_extractor/web/static/app.js: 13c71415f3aa73405e050102eb714f86504585a313b9c812bdb10e5d9a452c27
-- tests/test_gopay_isolated_optimization.py: ec13b89511ac9534966dbbefa842fa5120d4974cc9e066e351e11a1e65b223f8
+- payment_link_extractor/web/tasks.py: 008c95e39e0ad0f148fa1d89de73eab817313d6901a58cfcaa58343240b41555
+- payment_link_extractor/web/static/app.js: 95114eaeb148e157f2651334db6a675321f44f2e7d959fd3664b69e33b8628ca
+- tests/test_gopay_isolated_optimization.py: 17da8a034205fc5c40cd5945ec8ea85802ad8563e3b4ec7d5f01c0a836605c0a
 Modified snapshot SHA-256:
 - payment_link_extractor/gopay_core.py: fb93ec430271becd0efde0e1741b1c72f2f76fe883dfc0734b93b767b03bb981
-- payment_link_extractor/gopay_checkout.py: 5744e3877cd9005284a61a609dd3a63306f7322c0f0d69cf98f726c8e60afabd
+- payment_link_extractor/gopay_checkout.py: ff91c51494d648034e2177ac8a1f6ddd5b1c359020d48f9f9db735e4f984e52c
 - payment_link_extractor/gopay_transport.py: a2b7cc2e5fd6a41348660c2c8327af7095d7f6e4c0c98239796d5166b72b21c8
 - payment_link_extractor/web/tasks.py: c4152314c39e804d8b24b24a39820aecdf3dbe9965934a48d5ccce313eb8266e
 - payment_link_extractor/web/static/app.js: 30c47acf116eb00ec4f0e349cdf336167194e4d666efa809cac1c2421aa38593
-- tests/test_gopay_isolated_optimization.py: 17da8a034205fc5c40cd5945ec8ea85802ad8563e3b4ec7d5f01c0a836605c0a
-- docs/2026-08-30_gopay-missing-parameter-fix.md: 0f1bee9dc96caa2a8878cb0058aa3d3e267519ebd2dd8c606667604d3225df91
-- DIFF_FILE: f110fd6d448891576e26de969e9a9f1d521286ea01601bdca0c9c62e469dc6d8
+- tests/test_gopay_isolated_optimization.py: 80aa939a1363136d3f401e262b195b5e9ac911203b995be1d976fbc50ffaa007
+- docs/2026-08-30_gopay-missing-parameter-fix.md: e44e22df5d12a061812ec9b4246d65f807078f1955a7b0e4c8d5c3ef27b25fe2
+- DIFF_FILE: d3239d1e0f1fee9e21d37adda4d93dd8ab02b1f4ed351b847fb6b9bf36d365ee
 - ROLLBACK.sh: fd13f210810a3a17d6a5f56ba2ba7631f013027707f9cb481a5c0cc5fb6e5206
 
 BASELINE command:
 .\.venv\Scripts\python.exe -m pytest -q
-Input: source at pushed commit f69cc3a before downloaded-project alignment
-Literal output/result: 198 passed in 1.51s
+Input: source at pushed commit b80fd5c before initial promo-context change
+Literal output/result: 198 passed in 1.69s
 Exit status: 0
 
 MODIFIED command:
 .\.venv\Scripts\python.exe -m pytest -q
-Input: working tree with GoPay promo-flow alignment and regression tests
-Literal output/result: 198 passed in 1.82s
+Input: working tree with initial promo context and regression test
+Literal output/result: 199 passed in 1.93s
 Exit status: 0
 
 TARGET_TEST command:
-.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_isolated_optimization.py tests/test_gopay_support.py
-Literal output/result: 22 passed in 0.48s
-Exit status: 0
-
-PY_COMPILE command:
-.\.venv\Scripts\python.exe -m py_compile payment_link_extractor\gopay_core.py payment_link_extractor\gopay_checkout.py payment_link_extractor\gopay_transport.py payment_link_extractor\web\tasks.py
-Literal output/result: no output; syntax check passed
+.\.venv\Scripts\python.exe -m pytest -q tests/test_gopay_isolated_optimization.py
+Literal output/result: 20 passed in 0.22s
 Exit status: 0
 
 HAR_COMPARE command:
 .\.venv\Scripts\python.exe -c "<offline compare>"
-Input: artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har; data\captures\gcash-10201-3336.har; C:\Users\Administrator\Downloads\GoPay-印尼0元优惠百分百提链
-Literal output/result: canonical GoPay HAR contains no check_coupon; GoPay Stripe amount contract is 34900000; GCash HAR check_coupon can return eligible; downloaded project gates on promotion amount after apply_promotion.
+Input: canonical GoPay HAR, existing GCash HAR, downloaded GoPay project
+Literal output/result: canonical non-zero GoPay HAR creates Checkout without promo and totals 34900000; GCash zero-flow HAR creates Checkout with promo context; downloaded project gates on amount after apply_promotion.
 Exit status: 0
 
-LIVE_PROBE command:
-.\.venv\Scripts\python.exe -c "extract_payment_link(AT, ID proxy)"
-Input: one user AT and one ID proxy held in memory; no HAR replay.
-Literal output/result: after removing the standalone preflight, the attempt reached the Checkout path but returned NetworkError at ChatGPT checkout on one exit; another exit returned browser Sentinel proof generation failure. No final gopay_url.
+LIVE_RETRY5 command:
+.\.venv\Scripts\python.exe -u artifacts-local\run_reference_flow_retry5.py
+Input: 3 user ATs, 10 new t-30 ID proxies, independently randomized per AT, 5 retries (6 total attempts each); each attempt created a new browser/order/fingerprint.
+Literal output/result:
+- AT-1: six attempts; five reached checkout/update/promotion_applied/Stripe/taxes and returned amount 34900000; one Sentinel/proxy timeout/failure; stopped after 5 retries.
+- AT-2: six attempts; four reached amount 34900000; one unusual_activity; one timeout/network failure; stopped after 5 retries.
+- AT-3: six attempts; all reached checkout/update/promotion_applied/Stripe/taxes and returned amount 34900000; stopped after 5 retries.
+- No attempt returned amount 0; no final gopay_url.
 Exit status: 1 (no successful link)
 
 Rationale:
-- High probability: the extra GoPay check_coupon preflight was not present in the canonical GoPay HAR or the downloaded GoPay project sequence; it caused every `not_eligible` response to stop before Checkout.
-- Medium probability: missing browser `x-oai-is-pending-updates` continuity; now synchronized from response/request monitor receipts.
-- Low probability: proxy/TLS/Sentinel transient failures; observed separately and retried under the existing policy.
+- High probability confirmed: the standalone GoPay check_coupon gate was not in the downloaded state machine or canonical GoPay HAR; removing it allows nearly all usable exits to reach the authoritative amount check.
+- Medium probability addressed: missing initial promo context and pending-update continuity; both are now present.
+- Low probability observed: Sentinel, unusual_activity, TLS and timeout failures on a minority of attempts; retries rebuilt state and rotated proxy.
 
 ROLLBACK command:
 & "C:/Program Files/Git/bin/bash.exe" -lc "C:\Users\Administrator\Desktop\提链\artifacts\gopay-promo-flow-project-alignment-20260830\ROLLBACK.sh C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-promo-flow-rollback-test C:\Users\Administrator\Desktop\提链\artifacts\gopay-promo-flow-project-alignment-20260830\MODIFIED_FILE"
@@ -80,14 +80,15 @@ Literal output/result:
 ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-promo-flow-rollback-test
 RESTORED_FILES=7
 RESTORED_STATUS=PASS
-BEFORE_SHA256=2e8ea882eed522f7865a73a968ccb8cf1289cccd4cb32f846ffd592f63d6916d
-RESTORED_SHA256=fb93ec430271becd0efde0e1741b1c72f2f76fe883dfc0734b93b767b03bb981
-EXPECTED_SHA256=fb93ec430271becd0efde0e1741b1c72f2f76fe883dfc0734b93b767b03bb981
+BEFORE_SHA256=4636495e1605f9a870ab1c04e2ad4255752c6af6af111cdbbd3bf65a1b5c25e0
+RESTORED_SHA256=ff91c51494d648034e2177ac8a1f6ddd5b1c359020d48f9f9db735e4f984e52c
+EXPECTED_SHA256=ff91c51494d648034e2177ac8a1f6ddd5b1c359020d48f9f9db735e4f984e52c
 HASH_MATCH=True
 Exit status: 0
 
 Restored behavior/status:
-- GoPay now reaches Checkout without a false-negative standalone eligibility gate; promotion is validated by the downstream authoritative amount.
-- A qualifying attempt retains one proxy for the full flow; retries rebuild Checkout/browser state and rotate proxy.
+- GoPay no longer stops on a false-negative standalone eligibility probe.
+- Every usable attempt reaches promotion application and validates the authoritative amount.
+- Non-zero results rebuild Checkout/browser state and rotate the proxy within the configured attempts.
 - MODIFIED_FILE remains changed; rollback was tested on another copy.
-- No AT, proxy credential, cookie, client_secret, or order identifier was written to artifacts.
+- No AT, proxy credential, cookie, client_secret or order id is persisted in artifacts.

@@ -154,6 +154,49 @@ def test_gopay_promo_probe_prepares_browser_session(monkeypatch) -> None:
     assert calls == ["prepare"]
 
 
+def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Provider:
+        def headers(self, _flow, **_kwargs):
+            return {"OpenAI-Sentinel-Token": "proof-fixture"}
+
+    class Session:
+        openai_sentinel_provider = Provider()
+
+    class Response:
+        status_code = 200
+        text = '{"checkout_session_id":"cs_fixture"}'
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {"checkout_session_id": "cs_fixture"}
+
+    def fake_request(*_args, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="http://proxy.example:8080",
+        country="ID",
+        payment_method="gopay",
+    )
+    checkout = gopay_checkout.create_checkout(config, Session(), None)
+    assert checkout["session_kind"] == "stripe_checkout"
+    body = captured["json"]
+    assert body["promo_campaign"] == {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": True,
+    }
+    assert body["check_card_proxy"] is True
+    assert captured["headers"]["Referer"].endswith(
+        "/?promo_campaign=plus-1-month-free"
+    )
+
+
 def test_gopay_required_sentinel_proof_fails_closed() -> None:
     with pytest.raises(RuntimeError, match="browser Sentinel provider is required"):
         gopay_transport.openai_sentinel_headers(

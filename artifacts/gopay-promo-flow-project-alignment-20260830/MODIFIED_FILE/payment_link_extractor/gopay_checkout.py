@@ -263,9 +263,18 @@ def create_checkout(
             "country": config.country.upper(),
             "currency": config_currency(config),
         },
+        # The zero-offer path enters Checkout from the promo landing page.
+        # The canonical non-zero GoPay HAR omitted this object; the zero-flow
+        # GCash HAR and the downloaded reference state machine both establish
+        # the campaign before applying the later checkout/update mutation.
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": True,
+        },
         "checkout_ui_mode": "custom",
+        "check_card_proxy": True,
     }
-    referer = "https://chatgpt.com/"
+    referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
     headers = {
         "Referer": referer,
         "x-openai-target-path": path,

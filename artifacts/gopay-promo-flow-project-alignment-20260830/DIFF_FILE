@@ -1,93 +1,78 @@
-diff --git a/payment_link_extractor/gopay_core.py b/payment_link_extractor/gopay_core.py
-index 6e8f863..951ca41 100644
---- a/payment_link_extractor/gopay_core.py
-+++ b/payment_link_extractor/gopay_core.py
-@@ -13,7 +13,6 @@ from .auth import account_email
- from .config import billing_for_country, currency_minor_scale
- from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
- from .gopay_checkout import (
--    check_coupon_eligibility,
-     create_checkout,
-     require_country_currency,
-     update_checkout,
-@@ -108,14 +107,6 @@ def extract_gopay_payment_link(
-     chatgpt = factory.chatgpt(config, config.checkout_proxy)
-     stripe = None
-     try:
--        if apply_checkout_update:
--            checkpoint("eligibility_check")
--            check_coupon_eligibility(config, chatgpt, log)
--            # Distinguish a successful qualification probe from the later
--            # Checkout/Stripe stages in task events. This keeps the UI from
--            # looking stalled when a browser proof or proxy connection fails
--            # immediately after eligibility is confirmed.
--            checkpoint("eligibility_confirmed")
-         checkpoint("checkout")
-         checkout = create_checkout(config, chatgpt, log)
-         checkpoint(f"checkout_kind:{checkout['session_kind']}")
-@@ -125,6 +116,10 @@ def extract_gopay_payment_link(
-         if apply_checkout_update:
-             checkpoint("checkout_update")
-             update_checkout(config, chatgpt, checkout, log)
-+            # The local GoPay reference project treats promotion application
-+            # followed by the provider's amount response as the eligibility
-+            # check; there is no standalone check_coupon request in that flow.
-+            checkpoint("promotion_applied")
-             require_country_currency(checkout, config)
-         stripe = factory.stripe(config)
-         checkpoint("stripe_init")
-diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
-index e6cbcb6..8a6ca58 100644
---- a/payment_link_extractor/web/static/app.js
-+++ b/payment_link_extractor/web/static/app.js
-@@ -1061,7 +1061,7 @@
-     const labels = {
-       queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout",
-       retrying: "更换代理 IP 后完整重试",
--      checkout_update: "更新 Checkout", stripe_init: "初始化支付", elements_session: "准备支付方式",
-+      checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", stripe_init: "初始化支付", elements_session: "准备支付方式",
-       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
-       completed: "任务完成", cancelled: "任务已取消", failed: "任务失败",
-     };
-diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
-index 6572ef9..d7b856d 100644
---- a/payment_link_extractor/web/tasks.py
-+++ b/payment_link_extractor/web/tasks.py
-@@ -29,6 +29,7 @@ STAGE_PROGRESS = {
-     "eligibility_confirmed": 12,
-     "checkout": 15,
-     "checkout_update": 25,
-+    "promotion_applied": 30,
-     "stripe_init": 35,
-     "elements_session": 50,
-     "taxes": 65,
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 7114547..7d15d6f 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -263,9 +263,18 @@ def create_checkout(
+             "country": config.country.upper(),
+             "currency": config_currency(config),
+         },
++        # The zero-offer path enters Checkout from the promo landing page.
++        # The canonical non-zero GoPay HAR omitted this object; the zero-flow
++        # GCash HAR and the downloaded reference state machine both establish
++        # the campaign before applying the later checkout/update mutation.
++        "promo_campaign": {
++            "promo_campaign_id": "plus-1-month-free",
++            "is_coupon_from_query_param": True,
++        },
+         "checkout_ui_mode": "custom",
++        "check_card_proxy": True,
+     }
+-    referer = "https://chatgpt.com/"
++    referer = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+     headers = {
+         "Referer": referer,
+         "x-openai-target-path": path,
 diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
-index 53c0231..40eb6d2 100644
+index 40eb6d2..893fa41 100644
 --- a/tests/test_gopay_isolated_optimization.py
 +++ b/tests/test_gopay_isolated_optimization.py
-@@ -453,7 +453,7 @@ def test_gopay_core_mock_flow_uses_own_factory_and_result_field(monkeypatch) ->
-     assert factory.chatgpt_calls == 1 and factory.stripe_calls == 1
+@@ -154,6 +154,49 @@ def test_gopay_promo_probe_prepares_browser_session(monkeypatch) -> None:
+     assert calls == ["prepare"]
  
  
--def test_gopay_core_marks_eligibility_before_checkout(monkeypatch) -> None:
-+def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
-     class Session:
-         def close(self) -> None:
-             return None
-@@ -465,7 +465,6 @@ def test_gopay_core_marks_eligibility_before_checkout(monkeypatch) -> None:
-         def stripe(self, _config):
-             return Session()
- 
--    monkeypatch.setattr(gopay_core, "check_coupon_eligibility", lambda *_args: {"state": "eligible"})
-     monkeypatch.setattr(gopay_core, "update_checkout", lambda *_args: {})
-     monkeypatch.setattr(
-         gopay_core,
-@@ -496,7 +495,7 @@ def test_gopay_core_marks_eligibility_before_checkout(monkeypatch) -> None:
-     gopay_core.extract_gopay_payment_link(
-         config, transport_factory=Factory(), stage_callback=stages.append
-     )
--    assert stages[:3] == ["eligibility_check", "eligibility_confirmed", "checkout"]
-+    assert stages[:4] == ["checkout", "checkout_kind:stripe_checkout", "checkout_update", "promotion_applied"]
- 
- 
- def test_gopay_batch_validation_keeps_failure_modes_separate() -> None:
++def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    class Provider:
++        def headers(self, _flow, **_kwargs):
++            return {"OpenAI-Sentinel-Token": "proof-fixture"}
++
++    class Session:
++        openai_sentinel_provider = Provider()
++
++    class Response:
++        status_code = 200
++        text = '{"checkout_session_id":"cs_fixture"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"checkout_session_id": "cs_fixture"}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    checkout = gopay_checkout.create_checkout(config, Session(), None)
++    assert checkout["session_kind"] == "stripe_checkout"
++    body = captured["json"]
++    assert body["promo_campaign"] == {
++        "promo_campaign_id": "plus-1-month-free",
++        "is_coupon_from_query_param": True,
++    }
++    assert body["check_card_proxy"] is True
++    assert captured["headers"]["Referer"].endswith(
++        "/?promo_campaign=plus-1-month-free"
++    )
++
++
+ def test_gopay_required_sentinel_proof_fails_closed() -> None:
+     with pytest.raises(RuntimeError, match="browser Sentinel provider is required"):
+         gopay_transport.openai_sentinel_headers(
