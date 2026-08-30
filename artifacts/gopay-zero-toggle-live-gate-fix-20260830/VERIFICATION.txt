@@ -1,0 +1,101 @@
+GoPay 关闭 0 元开关真实提链修复验证
+======================================
+
+Changed branch/field:
+- Git branch: main
+- Field: ExtractionConfig.gopay_zero_trial_validation=False
+- Removed the unconditional validate_gopay_amount calls from the GoPay-only CS and OAICS provider flows.
+- gopay_core.py remains the single switch-controlled amount gate: disabled returns the provider link regardless of non-zero amount; enabled validates after provider generation.
+- The observed changed branch completed checkout -> checkout_update -> stripe_init -> elements_session -> taxes -> payment_confirmation -> redirect_resolution -> completed.
+
+Failure analysis:
+- High probability, confirmed and fixed: duplicate provider-layer zero gate rejected amount_due_minor=34900000 even though the switch was off.
+- Medium probability, observed transiently: checkout_not_active_session; a newly created task/session completed confirm successfully.
+- Low probability, observed once: proxy tunnel/Sentinel browser proof interruption; the randomized no-replacement proxy plan remains active.
+
+HAR evidence:
+- Source: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+- SHA-256: 8DF5163E0A2D57598B257435C2449EA0371A236C6114BAE85234A94108547E50
+- Finding: the captured non-zero flow continues from taxes amount_total=34900000 through confirm, approve, redirect and Midtrans, so an off-mode provider flow must not reject before provider generation.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-toggle-live-gate-fix-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-toggle-live-gate-fix-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-toggle-live-gate-fix-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-zero-toggle-live-gate-fix-20260830\ROLLBACK.sh
+
+Original Git baseline SHA-256 (HEAD e29f068):
+- payment_link_extractor/gopay_cs_live.py: 1bcafa68c43bbed1099e057ff96d07eb1fb6538fb93b21321748b677140f8594
+- payment_link_extractor/gopay_oaics.py: 9955439e3a52d4841a6a8a99d9eecb9e6f05954a679fe9e1e61a43f1d025184d
+- tests/test_gopay_isolated_optimization.py: a4296da413c0cc26a6bb085c1a5ac31da5f89d75fe8f2ffafa7a9512e0cfe995
+
+Modified working-tree SHA-256:
+- payment_link_extractor/gopay_cs_live.py: 7e9f3b097fe8b5628292a9ae8e82f336a893618c0864502a6edbd9410aeee488
+- payment_link_extractor/gopay_oaics.py: 083d90c9a48ccef6f840ed316fc00aeab492d3fa0d52e2ee0736fb086e33e53a
+- tests/test_gopay_isolated_optimization.py: 82d7c5e4536d5e25270c8f4a9b4ba213322dcb35daa26958942d97e0871326e1
+- docs/2026-08-30_gopay-zero-toggle-live-validation-report.md: 6f06563dc7d8415c134df0095c5d7e1765dd81e2377228ea66ed5cf267f67e7d
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: source at Git baseline e29f068 before removing the provider-layer duplicate gates.
+Literal output/result:
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+.........................................................                [100%]
+201 passed in 1.60s
+BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with both duplicate provider-layer gates removed and a regression contract added.
+Literal output/result:
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+..........................................................               [100%]
+202 passed in 1.67s
+TARGET_EXIT=0
+MODIFIED_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py
+Input: isolated GoPay core/provider switch contracts.
+Literal output/result:
+.....................                                                    [100%]
+21 passed in 0.21s
+Exit status: 0
+
+LIVE command:
+.\.venv\Scripts\python.exe -u -c <in-memory runtime runner>
+Input: runtime-only AT, 10 supplied ID proxies in a randomized no-replacement plan, payment_method=gopay, gopay_zero_trial_validation=False; no credential was written to a file.
+Literal redacted output/result:
+LIVE_TASK_STARTED=1
+ZERO_TRIAL_VALIDATION=OFF
+PROXY_POOL_COUNT=10
+LIVE_STAGE checkout -> checkout_update -> stripe_init -> elements_session -> taxes -> payment_confirmation -> redirect_resolution -> completed
+LIVE_RESULT status=succeeded attempt=1/10 payment_method=gopay currency=IDR amount_due_minor=34900000 host=app.midtrans.com gopay_zero_trial_validation=false
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-zero-toggle-live-gate-fix-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-zero-toggle-live-gate-rollback-test-20260830-1645' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy after appending an intentional mutation to payment_link_extractor/gopay_cs_live.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-zero-toggle-live-gate-rollback-test-20260830-1645
+RESTORED_TRACKED_FILES=3
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+BEFORE_SHA256=131aa04a14ba26fbfbdbd981a7af247763081a23043b6bb8562c34fbbe3d5a67
+RESTORED_SHA256=1bcafa68c43bbed1099e057ff96d07eb1fb6538fb93b21321748b677140f8594
+EXPECTED_SHA256=1bcafa68c43bbed1099e057ff96d07eb1fb6538fb93b21321748b677140f8594
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The rollback test copy restored all three tracked files byte-for-byte to e29f068 and removed the new report.
+- The repository working tree and MODIFIED_FILE remain changed.
+- Disabled mode now reaches and returns the GoPay long link for the observed non-zero amount.
+- Enabled mode still executes its final core-owned zero amount validation after provider generation.
+- PayPal and GCash source, adapters, result fields and transports remain unchanged.
+- Runtime credentials and the complete generated redirect were not stored in Git artifacts.
