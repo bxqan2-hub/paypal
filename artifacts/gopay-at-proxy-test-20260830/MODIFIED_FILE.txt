@@ -1,0 +1,34 @@
+GoPay AT/proxy test report (2026-08-30)
+=========================================
+
+Changed branch/field:
+- Test-only continuation using 3 ATs from the user attachment and 8 t-30 1024Proxy entries.
+- Source tree stayed on the previously pushed approve-telemetry/HAR-alignment fix; no source modification was required by this test pass.
+
+Inputs:
+- AT attachment: C:\Users\Administrator\.codex\attachments\a36eda5e-1820-4459-a8f7-537600d2a4cc\pasted-text.txt
+- AT attachment SHA-256: 62faf9d538250ff6e755617e774611ea93172e171626649c577d9fad4aad008d
+- Parsed AT count: 3 (values not persisted)
+- Proxy count: 8 (values not persisted)
+- Complete HAR: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+- HAR SHA-256: 8df5163e0a2d57598b257435c2449ea0371a236c6114bae85234a94108547e50
+
+Offline HAR evidence:
+- entries=483
+- Stripe confirm keys=60
+- js_checksum/rvtimestamp matched Stripe.js derivation
+- progressive tax-region counts=[1,2,3,4,5]
+- approve headers include oai-telemetry
+
+Live test observations (secrets redacted):
+- AT-1 qualification/Checkout: 401 access_denied / no_organization on tested exits; no link.
+- AT-2 qualification: mixed eligible/not_eligible by exit; one eligible run reached Stripe with amount_due_minor=0, then approve returned {"result":"blocked"}.
+- AT-3 qualification: not_eligible in the tested run.
+- Proxy switching: all 8 supplied nodes were attempted for AT-1 qualification; eligible, not_eligible, and network/TLS outcomes were observed.
+- Final gopay_url: not produced in this test pass.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-at-proxy-test-20260830\MODIFIED_FILE.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-at-proxy-test-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-at-proxy-test-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-at-proxy-test-20260830\ROLLBACK.sh
