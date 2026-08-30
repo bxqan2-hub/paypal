@@ -1,0 +1,23 @@
+GoPay token/proxy state-machine test (2026-08-30)
+===============================================
+
+Changed branch/field:
+- Test orchestration now treats `eligible` as permission to continue the same attempt on the same proxy.
+- A new checkout/browser session is created for every retry.
+- `not_eligible` or non-zero amount -> next proxy with the same AT.
+- `blocked` -> next proxy + next AT, then full flow restarts with a new fingerprint/order.
+
+Inputs:
+- AT attachment: C:\Users\Administrator\.codex\attachments\a36eda5e-1820-4459-a8f7-537600d2a4cc\pasted-text.txt (3 ATs; values not persisted)
+- Proxy pool: 8 t-30 1024Proxy entries (values not persisted)
+- HAR: C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-cdp-capture-browser-targets-20260830-next.har
+
+Observed integrated run:
+- AT-1: all attempts stopped at `eligibility_check` with `not_eligible` or network timeout; no checkout started.
+- AT-2 / proxy 2: `eligibility_confirmed` -> `checkout` -> `checkout_update` -> `stripe_init` -> `elements_session` -> `taxes`; zero gate rejected `34900000`, so the next proxy was selected.
+- AT-3 / proxy 2: `eligibility_confirmed` -> `checkout` -> `checkout_update` -> `stripe_init` -> `elements_session` -> `taxes` -> `payment_confirmation`; approve returned `manual approval blocked`, so the next attempt must rotate both proxy and AT.
+- The follow-up run after session changes observed only `not_eligible`/network outcomes; no zero-amount GoPay URL was emitted.
+
+Result:
+- The earlier “AT-1 detected trial” line was a qualification observation, not a completed extraction. The corrected state machine requires `eligibility_confirmed` followed by `checkout` in the same attempt; those two events are now visible separately in the UI.
+- No final `gopay_url` was produced in this runtime pass.

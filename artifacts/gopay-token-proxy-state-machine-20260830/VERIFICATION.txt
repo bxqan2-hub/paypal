@@ -1,0 +1,58 @@
+GoPay token/proxy state-machine verification
+============================================
+
+Changed branch/field:
+- Same-proxy continuation after `eligibility_confirmed`.
+- New order/browser fingerprint for every retry.
+- `not_eligible`/non-zero => next proxy; `blocked` => next proxy plus next AT.
+
+Artifacts:
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\MODIFIED_FILE.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\ROLLBACK.sh
+
+Snapshot SHA-256:
+- MODIFIED_FILE.txt: 584cec36696c42b31a04357ba9d42fdd9d06417b0fe346193d654a5fd4e6787a
+- DIFF_FILE: 90b98e94707f5672f9c203ab0b60a6b7980012b6c823175fc223bd0e1a066956
+- ROLLBACK.sh: 43d37e34c6c42c694b9b1045aa572955f5a188dd6e09dd0448c7afcc6ac00369
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: pushed source before this test-only state-machine report
+Literal output/result: 190 passed in 1.52s
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: same source with the already committed `eligibility_confirmed` stage fix
+Literal output/result: 190 passed in 1.52s
+Exit status: 0
+
+INTEGRATED_TEST command:
+.\.venv\Scripts\python.exe -u artifacts-local\run_integrated_gopay_test.py
+Input: 3 ATs from the new attachment and 8 t-30 proxies; each child attempt used one proxy, one new Checkout, and one new browser process.
+Literal output/result:
+- AT-1: `eligibility_check` only; proxies returned not_eligible/network outcomes, so no Checkout was started.
+- AT-2 proxy 2: `eligibility_confirmed` -> `checkout` -> `checkout_update` -> `stripe_init` -> `elements_session` -> `taxes`; amount gate returned `expected zero amount, got 34900000`; next proxy selected.
+- AT-3 proxy 2: `eligibility_confirmed` -> `checkout` -> `checkout_update` -> `stripe_init` -> `elements_session` -> `taxes` -> `payment_confirmation`; approve returned `ChatGPT manual approval blocked`; the next retry policy is next proxy plus next AT.
+- Final gopay_url: not produced.
+Exit status: 1 (no successful link)
+
+ROLLBACK command:
+& "C:/Program Files/Git/bin/bash.exe" -lc "C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\ROLLBACK.sh C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-token-proxy-rollback-test.txt C:\Users\Administrator\Desktop\提链\artifacts\gopay-token-proxy-state-machine-20260830\MODIFIED_FILE.txt"
+Input: independent report copy after an intentional mutation
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-token-proxy-rollback-test.txt
+RESTORED_STATUS=PASS
+BEFORE_SHA256=5498f862ea8ba0ffcaea03b0d2c62afc5336ce73d23799d4237e16bdbf05f12e
+RESTORED_SHA256=584cec36696c42b31a04357ba9d42fdd9d06417b0fe346193d654a5fd4e6787a
+EXPECTED_SHA256=584cec36696c42b31a04357ba9d42fdd9d06417b0fe346193d654a5fd4e6787a
+HASH_MATCH=True
+Exit status: 0
+
+Restored behavior/status:
+- Eligibility is not reported as link extraction.
+- A proxy that reaches `eligibility_confirmed` is retained for the rest of that attempt.
+- Non-zero and blocked results restart the flow; blocked additionally rotates AT.
+- MODIFIED_FILE remains changed; rollback was tested on another copy.
