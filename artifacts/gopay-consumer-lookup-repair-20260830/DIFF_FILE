@@ -1,0 +1,99 @@
+diff --git a/docs/2026-08-30_gopay-approve-har-alignment-report.md b/docs/2026-08-30_gopay-approve-har-alignment-report.md
+index 00c2231..e5fde55 100644
+--- a/docs/2026-08-30_gopay-approve-har-alignment-report.md
++++ b/docs/2026-08-30_gopay-approve-har-alignment-report.md
+@@ -39 +38,0 @@ zero-length browser ping → checkout/approve=approved → provider redirect
+-- `/v1/consumers/sessions/lookup` 属于 Stripe Link/consumer 初始化；两份 HAR 都存在，但不是 ChatGPT approve 的必需 body/header，暂不扩大改动面。
+@@ -54,0 +54 @@ zero-length browser ping → checkout/approve=approved → provider redirect
++  - Elements 和 approval challenge 预取后补齐两份 HAR 共有的 `/v1/consumers/sessions/lookup` 六字段请求。
+@@ -67,0 +68,5 @@ zero-length browser ping → checkout/approve=approved → provider redirect
++| E-006：两个成功 HAR 都在 approval challenge 后调用相同六字段 consumer lookup | F-006：补齐 Stripe Link/consumer 初始化，避免 Confirm/Approve 状态缺口 | `gopay_cs_live.py` |
++
++## 第一账号实测反馈
++
++第一账号在固定资格代理上保持 `11` 次代理核对全部一致，并确认：`init → token` 生命周期、`muid == __stripe_mid`、空 pending envelope 和 SDK ping telemetry 均已生效。该次仍返回 `approve=blocked`；与双 HAR 比较后，剩余唯一稳定缺失请求是 `/v1/consumers/sessions/lookup`，因此在使用第二账号前补齐该请求，不重复消耗第一账号。
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 823e543..f16a8fe 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -370,0 +371,33 @@ def stripe_create_payment_method(
++def stripe_consumer_session_lookup(
++    stripe: Any,
++    checkout: CheckoutData,
++    billing: dict[str, str],
++    log: Any | None,
++) -> dict[str, Any]:
++    """Match Stripe Link consumer initialization present in both complete HARs."""
++    body = {
++        "request_surface": "web_elements_controller",
++        "email_address": openai_checkout_email(checkout) or billing["email"],
++        "email_source": "default_value",
++        "session_id": checkout["cs_id"],
++        "key": stripe_key(checkout),
++        "do_not_log_consumer_funnel_event": "true",
++    }
++    response = stage_http_request(
++        stripe,
++        "Stripe consumer session lookup",
++        "POST",
++        "https://api.stripe.com/v1/consumers/sessions/lookup",
++        log,
++        data=body,
++        headers=cs_stripe_headers(),
++        timeout=DEFAULT_TIMEOUT,
++    )
++    if response.status_code >= 400:
++        raise ProtocolError(
++            response.status_code,
++            f"Stripe consumer session lookup failed: {response.text[:500]}",
++        )
++    return response_json(response, "Stripe consumer session lookup")
++
++
+@@ -587,0 +621 @@ def extract_cs_live_provider(
++    stripe_consumer_session_lookup(stripe, checkout, billing, log)
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 1f55e91..c5ca63a 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -601,0 +602,37 @@ def test_gopay_taxes_does_not_mint_an_extra_sentinel_proof(monkeypatch) -> None:
++def test_gopay_consumer_lookup_matches_both_har_parameter_sets(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    class Response:
++        status_code = 200
++        text = '{"consumer_session":null}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"consumer_session": None}
++
++    def fake_request(*_args, **kwargs):
++        captured.update(kwargs)
++        return Response()
++
++    monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
++    checkout = {
++        "cs_id": "cs_live_fixture",
++        "publishable_key": "pk_live_fixture",
++        "checkout_state": {"email": "account@example.com"},
++    }
++    billing = {"email": "billing@example.com"}
++    result = gopay_cs_live.stripe_consumer_session_lookup(
++        object(), checkout, billing, None
++    )
++    assert result == {"consumer_session": None}
++    assert captured["data"] == {
++        "request_surface": "web_elements_controller",
++        "email_address": "account@example.com",
++        "email_source": "default_value",
++        "session_id": "cs_live_fixture",
++        "key": "pk_live_fixture",
++        "do_not_log_consumer_funnel_event": "true",
++    }
++    assert captured["headers"] == gopay_cs_live.cs_stripe_headers()
++
++
+@@ -609,0 +647,2 @@ def test_gopay_confirm_uses_har_stripe_runtime_without_precreating_payment_metho
++    assert flow.index("prefetch_checkout_approval_proof(") < flow.index("stripe_consumer_session_lookup(")
++    assert flow.index("stripe_consumer_session_lookup(") < flow.index("cs_checkout_taxes(")

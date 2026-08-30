@@ -1,0 +1,77 @@
+GoPay Consumer Session Lookup 第二次修复验证
+============================================
+
+Changed branch/field:
+- Git branch: main
+- Added the six-field POST /v1/consumers/sessions/lookup call shared by both complete HARs.
+- Sequence: Elements -> approval challenge init -> consumer lookup -> taxes/snapshot -> confirm -> approval token/ping -> approve.
+- The first live account was not retried: its single full attempt kept one proxy but returned approve=blocked; the remaining stable HAR gap was repaired before using account two.
+
+Four artifacts:
+- MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-consumer-lookup-repair-20260830\MODIFIED_FILE
+- DIFF_FILE: C:\Users\Administrator\Desktop\提链\artifacts\gopay-consumer-lookup-repair-20260830\DIFF_FILE
+- VERIFICATION.txt: C:\Users\Administrator\Desktop\提链\artifacts\gopay-consumer-lookup-repair-20260830\VERIFICATION.txt
+- executable ROLLBACK.sh: C:\Users\Administrator\Desktop\提链\artifacts\gopay-consumer-lookup-repair-20260830\ROLLBACK.sh
+
+Original Git baseline SHA-256 (HEAD 102437a):
+- payment_link_extractor/gopay_cs_live.py: cd4c17be82c13db87a843eb40951ac001854a005b5b4f3cad37b060a7fb3aec3
+- tests/test_gopay_isolated_optimization.py: c8edc3b05c93d5549ff72918761196f385d2b61235fd3029bddc201c8042c52d
+- docs/2026-08-30_gopay-approve-har-alignment-report.md: 494aa100815d6906594d2e0c21f8451594df2c7de5a68f927120b16e7745f5fc
+
+Modified working-tree SHA-256:
+- payment_link_extractor/gopay_cs_live.py: cf60c773eeaaaf7a75d4174d42fa71a69f52d84678ae16c1bbf321293153db82
+- tests/test_gopay_isolated_optimization.py: 0ae8de29296e0d583dec91c427e2500dade0d3a28a89983ea3dd38ebfd749269
+- docs/2026-08-30_gopay-approve-har-alignment-report.md: 7540c7864443a1ad2e2de6a759541804d063d0ec2bd524a30bb1e7e5654ae3eb
+
+BASELINE command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: source at Git baseline 102437a before adding the missing consumer lookup.
+Literal output/result:
+........................................................................ [ 33%]
+........................................................................ [ 67%]
+......................................................................   [100%]
+214 passed in 1.57s
+BASELINE_EXIT=0
+Exit status: 0
+
+MODIFIED command:
+.\.venv\Scripts\python.exe -m pytest -q
+Input: working tree with the HAR-exact consumer lookup, sequence assertion and updated report.
+Literal output/result:
+........................................................................ [ 33%]
+........................................................................ [ 66%]
+.......................................................................  [100%]
+215 passed in 1.63s
+TARGET_EXIT=0
+MODIFIED_EXIT=0
+Exit status: 0
+
+TARGET command:
+.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_isolated_optimization.py
+Input: all isolated GoPay contracts including the six-field lookup and its position between challenge init and taxes.
+Literal output/result:
+..............................                                           [100%]
+30 passed in 0.21s
+Exit status: 0
+
+ROLLBACK command:
+& 'C:\Program Files\Git\bin\bash.exe' 'artifacts/gopay-consumer-lookup-repair-20260830/ROLLBACK.sh' 'C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-consumer-lookup-rollback-test-20260830-1835' 'C:\Users\Administrator\Desktop\提链'
+Input: independent MODIFIED_FILE copy after appending an intentional mutation to payment_link_extractor/gopay_cs_live.py.
+Literal output/result:
+ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-consumer-lookup-rollback-test-20260830-1835
+RESTORED_TRACKED_FILES=3
+REMOVED_NEW_FILES=0
+RESTORED_STATUS=PASS
+BEFORE_SHA256=3a18b7d8ce97d917f4a80c3699c80ead7238b20eb7bb43474738ca6217d0dd7a
+RESTORED_SHA256=cd4c17be82c13db87a843eb40951ac001854a005b5b4f3cad37b060a7fb3aec3
+EXPECTED_SHA256=cd4c17be82c13db87a843eb40951ac001854a005b5b4f3cad37b060a7fb3aec3
+HASH_MATCH=True
+ROLLBACK_EXIT=0
+Exit status: 0
+
+Restored behavior/status:
+- The independent rollback copy restored all three tracked files byte-for-byte to 102437a.
+- The repository working tree and MODIFIED_FILE remain changed.
+- Modified GoPay now includes the missing consumer lookup while retaining exact SDK timing, pending envelope, Cookie/Stripe identity, one-proxy affinity and zero-amount validation.
+- PayPal and GCash remain unchanged.
+- No runtime credential, Cookie, proof, account id, checkout id or redirect nonce is stored in artifacts.
