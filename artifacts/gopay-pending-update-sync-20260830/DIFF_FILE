@@ -1,0 +1,242 @@
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index aedc7c6..7114547 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -8,7 +8,13 @@ from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_
+ from .errors import ConfigurationError, ProtocolError
+ from .logging_utils import safe_log_text
+ from .models import CheckoutData, ExtractionConfig
+-from .gopay_transport import openai_sentinel_headers, response_json, set_proxy_url, stage_http_request
++from .gopay_transport import (
++    openai_sentinel_headers,
++    prepare_openai_browser_session,
++    response_json,
++    set_proxy_url,
++    stage_http_request,
++)
+ 
+ CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
+ PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+@@ -323,6 +329,10 @@ def check_coupon_eligibility(
+     url = f"https://chatgpt.com{path}?coupon=plus-1-month-free&is_coupon_from_query_param=true"
+     set_proxy_url(chatgpt, config.update_proxy)
+     try:
++        # Bootstrap the same browser origin before probing eligibility so the
++        # request inherits the current `x-oai-is-pending-updates` receipt seen
++        # in the PayPal/GCash HAR captures.
++        prepare_openai_browser_session(chatgpt)
+         response = stage_http_request(
+             chatgpt,
+             "Promo eligibility check",
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index bc47a03..bbc8cc6 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -319,6 +319,28 @@ def stage_http_request(
+         log,
+         f"{stage}: HTTP {response.status_code} elapsed={time.perf_counter() - started:.2f}s",
+     )
++    # ChatGPT rotates an encrypted `x-oai-is-update` receipt on responses and
++    # sends it back as the next request's `x-oai-is-pending-updates` value.
++    # The canonical GoPay HAR carries this header on checkout (502 bytes),
++    # while later requests use the acknowledged empty envelope. Keep the
++    # session synchronized without persisting or logging the opaque token.
++    response_headers = getattr(response, "headers", None)
++    pending_update = None
++    if response_headers is not None:
++        try:
++            pending_update = response_headers.get("x-oai-is-update")
++        except Exception:
++            pending_update = None
++    if pending_update:
++        session_headers = getattr(session, "headers", None)
++        if session_headers is not None:
++            try:
++                session_headers["x-oai-is-pending-updates"] = json.dumps(
++                    {"v": 3, "updates": [str(pending_update)]},
++                    separators=(",", ":"),
++                )
++            except Exception:
++                pass
+     return response
+ 
+ 
+@@ -409,6 +431,14 @@ def openai_sentinel_headers(
+     return headers
+ 
+ 
++def prepare_openai_browser_session(session: Any) -> None:
++    """Start the GoPay browser context before the promo probe when present."""
++    provider = getattr(session, "openai_sentinel_provider", None)
++    prepare = getattr(provider, "prepare", None)
++    if callable(prepare):
++        prepare()
++
++
+ def is_network_exception(exc: BaseException) -> bool:
+     """Return whether an exception indicates a transport failure.
+ 
+@@ -685,6 +715,43 @@ class BrowserSentinelProvider:
+             if attestation:
+                 self._attestation = attestation
+ 
++    def _sync_pending_update_from_browser(self) -> None:
++        """Mirror the browser's latest encrypted update receipt.
++
++        ChatGPT returns `x-oai-is-update` on browser responses and the next
++        request sends it as `x-oai-is-pending-updates`. The HTTP transport does
++        not see those browser-only response headers, so read only the header
++        metadata from agent-browser's request monitor and keep the opaque
++        value in memory.
++        """
++        try:
++            value = self._run(
++                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
++                timeout=20,
++            )
++        except Exception:
++            return
++        data = value.get("data") if isinstance(value, dict) else None
++        requests = data.get("requests") if isinstance(data, dict) else None
++        if not isinstance(requests, list):
++            return
++        for item in reversed(requests):
++            if not isinstance(item, dict):
++                continue
++            headers = item.get("responseHeaders")
++            if not isinstance(headers, dict):
++                continue
++            update = headers.get("x-oai-is-update") or headers.get("X-OAI-IS-Update")
++            if not update:
++                continue
++            transport_headers = getattr(self.transport_session, "headers", None)
++            if transport_headers is None:
++                return
++            transport_headers["x-oai-is-pending-updates"] = json.dumps(
++                {"v": 3, "updates": [str(update)]}, separators=(",", ":")
++            )
++            return
++
+     def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
+         """Set a browser cookie, chunking large NextAuth values safely."""
+         cookie_name = str(name or "").strip()
+@@ -808,12 +875,23 @@ class BrowserSentinelProvider:
+                 ]
+             )
+             self._capture_bootstrap()
++            self._sync_pending_update_from_browser()
+             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
+             self._sync_cookies()
+         except Exception:
+             self._failed = True
+             raise
+ 
++    def prepare(self) -> None:
++        """Eagerly bootstrap the browser and mirror pending update state."""
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Sentinel browser provider failed during startup")
++            if not self._started:
++                self._start()
++            else:
++                self._sync_pending_update_from_browser()
++
+     def _ping(self, referer: str) -> None:
+         # The SDK itself uses a zero-length POST immediately before protected
+         # checkout calls.  Running it in the same browser context keeps the
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index a9d0cbb..53c0231 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -69,6 +69,91 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
+     assert approve_values[0] == 1 and approve_values[5:] == [2, 0, approve_values[7]]
+ 
+ 
++def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers = {"x-oai-is-pending-updates": '{"v":3,"updates":[]}'}
++
++        def request(self, *_args, **_kwargs):
++            class Response:
++                status_code = 200
++                text = "{}"
++                headers = {"x-oai-is-update": "ois1.fixture"}
++
++            return Response()
++
++    session = Session()
++    response = gopay_transport.stage_http_request(
++        session,
++        "fixture",
++        "GET",
++        "https://chatgpt.com/backend-api/fixture",
++        None,
++    )
++    assert response.status_code == 200
++    assert json.loads(session.headers["x-oai-is-pending-updates"]) == {
++        "v": 3,
++        "updates": ["ois1.fixture"],
++    }
++
++
++def test_gopay_browser_provider_syncs_pending_update_header(monkeypatch) -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++
++    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
++    provider.transport_session = Session()
++    monkeypatch.setattr(
++        provider,
++        "_run",
++        lambda _args, timeout=20: {
++            "success": True,
++            "data": {
++                "requests": [
++                    {"responseHeaders": {"x-oai-is-update": "ois1.browser-fixture"}}
++                ]
++            },
++        },
++    )
++    provider._sync_pending_update_from_browser()
++    assert json.loads(provider.transport_session.headers["x-oai-is-pending-updates"]) == {
++        "v": 3,
++        "updates": ["ois1.browser-fixture"],
++    }
++
++
++def test_gopay_promo_probe_prepares_browser_session(monkeypatch) -> None:
++    calls: list[str] = []
++
++    class Session:
++        def __init__(self) -> None:
++            self.openai_sentinel_provider = type(
++                "Provider", (), {"prepare": lambda _self: calls.append("prepare")}
++            )()
++            self.proxies: dict[str, str] = {}
++
++    class Response:
++        status_code = 200
++        text = '{"state":"eligible"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"state": "eligible"}
++
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", lambda *_args, **_kwargs: Response())
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    result = gopay_checkout.check_coupon_eligibility(config, Session(), None)
++    assert result["state"] == "eligible"
++    assert calls == ["prepare"]
++
++
+ def test_gopay_required_sentinel_proof_fails_closed() -> None:
+     with pytest.raises(RuntimeError, match="browser Sentinel provider is required"):
+         gopay_transport.openai_sentinel_headers(
