@@ -90,3 +90,34 @@ def test_canary_loader_parses_jsonl_before_matching_token(tmp_path: Path) -> Non
     assert MODULE.load_tokens(rollout) == [
         "eyJheader.payload.signature_tail"
     ]
+
+
+def test_canary_loads_runtime_browser_state_without_exposing_values(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "browser-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "__Secure-next-auth.session-token.0",
+                        "value": "chunk-zero",
+                    },
+                    {
+                        "name": "__Secure-next-auth.session-token.1",
+                        "value": "chunk-one",
+                    },
+                    {"name": "__cf_bm", "value": "must-be-ignored"},
+                ],
+                "oai-web-deployment-attestation": "a" * 291,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cookies, attestation = MODULE.load_browser_state(state)
+    assert cookies == (
+        ("__Secure-next-auth.session-token.0", "chunk-zero"),
+        ("__Secure-next-auth.session-token.1", "chunk-one"),
+    )
+    assert attestation == "a" * 291
