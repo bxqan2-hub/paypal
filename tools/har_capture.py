@@ -195,6 +195,7 @@ class HARRecorder:
         self.states: dict[str, dict[str, Any]] = {}
         self._commands: dict[int, dict[str, Any]] = {}
         self._fetch_bodies: dict[str, dict[str, Any]] = {}
+        self._flushing = False
         # ExtraInfo events carry the complete wire headers/cookie metadata. They
         # are delivered independently from requestWillBeSent/responseReceived
         # (and can arrive before or after those events), so retain unmatched
@@ -229,6 +230,8 @@ class HARRecorder:
                 sock.settimeout(previous_timeout)
 
     def handle(self, message: dict[str, Any]) -> None:
+        if self._flushing:
+            return
         method = str(message.get("method") or "")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if method == "Fetch.requestPaused":
@@ -498,14 +501,18 @@ class HARRecorder:
         """Materialize requests still in flight when capture stops."""
         pending = list(self.states.values())
         self.states.clear()
-        for state in pending:
-            self._fill_missing_request_body(state)
-            if state.get("response"):
-                try:
-                    self._fill_response_body(state)
-                except Exception:
-                    pass
-            self._finish(state)
+        self._flushing = True
+        try:
+            for state in pending:
+                self._fill_missing_request_body(state)
+                if state.get("response"):
+                    try:
+                        self._fill_response_body(state)
+                    except Exception:
+                        pass
+                self._finish(state)
+        finally:
+            self._flushing = False
 
     @staticmethod
     def _expects_response_body(request: dict[str, Any], response: dict[str, Any]) -> bool:
