@@ -28,6 +28,11 @@ def test_profile_cache_cleanup_preserves_session_files(tmp_path) -> None:
     model = profile / "optimization_guide_model_store"
     model.mkdir(parents=True)
     (model / "model.tflite").write_bytes(b"model")
+    (profile / "BrowserMetrics-spare.pma").write_bytes(b"metrics")
+    (profile / "CrashpadMetrics-active.pma").write_bytes(b"crash-metrics")
+    dawn = profile / "Default" / "DawnWebGPUCache"
+    dawn.mkdir(parents=True)
+    (dawn / "cache.bin").write_bytes(b"dawn")
     cookies = profile / "Default" / "Network" / "Cookies"
     cookies.parent.mkdir(parents=True)
     cookies.write_bytes(b"session-cookie-db")
@@ -35,6 +40,9 @@ def test_profile_cache_cleanup_preserves_session_files(tmp_path) -> None:
     assert sentinel._purge_profile_caches(profile) >= 2
     assert not cache.exists()
     assert not model.exists()
+    assert not (profile / "BrowserMetrics-spare.pma").exists()
+    assert not (profile / "CrashpadMetrics-active.pma").exists()
+    assert not dawn.exists()
     assert cookies.read_bytes() == b"session-cookie-db"
 
 
