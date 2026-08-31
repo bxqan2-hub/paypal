@@ -108,6 +108,10 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
                         "name": "__Secure-next-auth.session-token.1",
                         "value": "chunk-one",
                     },
+                    {"name": "oai-did", "value": "device-fixture"},
+                    {"name": "_account", "value": "account-fixture"},
+                    {"name": "__stripe_mid", "value": "mid-fixture"},
+                    {"name": "__stripe_sid", "value": "sid-fixture"},
                     {
                         "name": "__Secure-next-auth.session-token.bad",
                         "value": "must-be-ignored",
@@ -123,6 +127,10 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
     assert cookies == (
         ("__Secure-next-auth.session-token.0", "chunk-zero"),
         ("__Secure-next-auth.session-token.1", "chunk-one"),
+        ("__stripe_mid", "mid-fixture"),
+        ("__stripe_sid", "sid-fixture"),
+        ("_account", "account-fixture"),
+        ("oai-did", "device-fixture"),
     )
     assert attestation == "a" * 291
 

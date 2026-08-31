@@ -53,6 +53,7 @@ from .gopay_stripe_common import (
 )
 from .gopay_transport import (
     EMPTY_PENDING_UPDATES,
+    effective_gopay_proxy,
     openai_sentinel_headers,
     prepare_openai_browser_flow,
     rotate_openai_approval_context,
@@ -420,6 +421,8 @@ def cs_checkout_taxes(
     checkout: CheckoutData,
     billing: dict[str, str],
     log: Any | None,
+    *,
+    use_pending_updates: bool = False,
 ) -> dict[str, Any]:
     path = "/backend-api/payments/checkout/taxes"
     processor = processor_entity_for_country(
@@ -435,6 +438,13 @@ def cs_checkout_taxes(
         "processor_entity": processor,
         "billing_address": cs_billing_address(billing, country=config.country.upper()),
     }
+    request_headers = {
+        "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+    if not use_pending_updates:
+        request_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
     response = stage_http_request(
         chatgpt,
         "ChatGPT cs_live checkout/taxes",
@@ -442,12 +452,7 @@ def cs_checkout_taxes(
         "https://chatgpt.com" + path,
         log,
         json=body,
-        headers={
-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
-            "x-openai-target-path": path,
-            "x-openai-target-route": path,
-            "x-oai-is-pending-updates": EMPTY_PENDING_UPDATES,
-        },
+        headers=request_headers,
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
@@ -697,7 +702,10 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
         str(checkout.get("processor_entity") or ""),
     )
     referer = f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
-    approve_proxy = str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip()
+    approve_proxy = effective_gopay_proxy(
+        chatgpt,
+        str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip(),
+    )
     if approve_proxy:
         set_proxy_url(chatgpt, approve_proxy)
     # SentinelSDK.token(flow) consumes the challenge prefetched after
@@ -756,7 +764,10 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
             "browser_channel": str(getattr(provider, "_browser_channel", "") or ""),
             "browser_version": str(getattr(provider, "_browser_version", "") or ""),
             "persistent_runtime": bool(getattr(provider, "_runtime_id", "")),
-            "persistent_profile": bool(getattr(provider, "_profile_path", "")),
+            "persistent_profile": bool(
+                getattr(provider, "_profile_path", "")
+                and not getattr(provider, "_external_cdp", False)
+            ),
             "account_binding_verified": bool(
                 getattr(provider, "_account_binding_verified", False)
             ),
@@ -768,6 +779,11 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
             ),
             "session_cookie_source": str(
                 getattr(provider, "_session_cookie_source", "") or ""
+            ),
+            "external_cdp": bool(getattr(provider, "_external_cdp", False)),
+            "cookie_backed": bool(getattr(provider, "_cookie_backed", False)),
+            "browser_http_requests": int(
+                getattr(chatgpt, "openai_browser_http_requests", 0) or 0
             ),
             "checkout_navigation_fallback": bool(
                 getattr(provider, "_checkout_navigation_fallback", False)
@@ -865,7 +881,10 @@ def extract_cs_live_provider(
     if elements_payload:
         ensure_payment_method_offered(elements_payload, payment_method, "cs_live Elements session")
     prefetch_checkout_approval_proof(config, chatgpt, checkout, log)
-    provider_proxy = str(config.gopay_provider_proxy or config.checkout_proxy).strip()
+    provider_proxy = effective_gopay_proxy(
+        chatgpt,
+        str(config.gopay_provider_proxy or config.checkout_proxy).strip(),
+    )
     if provider_proxy:
         set_proxy_url(chatgpt, provider_proxy)
     stripe_consumer_session_lookup(stripe, checkout, billing, log)
@@ -911,7 +930,14 @@ def extract_cs_live_provider(
         (("postal_code", "state"),),
         accumulated,
     )
-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_taxes(
+        config,
+        chatgpt,
+        checkout,
+        billing,
+        log,
+        use_pending_updates=True,
+    )
     cs_checkout_page_refresh(stripe, checkout, ctx, log)
     require_gopay_fail_fast_amount(
         ctx.get("checkout_amount"),

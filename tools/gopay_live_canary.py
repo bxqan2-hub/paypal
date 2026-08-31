@@ -28,6 +28,10 @@ AUTH_COOKIE_NAMES = {
     "__Secure-oai-is",
     "oai-client-auth-info",
     "oai-client-session-epoch",
+    "_account",
+    "oai-did",
+    "__stripe_mid",
+    "__stripe_sid",
 }
 
 

@@ -6,13 +6,15 @@ import os
 import re
 from typing import Any, Callable
 
-from .auth import is_nextauth_session_cookie_name
+from .auth import account_id, is_nextauth_session_cookie_name
 from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
 from .errors import ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
 from .gopay_transport import (
+    effective_gopay_proxy,
     openai_sentinel_headers,
+    prepare_openai_browser_session,
     response_json,
     set_proxy_url,
     stage_http_request,
@@ -20,6 +22,14 @@ from .gopay_transport import (
 
 CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
 PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+
+
+def _external_cdp_requested() -> bool:
+    try:
+        port = int(os.getenv("OPLL_GOPAY_SENTINEL_CDP_PORT", "0"))
+    except ValueError:
+        return False
+    return 0 < port < 65_536
 
 
 def require_gopay_browser_session_binding(
@@ -438,6 +448,12 @@ def create_checkout(
             cookie_names=cookie_names,
             attestation_length=attestation_length,
         )
+    # In external-CDP mode collapse the initial Checkout request onto the
+    # browser-owned route too (eligibility may be disabled by callers).
+    set_proxy_url(
+        chatgpt,
+        effective_gopay_proxy(chatgpt, config.checkout_proxy),
+    )
     headers.update(sentinel_headers)
     if commit_callback is not None:
         commit_callback()
@@ -476,6 +492,15 @@ def create_checkout(
         "payment_locale": config_locale(config),
     }
     merge_checkout_payload(checkout, payload)
+    # The browser adds the account selector after Checkout is created; the
+    # initial create request intentionally omits it.  Mirror that phase change
+    # for snapshot/taxes/approve calls.
+    selected_account_id = account_id(config.access_token)
+    if selected_account_id:
+        try:
+            chatgpt.headers["chatgpt-account-id"] = selected_account_id
+        except Exception:
+            pass
     return checkout
 
 
@@ -485,9 +510,53 @@ def probe_coupon_eligibility(
     log: Any | None,
 ) -> dict[str, Any]:
     """Read the Plus trial state without creating or updating Checkout."""
-    eligibility_proxy = str(
-        config.gopay_checkout_proxy or config.checkout_proxy
-    ).strip()
+    # Attach and sample the live browser first.  Otherwise the first GET can
+    # leave on the configured proxy while the later Sentinel proof uses the
+    # browser's existing route/device, producing a mixed-identity attempt.
+    if _external_cdp_requested():
+        prepare_openai_browser_session(chatgpt)
+        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+        binding_state = str(
+            getattr(provider, "_session_cookie_binding_state", "") or ""
+        ).strip().lower()
+        if binding_state not in {"matched", "not_present"}:
+            error = ProtocolError(
+                412,
+                "GoPay browser session binding is not ready for eligibility",
+            )
+            error.failure_mode = (
+                "browser_session_account_mismatch"
+                if binding_state == "mismatched"
+                else "browser_session_binding_unavailable"
+            )
+            error.retryable = binding_state != "mismatched"
+            cookie_header = str(
+                getattr(provider, "_cookies", "") or ""
+            )
+            error.safe_context = {
+                "external_cdp": bool(getattr(provider, "_external_cdp", False)),
+                "session_cookie_binding_state": binding_state,
+                "session_cookie_source": str(
+                    getattr(provider, "_session_cookie_source", "") or ""
+                ),
+                "cookie_names": sorted(
+                    {
+                        part.split("=", 1)[0].strip()
+                        for part in cookie_header.split(";")
+                        if "=" in part and part.split("=", 1)[0].strip()
+                    }
+                ),
+                "attestation_length": len(
+                    str(getattr(provider, "_attestation", "") or "")
+                ),
+            }
+            raise error
+    eligibility_proxy = effective_gopay_proxy(
+        chatgpt,
+        str(
+            config.gopay_checkout_proxy or config.checkout_proxy
+        ).strip(),
+    )
     if not eligibility_proxy:
         raise ConfigurationError("checkout proxy is required for eligibility check")
     path = "/backend-api/promo_campaign/check_coupon"
@@ -495,6 +564,10 @@ def probe_coupon_eligibility(
     url = f"https://chatgpt.com{path}?coupon={coupon}&is_coupon_from_query_param=true"
     set_proxy_url(chatgpt, eligibility_proxy)
     try:
+        # Bind the HTTP eligibility probe to the same live browser cookies,
+        # device id, attestation and pending-receipt state that will be used
+        # by Checkout/approve.  This is especially important in external-CDP
+        # mode, where the browser already owns the authenticated context.
         # The reference account audit performs this authenticated GET as a
         # standalone probe. The existing GoPay session already carries the
         # account id, device id, ID locale and the selected attempt proxy.
@@ -534,7 +607,10 @@ def probe_coupon_eligibility(
             "redeemed_by_user": redemption.get("redeemed_by_user"),
         }
     finally:
-        set_proxy_url(chatgpt, config.checkout_proxy)
+        set_proxy_url(
+            chatgpt,
+            effective_gopay_proxy(chatgpt, config.checkout_proxy),
+        )
 
 
 def check_coupon_eligibility(
@@ -576,7 +652,10 @@ def update_checkout(
             "is_coupon_from_query_param": False,
         },
     }
-    set_proxy_url(chatgpt, config.update_proxy)
+    set_proxy_url(
+        chatgpt,
+        effective_gopay_proxy(chatgpt, config.update_proxy),
+    )
     try:
         response = stage_http_request(
             chatgpt,
@@ -593,7 +672,10 @@ def update_checkout(
             timeout=DEFAULT_TIMEOUT,
         )
     finally:
-        set_proxy_url(chatgpt, config.checkout_proxy)
+        set_proxy_url(
+            chatgpt,
+            effective_gopay_proxy(chatgpt, config.checkout_proxy),
+        )
     if response.status_code >= 400:
         raise ProtocolError(response.status_code, f"checkout/update failed: {response.text[:500]}")
     payload = response_json(response, "checkout/update")

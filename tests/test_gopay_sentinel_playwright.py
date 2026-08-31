@@ -28,6 +28,14 @@ def test_playwright_cookie_header_contains_no_empty_names() -> None:
             {"name": "__stripe_mid", "value": "mid"},
         ]
     ) == "oai-did=device; __stripe_mid=mid"
+    preserved = sentinel._cookies_from_header(
+        "oai-did=browser-device; __Host-next-auth.csrf-token=csrf",
+        "at-derived-device",
+        preserve_device_id=True,
+    )
+    assert {item["name"]: item["value"] for item in preserved}["oai-did"] == (
+        "browser-device"
+    )
 
 
 def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
@@ -53,8 +61,13 @@ def test_session_cookie_binding_probe_uses_cookies_without_bearer_header() -> No
     assert asyncio.run(
         sentinel._verify_session_cookie_binding(page, "user-fixture")
     ) == "matched"
-    assert calls[0]["expected"] == "user-fixture"
+    assert calls[0]["expected"] == {
+        "expected": "user-fixture",
+        "expectedEmail": "",
+        "expectedAccount": "",
+    }
     assert "credentials: 'include'" in calls[0]["expression"]
+    assert "'/api/auth/session'" in calls[0]["expression"]
     assert "authorization" not in calls[0]["expression"].lower()
 
 
@@ -79,6 +92,26 @@ def test_session_cookie_binding_probe_keeps_unavailable_distinct() -> None:
     assert asyncio.run(
         sentinel._verify_session_cookie_binding(Page(), "")
     ) == "identity_missing"
+
+
+def test_session_cookie_binding_probe_can_use_email_when_user_id_is_missing() -> None:
+    calls: list[dict[str, object]] = []
+
+    class Page:
+        async def evaluate(self, expression, expected):
+            calls.append({"expression": expression, "expected": expected})
+            return "matched"
+
+    assert asyncio.run(
+        sentinel._verify_session_cookie_binding(
+            Page(), "", "User@Example.test"
+        )
+    ) == "matched"
+    assert calls[0]["expected"] == {
+        "expected": "",
+        "expectedEmail": "user@example.test",
+        "expectedAccount": "",
+    }
 
 
 def test_session_cookie_binding_retries_unavailable_in_same_runtime() -> None:
@@ -148,6 +181,27 @@ def test_imported_session_cookies_replace_stale_nextauth_chunks_only() -> None:
     assert events[1][1] == imported
 
 
+def test_host_cookie_import_omits_domain_for_playwright() -> None:
+    cookies = sentinel._cookies_from_header(
+        "__Host-next-auth.csrf-token=csrf-fixture; oai-did=device-fixture",
+        "device-fixture",
+    )
+    by_name = {item["name"]: item for item in cookies}
+    assert "domain" not in by_name["__Host-next-auth.csrf-token"]
+    assert by_name["__Host-next-auth.csrf-token"]["url"] == "https://chatgpt.com/"
+    assert "path" not in by_name["__Host-next-auth.csrf-token"]
+    assert by_name["oai-did"]["domain"] == ".chatgpt.com"
+    assert sentinel._cookie_record(
+        "fixture-cookie", "value", http_only=True
+    )["httpOnly"] is True
+
+
+def test_chatgpt_origin_check_rejects_auth_routes() -> None:
+    assert sentinel._is_chatgpt_url("https://chatgpt.com/") is True
+    assert sentinel._is_chatgpt_url("https://chatgpt.com/auth/login") is False
+    assert sentinel._is_chatgpt_url("https://auth.openai.com/") is False
+
+
 def test_explicit_nextauth_chunks_do_not_reimport_stale_header_chunks() -> None:
     cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
         (
@@ -169,6 +223,17 @@ def test_explicit_nextauth_chunks_do_not_reimport_stale_header_chunks() -> None:
     assert by_name["__Secure-next-auth.session-token.0"] == "fresh-zero"
     assert by_name["__Secure-next-auth.session-token.1"] == "fresh-one"
     assert "__Secure-next-auth.session-token.2" not in by_name
+
+
+def test_explicit_nextauth_preserves_account_cookie_metadata() -> None:
+    cookies, _, _ = sentinel._browser_session_cookies(
+        "__Secure-next-auth.session-token.0=stale; _account=account-fixture",
+        "device-fixture",
+        "",
+        (("__Secure-next-auth.session-token.0", "fresh"),),
+    )
+    names = {item["name"] for item in cookies}
+    assert "_account" in names
 
 
 def test_auxiliary_browser_cookies_do_not_replace_profile_nextauth() -> None:
@@ -197,6 +262,7 @@ def test_at_bound_fallback_discards_stale_profile_nextauth() -> None:
     assert replace_nextauth is True
     assert explicit_nextauth is False
     assert "__Secure-next-auth.session-token.0" not in names
+    assert "__Host-next-auth.csrf-token" not in names
     assert "__cf_bm" in names
 
 
@@ -234,6 +300,100 @@ def test_at_only_bearer_probe_keeps_non_nextauth_browser_cookies() -> None:
     source = Path(sentinel.__file__).read_text(encoding="utf-8")
     assert "credentials: cookieBacked ? 'omit' : 'include'" in source
     assert "'chatgpt-account-id': account" in source
+
+
+def test_sdk_install_falls_back_to_pinned_local_asset(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Page:
+        async def evaluate(self, *_args):
+            return False
+
+        async def add_script_tag(self, **kwargs):
+            calls.append(kwargs)
+            if "url" in kwargs:
+                raise RuntimeError("fixture proxy asset failure")
+
+    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
+    async def ready(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(sentinel, "_wait_for_sdk_ready", ready)
+    digest = asyncio.run(daemon._install_sdk(Page()))
+    assert digest == sentinel.PINNED_SENTINEL_SDK_SHA256
+    assert len(calls) == 2
+    assert calls[0]["url"].endswith("/backend-api/sentinel/sdk.js")
+    assert len(calls[1]["content"]) > 1000
+
+
+def test_page_bootstrap_syncs_attestation_and_session_id() -> None:
+    class Page:
+        async def evaluate(self, *_args):
+            return {
+                "attestation": "a" * 291,
+                "sessionId": "session-from-page",
+            }
+
+    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
+    session = sentinel._BrowserSession(
+        context=SimpleNamespace(),
+        page=Page(),
+        profile_path=Path("runtime-profile"),
+        device_id="device-fixture",
+        session_id="transport-session",
+    )
+    asyncio.run(daemon._capture_page_attestation(session))
+    assert session.attestation == "a" * 291
+    assert session.session_id == "session-from-page"
+
+
+def test_sdk_fallback_uses_cdp_csp_bypass_on_attached_page(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class CDP:
+        async def send(self, method, params):
+            calls.append((method, params))
+
+        async def detach(self):
+            calls.append(("detach", None))
+
+    class Context:
+        async def new_cdp_session(self, _page):
+            return CDP()
+
+    class Page:
+        context = Context()
+        url = "https://chatgpt.com/"
+
+        async def evaluate(self, *_args):
+            return False
+
+        async def add_script_tag(self, **kwargs):
+            if "url" in kwargs:
+                raise RuntimeError("fixture remote failure")
+            calls.append(("inline", kwargs.get("content", "")))
+
+        async def set_extra_http_headers(self, headers):
+            calls.append(("headers", dict(headers)))
+
+        async def goto(self, url, **_kwargs):
+            self.url = url
+
+    async def ready(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(sentinel, "_wait_for_sdk_ready", ready)
+    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
+    digest = asyncio.run(
+        daemon._install_sdk(Page(), {"oai-device-id": "device-fixture"})
+    )
+    assert digest == sentinel.PINNED_SENTINEL_SDK_SHA256
+    assert any(
+        method == "Page.setBypassCSP" and params == {"enabled": True}
+        for method, params in calls
+    )
+    assert any(method == "inline" for method, _ in calls)
+    assert any(method == "detach" for method, _ in calls)
 
 
 def test_at_only_checkout_navigation_timeout_uses_same_page_fallback(

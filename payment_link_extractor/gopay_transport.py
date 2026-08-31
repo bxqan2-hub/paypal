@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import base64
 import json
+import re
 import secrets
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -21,7 +22,12 @@ try:
 except ImportError:  # pragma: no cover - installation issue handled at runtime
     requests = None  # type: ignore
 
-from .auth import account_id, account_user_id, is_nextauth_session_cookie_name
+from .auth import (
+    account_email,
+    account_id,
+    account_user_id,
+    is_nextauth_session_cookie_name,
+)
 from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
 from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
@@ -29,7 +35,45 @@ from .models import ExtractionConfig
 
 
 EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
+PENDING_RECEIPT_LIMIT = 2
 SENTINEL_SDK_VERSION = "20260810913b"
+
+
+def _enabled_env(value: Any, *, default: bool) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    return text not in {"0", "false", "off", "disabled", "no"}
+
+
+class BrowserHTTPResponse:
+    """Small requests-compatible response returned by the CDP fetch bridge."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        text: str,
+        headers: dict[str, str],
+        url: str,
+        reason: str = "",
+    ) -> None:
+        self.status_code = int(status_code)
+        self.text = str(text or "")
+        self.headers = dict(headers or {})
+        self.url = str(url or "")
+        self.reason = str(reason or "")
+
+    @property
+    def ok(self) -> bool:
+        return self.status_code < 400
+
+    @property
+    def content(self) -> bytes:
+        return self.text.encode("utf-8")
+
+    def json(self) -> Any:
+        return json.loads(self.text)
 
 
 def browser_checkout_telemetry(action: str) -> str:
@@ -60,6 +104,18 @@ def browser_checkout_telemetry(action: str) -> str:
             tail,
         ]
     return json.dumps(values, separators=(",", ":"))
+
+
+def _pending_receipts_from_header(value: Any) -> list[str]:
+    try:
+        payload = json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return []
+    updates = payload.get("updates") if isinstance(payload, dict) else None
+    if not isinstance(updates, list):
+        return []
+    values = [str(item).strip() for item in updates if str(item).strip()]
+    return values[-PENDING_RECEIPT_LIMIT:]
 
 try:
     from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
@@ -314,6 +370,13 @@ def normalize_proxy_url(proxy: str) -> str:
 def set_proxy_url(session: Any, proxy: str) -> None:
     normalized = normalize_proxy_url(proxy)
     session.proxies = {"http": normalized, "https": normalized} if normalized else {}
+    # Keep the diagnostic/rotation source of truth aligned with the actual
+    # requests proxy.  External-CDP mode consults this value to prevent an
+    # HTTP-only route change from splitting the browser proof and approval.
+    try:
+        session.openai_proxy = normalized
+    except Exception:
+        pass
 
 
 def merged_session_cookie_header(session: Any) -> str:
@@ -338,7 +401,7 @@ def merged_session_cookie_header(session: Any) -> str:
             values = {}
         if isinstance(values, dict):
             for name, value in values.items():
-                if str(name).strip():
+                if str(name).strip() and str(name) not in merged:
                     merged[str(name)] = str(value)
     return "; ".join(f"{name}={value}" for name, value in merged.items())
 
@@ -353,10 +416,8 @@ def stage_http_request(
 ) -> Any:
     started = time.perf_counter()
     emit_log(log, f"{stage}: {method.upper()} {compact_url(url)}")
-    # The browser rotates this short-lived observation value on each logical
-    # request.  Keep it out of call sites so route/tax/confirm requests all
-    # receive the same transport-level treatment while test doubles remain
-    # unchanged.
+    # Keep the browser's short-lived observation value out of call sites so
+    # route/tax/confirm requests receive one consistent transport treatment.
     refresh_headers = getattr(session, "refresh_openai_request_headers", None)
     if callable(refresh_headers):
         try:
@@ -369,7 +430,55 @@ def stage_http_request(
                 request_headers[key] = value
             kwargs["headers"] = request_headers
     try:
-        response = session.request(method.upper(), url, **kwargs)
+        provider = getattr(session, "openai_sentinel_provider", None)
+        parsed_url = urlsplit(str(url or ""))
+        use_browser_http = (
+            provider is not None
+            and bool(getattr(provider, "_external_cdp", False))
+            and callable(getattr(provider, "browser_request", None))
+            and parsed_url.scheme == "https"
+            and parsed_url.netloc == "chatgpt.com"
+            and _enabled_env(
+                os.getenv("OPLL_GOPAY_EXTERNAL_CDP_BROWSER_HTTP", ""),
+                default=True,
+            )
+        )
+        if use_browser_http:
+            try:
+                session.openai_browser_http_requests = int(
+                    getattr(session, "openai_browser_http_requests", 0) or 0
+                ) + 1
+            except Exception:
+                pass
+            request_url = str(url)
+            params = kwargs.get("params")
+            if params:
+                query = urlencode(params, doseq=True)
+                request_url += ("&" if "?" in request_url else "?") + query
+            browser_headers = dict(getattr(session, "headers", {}) or {})
+            browser_headers.update(dict(kwargs.get("headers") or {}))
+            body: str | None = None
+            if kwargs.get("json") is not None:
+                body = json.dumps(
+                    kwargs["json"], ensure_ascii=False, separators=(",", ":")
+                )
+            elif kwargs.get("data") is not None:
+                data = kwargs["data"]
+                body = urlencode(data, doseq=True) if isinstance(data, dict) else str(data)
+            timeout_value = kwargs.get("timeout", DEFAULT_TIMEOUT)
+            try:
+                timeout_ms = max(1_000, min(120_000, int(float(timeout_value) * 1000)))
+            except (TypeError, ValueError):
+                timeout_ms = int(DEFAULT_TIMEOUT * 1000)
+            response = provider.browser_request(
+                method.upper(),
+                request_url,
+                headers=browser_headers,
+                body=body,
+                timeout_ms=timeout_ms,
+            )
+        else:
+            response = session.request(method.upper(), url, **kwargs)
     except Exception as exc:
         detail = safe_log_text(exc)
         emit_log(log, f"{stage}: request error={detail}")
@@ -396,13 +505,22 @@ def stage_http_request(
     session_headers = getattr(session, "headers", None)
     if session_headers is not None:
         try:
+            queue = getattr(session, "openai_pending_receipts", None)
+            if not isinstance(queue, list):
+                queue = []
             if pending_ack:
+                queue = []
                 session_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
             elif pending_receipt:
+                selected_receipt = str(pending_receipt)
+                if selected_receipt not in queue:
+                    queue.append(selected_receipt)
+                queue = queue[-PENDING_RECEIPT_LIMIT:]
                 session_headers["x-oai-is-pending-updates"] = json.dumps(
-                    {"v": 3, "updates": [str(pending_receipt)]},
+                    {"v": 3, "updates": queue},
                     separators=(",", ":"),
                 )
+            setattr(session, "openai_pending_receipts", queue)
         except Exception:
             pass
     return response
@@ -521,6 +639,28 @@ def prepare_openai_browser_flow(
     return False
 
 
+def effective_gopay_proxy(session: Any, configured: str) -> str:
+    """Keep HTTP GoPay calls on the route owned by an attached browser.
+
+    A CDP-attached profile cannot change its network proxy per request.  When
+    external mode is active, silently rotating only the HTTP session creates a
+    proof/IP split that the approval endpoint rejects.  Callers may opt back
+    into the legacy segmented rotation with
+    ``OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION=1``.
+    """
+    provider = getattr(session, "openai_sentinel_provider", None)
+    external = provider is not None and bool(
+        getattr(provider, "_external_cdp", False)
+    )
+    current = normalize_proxy_url(str(getattr(session, "openai_proxy", "") or ""))
+    allow_rotation = str(
+        os.getenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", "")
+    ).strip().lower() in {"1", "true", "on", "enabled", "yes"}
+    if external and current and not allow_rotation:
+        return current
+    return normalize_proxy_url(configured)
+
+
 def rotate_openai_approval_context(
     session: Any,
     config: ExtractionConfig,
@@ -532,6 +672,21 @@ def rotate_openai_approval_context(
     if not normalized or normalized == current:
         return False
     previous = getattr(session, "openai_sentinel_provider", None)
+    if (
+        previous is not None
+        and bool(getattr(previous, "_external_cdp", False))
+        and current
+        and normalized != current
+        and str(
+            os.getenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", "")
+        ).strip().lower()
+        not in {"1", "true", "on", "enabled", "yes"}
+    ):
+        # Keep the provider and its live browser tab; only the HTTP caller's
+        # requested segment is collapsed onto the browser's existing route.
+        set_proxy_url(session, current)
+        session.openai_approve_proxy = current
+        return False
     close = getattr(previous, "close", None)
     if callable(close):
         close()
@@ -611,6 +766,14 @@ def _session_cookie_value(session: Any, name: str) -> str:
     return ""
 
 
+def _stripe_browser_cookie_id(value: Any) -> str:
+    """Normalize generated Stripe ids to the browser's 42-character shape."""
+    text = str(value or "").strip()
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", text):
+        return text + secrets.token_hex(3)
+    return text
+
+
 def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
     """Bind Stripe confirm metrics to the ChatGPT browser cookie identity."""
     muid = _session_cookie_value(session, "__stripe_mid")
@@ -618,6 +781,8 @@ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
         ctx["muid"] = muid
     else:
         muid = str(ctx.get("muid") or "").strip()
+        muid = _stripe_browser_cookie_id(muid)
+        ctx["muid"] = muid
         if muid:
             provider = getattr(session, "openai_sentinel_provider", None)
             set_cookie = getattr(provider, "set_cookie", None)
@@ -637,8 +802,27 @@ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
     if sid and sid.upper() != "NA":
         ctx["sid"] = sid
     else:
-        # The successful no-cookie browser shape sends the literal NA.
-        ctx["sid"] = "NA"
+        provider = getattr(session, "openai_sentinel_provider", None)
+        if bool(
+            getattr(provider, "_external_cdp", False)
+            or getattr(provider, "_cookie_backed", False)
+        ):
+            # A logged-in attached browser follows the Stripe cookie-backed
+            # shape.  Seed a real session id when the profile has not visited
+            # Stripe yet, then mirror it through the same provider tab.
+            generated_sid = _stripe_browser_cookie_id(str(uuid.uuid4()))
+            set_cookie = getattr(provider, "set_cookie", None)
+            installed = False
+            if callable(set_cookie):
+                try:
+                    set_cookie("__stripe_sid", generated_sid, http_only=False)
+                    installed = True
+                except Exception:
+                    pass
+            ctx["sid"] = generated_sid if installed else "NA"
+        else:
+            # The successful no-cookie browser shape sends the literal NA.
+            ctx["sid"] = "NA"
 
 
 def is_network_exception(exc: BaseException) -> bool:
@@ -1404,6 +1588,8 @@ class PlaywrightSentinelProvider:
         self._session_cookie_binding_verified = False
         self._session_cookie_binding_state = "unverified"
         self._session_cookie_source = "none"
+        self._cookie_backed = False
+        self._external_cdp = False
         self._checkout_navigation_fallback = False
         self._checkout_navigation_error = ""
         self._started = False
@@ -1428,13 +1614,69 @@ class PlaywrightSentinelProvider:
 
         return get_playwright_daemon()
 
+    def browser_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+        timeout_ms: int = 45_000,
+    ) -> BrowserHTTPResponse:
+        """Route a protected ChatGPT call through the attached browser tab."""
+        with self._lock:
+            if self._failed:
+                raise RuntimeError("Playwright Sentinel provider failed during startup")
+            if not self._started:
+                self._start()
+            result = self._daemon().browser_request(
+                self._runtime_id,
+                str(method or "GET").upper(),
+                str(url),
+                dict(headers or {}),
+                body,
+                int(timeout_ms),
+            )
+            self._apply_runtime(result)
+            return BrowserHTTPResponse(
+                status_code=int(result.get("status_code") or 0),
+                text=str(result.get("text") or ""),
+                headers=dict(result.get("headers") or {}),
+                url=str(result.get("url") or url),
+                reason=str(result.get("reason") or ""),
+            )
+
     def _apply_runtime(self, result: dict[str, Any]) -> None:
-        attestation = str(result.get("attestation") or "").strip()
-        if attestation:
-            self._attestation = attestation
-        cookies = str(result.get("cookie_header") or "").strip()
-        if cookies:
-            self._cookies = cookies
+        device_id = str(result.get("device_id") or "").strip()
+        if device_id:
+            self.device_id = device_id
+        runtime_session_id = str(result.get("session_id") or "").strip()
+        if runtime_session_id:
+            self.session_id = runtime_session_id
+        if "attestation" in result:
+            self._attestation = str(result.get("attestation") or "").strip()
+        if "cookie_header" in result:
+            self._cookies = str(result.get("cookie_header") or "").strip()
+            if not self._cookies and self.device_id:
+                # Keep the baseline device cookie even when a transient CDP
+                # read returns an empty jar.  The next successful read can
+                # replace it with the complete browser Cookie header.
+                self._cookies = f"oai-did={self.device_id}"
+        effective_user_agent = str(result.get("user_agent") or "").strip()
+        if effective_user_agent:
+            self.user_agent = effective_user_agent
+        effective_accept_language = str(
+            result.get("accept_language") or ""
+        ).strip()
+        effective_language = str(result.get("language") or "").strip()
+        if effective_language:
+            self.language = effective_language
+        effective_timezone = str(result.get("timezone") or "").strip()
+        if effective_timezone:
+            self.timezone = effective_timezone
+        sec_ch_ua = str(result.get("sec_ch_ua") or "").strip()
+        sec_ch_ua_mobile = str(result.get("sec_ch_ua_mobile") or "").strip()
+        sec_ch_ua_platform = str(result.get("sec_ch_ua_platform") or "").strip()
         profile_path = str(result.get("profile_path") or "").strip()
         if profile_path:
             self._profile_path = profile_path
@@ -1471,6 +1713,10 @@ class PlaywrightSentinelProvider:
             self._session_cookie_source = str(
                 result.get("session_cookie_source") or "none"
             )
+        if "external_cdp" in result:
+            self._external_cdp = bool(result.get("external_cdp"))
+        if "cookie_backed" in result:
+            self._cookie_backed = bool(result.get("cookie_backed"))
         if "checkout_navigation_fallback" in result:
             self._checkout_navigation_fallback = bool(
                 result.get("checkout_navigation_fallback")
@@ -1480,16 +1726,69 @@ class PlaywrightSentinelProvider:
                 result.get("checkout_navigation_error") or ""
             )
         headers = getattr(self.transport_session, "headers", None)
+        # Keep the transport object's identity attributes in lockstep with the
+        # browser runtime.  Approval-context rotation reads these attributes
+        # when it recreates the provider on a different sticky proxy.
+        for attr, value in (
+            ("openai_device_id", self.device_id),
+            ("openai_did", self.device_id),
+            ("openai_session_id", self.session_id),
+            ("openai_user_agent", self.user_agent),
+            ("openai_language", self.language),
+            ("openai_timezone", self.timezone),
+        ):
+            if value:
+                try:
+                    setattr(self.transport_session, attr, value)
+                except Exception:
+                    pass
+        try:
+            setattr(self.transport_session, "openai_external_cdp", self._external_cdp)
+        except Exception:
+            pass
         if headers is not None:
-            if self._cookies:
-                headers["Cookie"] = self._cookies
+            if "cookie_header" in result:
+                if self._cookies:
+                    headers["Cookie"] = self._cookies
+                else:
+                    headers.pop("Cookie", None)
             headers["oai-device-id"] = self.device_id
-            if self._attestation:
-                headers["oai-web-deployment-attestation"] = self._attestation
+            headers["oai-session-id"] = self.session_id
+            if "attestation" in result:
+                if self._attestation:
+                    headers["oai-web-deployment-attestation"] = self._attestation
+                else:
+                    headers.pop("oai-web-deployment-attestation", None)
+            if effective_user_agent:
+                headers["User-Agent"] = self.user_agent
+            if effective_accept_language:
+                headers["Accept-Language"] = effective_accept_language
+            if effective_language:
+                headers["oai-language"] = self.language
+            if sec_ch_ua:
+                headers["sec-ch-ua"] = sec_ch_ua
+            if sec_ch_ua_mobile:
+                headers["sec-ch-ua-mobile"] = sec_ch_ua_mobile
+            if sec_ch_ua_platform:
+                headers["sec-ch-ua-platform"] = sec_ch_ua_platform
             receipt = str(result.get("latest_receipt") or "").strip()
             if receipt:
+                queue = getattr(self.transport_session, "openai_pending_receipts", None)
+                if not isinstance(queue, list):
+                    queue = []
+                if receipt not in queue:
+                    queue.append(receipt)
+                queue = queue[-PENDING_RECEIPT_LIMIT:]
+                try:
+                    setattr(
+                        self.transport_session,
+                        "openai_pending_receipts",
+                        queue,
+                    )
+                except Exception:
+                    pass
                 headers["x-oai-is-pending-updates"] = json.dumps(
-                    {"v": 3, "updates": [receipt]}, separators=(",", ":")
+                    {"v": 3, "updates": queue}, separators=(",", ":")
                 )
 
     def _start(self) -> None:
@@ -1502,6 +1801,7 @@ class PlaywrightSentinelProvider:
                 access_token=self.access_token,
                 account_id=account_id(self.access_token),
                 expected_user_id=account_user_id(self.access_token),
+                expected_email=account_email(self.access_token),
                 device_id=self.device_id,
                 session_id=self.session_id,
                 user_agent=self.user_agent,
@@ -1727,15 +2027,16 @@ class DefaultTransportFactory:
         session.openai_client_observation = session.headers.get(
             "x-oai-is-client-observation", ""
         )
+        session.openai_gopay_snapshot_count = 0
+        session.openai_gopay_taxes_count = 0
+        session.openai_pending_receipts = _pending_receipts_from_header(
+            session.headers.get("x-oai-is-pending-updates", "")
+        )
         session.openai_request_started = time.perf_counter()
         session.openai_sentinel_observer_enabled = not is_gopay
 
         def refresh_openai_request_headers(method: str, url: str) -> dict[str, str]:
             pinned = observation_override or os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
-            observation = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
-            session.openai_client_observation = observation
-            session.headers["x-oai-is-client-observation"] = observation
-            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
             normalized_url = str(url or "").lower()
             is_checkout = normalized_url.endswith("/backend-api/payments/checkout")
             is_checkout_confirm = normalized_url.endswith(
@@ -1744,6 +2045,39 @@ class DefaultTransportFactory:
             is_checkout_approve = normalized_url.endswith(
                 "/backend-api/payments/checkout/approve"
             )
+            if pinned:
+                observation = pinned
+            elif payment_method == "gopay" and _enabled_env(
+                os.getenv("OPLL_GOPAY_BURST_OBSERVATION", ""), default=True
+            ):
+                # Chrome keeps one observation id for the snapshot/taxes burst,
+                # then rotates at the second taxes request and at approve.
+                observation = str(
+                    getattr(session, "openai_client_observation", "") or ""
+                ).strip()
+                if is_checkout or is_checkout_confirm or is_checkout_approve:
+                    observation = ""
+                elif normalized_url.endswith("/backend-api/payments/checkout/taxes"):
+                    count = int(getattr(session, "openai_gopay_taxes_count", 0) or 0)
+                    if count >= 1:
+                        observation = ""
+                    session.openai_gopay_taxes_count = count + 1
+                elif normalized_url.endswith(
+                    "/backend-api/payments/checkout/snapshot"
+                ):
+                    count = int(
+                        getattr(session, "openai_gopay_snapshot_count", 0) or 0
+                    )
+                    if count == 0:
+                        observation = ""
+                    session.openai_gopay_snapshot_count = count + 1
+                if not observation:
+                    observation = f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
+            else:
+                observation = f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
+            session.openai_client_observation = observation
+            session.headers["x-oai-is-client-observation"] = observation
+            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
             if method.upper() == "POST" and (
                 is_checkout or is_checkout_confirm or is_checkout_approve
             ):
@@ -1763,13 +2097,18 @@ class DefaultTransportFactory:
                         )
                         or ""
                     ).strip()
-                    dynamic["oai-telemetry"] = (
-                        override
-                        or captured
-                        or browser_checkout_telemetry(
-                            "approve" if is_checkout_approve else "confirm"
+                    if is_checkout_approve:
+                        # The browser approve request intentionally carries
+                        # the compact null telemetry marker; the richer
+                        # eight-field timing belongs to the initial Checkout
+                        # request and is retained separately for diagnostics.
+                        dynamic["oai-telemetry"] = override or "[1,null]"
+                    else:
+                        dynamic["oai-telemetry"] = (
+                            override
+                            or captured
+                            or browser_checkout_telemetry("confirm")
                         )
-                    )
                     if is_checkout_approve:
                         # Both complete GoPay HARs acknowledge an empty update
                         # envelope on approve, regardless of earlier tax receipts.
