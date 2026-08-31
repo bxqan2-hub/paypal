@@ -18,12 +18,7 @@ from ..config import (
     normalize_payment_method,
 )
 from ..errors import ConfigurationError
-from ..auth import (
-    extract_access_token,
-    extract_deployment_attestation,
-    extract_nextauth_session_cookies,
-    extract_session_token,
-)
+from ..auth import extract_access_token, extract_session_token
 from ..models import ExtractionConfig
 from .proxy_probe import ProxyProbeError, probe_proxy
 from .tasks import TaskManager, TaskNotFoundError, TaskStateError
@@ -360,8 +355,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
         session_token=extract_session_token(payload),
-        gopay_session_cookies=extract_nextauth_session_cookies(payload),
-        gopay_deployment_attestation=extract_deployment_attestation(payload),
     )
 
 

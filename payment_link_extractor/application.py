@@ -70,14 +70,6 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         gopay_promotion_proxy=str(config.gopay_promotion_proxy or "").strip(),
         gopay_provider_proxy=str(config.gopay_provider_proxy or "").strip(),
         gopay_approve_proxy=str(config.gopay_approve_proxy or "").strip(),
-        gopay_session_cookies=tuple(
-            (str(name).strip(), str(value).strip())
-            for name, value in config.gopay_session_cookies
-            if str(name).strip() and str(value).strip()
-        ),
-        gopay_deployment_attestation=str(
-            config.gopay_deployment_attestation or ""
-        ).strip(),
     )
 
 

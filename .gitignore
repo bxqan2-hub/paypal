@@ -9,10 +9,8 @@ __pycache__/
 data/*.log
 data/captures/
 data/har-capture-profile/
-data/playwright-capture-profile/
 data/gopay-sentinel-profiles/
 artifacts/screenshots/
-*.har
 artifacts/gopay-cdp-capture-20260830/raw_capture.har
 artifacts-local/
 payment_link_extractor/mk_gopay_open_source/upi/.stripe_bundles/

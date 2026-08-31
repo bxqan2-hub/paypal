@@ -195,7 +195,6 @@ class HARRecorder:
         self.states: dict[str, dict[str, Any]] = {}
         self._commands: dict[int, dict[str, Any]] = {}
         self._fetch_bodies: dict[str, dict[str, Any]] = {}
-        self._flushing = False
         # ExtraInfo events carry the complete wire headers/cookie metadata. They
         # are delivered independently from requestWillBeSent/responseReceived
         # (and can arrive before or after those events), so retain unmatched
@@ -230,13 +229,6 @@ class HARRecorder:
                 sock.settimeout(previous_timeout)
 
     def handle(self, message: dict[str, Any]) -> None:
-        # Once stop/flush starts, only command responses are relevant.  Those
-        # are consumed by ``command`` before ``handle`` is called.  Ignoring
-        # late Network events here prevents a response received during
-        # Network.getResponseBody from recursively starting another response
-        # stream while the recorder is trying to close.
-        if self._flushing:
-            return
         method = str(message.get("method") or "")
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if method == "Fetch.requestPaused":
@@ -279,12 +271,6 @@ class HARRecorder:
                 "request_extra": self._request_extras.pop(request_id, None),
                 "response_extra": self._response_extras.pop(request_id, None),
             }
-            # Chrome can omit postData from requestWillBeSent even when the
-            # request advertises a body. Fetch it immediately while the
-            # request id is still live instead of waiting until navigation or
-            # capture shutdown, when CDP may already have evicted it.
-            if request.get("hasPostData") and not request.get("postData"):
-                self._fill_missing_request_body(self.states[request_id])
         elif method == "Network.responseReceived":
             request_id = str(params.get("requestId") or "")
             state = self.states.get(request_id)
@@ -512,18 +498,14 @@ class HARRecorder:
         """Materialize requests still in flight when capture stops."""
         pending = list(self.states.values())
         self.states.clear()
-        self._flushing = True
-        try:
-            for state in pending:
-                self._fill_missing_request_body(state)
-                if state.get("response"):
-                    try:
-                        self._fill_response_body(state)
-                    except Exception:
-                        pass
-                self._finish(state)
-        finally:
-            self._flushing = False
+        for state in pending:
+            self._fill_missing_request_body(state)
+            if state.get("response"):
+                try:
+                    self._fill_response_body(state)
+                except Exception:
+                    pass
+            self._finish(state)
 
     @staticmethod
     def _expects_response_body(request: dict[str, Any], response: dict[str, Any]) -> bool:

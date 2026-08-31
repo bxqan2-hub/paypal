@@ -31,10 +31,6 @@ class ExtractionConfig:
     gopay_promotion_proxy: str = ""
     gopay_provider_proxy: str = ""
     gopay_approve_proxy: str = ""
-    # GoPay-only logged-browser material. Cookie names are preserved exactly so
-    # NextAuth .0/.1 chunks are not collapsed or truncated.
-    gopay_session_cookies: tuple[tuple[str, str], ...] = ()
-    gopay_deployment_attestation: str = ""
     # Optional account metadata accepted by the upstream MK app.py account
     # object. GCash uses these before falling back to JWT profile claims.
     account_name: str = ""

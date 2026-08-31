@@ -16,16 +16,6 @@ _SESSION_TOKEN_KEYS = {
     "__secure_next_auth.session_token",
     "securenextauthsessiontoken",
 }
-_NEXTAUTH_COOKIE_PREFIX = "__Secure-next-auth.session-token"
-NEXTAUTH_SESSION_COOKIE_PATTERN = re.compile(
-    r"^__Secure-next-auth\.session-token(?:\.\d+)?$"
-)
-_ATTESTATION_KEYS = {
-    "gopay_deployment_attestation",
-    "deployment_attestation",
-    "oai_web_deployment_attestation",
-    "oai-web-deployment-attestation",
-}
 _TOKEN_CHARS_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 
 
@@ -151,93 +141,6 @@ def extract_session_token(raw: Any) -> str:
     return _find_session_token(value)
 
 
-def is_nextauth_session_cookie_name(value: Any) -> bool:
-    """Return whether a cookie is the exact token or a numeric chunk."""
-    return bool(NEXTAUTH_SESSION_COOKIE_PATTERN.fullmatch(str(value or "").strip()))
-
-
-def extract_nextauth_session_cookies(raw: Any) -> tuple[tuple[str, str], ...]:
-    """Extract exact NextAuth cookie names, including .0/.1 chunks."""
-    found: dict[str, str] = {}
-
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            cookie_name = str(value.get("name") or "").strip()
-            cookie_value = value.get("value")
-            if (
-                is_nextauth_session_cookie_name(cookie_name)
-                and isinstance(cookie_value, str)
-                and cookie_value.strip()
-            ):
-                found[cookie_name] = cookie_value.strip()
-            for key, nested in value.items():
-                selected = str(key or "").strip()
-                if (
-                    is_nextauth_session_cookie_name(selected)
-                    and isinstance(nested, str)
-                    and nested.strip()
-                ):
-                    found[selected] = nested.strip()
-                visit(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                visit(nested)
-
-    value = raw
-    if isinstance(raw, str) and raw.strip().startswith(("{", "[")):
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            value = raw
-    visit(value)
-    if not found:
-        legacy = extract_session_token(raw)
-        if legacy:
-            found[_NEXTAUTH_COOKIE_PREFIX] = legacy
-
-    def order(item: tuple[str, str]) -> tuple[int, int, str]:
-        name = item[0]
-        if name == _NEXTAUTH_COOKIE_PREFIX:
-            return (0, 0, name)
-        suffix = name[len(_NEXTAUTH_COOKIE_PREFIX) :]
-        if suffix.startswith(".") and suffix[1:].isdigit():
-            return (1, int(suffix[1:]), name)
-        return (2, 0, name)
-
-    return tuple(sorted(found.items(), key=order))
-
-
-def extract_deployment_attestation(raw: Any) -> str:
-    """Extract an optional per-browser deployment attestation from JSON."""
-    value = raw
-    if isinstance(raw, str) and raw.strip().startswith(("{", "[")):
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            return ""
-
-    def find(item: Any) -> str:
-        if isinstance(item, dict):
-            for key, nested in item.items():
-                normalized = str(key or "").strip().lower().replace("-", "_")
-                if normalized in {
-                    selected.replace("-", "_") for selected in _ATTESTATION_KEYS
-                } and isinstance(nested, str) and nested.strip():
-                    return nested.strip()
-            for nested in item.values():
-                result = find(nested)
-                if result:
-                    return result
-        elif isinstance(item, list):
-            for nested in item:
-                result = find(nested)
-                if result:
-                    return result
-        return ""
-
-    return find(value)
-
-
 def normalize_access_token(raw: str) -> str:
     return extract_access_token(raw)
 
@@ -276,22 +179,6 @@ def account_id(access_token: str) -> str:
             if value:
                 return value
     for key in ("chatgpt_account_id", "account_id"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def account_user_id(access_token: str) -> str:
-    """Extract the stable ChatGPT user id returned by /backend-api/me."""
-    payload = decode_jwt_payload(access_token)
-    auth = payload.get("https://api.openai.com/auth")
-    if isinstance(auth, dict):
-        for key in ("chatgpt_user_id", "user_id"):
-            value = str(auth.get(key) or "").strip()
-            if value:
-                return value
-    for key in ("chatgpt_user_id", "user_id", "sub"):
         value = str(payload.get(key) or "").strip()
         if value:
             return value

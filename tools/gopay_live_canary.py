@@ -14,7 +14,6 @@ if str(ROOT) not in sys.path:
 
 from payment_link_extractor.gopay_core import extract_gopay_payment_link
 from payment_link_extractor.gopay_transport import normalize_proxy_url
-from payment_link_extractor.auth import is_nextauth_session_cookie_name
 from payment_link_extractor.models import ExtractionConfig
 
 
@@ -22,17 +21,6 @@ JWT_RE = re.compile(r"eyJ[A-Za-z0-9_\\-]+(?:\.[A-Za-z0-9_\\-]+){2}")
 PROXY_RE = re.compile(
     r"(?:[A-Za-z0-9.-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^:\s]+"
 )
-AUTH_COOKIE_NAMES = {
-    "__Host-next-auth.csrf-token",
-    "__Secure-next-auth.callback-url",
-    "__Secure-oai-is",
-    "oai-client-auth-info",
-    "oai-client-session-epoch",
-    "_account",
-    "oai-did",
-    "__stripe_mid",
-    "__stripe_sid",
-}
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -78,34 +66,6 @@ def load_rollout_proxies(path: Path) -> list[str]:
     return [normalize_proxy_url(item) for item in raw]
 
 
-def load_browser_state(path: Path | None) -> tuple[tuple[tuple[str, str], ...], str]:
-    if path is None:
-        return (), ""
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(payload, dict):
-        raise ValueError("browser state must be a JSON object")
-    selected: dict[str, str] = {}
-    for item in payload.get("cookies") or []:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        value = str(item.get("value") or "").strip()
-        if (
-            is_nextauth_session_cookie_name(name)
-            or name in AUTH_COOKIE_NAMES
-        ) and value:
-            selected[name] = value
-    attestation = str(
-        payload.get("oai-web-deployment-attestation")
-        or payload.get("gopay_deployment_attestation")
-        or ""
-    ).strip()
-    cookies = tuple(sorted(selected.items()))
-    if len(attestation) < 64:
-        raise ValueError("browser state is missing deployment attestation")
-    return cookies, attestation
-
-
 def _safe_error(exc: BaseException) -> dict[str, Any]:
     status = getattr(exc, "status_code", None)
     try:
@@ -113,13 +73,7 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
     except (TypeError, ValueError):
         status = None
     message = str(exc).lower()
-    if "browser session account does not match" in message:
-        category = "browser_session_account_mismatch"
-    elif "browser session account verification is unavailable" in message:
-        category = "browser_session_binding_unavailable"
-    elif "access token is missing the browser user identity" in message:
-        category = "access_token_identity_missing"
-    elif "browser checkout readiness" in message:
+    if "browser checkout readiness" in message:
         category = "browser_session_incomplete"
     elif "attestation" in message:
         category = "attestation_missing"
@@ -170,11 +124,6 @@ def main() -> int:
     parser.add_argument("--token-index", type=int, required=True, help="one-based token slot")
     parser.add_argument("--start-proxy-slot", type=int, default=1)
     parser.add_argument(
-        "--browser-state-file",
-        type=Path,
-        help="runtime-only JSON containing browser auth cookies and attestation",
-    )
-    parser.add_argument(
         "--precommit-retries",
         type=int,
         default=3,
@@ -184,13 +133,6 @@ def main() -> int:
 
     tokens = load_tokens(args.tokens_file)
     proxies = load_rollout_proxies(args.proxy_rollout)
-    try:
-        browser_cookies, browser_attestation = load_browser_state(
-            args.browser_state_file
-        )
-    except (OSError, ValueError, json.JSONDecodeError):
-        print(json.dumps({"status": "input_error", "browser_state": False}))
-        return 2
     if not 1 <= args.token_index <= len(tokens):
         print(json.dumps({"status": "input_error", "token_count": len(tokens)}))
         return 2
@@ -216,8 +158,6 @@ def main() -> int:
             checkout_proxy_attempts=(proxy,),
             update_proxy_attempts=(proxy,),
             proxy_pool=(proxy,),
-            gopay_session_cookies=browser_cookies,
-            gopay_deployment_attestation=browser_attestation,
         )
         for precommit_try in range(1, max(1, args.precommit_retries) + 1):
             stages: list[str] = []

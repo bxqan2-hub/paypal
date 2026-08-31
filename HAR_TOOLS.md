@@ -1,30 +1,5 @@
 # HAR 抓包与解析工具
 
-## Playwright 持久浏览器与自动分析
-
-Playwright CLI 和与项目依赖匹配的 Chromium 安装完成后，可以用一个命令扫描当前
-浏览器的 `DevToolsActivePort`。没有可连接浏览器时，命令会自动启动并复用
-`data/playwright-capture-profile`，随后通过 Playwright 的 `connect_over_cdp` 验证连接：
-
-```powershell
-.\.venv\Scripts\python.exe tools\playwright_capture_session.py prepare
-```
-
-开始抓包时选择独立渠道。命令会调用浏览器级多目标记录器，停止后自动生成脱敏
-`*.summary.md`；GoPay 还会生成 `*.gopay.md` 渠道摘要：
-
-```powershell
-.\.venv\Scripts\python.exe tools\playwright_capture_session.py capture --channel gopay
-```
-
-默认按 Ctrl+C 停止；测试或固定窗口可加 `--duration <秒>`。原始 HAR 和摘要默认只写入
-`artifacts-local/playwright-captures`，不进入 Git。
-
-每轮结束后工具不会关闭浏览器，而是把已登录页面返回 `https://chatgpt.com/` 主界面并输出
-`CAPTURE_BROWSER_PRESERVED=1`、`CAPTURE_RETURNED_MAIN`、`CAPTURE_NEXT_CYCLE_READY=1`。
-后续优化继续复用同一 profile 和登录态，按“提链操作 → 实时抓包 → 脱敏分析 → 源码优化 →
-回归测试 → 下一轮抓包”的闭环重复，直到真实抓包完整性与回归测试均通过。
-
 工具位于本站根目录的 `tools` 文件夹，使用 Python 标准库和本机 Chrome/Edge，不需要额外安装抓包库。
 
 ## 0. 一键 BAT

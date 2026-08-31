@@ -27,8 +27,6 @@ except ImportError:  # direct ``python tools/har_capture_browser_attach.py``
 
 
 TARGET_TYPES = {"page", "iframe", "worker", "service_worker", "shared_worker"}
-AUTO_ATTACH_PARAMS = {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}
-CHILD_AUTO_ATTACH_PARAMS = {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}
 
 
 class BrowserConnection:
@@ -147,41 +145,34 @@ class TargetRecorder:
         self.fetch_responses = fetch_responses
 
     def enable(self) -> None:
+        self.recorder.command("Network.enable", network_enable_params(self.recorder.max_body_bytes))
         try:
-            self.recorder.command("Network.enable", network_enable_params(self.recorder.max_body_bytes))
+            self.recorder.command("Page.enable")
+        except Exception:
+            pass
+        try:
+            self.recorder.command("Runtime.enable")
+        except Exception:
+            pass
+        # A page can create nested OOPIF/worker targets after initial attach.
+        # Ask the target itself to discover and auto-attach children as a
+        # second line of defense in addition to the browser-level setting.
+        try:
+            self.recorder.command("Target.setDiscoverTargets", {"discover": True})
+            self.recorder.command(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+            )
+        except Exception:
+            pass
+        if self.fetch_responses:
             try:
-                self.recorder.command("Page.enable")
+                self.recorder.command(
+                    "Fetch.enable",
+                    {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]},
+                )
             except Exception:
-                pass
-            try:
-                self.recorder.command("Runtime.enable")
-            except Exception:
-                pass
-            # The browser session already pauses and attaches every new
-            # target. A target-local second line of defense must stay
-            # non-pausing because nested attached events are delivered to the
-            # parent target session rather than the browser event loop.
-            try:
-                self.recorder.command("Target.setDiscoverTargets", {"discover": True})
-                self.recorder.command("Target.setAutoAttach", CHILD_AUTO_ATTACH_PARAMS)
-            except Exception:
-                pass
-            if self.fetch_responses:
-                try:
-                    self.recorder.command(
-                        "Fetch.enable",
-                        {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]},
-                    )
-                except Exception:
-                    self.fetch_responses = False
-        finally:
-            # New OOPIF/worker targets are paused by AUTO_ATTACH_PARAMS so
-            # their earliest API calls cannot race ahead of Network.enable.
-            # Always resume even if a domain is unavailable in this target.
-            try:
-                self.recorder.command("Runtime.runIfWaitingForDebugger")
-            except Exception:
-                pass
+                self.fetch_responses = False
 
     def handle(self, message: dict[str, Any]) -> None:
         self.recorder.handle(message)
@@ -359,7 +350,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-fetch-responses", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--heartbeat-seconds", type=float, default=5.0)
-    parser.add_argument("--duration", type=float, default=0, help="automatic capture seconds; 0 waits for Ctrl+C")
     return parser
 
 
@@ -378,15 +368,7 @@ def main() -> int:
         nonlocal target_count_seen
         target_type = str(target_info.get("type") or "")
         target_id = str(target_info.get("targetId") or "")
-        if not session_id:
-            return
-        if target_type not in TARGET_TYPES:
-            try:
-                HARRecorder(ScopedCDP(browser, session_id), stream_responses=False).command(
-                    "Runtime.runIfWaitingForDebugger"
-                )
-            except Exception:
-                pass
+        if not session_id or target_type not in TARGET_TYPES:
             return
         if session_id in recorders or (target_id and target_id in target_sessions):
             return
@@ -400,10 +382,6 @@ def main() -> int:
         try:
             target.enable()
         except Exception:
-            try:
-                target.recorder.command("Runtime.runIfWaitingForDebugger")
-            except Exception:
-                pass
             return
         recorders[session_id] = target
         if target_id:
@@ -436,7 +414,7 @@ def main() -> int:
         browser.command("Target.setDiscoverTargets", {"discover": True})
         browser.command(
             "Target.setAutoAttach",
-            AUTO_ATTACH_PARAMS,
+            {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
         )
         try:
             existing = browser.command("Target.getTargets").get("targetInfos", [])
@@ -453,11 +431,7 @@ def main() -> int:
         print("CAPTURE_ACTION=perform the complete GoPay flow; send the stop instruction when finished", flush=True)
         heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
         last_heartbeat = time.monotonic()
-        deadline = time.monotonic() + args.duration if args.duration > 0 else None
         while True:
-            if deadline is not None and time.monotonic() >= deadline:
-                print("CAPTURE_STOP_REASON=duration", flush=True)
-                break
             try:
                 session_id, message = browser.recv_any()
             except socket.timeout:
