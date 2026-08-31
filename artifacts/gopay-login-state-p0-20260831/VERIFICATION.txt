@@ -1,0 +1,89 @@
+CHANGED_BRANCH=main
+CHANGED_FIELDS=NextAuth_session_binding,external_cdp_browser_http,account_header_phase,approve_telemetry,pending_receipt_queue,stripe_cookie_shape,session_id_sync,observation_burst
+BASE_COMMIT=27e8ff73a8dd0eae0706a855976d6b06a863e6e7
+MODIFIED_COMMIT=d9b681062efdcff8a0f868d84e9537b3740456f4
+
+ARTIFACT_PATHS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-login-state-p0-20260831\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-login-state-p0-20260831\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\gopay-login-state-p0-20260831\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\gopay-login-state-p0-20260831\ROLLBACK.sh
+
+KEY_FILE=C:\Users\Administrator\Desktop\提链\payment_link_extractor\gopay_sentinel_playwright.py
+ORIGINAL_SHA256=D55C202F364FE2018A37B8897B170B46C798B7BB21BC502A7840AF2091D34644
+MODIFIED_SHA256=4D31794A78BF2470EA9DF849C0A04435629DEEC9C08DADE64C4438DF24B400AC
+
+CHANGED_PATH_HASHES (path | baseline git-blob SHA256 | modified SHA256):
+.env.example | 1EDC73DEF985A7065A621E8DF67EECEFE9FAF47758CAD7CFAB967E54DAB6ECD4 | 3AE61C0ED391AF200141D0A6428EAEF8F6CF39ECFEAFF233DE22DB99E68E5899
+payment_link_extractor/gopay_checkout.py | 9EED8C6493F2EB9C6827BAA22E077B3C7195032D773AD3A29024FE736E2E7E1F | D4AF0EE78EB9D6B00A3665394F68CBBA9D389D735F2C8789DBB6AFEA23B3C9AB
+payment_link_extractor/gopay_cs_live.py | 86C6501664FB113C3170E7899F9324210C64BF688E87332D2EBE24BDE01F8EC1 | 2282EF20096CFD2BD21BF98ACCA390C6E09B550B489CA380F4D4A65E0C202C79
+payment_link_extractor/gopay_sentinel_playwright.py | D55C202F364FE2018A37B8897B170B46C798B7BB21BC502A7840AF2091D34644 | 4D31794A78BF2470EA9DF849C0A04435629DEEC9C08DADE64C4438DF24B400AC
+payment_link_extractor/gopay_transport.py | 2F3ABFDE3CB8832D96E62A778589CE3AE6BD4BDBA5F473F77F92757548B1C2E9 | 349BC33A404B251C17045A23310A7B92EEB71F07FE3ADF7C80AEC86AD6D5611F
+tests/test_gopay_isolated_optimization.py | 63F43F1D2745EFCFFD7DF8E754DFF95BE0BE78084C7AAA2A1E1EA44F2EE18788 | 9E898611D090CA110B85B6AAD595D581091D85768E8C54778DF54EA9E6B1943F
+tests/test_gopay_live_canary.py | 36B632ED31BE86E7653DFB8BB962601BD8B4A4891A8C667092EE4A0E3F53A347 | B9193DB2F9BB1F96A264E9CDB269C811E9CACE32DF0BF022C49673C02975CFD8
+tests/test_gopay_sentinel_playwright.py | 0E5232F6A7ADA76240A4C6F5E736BFB184CF9CF7E2801FA86A52E8661E0B450C | 706BE37E7C47B526DD4227FB66D13CC38D13E3B795209F8B66D7A633C3FDE569
+tools/gopay_live_canary.py | D01FE7E576331C558D941DEA1C61265EC0AD7A8A8D1112B8F920D437E43591B1 | D6E74B866AF8B0A1B5D150B452106FDFAA349647BD780EFAAA6C878904B8C975
+docs/2026-08-31_gopay-login-state-p0-alignment-report.md | MISSING | 399D74535E5609116AD0409CFF8DEE612832759BEB508D4E471447F2067A5863
+
+BASELINE:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
+INPUT=main at 27e8ff73a8dd0eae0706a855976d6b06a863e6e7 before login-state/P0 alignment
+LITERAL_OUTPUT=........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+...........................................................              [100%]
+275 passed in 1.98s
+BASELINE_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+MODIFIED:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
+INPUT=main at d9b681062efdcff8a0f868d84e9537b3740456f4 with external-CDP browser fetch, session/account/session-id sync, account header phase, approve telemetry and receipt cadence
+LITERAL_OUTPUT=........................................................................ [ 24%]
+........................................................................ [ 49%]
+........................................................................ [ 74%]
+........................................................................ [ 99%]
+..                                                                       [100%]
+290 passed in 1.98s
+MODIFIED_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+LIVE_LOGIN_AND_SMOKE:
+COMMAND=Playwright CDP login + external Sentinel/browser-fetch smoke
+INPUT=three supplied account slots; CDP 127.0.0.1:61908; secrets read only at runtime
+LITERAL_OUTPUT=LOGIN_SLOTS=3/3; SESSION_HTTP_STATUS=200; BINDING=matched; ACCOUNT_BINDING=1; SDK_CANONICAL=1; ATTESTATION_LENGTH=291; DEVICE_ID_LENGTH=36; SESSION_ID_LENGTH=36; BROWSER_HTTP_REQUESTS=1
+LIVE_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+ROLLBACK:
+COMMAND=C:\Users\Administrator\Desktop\提链\artifacts\gopay-login-state-p0-20260831\ROLLBACK.sh TARGET_COPY SOURCE_REPO
+INPUT=temporary separate Git worktree at artifacts-local/gopay-login-state-rollback-20260831
+LITERAL_OUTPUT=ROLLBACK_TARGET=/c/Users/Administrator/Desktop/提链/artifacts-local/gopay-login-state-rollback-20260831
+RESTORED_TRACKED_FILES=9
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+BEFORE_SHA256=4d31794a78bf2470ea9df849c0a04435629deec9c08dade64c4438df24b400ac
+RESTORED_SHA256=d55c202f364fe2018a37b8897b170b46c798b7bb21bc502a7840af2091d34644
+EXPECTED_SHA256=d55c202f364fe2018a37b8897b170b46c798b7bb21bc502a7840af2091d34644
+HASH_MATCH=True
+ROLLBACK_SCRIPT_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+ROLLBACK_TEST:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
+INPUT=separate copy after ROLLBACK.sh restored baseline files
+LITERAL_OUTPUT=...................................................................      [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+...........................................................              [100%]
+275 passed in 2.38s
+ROLLBACK_TEST_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+RESTORED_BEHAVIOR=Baseline copy restores the pre-alignment branch and passes its suite; the modified main branch remains changed.
+RESTORED_STATUS=PASS

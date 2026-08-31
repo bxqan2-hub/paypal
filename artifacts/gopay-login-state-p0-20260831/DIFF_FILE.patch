@@ -1,0 +1,3388 @@
+diff --git a/.env.example b/.env.example
+index bf448cf..2dad5ba 100644
+--- a/.env.example
++++ b/.env.example
+@@ -20,6 +20,16 @@ OPLL_SENTINEL_HEADLESS=false
+ OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL=chrome
+ OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT=true
+ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
++# Attach GoPay Sentinel to an already logged-in Chrome/Roxy CDP browser. Leave
++# blank to use the isolated persistent profile path above.
++OPLL_GOPAY_SENTINEL_CDP_PORT=
++# Keep the attached browser's single network route across all GoPay phases.
++OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION=false
++# Route ChatGPT protected mutations through the attached browser's real
++# network/proxy so Sentinel and approval share one egress.
++OPLL_GOPAY_EXTERNAL_CDP_BROWSER_HTTP=true
++# Match Chrome's snapshot/taxes observation burst; disable only for diagnostics.
++OPLL_GOPAY_BURST_OBSERVATION=true
+ # Optional cccy-compatible GoPay route segments. Blank keeps A/A/A/A on the
+ # selected attempt proxy; set explicitly only when each ID segment is sticky.
+ OPLL_GOPAY_CHECKOUT_PROXY=
+diff --git a/docs/2026-08-31_gopay-login-state-p0-alignment-report.md b/docs/2026-08-31_gopay-login-state-p0-alignment-report.md
+new file mode 100644
+index 0000000..d195657
+--- /dev/null
++++ b/docs/2026-08-31_gopay-login-state-p0-alignment-report.md
+@@ -0,0 +1,179 @@
++# GoPay 登录态与 approve 链路对齐报告
++
++## 结论
++
++本轮完成了三个账号的浏览器登录、NextAuth 绑定校验、Sentinel 生成和 GoPay
++请求链路对齐。三个账号均通过 Playwright 输入密码与 TOTP 完成网页登录；运行时只
++保留脱敏的槽位、布尔值、长度和阶段信息，不把 AT、密码、TOTP 或 Cookie 写入源码、
++Git、日志或报告。
++
++当前实现已经把最影响 `approve_blocked` 的三个协议差异修正为 canonical HAR 形状：
++
++1. Checkout 创建成功后才加入 `chatgpt-account-id`，并在 snapshot/taxes/approve
++   阶段持续携带。
++2. `approve` 使用浏览器的字面量 `oai-telemetry=[1,null]`。
++3. 收到的 `x-oai-is-receipt` 保留最近两个不同 receipt；第二次 taxes 才发送这两个
++   receipt，随后 approve 回到空 pending envelope。
++
++外部 CDP 模式还把 ChatGPT 的受保护请求改为由登录浏览器页发起，令 Cookie、设备、
++UA、session id、代理出口和 Sentinel proof 处于同一上下文，避免 Roxy 浏览器出口与
++HTTP 代理出口不一致导致的 proof/IP split。
++
++## Evidence → Finding → Path
++
++| Evidence | Finding | Path |
++|---|---|---|
++| 三个登录槽位均返回 ChatGPT 主界面，`/api/auth/session` HTTP 200 | 密码 + TOTP 登录态可以真实建立 NextAuth cookie；不能由 AT 单独伪造 | `artifacts-local/gopay-runtime/run-20260831-login-three/login-summary.json` |
++| CDP `61908` external smoke：binding `matched`、account binding `1`、attestation 长度 `291`、SDK canonical `1` | 当前登录浏览器与目标 AT 的 user id/email 一致，Sentinel runtime 可复用 | `payment_link_extractor/gopay_sentinel_playwright.py` |
++| canonical approve 的 account header 存在、telemetry 为 `[1,null]` | 旧实现漏掉阶段性 account header，并把 approve telemetry 错当成八字段 timing | `payment_link_extractor/gopay_checkout.py`, `payment_link_extractor/gopay_transport.py` |
++| canonical taxes2 pending update 数为 `2` | 单 receipt 覆盖会丢状态；需要最近两个 receipt 的队列 | `payment_link_extractor/gopay_transport.py`, `payment_link_extractor/gopay_cs_live.py` |
++| Roxy CDP 出口与用户代理池逐项 IP 不相同 | 仅切换 requests 代理不能让浏览器 proof 与 approve 同出口 | `payment_link_extractor/gopay_transport.py` 的 browser fetch bridge |
++| 三个账号的历史完整尝试均到 `payment_confirmation → approve_blocked`，随后资格变为 `not_eligible` | 协议缺口与试用资格/服务端风控必须分开验证；本轮不再重复消耗已用资格 | `artifacts-local/gopay-runtime/run-20260831-login-three/*.log` |
++
++## 登录态实现
++
++### 浏览器侧
++
++NextAuth 登录态由浏览器 Cookie jar 持有，关键材料包括分片的
++`__Secure-next-auth.session-token.0/.1`、`__Host-next-auth.csrf-token`、
++`__Secure-next-auth.callback-url`、`oai-did`、`_account` 及 Stripe 相关 Cookie。
++Playwright 通过 CDP 连接现有浏览器时不清空或覆盖该 jar，而是在同一 context 新建
++provider tab。
++
++### 绑定侧
++
++实现使用页面原生、无 Authorization header 的：
++
++```text
++GET /api/auth/session   (credentials: include, cache: no-store)
++```
++
++返回的 `user.id` 优先与 AT 的 `chatgpt_user_id` 比较，缺失时回退到邮箱比较；若
++可读到 `_account` UUID，则同时检查 AT 的 account id。`/backend-api/me` 只用于独立
++Bearer 校验，不能被当作 NextAuth 登录态证明。
++
++### TOTP 登录的可复现要点
++
++运行时从环境变量读取账号材料，不写入配置文件：
++
++```powershell
++$env:OPLL_GOPAY_SENTINEL_CDP_PORT = "61908"
++$env:OPLL_GOPAY_EXTERNAL_CDP_BROWSER_HTTP = "true"
++$env:OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT = "true"
++```
++
++TOTP URL 的首段是 Base32 secret。登录器在内存中按 30 秒窗口计算 RFC 6238
++HMAC-SHA1 六位码，填入 Auth0 MFA 页面；页面完成跳转后只校验
++`/api/auth/session` 的状态和邮箱布尔匹配，不保存验证码。
++
++## GoPay 请求链路改动
++
++### 外部 CDP browser fetch
++
++当 `OPLL_GOPAY_SENTINEL_CDP_PORT` 有效时，ChatGPT host 的 eligibility、Checkout、
++update、snapshot、taxes、redirect 和 approve 请求由 provider tab 的同源 `fetch`
++发出。代码剥离浏览器禁止设置的 `Cookie/User-Agent/Sec-*` headers，让 Chromium
++自动使用当前登录 Cookie、Roxy 指纹和真实出口；Stripe host 仍由独立 Stripe session
++处理。
++
++### 设备、session 与 attestation
++
++从 `client-bootstrap` 读取 `webDeploymentAttestation` 和页面级 `sessionId`，并把
++`oai-did`、`oai-session-id`、UA、Accept-Language、时区和 Client Hints 同步到 HTTP
++transport。导入完整 Cookie state 时保留已有 `oai-did`，避免用 AT 派生 UUID 覆盖签发
++attestation 的设备。
++
++### Receipt 与 telemetry
++
++```text
++checkout       -> observation A, optional prior pending receipts
++snapshot 1/2   -> observation B (同一 burst), pending 空
++taxes 1        -> observation B, pending 空
++taxes 2        -> observation C, 最近两个 receipt
++approve        -> observation D, pending {"v":3,"updates":[]}, telemetry [1,null]
++```
++
++Stripe 浏览器 cookie 缺失时，`__stripe_mid`/`__stripe_sid` 使用 UUID36 + 六位小写
++hex 后缀的 42 字符形状；AT-only、无 Cookie 的旧路径仍保留 `sid=NA`。
++
++## 实测结果
++
++### 登录与 Sentinel smoke
++
++```text
++CDP=127.0.0.1:61908
++LOGIN_SLOTS=3/3
++SESSION_HTTP_STATUS=200
++EXTERNAL_CDP=1
++SESSION_COOKIE_BINDING=matched
++ACCOUNT_BINDING=1
++SDK_SHA256_CANONICAL=1
++ATTESTATION_LENGTH=291
++DEVICE_ID_LENGTH=36
++SESSION_ID_LENGTH=36
++BROWSER_HTTP_ELIGIBILITY_REQUESTS=1
++```
++
++该 smoke 只做资格 GET 和 Sentinel 生成，不创建 Checkout；当前账号资格响应为
++`not_eligible`，浏览器主 context 保持打开并返回 ChatGPT 主界面。
++
++### 历史完整尝试（P0 修复前）
++
++三个新账号中可用资格的尝试均完成：
++
++```text
++eligibility_check
++→ eligibility_confirmed
++→ checkout
++→ checkout_committed
++→ checkout_kind:stripe_checkout
++→ checkout_browser_refresh
++→ checkout_update
++→ promotion_applied
++→ stripe_init
++→ elements_session
++→ taxes
++→ payment_confirmation
++→ approve_blocked
++```
++
++这些尝试证明了浏览器登录和 Stripe/Sentinel 阶段可运行，但发生在 account header、
++approve telemetry、receipt queue 和 browser-fetch 出口对齐之前；随后同一账号的
++资格变为 `not_eligible`，因此不能用旧 AT 证明新实现的最终 approve 成功率。
++
++## 验证命令
++
++```powershell
++& .venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
++```
++
++结果：`290 passed`，退出码 `0`。
++
++静态协议核对同时确认：初始 checkout 不带 account header；checkout 响应之后的
++snapshot/taxes/approve 带 account header；approve telemetry 为 `[1,null]`；第二次
++taxes 携带两个 receipt；`oai-did` 和 `oai-session-id` 在一个 runtime 内保持稳定。
++
++## 时序图
++
++```mermaid
++sequenceDiagram
++    participant B as 登录浏览器/CDP
++    participant S as GoPay Sentinel provider
++    participant O as ChatGPT API
++    participant T as Stripe API
++    B->>S: connect existing context + new provider tab
++    S->>B: read NextAuth, oai-did, sessionId, attestation
++    S->>B: Sentinel init/token in real page
++    B->>O: eligibility / checkout / update / snapshot / taxes / approve
++    O-->>S: receipt/ack + checkout state
++    S->>T: Stripe init/elements/taxes/confirm
++    T-->>S: redirect/provider state
++    S->>O: approve with account header + [1,null] + empty pending
++    O-->>S: approved or policy blocked
++```
++
++## 下一轮
++
++下一轮只需提供新的、仍为 `eligible` 的 AT/账号材料；沿用 CDP `61908` 和同一
++浏览器 profile，先执行 browser binding smoke，再执行一次完整 GoPay canary。已用
++账号不再重试，避免把资格状态与协议修复混在一起。
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 7358111..ead184b 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -6,13 +6,15 @@ import os
+ import re
+ from typing import Any, Callable
+ 
+-from .auth import is_nextauth_session_cookie_name
++from .auth import account_id, is_nextauth_session_cookie_name
+ from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
+ from .errors import ConfigurationError, ProtocolError
+ from .logging_utils import safe_log_text
+ from .models import CheckoutData, ExtractionConfig
+ from .gopay_transport import (
++    effective_gopay_proxy,
+     openai_sentinel_headers,
++    prepare_openai_browser_session,
+     response_json,
+     set_proxy_url,
+     stage_http_request,
+@@ -22,6 +24,14 @@ CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
+ PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+ 
+ 
++def _external_cdp_requested() -> bool:
++    try:
++        port = int(os.getenv("OPLL_GOPAY_SENTINEL_CDP_PORT", "0"))
++    except ValueError:
++        return False
++    return 0 < port < 65_536
++
++
+ def require_gopay_browser_session_binding(
+     provider: Any,
+     *,
+@@ -438,6 +448,12 @@ def create_checkout(
+             cookie_names=cookie_names,
+             attestation_length=attestation_length,
+         )
++    # In external-CDP mode collapse the initial Checkout request onto the
++    # browser-owned route too (eligibility may be disabled by callers).
++    set_proxy_url(
++        chatgpt,
++        effective_gopay_proxy(chatgpt, config.checkout_proxy),
++    )
+     headers.update(sentinel_headers)
+     if commit_callback is not None:
+         commit_callback()
+@@ -476,6 +492,15 @@ def create_checkout(
+         "payment_locale": config_locale(config),
+     }
+     merge_checkout_payload(checkout, payload)
++    # The browser adds the account selector after Checkout is created; the
++    # initial create request intentionally omits it.  Mirror that phase change
++    # for snapshot/taxes/approve calls.
++    selected_account_id = account_id(config.access_token)
++    if selected_account_id:
++        try:
++            chatgpt.headers["chatgpt-account-id"] = selected_account_id
++        except Exception:
++            pass
+     return checkout
+ 
+ 
+@@ -485,9 +510,53 @@ def probe_coupon_eligibility(
+     log: Any | None,
+ ) -> dict[str, Any]:
+     """Read the Plus trial state without creating or updating Checkout."""
+-    eligibility_proxy = str(
+-        config.gopay_checkout_proxy or config.checkout_proxy
+-    ).strip()
++    # Attach and sample the live browser first.  Otherwise the first GET can
++    # leave on the configured proxy while the later Sentinel proof uses the
++    # browser's existing route/device, producing a mixed-identity attempt.
++    if _external_cdp_requested():
++        prepare_openai_browser_session(chatgpt)
++        provider = getattr(chatgpt, "openai_sentinel_provider", None)
++        binding_state = str(
++            getattr(provider, "_session_cookie_binding_state", "") or ""
++        ).strip().lower()
++        if binding_state not in {"matched", "not_present"}:
++            error = ProtocolError(
++                412,
++                "GoPay browser session binding is not ready for eligibility",
++            )
++            error.failure_mode = (
++                "browser_session_account_mismatch"
++                if binding_state == "mismatched"
++                else "browser_session_binding_unavailable"
++            )
++            error.retryable = binding_state != "mismatched"
++            cookie_header = str(
++                getattr(provider, "_cookies", "") or ""
++            )
++            error.safe_context = {
++                "external_cdp": bool(getattr(provider, "_external_cdp", False)),
++                "session_cookie_binding_state": binding_state,
++                "session_cookie_source": str(
++                    getattr(provider, "_session_cookie_source", "") or ""
++                ),
++                "cookie_names": sorted(
++                    {
++                        part.split("=", 1)[0].strip()
++                        for part in cookie_header.split(";")
++                        if "=" in part and part.split("=", 1)[0].strip()
++                    }
++                ),
++                "attestation_length": len(
++                    str(getattr(provider, "_attestation", "") or "")
++                ),
++            }
++            raise error
++    eligibility_proxy = effective_gopay_proxy(
++        chatgpt,
++        str(
++            config.gopay_checkout_proxy or config.checkout_proxy
++        ).strip(),
++    )
+     if not eligibility_proxy:
+         raise ConfigurationError("checkout proxy is required for eligibility check")
+     path = "/backend-api/promo_campaign/check_coupon"
+@@ -495,6 +564,10 @@ def probe_coupon_eligibility(
+     url = f"https://chatgpt.com{path}?coupon={coupon}&is_coupon_from_query_param=true"
+     set_proxy_url(chatgpt, eligibility_proxy)
+     try:
++        # Bind the HTTP eligibility probe to the same live browser cookies,
++        # device id, attestation and pending-receipt state that will be used
++        # by Checkout/approve.  This is especially important in external-CDP
++        # mode, where the browser already owns the authenticated context.
+         # The reference account audit performs this authenticated GET as a
+         # standalone probe. The existing GoPay session already carries the
+         # account id, device id, ID locale and the selected attempt proxy.
+@@ -534,7 +607,10 @@ def probe_coupon_eligibility(
+             "redeemed_by_user": redemption.get("redeemed_by_user"),
+         }
+     finally:
+-        set_proxy_url(chatgpt, config.checkout_proxy)
++        set_proxy_url(
++            chatgpt,
++            effective_gopay_proxy(chatgpt, config.checkout_proxy),
++        )
+ 
+ 
+ def check_coupon_eligibility(
+@@ -576,7 +652,10 @@ def update_checkout(
+             "is_coupon_from_query_param": False,
+         },
+     }
+-    set_proxy_url(chatgpt, config.update_proxy)
++    set_proxy_url(
++        chatgpt,
++        effective_gopay_proxy(chatgpt, config.update_proxy),
++    )
+     try:
+         response = stage_http_request(
+             chatgpt,
+@@ -593,7 +672,10 @@ def update_checkout(
+             timeout=DEFAULT_TIMEOUT,
+         )
+     finally:
+-        set_proxy_url(chatgpt, config.checkout_proxy)
++        set_proxy_url(
++            chatgpt,
++            effective_gopay_proxy(chatgpt, config.checkout_proxy),
++        )
+     if response.status_code >= 400:
+         raise ProtocolError(response.status_code, f"checkout/update failed: {response.text[:500]}")
+     payload = response_json(response, "checkout/update")
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 71b5d4f..b8d91de 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -53,6 +53,7 @@ from .gopay_stripe_common import (
+ )
+ from .gopay_transport import (
+     EMPTY_PENDING_UPDATES,
++    effective_gopay_proxy,
+     openai_sentinel_headers,
+     prepare_openai_browser_flow,
+     rotate_openai_approval_context,
+@@ -420,6 +421,8 @@ def cs_checkout_taxes(
+     checkout: CheckoutData,
+     billing: dict[str, str],
+     log: Any | None,
++    *,
++    use_pending_updates: bool = False,
+ ) -> dict[str, Any]:
+     path = "/backend-api/payments/checkout/taxes"
+     processor = processor_entity_for_country(
+@@ -435,6 +438,13 @@ def cs_checkout_taxes(
+         "processor_entity": processor,
+         "billing_address": cs_billing_address(billing, country=config.country.upper()),
+     }
++    request_headers = {
++        "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
++        "x-openai-target-path": path,
++        "x-openai-target-route": path,
++    }
++    if not use_pending_updates:
++        request_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
+     response = stage_http_request(
+         chatgpt,
+         "ChatGPT cs_live checkout/taxes",
+@@ -442,12 +452,7 @@ def cs_checkout_taxes(
+         "https://chatgpt.com" + path,
+         log,
+         json=body,
+-        headers={
+-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+-            "x-openai-target-path": path,
+-            "x-openai-target-route": path,
+-            "x-oai-is-pending-updates": EMPTY_PENDING_UPDATES,
+-        },
++        headers=request_headers,
+         timeout=DEFAULT_TIMEOUT,
+     )
+     if response.status_code >= 400:
+@@ -697,7 +702,10 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+         str(checkout.get("processor_entity") or ""),
+     )
+     referer = f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
+-    approve_proxy = str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip()
++    approve_proxy = effective_gopay_proxy(
++        chatgpt,
++        str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip(),
++    )
+     if approve_proxy:
+         set_proxy_url(chatgpt, approve_proxy)
+     # SentinelSDK.token(flow) consumes the challenge prefetched after
+@@ -756,7 +764,10 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+             "browser_channel": str(getattr(provider, "_browser_channel", "") or ""),
+             "browser_version": str(getattr(provider, "_browser_version", "") or ""),
+             "persistent_runtime": bool(getattr(provider, "_runtime_id", "")),
+-            "persistent_profile": bool(getattr(provider, "_profile_path", "")),
++            "persistent_profile": bool(
++                getattr(provider, "_profile_path", "")
++                and not getattr(provider, "_external_cdp", False)
++            ),
+             "account_binding_verified": bool(
+                 getattr(provider, "_account_binding_verified", False)
+             ),
+@@ -769,6 +780,11 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+             "session_cookie_source": str(
+                 getattr(provider, "_session_cookie_source", "") or ""
+             ),
++            "external_cdp": bool(getattr(provider, "_external_cdp", False)),
++            "cookie_backed": bool(getattr(provider, "_cookie_backed", False)),
++            "browser_http_requests": int(
++                getattr(chatgpt, "openai_browser_http_requests", 0) or 0
++            ),
+             "checkout_navigation_fallback": bool(
+                 getattr(provider, "_checkout_navigation_fallback", False)
+             ),
+@@ -865,7 +881,10 @@ def extract_cs_live_provider(
+     if elements_payload:
+         ensure_payment_method_offered(elements_payload, payment_method, "cs_live Elements session")
+     prefetch_checkout_approval_proof(config, chatgpt, checkout, log)
+-    provider_proxy = str(config.gopay_provider_proxy or config.checkout_proxy).strip()
++    provider_proxy = effective_gopay_proxy(
++        chatgpt,
++        str(config.gopay_provider_proxy or config.checkout_proxy).strip(),
++    )
+     if provider_proxy:
+         set_proxy_url(chatgpt, provider_proxy)
+     stripe_consumer_session_lookup(stripe, checkout, billing, log)
+@@ -911,7 +930,14 @@ def extract_cs_live_provider(
+         (("postal_code", "state"),),
+         accumulated,
+     )
+-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
++    cs_checkout_taxes(
++        config,
++        chatgpt,
++        checkout,
++        billing,
++        log,
++        use_pending_updates=True,
++    )
+     cs_checkout_page_refresh(stripe, checkout, ctx, log)
+     require_gopay_fail_fast_amount(
+         ctx.get("checkout_amount"),
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index ff69e8e..73772e2 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -34,6 +34,20 @@ except ImportError:  # pragma: no cover - dependency is validated at runtime
+ 
+ SENTINEL_SDK_VERSION = "20260810913b"
+ CHATGPT_ORIGIN = "https://chatgpt.com"
++PINNED_SENTINEL_SDK_SHA256 = (
++    "49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd"
++)
++OPEN_SESSION_TIMEOUT_SECONDS = 240
++FLOW_TIMEOUT_SECONDS = 210
++
++
++def _is_chatgpt_url(value: str) -> bool:
++    parsed = urlsplit(str(value or ""))
++    return (
++        parsed.scheme == "https"
++        and parsed.netloc == "chatgpt.com"
++        and not parsed.path.startswith("/auth/")
++    )
+ 
+ 
+ def _enabled(value: str, *, default: bool) -> bool:
+@@ -51,6 +65,15 @@ def _checkout_navigation_timeout_ms() -> int:
+     return max(5_000, min(90_000, value))
+ 
+ 
++def _configured_cdp_port() -> int:
++    """Return the optional existing-browser CDP port for GoPay Sentinel."""
++    try:
++        value = int(os.getenv("OPLL_GOPAY_SENTINEL_CDP_PORT", "0"))
++    except ValueError:
++        value = 0
++    return value if 0 < value < 65_536 else 0
++
++
+ def _profile_root() -> Path:
+     configured = os.getenv("OPLL_GOPAY_SENTINEL_PROFILE_DIR", "").strip()
+     if configured:
+@@ -92,10 +115,54 @@ def _cookie_header(cookies: list[dict[str, Any]]) -> str:
+     )
+ 
+ 
++def _cookie_record(
++    name: str,
++    value: str,
++    *,
++    http_only: bool | None = None,
++) -> dict[str, Any]:
++    """Build a valid ChatGPT cookie record, including ``__Host-`` rules."""
++    selected_name = str(name or "").strip()
++    record: dict[str, Any] = {
++        "name": selected_name,
++        "value": str(value or ""),
++        "secure": True,
++        "httpOnly": (
++            is_nextauth_session_cookie_name(selected_name)
++            if http_only is None
++            else bool(http_only)
++        ),
++    }
++    # RFC 6265 forbids Domain on __Host- cookies; Playwright rejects such a
++    # record before it reaches Chromium.
++    if selected_name.startswith("__Host-"):
++        record["url"] = CHATGPT_ORIGIN + "/"
++    else:
++        record["path"] = "/"
++        record["domain"] = ".chatgpt.com"
++    return record
++
++
++def _is_auth_state_cookie(name: str) -> bool:
++    """Return whether a cookie belongs to the live OpenAI login state."""
++    normalized = str(name or "").strip().lower()
++    return is_nextauth_session_cookie_name(name) or (
++        "next-auth" in normalized
++        or normalized in {
++            "__secure-oai-is",
++            "oai-client-auth-info",
++            "oai-client-session-epoch",
++            "_account",
++        }
++    )
++
++
+ def _cookies_from_header(
+     value: str,
+     device_id: str,
+     session_cookies: tuple[tuple[str, str], ...] = (),
++    *,
++    preserve_device_id: bool = False,
+ ) -> list[dict[str, Any]]:
+     """Convert HTTP and imported NextAuth cookies into Playwright records."""
+     values: dict[str, str] = {}
+@@ -106,16 +173,12 @@ def _cookies_from_header(
+     for name, selected in session_cookies:
+         if str(name).strip() and str(selected).strip():
+             values[str(name).strip()] = str(selected).strip()
+-    values["oai-did"] = str(device_id)
++    if not preserve_device_id or not any(
++        str(name).strip().lower() == "oai-did" for name in values
++    ):
++        values["oai-did"] = str(device_id)
+     return [
+-        {
+-            "name": name,
+-            "value": selected,
+-            "domain": ".chatgpt.com",
+-            "path": "/",
+-            "secure": True,
+-            "httpOnly": is_nextauth_session_cookie_name(name),
+-        }
++        _cookie_record(name, selected)
+         for name, selected in values.items()
+         if name and selected
+     ]
+@@ -135,37 +198,34 @@ def _browser_session_cookies(
+         is_nextauth_session_cookie_name(name) for name, _value in selected
+     )
+     replace_nextauth = bool(explicit_nextauth or discard_nextauth)
+-    cookies = _cookies_from_header(cookie_header, device_id, ())
++    cookies = _cookies_from_header(
++        cookie_header,
++        device_id,
++        (),
++        preserve_device_id=explicit_nextauth,
++    )
+     if replace_nextauth:
+         cookies = [
+             item
+             for item in cookies
+             if not is_nextauth_session_cookie_name(item.get("name"))
+         ]
++        if discard_nextauth:
++            cookies = [
++                item
++                for item in cookies
++                if not _is_auth_state_cookie(item.get("name"))
++            ]
+     if selected:
+         for name, value in selected:
+-            cookies.append(
+-                {
+-                    "name": str(name),
+-                    "value": str(value),
+-                    "domain": ".chatgpt.com",
+-                    "path": "/",
+-                    "secure": True,
+-                    "httpOnly": is_nextauth_session_cookie_name(name),
+-                }
+-            )
++            cookies.append(_cookie_record(str(name), str(value)))
+     if session_token and not any(
+         is_nextauth_session_cookie_name(name) for name, _value in selected
+     ):
+         cookies.append(
+-            {
+-                "name": "__Secure-next-auth.session-token",
+-                "value": str(session_token),
+-                "domain": ".chatgpt.com",
+-                "path": "/",
+-                "secure": True,
+-                "httpOnly": True,
+-            }
++            _cookie_record(
++                "__Secure-next-auth.session-token", str(session_token)
++            )
+         )
+     return cookies, replace_nextauth, explicit_nextauth
+ 
+@@ -177,6 +237,7 @@ class _BrowserSession:
+     profile_path: Path
+     device_id: str
+     expected_user_id: str = ""
++    expected_email: str = ""
+     attestation: str = ""
+     request_events: list[dict[str, Any]] = field(default_factory=list)
+     latest_receipt: str = ""
+@@ -190,30 +251,51 @@ class _BrowserSession:
+     cookie_backed: bool = False
+     checkout_navigation_fallback: bool = False
+     checkout_navigation_error: str = ""
++    external_cdp: bool = False
++    access_token: str = ""
++    account_id: str = ""
++    session_id: str = ""
++    effective_user_agent: str = ""
++    effective_accept_language: str = ""
++    effective_language: str = ""
++    effective_timezone: str = ""
++    effective_sec_ch_ua: str = ""
++    effective_sec_ch_ua_mobile: str = "?0"
++    effective_sec_ch_ua_platform: str = '"Windows"'
++    request_handler: Any = None
++    response_handler: Any = None
++    cookie_fingerprint: str = ""
++    cookie_state_changed: bool = False
++    capture_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+ 
+ 
+ async def _verify_session_cookie_binding(
+     page: Page,
+     expected_user_id: str,
++    expected_email: str = "",
++    expected_account_id: str = "",
+ ) -> str:
+     """Verify the imported browser login independently from the bearer AT.
+ 
+-    A bearer-authenticated ``/backend-api/me`` request only proves that the AT
+-    is valid. GoPay approval also depends on the NextAuth browser session, so
+-    this browser-native probe sends cookies without an Authorization header.
++    A bearer-authenticated API request only proves that the AT is valid. GoPay
++    approval also depends on the NextAuth browser session, so this browser-native
++    probe reads the cookie-backed NextAuth ``/api/auth/session`` endpoint without
++    an Authorization header.
+     It returns a state so network/response failures are not mislabeled as a
+     confirmed account mismatch.
+     """
+     expected = str(expected_user_id or "").strip()
+-    if not expected:
++    expected_email_value = str(expected_email or "").strip().lower()
++    expected_account = str(expected_account_id or "").strip()
++    if not expected and not expected_email_value and not expected_account:
+         return "identity_missing"
+     try:
+         state = await page.evaluate(
+-            """async expected => {
++            """async ({expected, expectedEmail, expectedAccount}) => {
+                 const controller = new AbortController();
+                 const timer = setTimeout(() => controller.abort(), 10000);
+                 try {
+-                    const response = await fetch('/backend-api/me', {
++                    const response = await fetch('/api/auth/session', {
+                         credentials: 'include',
+                         cache: 'no-store',
+                         headers: {accept: 'application/json'},
+@@ -223,16 +305,48 @@ async def _verify_session_cookie_binding(
+                     let payload;
+                     try { payload = await response.json(); }
+                     catch (_) { return 'unavailable'; }
+-                    const actual = String(payload?.id || '');
+-                    if (!actual) return 'unavailable';
+-                    return actual === expected ? 'matched' : 'mismatched';
++                    const actual = String(
++                        payload?.user?.id
++                        || payload?.user?.sub
++                        || payload?.id
++                        || payload?.sub
++                        || ''
++                    );
++                    const actualEmail = String(payload?.user?.email || '').toLowerCase();
++                    if (expectedAccount) {
++                        const accountCookie = document.cookie
++                            .split(';')
++                            .map(item => item.trim().split('='))
++                            .find(item => item[0] === '_account');
++                        if (accountCookie && accountCookie.length > 1) {
++                            let actualAccount = accountCookie.slice(1).join('=');
++                            try { actualAccount = decodeURIComponent(actualAccount); }
++                            catch (_) {}
++                            if (/^[0-9a-f-]{36}$/i.test(actualAccount)
++                                && actualAccount !== expectedAccount) {
++                                return 'mismatched';
++                            }
++                        }
++                    }
++                    if (expected && actual) {
++                        return actual === expected ? 'matched' : 'mismatched';
++                    }
++                    if (expectedEmail && actualEmail) {
++                        return actualEmail === String(expectedEmail).toLowerCase()
++                            ? 'matched' : 'mismatched';
++                    }
++                    return 'unavailable';
+                 } catch (_) {
+                     return 'unavailable';
+                 } finally {
+                     clearTimeout(timer);
+                 }
+             }""",
+-            expected,
++            {
++                "expected": expected,
++                "expectedEmail": expected_email_value,
++                "expectedAccount": expected_account,
++            },
+         )
+     except Exception:
+         return "unavailable"
+@@ -246,6 +360,8 @@ async def _verify_session_cookie_binding_with_retry(
+     page: Page,
+     expected_user_id: str,
+     *,
++    expected_email: str = "",
++    expected_account_id: str = "",
+     cookie_backed: bool,
+     attempts: int = 3,
+     delay_seconds: float = 0.2,
+@@ -256,7 +372,9 @@ async def _verify_session_cookie_binding_with_retry(
+     budget = max(1, min(4, int(attempts)))
+     state = "unavailable"
+     for attempt in range(budget):
+-        state = await _verify_session_cookie_binding(page, expected_user_id)
++        state = await _verify_session_cookie_binding(
++            page, expected_user_id, expected_email, expected_account_id
++        )
+         if state != "unavailable" or attempt + 1 >= budget:
+             return state
+         await asyncio.sleep(max(0.0, float(delay_seconds)) * (attempt + 1))
+@@ -307,6 +425,120 @@ def _bootstrap_headers(
+     return headers
+ 
+ 
++async def _wait_for_sdk_ready(page: Page, timeout_ms: int = 30_000) -> None:
++    """Poll SDK readiness through CDP-safe evaluate calls.
++
++    ``page.wait_for_function`` evaluates a predicate through ``eval`` in the
++    document and is rejected by ChatGPT's strict CSP on an attached browser.
++    CDP-backed ``page.evaluate`` does not require ``unsafe-eval``.
++    """
++    deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000
++    expression = (
++        "() => typeof window.SentinelSDK?.init === 'function' "
++        "&& typeof window.SentinelSDK?.token === 'function' "
++        "&& typeof window.SentinelSDK?.sessionObserverToken === 'function'"
++    )
++    while time.monotonic() < deadline:
++        try:
++            if await page.evaluate(expression):
++                return
++        except Exception:
++            pass
++        await asyncio.sleep(0.1)
++    raise RuntimeError("Sentinel SDK did not become ready")
++
++
++async def _page_fingerprint(
++    page: Page,
++    *,
++    user_agent: str,
++    language: str,
++    timezone: str,
++) -> dict[str, str]:
++    """Read the effective fingerprint from an attached browser page.
++
++    A CDP-attached context owns its own UA/locale/timezone and cannot be
++    relaunch-configured by the provider.  Mirroring the values into the HTTP
++    transport keeps the proof and the approval request on one fingerprint.
++    """
++    fallback = {
++        "user_agent": str(user_agent or "").strip(),
++        "accept_language": str(language or "").strip(),
++        "language": str(language or "").strip(),
++        "timezone": str(timezone or "").strip(),
++        "sec_ch_ua": "",
++        "sec_ch_ua_mobile": "?0",
++        "sec_ch_ua_platform": '"Windows"',
++    }
++    try:
++        value = await page.evaluate(
++            """() => {
++                const uaData = navigator.userAgentData;
++                const brands = Array.isArray(uaData?.brands)
++                    ? uaData.brands
++                        .filter(item => item && item.brand && item.version)
++                        .map(item => `\"${item.brand}\";v=\"${item.version}\"`)
++                        .join(', ')
++                    : '';
++                const languages = Array.isArray(navigator.languages)
++                    ? navigator.languages.filter(Boolean).map(String)
++                    : [];
++                return {
++                    userAgent: String(navigator.userAgent || ''),
++                    language: String(navigator.language || ''),
++                    languages,
++                    timezone: String(
++                        Intl.DateTimeFormat().resolvedOptions().timeZone || ''
++                    ),
++                    secChUa: brands,
++                    secChUaMobile: uaData?.mobile ? '?1' : '?0',
++                    secChUaPlatform: uaData?.platform
++                        ? `\"${uaData.platform}\"`
++                        : '',
++                };
++            }"""
++        )
++    except Exception:
++        return fallback
++    if not isinstance(value, dict):
++        return fallback
++    selected_ua = str(value.get("userAgent") or "").strip() or fallback["user_agent"]
++    selected_language = (
++        str(value.get("language") or "").strip() or fallback["language"]
++    )
++    languages = value.get("languages")
++    if isinstance(languages, list):
++        clean_languages = [
++            str(item).strip() for item in languages if str(item).strip()
++        ]
++        weighted: list[str] = []
++        for index, item in enumerate(clean_languages):
++            if index == 0:
++                weighted.append(item)
++            else:
++                quality = max(0.1, 1.0 - 0.1 * index)
++                weighted.append(f"{item};q={quality:.1f}")
++        selected_accept = ",".join(weighted)
++    else:
++        selected_accept = ""
++    selected_accept = selected_accept or selected_language or fallback["accept_language"]
++    selected_timezone = (
++        str(value.get("timezone") or "").strip() or fallback["timezone"]
++    )
++    return {
++        "user_agent": selected_ua,
++        "accept_language": selected_accept,
++        "language": selected_language,
++        "timezone": selected_timezone,
++        "sec_ch_ua": str(value.get("secChUa") or "").strip()
++        or fallback["sec_ch_ua"],
++        "sec_ch_ua_mobile": str(value.get("secChUaMobile") or "").strip()
++        or fallback["sec_ch_ua_mobile"],
++        "sec_ch_ua_platform": str(value.get("secChUaPlatform") or "").strip()
++        or fallback["sec_ch_ua_platform"],
++    }
++
++
+ class PersistentPlaywrightDaemon:
+     """One daemon thread owns Playwright, its event loop and live browsers."""
+ 
+@@ -348,17 +580,37 @@ class PersistentPlaywrightDaemon:
+         if self._startup_error is not None or not self._thread.is_alive():
+             raise RuntimeError("Playwright daemon is unavailable")
+         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+-        return future.result(timeout=timeout)
++        try:
++            return future.result(timeout=timeout)
++        except TimeoutError:
++            # Propagate cancellation to the daemon loop so a timed-out
++            # navigation cannot continue mutating a live browser tab.
++            future.cancel()
++            raise
+ 
+     async def _capture_request(self, session_id: str, request: Any) -> None:
+         session = self._sessions.get(session_id)
+         if session is None:
+             return
++        if session.external_cdp:
++            try:
++                if request.frame.page is not session.page:
++                    return
++            except Exception:
++                # The browser-level recorder owns service-worker targets.  The
++                # provider keeps only its page/iframe events to avoid mixing
++                # another live tab's receipts into this runtime.
++                return
+         try:
+             parsed = urlsplit(request.url)
+             headers = await request.all_headers()
+         except Exception:
+             return
++        if parsed.scheme != "https" or parsed.hostname not in {
++            "chatgpt.com",
++            "www.chatgpt.com",
++        }:
++            return
+         attestation = str(headers.get("oai-web-deployment-attestation") or "").strip()
+         if attestation:
+             session.attestation = attestation
+@@ -385,12 +637,24 @@ class PersistentPlaywrightDaemon:
+         session = self._sessions.get(session_id)
+         if session is None:
+             return
++        if session.external_cdp:
++            try:
++                if response.frame.page is not session.page:
++                    return
++            except Exception:
++                return
+         try:
+             response_url = response.url
+             headers = await response.all_headers()
+         except Exception:
+             return
+-        path = urlsplit(response_url).path
++        parsed_response = urlsplit(response_url)
++        if parsed_response.scheme != "https" or parsed_response.hostname not in {
++            "chatgpt.com",
++            "www.chatgpt.com",
++        }:
++            return
++        path = parsed_response.path
+         receipt = str(headers.get("x-oai-is-receipt") or "").strip()
+         if receipt:
+             session.latest_receipt = receipt
+@@ -416,53 +680,243 @@ class PersistentPlaywrightDaemon:
+                         ),
+                     }
+                 )
+-        if path == f"/sentinel/{SENTINEL_SDK_VERSION}/sdk.js":
++        if path in {
++            f"/sentinel/{SENTINEL_SDK_VERSION}/sdk.js",
++            "/backend-api/sentinel/sdk.js",
++        }:
+             try:
+                 session.sdk_sha256 = hashlib.sha256(await response.body()).hexdigest()
+             except Exception:
+                 pass
+ 
+-    async def _install_sdk(self, page: Page) -> None:
++    async def _install_local_sdk(
++        self,
++        page: Page,
++        source: str,
++        bootstrap_headers: dict[str, str] | None = None,
++    ) -> str:
++        """Install the pinned SDK even when the page has a strict CSP.
++
++        ``add_script_tag(content=...)`` is intentionally blocked by a normal
++        ChatGPT document's CSP.  Page.setBypassCSP takes effect on the next
++        navigation, so enable it for this page, reload the same URL, and then
++        inject the verified source after DOMContentLoaded.  The page is a
++        provider-owned tab (including external-CDP mode), never the user's
++        existing tab.
++        """
++        cdp = None
++        try:
++            context = getattr(page, "context", None)
++            new_cdp_session = getattr(context, "new_cdp_session", None)
++            if not callable(new_cdp_session):
++                # Lightweight test/page adapters may not expose CDP.  Real
++                # Playwright pages always take the CSP-aware path below.
++                await page.add_script_tag(content=source)
++                await _wait_for_sdk_ready(page)
++                return PINNED_SENTINEL_SDK_SHA256
++            if bootstrap_headers:
++                await page.set_extra_http_headers(dict(bootstrap_headers))
++            cdp = await new_cdp_session(page)
++            await cdp.send("Page.setBypassCSP", {"enabled": True})
++            current_url = str(page.url or CHATGPT_ORIGIN)
++            parsed = urlsplit(current_url)
++            if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
++                current_url = CHATGPT_ORIGIN + "/"
++            await page.goto(
++                current_url,
++                wait_until="domcontentloaded",
++                timeout=90_000,
++            )
++            if not _is_chatgpt_url(page.url):
++                raise RuntimeError("Sentinel SDK fallback navigation left chatgpt.com")
++            await page.add_script_tag(content=source)
++            await _wait_for_sdk_ready(page)
++            return PINNED_SENTINEL_SDK_SHA256
++        finally:
++            if bootstrap_headers and callable(getattr(page, "set_extra_http_headers", None)):
++                try:
++                    await page.set_extra_http_headers({})
++                except Exception:
++                    pass
++            if cdp is not None:
++                try:
++                    await cdp.send("Page.setBypassCSP", {"enabled": False})
++                except Exception:
++                    pass
++                try:
++                    await cdp.detach()
++                except Exception:
++                    pass
++
++    async def _install_sdk(
++        self,
++        page: Page,
++        bootstrap_headers: dict[str, str] | None = None,
++    ) -> str:
+         present = await page.evaluate(
+             "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'"
+         )
+         if present:
+-            return
+-        await page.add_script_tag(
+-            url=f"{CHATGPT_ORIGIN}/backend-api/sentinel/sdk.js"
+-        )
+-        await page.wait_for_function(
+-            "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'",
+-            timeout=30_000,
+-        )
++            return ""
++        try:
++            await page.add_script_tag(
++                url=f"{CHATGPT_ORIGIN}/backend-api/sentinel/sdk.js"
++            )
++            try:
++                await _wait_for_sdk_ready(page)
++                return ""
++            except Exception:
++                # A stale/partially loaded remote asset is not usable. Reload
++                # once and fall through to the verified local implementation.
++                pass
++        except Exception:
++            pass
++        # The fallback is CSP-aware and also handles a remote script that
++        # loaded but failed before exposing the expected API.
++        local_path = Path(__file__).resolve().parent / "sentinel_assets" / "sentinel_sdk.js"
++        source = local_path.read_text(encoding="utf-8")
++        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
++        if digest != PINNED_SENTINEL_SDK_SHA256:
++            raise RuntimeError("local Sentinel SDK checksum mismatch")
++        return await self._install_local_sdk(page, source, bootstrap_headers)
++
++    async def _wait_for_capture_settle(
++        self, session: _BrowserSession, timeout_ms: int = 1500
++    ) -> None:
++        """Allow asynchronous request/response listeners to finish parsing."""
++        deadline = time.monotonic() + max(0, int(timeout_ms)) / 1000
++        previous = (-1, -1, "")
++        while time.monotonic() < deadline:
++            current = (
++                len(session.request_events),
++                len(session.challenge_shapes),
++                session.latest_receipt,
++            )
++            if current == previous:
++                await asyncio.sleep(0.15)
++                if current == (
++                    len(session.request_events),
++                    len(session.challenge_shapes),
++                    session.latest_receipt,
++                ):
++                    pending = list(session.capture_tasks)
++                    if pending:
++                        await asyncio.gather(*pending, return_exceptions=True)
++                    return
++            previous = current
++            await asyncio.sleep(0.1)
++        pending = list(session.capture_tasks)
++        if pending:
++            await asyncio.gather(*pending, return_exceptions=True)
+ 
+     async def _capture_page_attestation(self, session: _BrowserSession) -> None:
+         try:
+             value = await session.page.evaluate(
+                 """() => {
+-                    const direct = window.__reactRouterContext?.state?.loaderData?.root?.clientBootstrap?.webDeploymentAttestation;
+-                    if (direct) return String(direct);
++                    const direct = window.__reactRouterContext?.state?.loaderData?.root?.clientBootstrap;
++                    let attestation = String(direct?.webDeploymentAttestation || '');
++                    let sessionId = String(direct?.sessionId || '');
+                     const node = document.getElementById('client-bootstrap');
+                     if (node) {
+                         try {
+                             const data = JSON.parse(node.textContent || '{}');
+-                            if (data.webDeploymentAttestation) return String(data.webDeploymentAttestation);
++                            attestation = attestation || String(
++                                data.webDeploymentAttestation || ''
++                            );
++                            sessionId = sessionId || String(data.sessionId || '');
+                         } catch (_) {}
+                     }
+-                    return '';
++                    return {attestation, sessionId};
+                 }"""
+             )
+         except Exception:
+-            value = ""
+-        if value:
+-            session.attestation = str(value)
++            value = {}
++        if isinstance(value, dict):
++            attestation = str(value.get("attestation") or "").strip()
++            page_session_id = str(value.get("sessionId") or "").strip()
++            if attestation:
++                session.attestation = attestation
++            if page_session_id:
++                session.session_id = page_session_id
++
++    async def _refresh_cookie_state(
++        self, session: _BrowserSession
++    ) -> list[dict[str, Any]]:
++        """Refresh live cookies before every flow and approval decision."""
++        cookies_method = getattr(session.context, "cookies", None)
++        if not callable(cookies_method):
++            return []
++        current = await cookies_method(CHATGPT_ORIGIN)
++        if not isinstance(current, list):
++            current = []
++        browser_device_id = next(
++            (
++                str(item.get("value") or "").strip()
++                for item in current
++                if str(item.get("name") or "").strip().lower() == "oai-did"
++            ),
++            "",
++        )
++        if browser_device_id:
++            # Imported cookie-backed profiles carry the device id that signed
++            # their attestation; do not replace it with the AT-derived UUID.
++            session.device_id = browser_device_id
++        session.cookie_backed = any(
++            is_nextauth_session_cookie_name(item.get("name")) for item in current
++        )
++        auth_material = "\x00".join(
++            sorted(
++                f"{str(item.get('name') or '').strip()}={str(item.get('value') or '')}"
++                for item in current
++                if _is_auth_state_cookie(item.get("name"))
++            )
++        )
++        fingerprint = hashlib.sha256(
++            auth_material.encode("utf-8")
++        ).hexdigest()
++        session.cookie_state_changed = fingerprint != session.cookie_fingerprint
++        session.cookie_fingerprint = fingerprint
++        return current
++
++    def _rebuild_bootstrap_headers(self, session: _BrowserSession) -> None:
++        """Rebuild page headers after cookies/device/attestation rotate."""
++        session.bootstrap_headers = _bootstrap_headers(
++            access_token=session.access_token,
++            account_id=session.account_id,
++            device_id=session.device_id,
++            session_id=session.session_id,
++            language=session.effective_language,
++            attestation=session.attestation,
++            cookie_backed=session.cookie_backed,
++        )
++
++    async def _refresh_binding_state(
++        self, session: _BrowserSession, *, attempts: int = 1
++    ) -> str:
++        """Re-check the cookie account when its NextAuth material changes."""
++        if not session.cookie_backed:
++            session.session_cookie_binding_state = "not_present"
++            session.session_cookie_binding_verified = False
++            return session.session_cookie_binding_state
++        state = await _verify_session_cookie_binding_with_retry(
++            session.page,
++            session.expected_user_id,
++            expected_email=session.expected_email,
++            expected_account_id=session.account_id,
++            cookie_backed=True,
++            attempts=attempts,
++        )
++        session.session_cookie_binding_state = state
++        session.session_cookie_binding_verified = state == "matched"
++        return state
+ 
+-    async def _open_session_async(
++    async def _open_session_body_async(
+         self,
+         *,
+         access_token: str,
+         account_id: str,
+         expected_user_id: str,
++        expected_email: str = "",
+         device_id: str,
+         session_id: str,
+         user_agent: str,
+@@ -473,77 +927,149 @@ class PersistentPlaywrightDaemon:
+         cookie_header: str,
+         language: str,
+         timezone: str,
++        _runtime_holder: dict[str, Any] | None = None,
+     ) -> dict[str, Any]:
+         runtime_id = uuid.uuid4().hex
+-        profile_path = _profile_root() / _profile_key(device_id)
+-        profile_path.mkdir(parents=True, exist_ok=True)
++        if _runtime_holder is not None:
++            _runtime_holder["runtime_id"] = runtime_id
+         headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=False)
+         browser_channel = os.getenv(
+             "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
+         ).strip()
+-        launch_options: dict[str, Any] = {
+-            "user_data_dir": str(profile_path),
+-            "headless": headless,
+-            "proxy": _proxy_options(browser_proxy),
+-            "user_agent": user_agent,
+-            "locale": language,
+-            "timezone_id": timezone,
+-            "viewport": {"width": 1365, "height": 768},
+-            "bypass_csp": True,
+-            "ignore_https_errors": False,
+-            "args": ["--no-first-run", "--no-default-browser-check"],
+-        }
+-        if browser_channel:
+-            launch_options["channel"] = browser_channel
+-        try:
+-            context = await self._playwright.chromium.launch_persistent_context(
+-                **launch_options
+-            )
+-        except Exception:
+-            if not browser_channel:
+-                raise
+-            launch_options.pop("channel", None)
+-            context = await self._playwright.chromium.launch_persistent_context(
+-                **launch_options
++        configured_cdp_port = _configured_cdp_port()
++        external_cdp = bool(configured_cdp_port)
++        browser = None
++        if external_cdp:
++            endpoint = f"http://127.0.0.1:{configured_cdp_port}"
++            browser = await self._playwright.chromium.connect_over_cdp(endpoint)
++            if not browser.contexts:
++                raise RuntimeError("configured GoPay CDP browser has no context")
++            context = next(
++                (
++                    candidate
++                    for candidate in browser.contexts
++                    if any(
++                        _is_chatgpt_url(str(existing.url or ""))
++                        for existing in candidate.pages
++                    )
++                ),
++                browser.contexts[0],
+             )
++            page = await context.new_page()
++            # This is a diagnostic marker, not a second browser profile.  Keep
++            # it absolute so callers do not mistake the attached context for a
++            # newly launched persistent profile.
++            profile_path = (
++                Path(__file__).resolve().parents[1]
++                / "data"
++                / "gopay-sentinel-external-cdp"
++                / str(configured_cdp_port)
++            ).resolve()
++        else:
++            profile_path = _profile_root() / _profile_key(device_id)
++            profile_path.mkdir(parents=True, exist_ok=True)
++            launch_options: dict[str, Any] = {
++                "user_data_dir": str(profile_path),
++                "headless": headless,
++                "proxy": _proxy_options(browser_proxy),
++                "user_agent": user_agent,
++                "locale": language,
++                "timezone_id": timezone,
++                "viewport": {"width": 1365, "height": 768},
++                "bypass_csp": True,
++                "ignore_https_errors": False,
++                "args": ["--no-first-run", "--no-default-browser-check"],
++            }
++            if browser_channel:
++                launch_options["channel"] = browser_channel
++            try:
++                context = await self._playwright.chromium.launch_persistent_context(
++                    **launch_options
++                )
++            except Exception:
++                if not browser_channel:
++                    raise
++                launch_options.pop("channel", None)
++                context = await self._playwright.chromium.launch_persistent_context(
++                    **launch_options
++                )
++            page = context.pages[0] if context.pages else await context.new_page()
++        if _runtime_holder is not None:
++            _runtime_holder["context"] = context
++            _runtime_holder["page"] = page
++            _runtime_holder["external_cdp"] = external_cdp
++        fingerprint = await _page_fingerprint(
++            page,
++            user_agent=user_agent,
++            language=language,
++            timezone=timezone,
++        )
++        effective_user_agent = fingerprint["user_agent"]
++        effective_accept_language = fingerprint["accept_language"]
++        effective_language = fingerprint["language"]
++        effective_timezone = fingerprint["timezone"]
++        effective_sec_ch_ua = fingerprint["sec_ch_ua"]
++        effective_sec_ch_ua_mobile = fingerprint["sec_ch_ua_mobile"]
++        effective_sec_ch_ua_platform = fingerprint["sec_ch_ua_platform"]
+         browser_version = (
+             str(context.browser.version)
+             if getattr(context, "browser", None) is not None
+             else ""
+         )
+-        (profile_path / "device-profile.json").write_text(
+-            json.dumps(
+-                {
+-                    "device_id": device_id,
+-                    "language": language,
+-                    "timezone": timezone,
+-                    "user_agent": user_agent,
+-                    "browser_channel": browser_channel or "bundled-chromium",
+-                    "browser_version": browser_version,
+-                },
+-                ensure_ascii=False,
+-                indent=2,
+-            ),
+-            encoding="utf-8",
+-        )
+-        page = context.pages[0] if context.pages else await context.new_page()
++        if not external_cdp:
++            (profile_path / "device-profile.json").write_text(
++                json.dumps(
++                    {
++                        "device_id": device_id,
++                        "language": language,
++                        "timezone": timezone,
++                        "user_agent": user_agent,
++                        "browser_channel": browser_channel or "bundled-chromium",
++                        "browser_version": browser_version,
++                    },
++                    ensure_ascii=False,
++                    indent=2,
++                ),
++                encoding="utf-8",
++            )
+         session = _BrowserSession(
+             context=context,
+             page=page,
+             profile_path=profile_path,
+             device_id=device_id,
+             expected_user_id=str(expected_user_id or "").strip(),
++            expected_email=str(expected_email or "").strip(),
+             attestation=str(deployment_attestation or "").strip(),
++            external_cdp=external_cdp,
++            access_token=str(access_token or ""),
++            account_id=str(account_id or ""),
++            session_id=str(session_id or ""),
++            effective_user_agent=effective_user_agent,
++            effective_accept_language=effective_accept_language,
++            effective_language=effective_language,
++            effective_timezone=effective_timezone,
++            effective_sec_ch_ua=effective_sec_ch_ua,
++            effective_sec_ch_ua_mobile=effective_sec_ch_ua_mobile,
++            effective_sec_ch_ua_platform=effective_sec_ch_ua_platform,
+         )
+         self._sessions[runtime_id] = session
+-        context.on(
+-            "request",
+-            lambda request: asyncio.create_task(self._capture_request(runtime_id, request)),
++
++        def schedule_capture(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
++            task = asyncio.create_task(coro)
++            session.capture_tasks.add(task)
++            task.add_done_callback(session.capture_tasks.discard)
++            return task
++
++        request_handler = lambda request: schedule_capture(
++            self._capture_request(runtime_id, request)
+         )
+-        context.on(
+-            "response",
+-            lambda response: asyncio.create_task(self._capture_response(runtime_id, response)),
++        response_handler = lambda response: schedule_capture(
++            self._capture_response(runtime_id, response)
+         )
++        session.request_handler = request_handler
++        session.response_handler = response_handler
++        context.on("request", request_handler)
++        context.on("response", response_handler)
+         explicit_nextauth = bool(session_token) or any(
+             is_nextauth_session_cookie_name(name)
+             for name, _value in tuple(session_cookies or ())
+@@ -552,47 +1078,52 @@ class PersistentPlaywrightDaemon:
+             os.getenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", ""),
+             default=False,
+         )
+-        cookies, replace_nextauth, explicit_nextauth = _browser_session_cookies(
+-            cookie_header,
+-            device_id,
+-            session_token,
+-            tuple(session_cookies or ()),
+-            discard_nextauth=bool(allow_at_bound_browser and not explicit_nextauth),
+-        )
+-        await _replace_imported_session_cookies(
+-            context,
+-            cookies,
+-            replace_nextauth=replace_nextauth,
+-        )
+-        current_cookies = await context.cookies(CHATGPT_ORIGIN)
+-        cookie_backed = any(
+-            is_nextauth_session_cookie_name(item.get("name"))
+-            for item in current_cookies
+-        )
+-        session.cookie_backed = cookie_backed
+-        bootstrap_headers = _bootstrap_headers(
+-            access_token=access_token,
+-            account_id=account_id,
+-            device_id=device_id,
+-            session_id=session_id,
+-            language=language,
+-            attestation=session.attestation,
+-            cookie_backed=cookie_backed,
+-        )
+-        session.bootstrap_headers = dict(bootstrap_headers)
+-        await context.set_extra_http_headers(bootstrap_headers)
++        if external_cdp:
++            # The attached browser already owns the authenticated Cookie jar;
++            # never clear or overwrite the user's live context.
++            cookies = []
++            explicit_nextauth = False
++        else:
++            cookies, replace_nextauth, explicit_nextauth = _browser_session_cookies(
++                cookie_header,
++                device_id,
++                session_token,
++                tuple(session_cookies or ()),
++                discard_nextauth=bool(allow_at_bound_browser and not explicit_nextauth),
++            )
++            await _replace_imported_session_cookies(
++                context,
++                cookies,
++                replace_nextauth=replace_nextauth,
++            )
++        await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
++        bootstrap_headers = dict(session.bootstrap_headers)
++        if external_cdp:
++            await page.set_extra_http_headers(bootstrap_headers)
++        else:
++            await context.set_extra_http_headers(bootstrap_headers)
+         try:
+             await page.goto(
+                 f"{CHATGPT_ORIGIN}/?promo_campaign=plus-1-month-free",
+                 wait_until="domcontentloaded",
+                 timeout=90_000,
+             )
++            if not _is_chatgpt_url(page.url):
++                raise RuntimeError("Sentinel browser navigation left chatgpt.com")
+         finally:
+             # Sentinel req/ping in both HARs are cookie/browser requests and do
+             # not carry the API Authorization header.
+-            await context.set_extra_http_headers({})
+-        await self._install_sdk(page)
++            if external_cdp:
++                await page.set_extra_http_headers({})
++            else:
++                await context.set_extra_http_headers({})
++        sdk_hash = await self._install_sdk(page, session.bootstrap_headers)
++        if sdk_hash:
++            session.sdk_sha256 = sdk_hash
+         await self._capture_page_attestation(session)
++        await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
+         try:
+             binding_attempts = int(
+                 os.getenv("OPLL_GOPAY_BINDING_PROBE_ATTEMPTS", "3")
+@@ -603,7 +1134,9 @@ class PersistentPlaywrightDaemon:
+             await _verify_session_cookie_binding_with_retry(
+                 page,
+                 expected_user_id,
+-                cookie_backed=cookie_backed,
++                expected_email=expected_email,
++                expected_account_id=account_id,
++                cookie_backed=session.cookie_backed,
+                 attempts=binding_attempts,
+             )
+         )
+@@ -612,7 +1145,7 @@ class PersistentPlaywrightDaemon:
+         )
+         try:
+             binding = await page.evaluate(
+-                """async ({token, expected, account, cookieBacked}) => {
++                """async ({token, expected, expectedEmail, account, cookieBacked}) => {
+                     const controller = new AbortController();
+                     const timer = setTimeout(() => controller.abort(), 10000);
+                     try {
+@@ -630,7 +1163,14 @@ class PersistentPlaywrightDaemon:
+                         });
+                         if (!response.ok) return false;
+                         const payload = await response.json();
+-                        return Boolean(expected && String(payload?.id || '') === expected);
++                        const actual = String(payload?.id || '');
++                        const actualEmail = String(
++                            payload?.email || payload?.user?.email || ''
++                        ).toLowerCase();
++                        return Boolean(
++                            (expected && actual === expected)
++                            || (!expected && expectedEmail && actualEmail === expectedEmail)
++                        );
+                     } catch (_) {
+                         return false;
+                     } finally {
+@@ -640,17 +1180,22 @@ class PersistentPlaywrightDaemon:
+                 {
+                     "token": access_token,
+                     "expected": expected_user_id,
++                    "expectedEmail": str(expected_email or "").strip().lower(),
+                     "account": account_id,
+-                    "cookieBacked": cookie_backed,
++                    "cookieBacked": session.cookie_backed,
+                 },
+             )
+             session.account_binding_verified = bool(binding)
+         except Exception:
+             session.account_binding_verified = False
+-        await asyncio.sleep(0.15)
++        await self._wait_for_capture_settle(session)
+         browser_cookies = await context.cookies(CHATGPT_ORIGIN)
++        session.active_page_url = str(page.url or "")
+         return {
+             "runtime_id": runtime_id,
++            "device_id": session.device_id,
++            "session_id": session.session_id,
++            "external_cdp": external_cdp,
+             "attestation": session.attestation,
+             "cookie_header": _cookie_header(browser_cookies),
+             "latest_receipt": session.latest_receipt,
+@@ -658,27 +1203,107 @@ class PersistentPlaywrightDaemon:
+             "sdk_sha256": session.sdk_sha256,
+             "profile_path": str(profile_path),
+             "headless": headless,
+-            "browser_channel": browser_channel or "bundled-chromium",
++            "browser_channel": "external-cdp"
++            if external_cdp
++            else browser_channel or "bundled-chromium",
+             "browser_version": browser_version,
++            "user_agent": effective_user_agent,
++            "accept_language": effective_accept_language,
++            "language": effective_language,
++            "timezone": effective_timezone,
++            "sec_ch_ua": effective_sec_ch_ua,
++            "sec_ch_ua_mobile": effective_sec_ch_ua_mobile,
++            "sec_ch_ua_platform": effective_sec_ch_ua_platform,
++            "cookie_backed": session.cookie_backed,
+             "account_binding_verified": session.account_binding_verified,
+             "session_cookie_binding_verified": (
+                 session.session_cookie_binding_verified
+             ),
+             "session_cookie_binding_state": session.session_cookie_binding_state,
+             "session_cookie_source": (
+-                "explicit"
++                "external"
++                if external_cdp
++                else "explicit"
+                 if explicit_nextauth
+-                else "profile" if cookie_backed else "none"
++                else "profile" if session.cookie_backed else "none"
+             ),
+         }
+ 
++    async def _open_session_async(self, **kwargs: Any) -> dict[str, Any]:
++        holder = kwargs.get("_runtime_holder")
++        if not isinstance(holder, dict):
++            holder = {}
++            kwargs["_runtime_holder"] = holder
++        try:
++            return await self._open_session_body_async(**kwargs)
++        except BaseException:
++            runtime_id = str(holder.get("runtime_id") or "")
++            if runtime_id and runtime_id in self._sessions:
++                try:
++                    await self._close_session_async(runtime_id)
++                except Exception:
++                    pass
++            else:
++                page = holder.get("page")
++                context = holder.get("context")
++                if page is not None:
++                    try:
++                        await page.close()
++                    except Exception:
++                        pass
++                elif context is not None:
++                    try:
++                        await context.close()
++                    except Exception:
++                        pass
++            raise
++
++    async def _cleanup_opening_holder(self, holder: dict[str, Any]) -> None:
++        runtime_id = str(holder.get("runtime_id") or "")
++        if runtime_id and runtime_id in self._sessions:
++            await self._close_session_async(runtime_id)
++            return
++        page = holder.get("page")
++        context = holder.get("context")
++        if page is not None:
++            try:
++                await page.close()
++            except Exception:
++                pass
++        elif context is not None:
++            try:
++                await context.close()
++            except Exception:
++                pass
++
+     def open_session(self, **kwargs: Any) -> dict[str, Any]:
+-        return self._call(self._open_session_async(**kwargs), timeout=150)
++        runtime_holder: dict[str, Any] = {}
++        kwargs = dict(kwargs)
++        kwargs["_runtime_holder"] = runtime_holder
++        try:
++            return self._call(
++                self._open_session_async(**kwargs),
++                timeout=OPEN_SESSION_TIMEOUT_SECONDS,
++            )
++        except BaseException:
++            try:
++                self._call(
++                    self._cleanup_opening_holder(runtime_holder),
++                    timeout=30,
++                )
++            except Exception:
++                pass
++            raise
+ 
+     async def _set_page_url(self, session: _BrowserSession, page_url: str) -> None:
+         parsed = urlsplit(str(page_url or CHATGPT_ORIGIN))
+         if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
+             raise ValueError("Sentinel page URL must remain on chatgpt.com")
++        await self._refresh_cookie_state(session)
++        await self._capture_page_attestation(session)
++        self._rebuild_bootstrap_headers(session)
++        if session.cookie_state_changed and session.cookie_backed:
++            await self._refresh_binding_state(session, attempts=1)
+         relative = parsed.path or "/"
+         if parsed.query:
+             relative += "?" + parsed.query
+@@ -688,13 +1313,17 @@ class PersistentPlaywrightDaemon:
+             os.getenv("OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT", ""),
+             default=True,
+         )
+-        current = urlsplit(session.page.url)
+         if (
+             navigate_checkout
+             and parsed.path.startswith("/checkout/")
+             and session.active_page_url != parsed.geturl()
+         ):
+-            await session.context.set_extra_http_headers(session.bootstrap_headers)
++            await self._capture_page_attestation(session)
++            self._rebuild_bootstrap_headers(session)
++            if session.external_cdp:
++                await session.page.set_extra_http_headers(session.bootstrap_headers)
++            else:
++                await session.context.set_extra_http_headers(session.bootstrap_headers)
+             try:
+                 try:
+                     await session.page.goto(
+@@ -718,20 +1347,22 @@ class PersistentPlaywrightDaemon:
+                     await session.page.evaluate("() => { window.stop(); return true; }")
+                     session.checkout_navigation_fallback = True
+                     session.checkout_navigation_error = "timeout"
++                if not _is_chatgpt_url(session.page.url):
++                    raise RuntimeError("Sentinel checkout navigation left chatgpt.com")
+             finally:
+-                await session.context.set_extra_http_headers({})
+-            await self._install_sdk(session.page)
+-            await self._capture_page_attestation(session)
+-            session.session_cookie_binding_state = (
+-                await _verify_session_cookie_binding_with_retry(
+-                    session.page,
+-                    session.expected_user_id,
+-                    cookie_backed=session.cookie_backed,
+-                )
+-            )
+-            session.session_cookie_binding_verified = (
+-                session.session_cookie_binding_state == "matched"
++                if session.external_cdp:
++                    await session.page.set_extra_http_headers({})
++                else:
++                    await session.context.set_extra_http_headers({})
++            sdk_hash = await self._install_sdk(
++                session.page, session.bootstrap_headers
+             )
++            if sdk_hash:
++                session.sdk_sha256 = sdk_hash
++            await self._capture_page_attestation(session)
++            await self._refresh_cookie_state(session)
++            self._rebuild_bootstrap_headers(session)
++            await self._refresh_binding_state(session, attempts=3)
+             # Auth-only AT sessions may be redirected while the checkout shell
+             # loads. Restore the exact Checkout URL before SDK.init so its
+             # zero-length ping carries the HAR checkout Referer.
+@@ -741,27 +1372,52 @@ class PersistentPlaywrightDaemon:
+             )
+             session.active_page_url = parsed.geturl()
+             return
++        if not _is_chatgpt_url(session.page.url):
++            raise RuntimeError("Sentinel page is not on chatgpt.com")
+         await session.page.evaluate(
+             "url => history.replaceState({}, '', url)",
+             relative,
+         )
++        session.active_page_url = parsed.geturl()
+ 
+     async def _prepare_flow_async(
+         self, runtime_id: str, flow: str, page_url: str
+     ) -> dict[str, Any]:
+         session = self._sessions[runtime_id]
+         await self._set_page_url(session, page_url)
+-        await self._install_sdk(session.page)
++        sdk_hash = await self._install_sdk(
++            session.page, session.bootstrap_headers
++        )
++        if sdk_hash:
++            session.sdk_sha256 = sdk_hash
++        await self._capture_page_attestation(session)
++        await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
++        if session.cookie_backed and (
++            session.cookie_state_changed
++            or session.session_cookie_binding_state not in {"matched", "mismatched"}
++        ):
++            await self._refresh_binding_state(session, attempts=2)
+         before = len(session.request_events)
+         await session.page.evaluate(
+             "async flow => { await window.SentinelSDK.init(flow); return true; }",
+             flow,
+         )
+-        await asyncio.sleep(0.1)
++        await self._wait_for_capture_settle(session)
+         cookies = await session.context.cookies(CHATGPT_ORIGIN)
+         return {
++            "device_id": session.device_id,
++            "session_id": session.session_id,
+             "attestation": session.attestation,
+             "cookie_header": _cookie_header(cookies),
++            "user_agent": session.effective_user_agent,
++            "accept_language": session.effective_accept_language,
++            "language": session.effective_language,
++            "timezone": session.effective_timezone,
++            "sec_ch_ua": session.effective_sec_ch_ua,
++            "sec_ch_ua_mobile": session.effective_sec_ch_ua_mobile,
++            "sec_ch_ua_platform": session.effective_sec_ch_ua_platform,
++            "cookie_backed": session.cookie_backed,
+             "latest_receipt": session.latest_receipt,
+             "request_events": session.request_events[before:],
+             "challenge_shapes": list(session.challenge_shapes),
+@@ -776,7 +1432,8 @@ class PersistentPlaywrightDaemon:
+ 
+     def prepare_flow(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+         return self._call(
+-            self._prepare_flow_async(runtime_id, flow, page_url), timeout=120
++            self._prepare_flow_async(runtime_id, flow, page_url),
++            timeout=FLOW_TIMEOUT_SECONDS,
+         )
+ 
+     async def _token_async(
+@@ -784,7 +1441,19 @@ class PersistentPlaywrightDaemon:
+     ) -> dict[str, Any]:
+         session = self._sessions[runtime_id]
+         await self._set_page_url(session, page_url)
+-        await self._install_sdk(session.page)
++        sdk_hash = await self._install_sdk(
++            session.page, session.bootstrap_headers
++        )
++        if sdk_hash:
++            session.sdk_sha256 = sdk_hash
++        await self._capture_page_attestation(session)
++        await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
++        if session.cookie_backed and (
++            session.cookie_state_changed
++            or session.session_cookie_binding_state not in {"matched", "mismatched"}
++        ):
++            await self._refresh_binding_state(session, attempts=2)
+         before = len(session.request_events)
+         started = time.perf_counter()
+         generated = await session.page.evaluate(
+@@ -797,13 +1466,24 @@ class PersistentPlaywrightDaemon:
+             }""",
+             flow,
+         )
++        await self._wait_for_capture_settle(session)
+         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+         cookies = await session.context.cookies(CHATGPT_ORIGIN)
+         return {
++            "device_id": session.device_id,
++            "session_id": session.session_id,
+             "token": generated.get("token") if isinstance(generated, dict) else "",
+             "timing": generated.get("timing") if isinstance(generated, dict) else None,
+             "attestation": session.attestation,
+             "cookie_header": _cookie_header(cookies),
++            "user_agent": session.effective_user_agent,
++            "accept_language": session.effective_accept_language,
++            "language": session.effective_language,
++            "timezone": session.effective_timezone,
++            "sec_ch_ua": session.effective_sec_ch_ua,
++            "sec_ch_ua_mobile": session.effective_sec_ch_ua_mobile,
++            "sec_ch_ua_platform": session.effective_sec_ch_ua_platform,
++            "cookie_backed": session.cookie_backed,
+             "latest_receipt": session.latest_receipt,
+             "request_events": session.request_events[before:],
+             "elapsed_ms": elapsed_ms,
+@@ -817,27 +1497,197 @@ class PersistentPlaywrightDaemon:
+             "checkout_navigation_error": session.checkout_navigation_error,
+         }
+ 
++    async def _browser_request_async(
++        self,
++        runtime_id: str,
++        method: str,
++        url: str,
++        headers: dict[str, str] | None = None,
++        body: str | None = None,
++        timeout_ms: int = 45_000,
++    ) -> dict[str, Any]:
++        """Send a ChatGPT API request from the provider-owned browser tab.
++
++        External-CDP mode must keep the protected ChatGPT mutations on the
++        browser's actual proxy/IP and cookie jar.  This bridge deliberately
++        strips browser-forbidden headers (Cookie/User-Agent/Sec-*) and lets
++        Chromium supply them from the attached profile.
++        """
++        session = self._sessions[runtime_id]
++        parsed = urlsplit(str(url or ""))
++        if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
++            raise ValueError("browser request URL must remain on chatgpt.com")
++        if not _is_chatgpt_url(session.page.url):
++            raise RuntimeError("Sentinel browser request page is not on chatgpt.com")
++        await self._refresh_cookie_state(session)
++        if session.cookie_backed and (
++            session.cookie_state_changed
++            or session.session_cookie_binding_state not in {"matched", "mismatched"}
++        ):
++            await self._refresh_binding_state(session, attempts=2)
++        if session.cookie_backed and session.session_cookie_binding_state != "matched":
++            raise RuntimeError("Sentinel browser request session binding is not matched")
++
++        source_headers = dict(headers or {})
++        referer = ""
++        for key, value in source_headers.items():
++            if str(key).lower() == "referer":
++                referer = str(value or "").strip()
++                break
++        if referer:
++            referer_url = urlsplit(referer)
++            if referer_url.scheme != "https" or referer_url.netloc != "chatgpt.com":
++                raise ValueError("browser request referer must remain on chatgpt.com")
++            relative = referer_url.path or "/"
++            if referer_url.query:
++                relative += "?" + referer_url.query
++            if referer_url.fragment:
++                relative += "#" + referer_url.fragment
++            await session.page.evaluate(
++                "url => history.replaceState({}, '', url)", relative
++            )
++            session.active_page_url = referer_url.geturl()
++
++        forbidden = {
++            "accept-encoding",
++            "connection",
++            "content-length",
++            "cookie",
++            "host",
++            "origin",
++            "priority",
++            "referer",
++            "sec-ch-ua",
++            "sec-ch-ua-mobile",
++            "sec-ch-ua-platform",
++            "sec-fetch-dest",
++            "sec-fetch-mode",
++            "sec-fetch-site",
++            "user-agent",
++        }
++        safe_headers = {
++            str(key): str(value)
++            for key, value in source_headers.items()
++            if str(key).lower() not in forbidden
++        }
++        result = await session.page.evaluate(
++            """async ({url, method, headers, body, timeoutMs}) => {
++                const controller = new AbortController();
++                const timer = setTimeout(() => controller.abort(), timeoutMs);
++                try {
++                    const response = await fetch(url, {
++                        method,
++                        credentials: 'include',
++                        cache: 'no-store',
++                        redirect: 'follow',
++                        headers,
++                        body: body == null ? undefined : body,
++                        signal: controller.signal,
++                    });
++                    const text = await response.text();
++                    const responseHeaders = {};
++                    response.headers.forEach((value, key) => {
++                        responseHeaders[key] = value;
++                    });
++                    return {
++                        status: response.status,
++                        statusText: response.statusText,
++                        url: response.url,
++                        text,
++                        headers: responseHeaders,
++                    };
++                } finally {
++                    clearTimeout(timer);
++                }
++            }""",
++            {
++                "url": str(url),
++                "method": str(method or "GET").upper(),
++                "headers": safe_headers,
++                "body": body,
++                "timeoutMs": max(1_000, min(120_000, int(timeout_ms))),
++            },
++        )
++        if not isinstance(result, dict) or "status" not in result:
++            raise RuntimeError("browser request returned an invalid response")
++        await self._capture_page_attestation(session)
++        await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
++        return {
++            "status_code": int(result.get("status") or 0),
++            "reason": str(result.get("statusText") or ""),
++            "url": str(result.get("url") or url),
++            "text": str(result.get("text") or ""),
++            "headers": dict(result.get("headers") or {}),
++            "device_id": session.device_id,
++            "session_id": session.session_id,
++            "attestation": session.attestation,
++            "cookie_header": _cookie_header(
++                await session.context.cookies(CHATGPT_ORIGIN)
++            ),
++            "cookie_backed": session.cookie_backed,
++            "latest_receipt": session.latest_receipt,
++        }
++
++    def browser_request(
++        self,
++        runtime_id: str,
++        method: str,
++        url: str,
++        headers: dict[str, str] | None = None,
++        body: str | None = None,
++        timeout_ms: int = 45_000,
++    ) -> dict[str, Any]:
++        return self._call(
++            self._browser_request_async(
++                runtime_id,
++                method,
++                url,
++                headers,
++                body,
++                timeout_ms,
++            ),
++            timeout=max(60, min(180, int(timeout_ms / 1000) + 30)),
++        )
++
+     def token(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+-        return self._call(self._token_async(runtime_id, flow, page_url), timeout=120)
++        return self._call(
++            self._token_async(runtime_id, flow, page_url),
++            timeout=FLOW_TIMEOUT_SECONDS,
++        )
+ 
+     async def _set_cookie_async(
+         self, runtime_id: str, name: str, value: str, http_only: bool
+     ) -> dict[str, Any]:
+         session = self._sessions[runtime_id]
++        selected_name = str(name or "").strip()
++        # An attached browser owns the user's authentication jar.  Never
++        # overwrite its NextAuth or device cookie from the HTTP side; Stripe
++        # correlation cookies are still allowed and are intentionally shared
++        # with the provider-owned tab.
++        if session.external_cdp and (
++            _is_auth_state_cookie(selected_name)
++            or selected_name.lower() == "oai-did"
++        ):
++            cookies = await self._refresh_cookie_state(session)
++            self._rebuild_bootstrap_headers(session)
++            return {
++                "device_id": session.device_id,
++                "session_id": session.session_id,
++                "cookie_header": _cookie_header(cookies),
++                "session_cookie_binding_verified": (
++                    session.session_cookie_binding_verified
++                ),
++                "session_cookie_binding_state": session.session_cookie_binding_state,
++            }
+         await session.context.add_cookies(
+-            [
+-                {
+-                    "name": str(name),
+-                    "value": str(value),
+-                    "domain": ".chatgpt.com",
+-                    "path": "/",
+-                    "secure": True,
+-                    "httpOnly": bool(http_only),
+-                }
+-            ]
++            [_cookie_record(selected_name, str(value), http_only=http_only)]
+         )
+-        cookies = await session.context.cookies(CHATGPT_ORIGIN)
++        cookies = await self._refresh_cookie_state(session)
++        self._rebuild_bootstrap_headers(session)
+         return {
++            "device_id": session.device_id,
++            "session_id": session.session_id,
+             "cookie_header": _cookie_header(cookies),
+             "session_cookie_binding_verified": (
+                 session.session_cookie_binding_verified
+@@ -855,7 +1705,28 @@ class PersistentPlaywrightDaemon:
+     async def _close_session_async(self, runtime_id: str) -> None:
+         session = self._sessions.pop(runtime_id, None)
+         if session is not None:
+-            await session.context.close()
++            for event_name, handler in (
++                ("request", session.request_handler),
++                ("response", session.response_handler),
++            ):
++                if handler is not None:
++                    try:
++                        session.context.remove_listener(event_name, handler)
++                    except Exception:
++                        pass
++            pending = list(session.capture_tasks)
++            for task in pending:
++                if not task.done():
++                    task.cancel()
++            if pending:
++                await asyncio.gather(*pending, return_exceptions=True)
++            if session.external_cdp:
++                try:
++                    await session.page.close()
++                except Exception:
++                    pass
++            else:
++                await session.context.close()
+ 
+     def close_session(self, runtime_id: str) -> None:
+         if runtime_id:
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index af85ffd..3d50c16 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import os
+ import base64
+ import json
++import re
+ import secrets
+ import shutil
+ import subprocess
+@@ -13,7 +14,7 @@ import time
+ import uuid
+ from pathlib import Path
+ from typing import Any, Protocol
+-from urllib.parse import quote, unquote, urlsplit, urlunsplit
++from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
+ from urllib.request import Request, urlopen
+ 
+ try:
+@@ -21,7 +22,12 @@ try:
+ except ImportError:  # pragma: no cover - installation issue handled at runtime
+     requests = None  # type: ignore
+ 
+-from .auth import account_id, account_user_id, is_nextauth_session_cookie_name
++from .auth import (
++    account_email,
++    account_id,
++    account_user_id,
++    is_nextauth_session_cookie_name,
++)
+ from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
+ from .errors import ConfigurationError, NetworkError, ProtocolError
+ from .logging_utils import compact_url, emit_log, safe_log_text
+@@ -29,9 +35,47 @@ from .models import ExtractionConfig
+ 
+ 
+ EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
++PENDING_RECEIPT_LIMIT = 2
+ SENTINEL_SDK_VERSION = "20260810913b"
+ 
+ 
++def _enabled_env(value: Any, *, default: bool) -> bool:
++    text = str(value or "").strip().lower()
++    if not text:
++        return default
++    return text not in {"0", "false", "off", "disabled", "no"}
++
++
++class BrowserHTTPResponse:
++    """Small requests-compatible response returned by the CDP fetch bridge."""
++
++    def __init__(
++        self,
++        *,
++        status_code: int,
++        text: str,
++        headers: dict[str, str],
++        url: str,
++        reason: str = "",
++    ) -> None:
++        self.status_code = int(status_code)
++        self.text = str(text or "")
++        self.headers = dict(headers or {})
++        self.url = str(url or "")
++        self.reason = str(reason or "")
++
++    @property
++    def ok(self) -> bool:
++        return self.status_code < 400
++
++    @property
++    def content(self) -> bytes:
++        return self.text.encode("utf-8")
++
++    def json(self) -> Any:
++        return json.loads(self.text)
++
++
+ def browser_checkout_telemetry(action: str) -> str:
+     """Return the eight-value browser telemetry shape seen in both GoPay HARs."""
+     normalized = str(action or "checkout").strip().lower()
+@@ -61,6 +105,18 @@ def browser_checkout_telemetry(action: str) -> str:
+         ]
+     return json.dumps(values, separators=(",", ":"))
+ 
++
++def _pending_receipts_from_header(value: Any) -> list[str]:
++    try:
++        payload = json.loads(str(value or ""))
++    except (TypeError, ValueError):
++        return []
++    updates = payload.get("updates") if isinstance(payload, dict) else None
++    if not isinstance(updates, list):
++        return []
++    values = [str(item).strip() for item in updates if str(item).strip()]
++    return values[-PENDING_RECEIPT_LIMIT:]
++
+ try:
+     from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
+ except ImportError:  # pragma: no cover
+@@ -314,6 +370,13 @@ def normalize_proxy_url(proxy: str) -> str:
+ def set_proxy_url(session: Any, proxy: str) -> None:
+     normalized = normalize_proxy_url(proxy)
+     session.proxies = {"http": normalized, "https": normalized} if normalized else {}
++    # Keep the diagnostic/rotation source of truth aligned with the actual
++    # requests proxy.  External-CDP mode consults this value to prevent an
++    # HTTP-only route change from splitting the browser proof and approval.
++    try:
++        session.openai_proxy = normalized
++    except Exception:
++        pass
+ 
+ 
+ def merged_session_cookie_header(session: Any) -> str:
+@@ -338,7 +401,7 @@ def merged_session_cookie_header(session: Any) -> str:
+             values = {}
+         if isinstance(values, dict):
+             for name, value in values.items():
+-                if str(name).strip():
++                if str(name).strip() and str(name) not in merged:
+                     merged[str(name)] = str(value)
+     return "; ".join(f"{name}={value}" for name, value in merged.items())
+ 
+@@ -353,10 +416,8 @@ def stage_http_request(
+ ) -> Any:
+     started = time.perf_counter()
+     emit_log(log, f"{stage}: {method.upper()} {compact_url(url)}")
+-    # The browser rotates this short-lived observation value on each logical
+-    # request.  Keep it out of call sites so route/tax/confirm requests all
+-    # receive the same transport-level treatment while test doubles remain
+-    # unchanged.
++    # Keep the browser's short-lived observation value out of call sites so
++    # route/tax/confirm requests receive one consistent transport treatment.
+     refresh_headers = getattr(session, "refresh_openai_request_headers", None)
+     if callable(refresh_headers):
+         try:
+@@ -369,7 +430,55 @@ def stage_http_request(
+                 request_headers[key] = value
+             kwargs["headers"] = request_headers
+     try:
+-        response = session.request(method.upper(), url, **kwargs)
++        provider = getattr(session, "openai_sentinel_provider", None)
++        parsed_url = urlsplit(str(url or ""))
++        use_browser_http = (
++            provider is not None
++            and bool(getattr(provider, "_external_cdp", False))
++            and callable(getattr(provider, "browser_request", None))
++            and parsed_url.scheme == "https"
++            and parsed_url.netloc == "chatgpt.com"
++            and _enabled_env(
++                os.getenv("OPLL_GOPAY_EXTERNAL_CDP_BROWSER_HTTP", ""),
++                default=True,
++            )
++        )
++        if use_browser_http:
++            try:
++                session.openai_browser_http_requests = int(
++                    getattr(session, "openai_browser_http_requests", 0) or 0
++                ) + 1
++            except Exception:
++                pass
++            request_url = str(url)
++            params = kwargs.get("params")
++            if params:
++                query = urlencode(params, doseq=True)
++                request_url += ("&" if "?" in request_url else "?") + query
++            browser_headers = dict(getattr(session, "headers", {}) or {})
++            browser_headers.update(dict(kwargs.get("headers") or {}))
++            body: str | None = None
++            if kwargs.get("json") is not None:
++                body = json.dumps(
++                    kwargs["json"], ensure_ascii=False, separators=(",", ":")
++                )
++            elif kwargs.get("data") is not None:
++                data = kwargs["data"]
++                body = urlencode(data, doseq=True) if isinstance(data, dict) else str(data)
++            timeout_value = kwargs.get("timeout", DEFAULT_TIMEOUT)
++            try:
++                timeout_ms = max(1_000, min(120_000, int(float(timeout_value) * 1000)))
++            except (TypeError, ValueError):
++                timeout_ms = int(DEFAULT_TIMEOUT * 1000)
++            response = provider.browser_request(
++                method.upper(),
++                request_url,
++                headers=browser_headers,
++                body=body,
++                timeout_ms=timeout_ms,
++            )
++        else:
++            response = session.request(method.upper(), url, **kwargs)
+     except Exception as exc:
+         detail = safe_log_text(exc)
+         emit_log(log, f"{stage}: request error={detail}")
+@@ -396,13 +505,22 @@ def stage_http_request(
+     session_headers = getattr(session, "headers", None)
+     if session_headers is not None:
+         try:
++            queue = getattr(session, "openai_pending_receipts", None)
++            if not isinstance(queue, list):
++                queue = []
+             if pending_ack:
++                queue = []
+                 session_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
+             elif pending_receipt:
++                selected_receipt = str(pending_receipt)
++                if selected_receipt not in queue:
++                    queue.append(selected_receipt)
++                queue = queue[-PENDING_RECEIPT_LIMIT:]
+                 session_headers["x-oai-is-pending-updates"] = json.dumps(
+-                    {"v": 3, "updates": [str(pending_receipt)]},
++                    {"v": 3, "updates": queue},
+                     separators=(",", ":"),
+                 )
++            setattr(session, "openai_pending_receipts", queue)
+         except Exception:
+             pass
+     return response
+@@ -521,6 +639,28 @@ def prepare_openai_browser_flow(
+     return False
+ 
+ 
++def effective_gopay_proxy(session: Any, configured: str) -> str:
++    """Keep HTTP GoPay calls on the route owned by an attached browser.
++
++    A CDP-attached profile cannot change its network proxy per request.  When
++    external mode is active, silently rotating only the HTTP session creates a
++    proof/IP split that the approval endpoint rejects.  Callers may opt back
++    into the legacy segmented rotation with
++    ``OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION=1``.
++    """
++    provider = getattr(session, "openai_sentinel_provider", None)
++    external = provider is not None and bool(
++        getattr(provider, "_external_cdp", False)
++    )
++    current = normalize_proxy_url(str(getattr(session, "openai_proxy", "") or ""))
++    allow_rotation = str(
++        os.getenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", "")
++    ).strip().lower() in {"1", "true", "on", "enabled", "yes"}
++    if external and current and not allow_rotation:
++        return current
++    return normalize_proxy_url(configured)
++
++
+ def rotate_openai_approval_context(
+     session: Any,
+     config: ExtractionConfig,
+@@ -532,6 +672,21 @@ def rotate_openai_approval_context(
+     if not normalized or normalized == current:
+         return False
+     previous = getattr(session, "openai_sentinel_provider", None)
++    if (
++        previous is not None
++        and bool(getattr(previous, "_external_cdp", False))
++        and current
++        and normalized != current
++        and str(
++            os.getenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", "")
++        ).strip().lower()
++        not in {"1", "true", "on", "enabled", "yes"}
++    ):
++        # Keep the provider and its live browser tab; only the HTTP caller's
++        # requested segment is collapsed onto the browser's existing route.
++        set_proxy_url(session, current)
++        session.openai_approve_proxy = current
++        return False
+     close = getattr(previous, "close", None)
+     if callable(close):
+         close()
+@@ -611,6 +766,14 @@ def _session_cookie_value(session: Any, name: str) -> str:
+     return ""
+ 
+ 
++def _stripe_browser_cookie_id(value: Any) -> str:
++    """Normalize generated Stripe ids to the browser's 42-character shape."""
++    text = str(value or "").strip()
++    if re.fullmatch(r"[0-9a-fA-F-]{36}", text):
++        return text + secrets.token_hex(3)
++    return text
++
++
+ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
+     """Bind Stripe confirm metrics to the ChatGPT browser cookie identity."""
+     muid = _session_cookie_value(session, "__stripe_mid")
+@@ -618,6 +781,8 @@ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
+         ctx["muid"] = muid
+     else:
+         muid = str(ctx.get("muid") or "").strip()
++        muid = _stripe_browser_cookie_id(muid)
++        ctx["muid"] = muid
+         if muid:
+             provider = getattr(session, "openai_sentinel_provider", None)
+             set_cookie = getattr(provider, "set_cookie", None)
+@@ -637,8 +802,27 @@ def synchronize_stripe_browser_ids(session: Any, ctx: dict[str, Any]) -> None:
+     if sid and sid.upper() != "NA":
+         ctx["sid"] = sid
+     else:
+-        # The successful no-cookie browser shape sends the literal NA.
+-        ctx["sid"] = "NA"
++        provider = getattr(session, "openai_sentinel_provider", None)
++        if bool(
++            getattr(provider, "_external_cdp", False)
++            or getattr(provider, "_cookie_backed", False)
++        ):
++            # A logged-in attached browser follows the Stripe cookie-backed
++            # shape.  Seed a real session id when the profile has not visited
++            # Stripe yet, then mirror it through the same provider tab.
++            generated_sid = _stripe_browser_cookie_id(str(uuid.uuid4()))
++            set_cookie = getattr(provider, "set_cookie", None)
++            installed = False
++            if callable(set_cookie):
++                try:
++                    set_cookie("__stripe_sid", generated_sid, http_only=False)
++                    installed = True
++                except Exception:
++                    pass
++            ctx["sid"] = generated_sid if installed else "NA"
++        else:
++            # The successful no-cookie browser shape sends the literal NA.
++            ctx["sid"] = "NA"
+ 
+ 
+ def is_network_exception(exc: BaseException) -> bool:
+@@ -1404,6 +1588,8 @@ class PlaywrightSentinelProvider:
+         self._session_cookie_binding_verified = False
+         self._session_cookie_binding_state = "unverified"
+         self._session_cookie_source = "none"
++        self._cookie_backed = False
++        self._external_cdp = False
+         self._checkout_navigation_fallback = False
+         self._checkout_navigation_error = ""
+         self._started = False
+@@ -1428,13 +1614,69 @@ class PlaywrightSentinelProvider:
+ 
+         return get_playwright_daemon()
+ 
++    def browser_request(
++        self,
++        method: str,
++        url: str,
++        *,
++        headers: dict[str, str] | None = None,
++        body: str | None = None,
++        timeout_ms: int = 45_000,
++    ) -> BrowserHTTPResponse:
++        """Route a protected ChatGPT call through the attached browser tab."""
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Playwright Sentinel provider failed during startup")
++            if not self._started:
++                self._start()
++            result = self._daemon().browser_request(
++                self._runtime_id,
++                str(method or "GET").upper(),
++                str(url),
++                dict(headers or {}),
++                body,
++                int(timeout_ms),
++            )
++            self._apply_runtime(result)
++            return BrowserHTTPResponse(
++                status_code=int(result.get("status_code") or 0),
++                text=str(result.get("text") or ""),
++                headers=dict(result.get("headers") or {}),
++                url=str(result.get("url") or url),
++                reason=str(result.get("reason") or ""),
++            )
++
+     def _apply_runtime(self, result: dict[str, Any]) -> None:
+-        attestation = str(result.get("attestation") or "").strip()
+-        if attestation:
+-            self._attestation = attestation
+-        cookies = str(result.get("cookie_header") or "").strip()
+-        if cookies:
+-            self._cookies = cookies
++        device_id = str(result.get("device_id") or "").strip()
++        if device_id:
++            self.device_id = device_id
++        runtime_session_id = str(result.get("session_id") or "").strip()
++        if runtime_session_id:
++            self.session_id = runtime_session_id
++        if "attestation" in result:
++            self._attestation = str(result.get("attestation") or "").strip()
++        if "cookie_header" in result:
++            self._cookies = str(result.get("cookie_header") or "").strip()
++            if not self._cookies and self.device_id:
++                # Keep the baseline device cookie even when a transient CDP
++                # read returns an empty jar.  The next successful read can
++                # replace it with the complete browser Cookie header.
++                self._cookies = f"oai-did={self.device_id}"
++        effective_user_agent = str(result.get("user_agent") or "").strip()
++        if effective_user_agent:
++            self.user_agent = effective_user_agent
++        effective_accept_language = str(
++            result.get("accept_language") or ""
++        ).strip()
++        effective_language = str(result.get("language") or "").strip()
++        if effective_language:
++            self.language = effective_language
++        effective_timezone = str(result.get("timezone") or "").strip()
++        if effective_timezone:
++            self.timezone = effective_timezone
++        sec_ch_ua = str(result.get("sec_ch_ua") or "").strip()
++        sec_ch_ua_mobile = str(result.get("sec_ch_ua_mobile") or "").strip()
++        sec_ch_ua_platform = str(result.get("sec_ch_ua_platform") or "").strip()
+         profile_path = str(result.get("profile_path") or "").strip()
+         if profile_path:
+             self._profile_path = profile_path
+@@ -1471,6 +1713,10 @@ class PlaywrightSentinelProvider:
+             self._session_cookie_source = str(
+                 result.get("session_cookie_source") or "none"
+             )
++        if "external_cdp" in result:
++            self._external_cdp = bool(result.get("external_cdp"))
++        if "cookie_backed" in result:
++            self._cookie_backed = bool(result.get("cookie_backed"))
+         if "checkout_navigation_fallback" in result:
+             self._checkout_navigation_fallback = bool(
+                 result.get("checkout_navigation_fallback")
+@@ -1480,16 +1726,69 @@ class PlaywrightSentinelProvider:
+                 result.get("checkout_navigation_error") or ""
+             )
+         headers = getattr(self.transport_session, "headers", None)
++        # Keep the transport object's identity attributes in lockstep with the
++        # browser runtime.  Approval-context rotation reads these attributes
++        # when it recreates the provider on a different sticky proxy.
++        for attr, value in (
++            ("openai_device_id", self.device_id),
++            ("openai_did", self.device_id),
++            ("openai_session_id", self.session_id),
++            ("openai_user_agent", self.user_agent),
++            ("openai_language", self.language),
++            ("openai_timezone", self.timezone),
++        ):
++            if value:
++                try:
++                    setattr(self.transport_session, attr, value)
++                except Exception:
++                    pass
++        try:
++            setattr(self.transport_session, "openai_external_cdp", self._external_cdp)
++        except Exception:
++            pass
+         if headers is not None:
+-            if self._cookies:
+-                headers["Cookie"] = self._cookies
++            if "cookie_header" in result:
++                if self._cookies:
++                    headers["Cookie"] = self._cookies
++                else:
++                    headers.pop("Cookie", None)
+             headers["oai-device-id"] = self.device_id
+-            if self._attestation:
+-                headers["oai-web-deployment-attestation"] = self._attestation
++            headers["oai-session-id"] = self.session_id
++            if "attestation" in result:
++                if self._attestation:
++                    headers["oai-web-deployment-attestation"] = self._attestation
++                else:
++                    headers.pop("oai-web-deployment-attestation", None)
++            if effective_user_agent:
++                headers["User-Agent"] = self.user_agent
++            if effective_accept_language:
++                headers["Accept-Language"] = effective_accept_language
++            if effective_language:
++                headers["oai-language"] = self.language
++            if sec_ch_ua:
++                headers["sec-ch-ua"] = sec_ch_ua
++            if sec_ch_ua_mobile:
++                headers["sec-ch-ua-mobile"] = sec_ch_ua_mobile
++            if sec_ch_ua_platform:
++                headers["sec-ch-ua-platform"] = sec_ch_ua_platform
+             receipt = str(result.get("latest_receipt") or "").strip()
+             if receipt:
++                queue = getattr(self.transport_session, "openai_pending_receipts", None)
++                if not isinstance(queue, list):
++                    queue = []
++                if receipt not in queue:
++                    queue.append(receipt)
++                queue = queue[-PENDING_RECEIPT_LIMIT:]
++                try:
++                    setattr(
++                        self.transport_session,
++                        "openai_pending_receipts",
++                        queue,
++                    )
++                except Exception:
++                    pass
+                 headers["x-oai-is-pending-updates"] = json.dumps(
+-                    {"v": 3, "updates": [receipt]}, separators=(",", ":")
++                    {"v": 3, "updates": queue}, separators=(",", ":")
+                 )
+ 
+     def _start(self) -> None:
+@@ -1502,6 +1801,7 @@ class PlaywrightSentinelProvider:
+                 access_token=self.access_token,
+                 account_id=account_id(self.access_token),
+                 expected_user_id=account_user_id(self.access_token),
++                expected_email=account_email(self.access_token),
+                 device_id=self.device_id,
+                 session_id=self.session_id,
+                 user_agent=self.user_agent,
+@@ -1727,15 +2027,16 @@ class DefaultTransportFactory:
+         session.openai_client_observation = session.headers.get(
+             "x-oai-is-client-observation", ""
+         )
++        session.openai_gopay_snapshot_count = 0
++        session.openai_gopay_taxes_count = 0
++        session.openai_pending_receipts = _pending_receipts_from_header(
++            session.headers.get("x-oai-is-pending-updates", "")
++        )
+         session.openai_request_started = time.perf_counter()
+         session.openai_sentinel_observer_enabled = not is_gopay
+ 
+         def refresh_openai_request_headers(method: str, url: str) -> dict[str, str]:
+             pinned = observation_override or os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+-            observation = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
+-            session.openai_client_observation = observation
+-            session.headers["x-oai-is-client-observation"] = observation
+-            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
+             normalized_url = str(url or "").lower()
+             is_checkout = normalized_url.endswith("/backend-api/payments/checkout")
+             is_checkout_confirm = normalized_url.endswith(
+@@ -1744,6 +2045,39 @@ class DefaultTransportFactory:
+             is_checkout_approve = normalized_url.endswith(
+                 "/backend-api/payments/checkout/approve"
+             )
++            if pinned:
++                observation = pinned
++            elif payment_method == "gopay" and _enabled_env(
++                os.getenv("OPLL_GOPAY_BURST_OBSERVATION", ""), default=True
++            ):
++                # Chrome keeps one observation id for the snapshot/taxes burst,
++                # then rotates at the second taxes request and at approve.
++                observation = str(
++                    getattr(session, "openai_client_observation", "") or ""
++                ).strip()
++                if is_checkout or is_checkout_confirm or is_checkout_approve:
++                    observation = ""
++                elif normalized_url.endswith("/backend-api/payments/checkout/taxes"):
++                    count = int(getattr(session, "openai_gopay_taxes_count", 0) or 0)
++                    if count >= 1:
++                        observation = ""
++                    session.openai_gopay_taxes_count = count + 1
++                elif normalized_url.endswith(
++                    "/backend-api/payments/checkout/snapshot"
++                ):
++                    count = int(
++                        getattr(session, "openai_gopay_snapshot_count", 0) or 0
++                    )
++                    if count == 0:
++                        observation = ""
++                    session.openai_gopay_snapshot_count = count + 1
++                if not observation:
++                    observation = f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
++            else:
++                observation = f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
++            session.openai_client_observation = observation
++            session.headers["x-oai-is-client-observation"] = observation
++            dynamic: dict[str, str] = {"x-oai-is-client-observation": observation}
+             if method.upper() == "POST" and (
+                 is_checkout or is_checkout_confirm or is_checkout_approve
+             ):
+@@ -1763,13 +2097,18 @@ class DefaultTransportFactory:
+                         )
+                         or ""
+                     ).strip()
+-                    dynamic["oai-telemetry"] = (
+-                        override
+-                        or captured
+-                        or browser_checkout_telemetry(
+-                            "approve" if is_checkout_approve else "confirm"
++                    if is_checkout_approve:
++                        # The browser approve request intentionally carries
++                        # the compact null telemetry marker; the richer
++                        # eight-field timing belongs to the initial Checkout
++                        # request and is retained separately for diagnostics.
++                        dynamic["oai-telemetry"] = override or "[1,null]"
++                    else:
++                        dynamic["oai-telemetry"] = (
++                            override
++                            or captured
++                            or browser_checkout_telemetry("confirm")
+                         )
+-                    )
+                     if is_checkout_approve:
+                         # Both complete GoPay HARs acknowledge an empty update
+                         # envelope on approve, regardless of earlier tax receipts.
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 5fe412e..8e26388 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -90,15 +90,47 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
+     approve_headers = session.refresh_openai_request_headers(
+         "POST", "https://chatgpt.com/backend-api/payments/checkout/approve"
+     )
+-    approve_values = json.loads(approve_headers["oai-telemetry"])
+-    assert len(approve_values) == 8
+-    assert approve_values[0] == 1 and approve_values[5:] == [2, 0, approve_values[7]]
+-    assert 600 <= approve_values[1] <= 760
+-    assert 3 <= approve_values[7] - approve_values[1] <= 5
+-    assert approve_values == [1, 725.3, 113, 28, 59, 2, 0, 729]
++    assert approve_headers["oai-telemetry"] == "[1,null]"
+     assert approve_headers["x-oai-is-pending-updates"] == '{"v":3,"updates":[]}'
+ 
+ 
++def test_gopay_observation_id_follows_browser_burst_boundaries(monkeypatch) -> None:
++    class Session:
++        def __init__(self):
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    monkeypatch.setattr(gopay_transport, "new_session", Session)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    session = gopay_transport.GoPayTransportFactory().chatgpt(
++        config, config.checkout_proxy
++    )
++    urls = [
++        "https://chatgpt.com/backend-api/payments/checkout",
++        "https://chatgpt.com/backend-api/payments/checkout/snapshot",
++        "https://chatgpt.com/backend-api/payments/checkout/snapshot",
++        "https://chatgpt.com/backend-api/payments/checkout/taxes",
++        "https://chatgpt.com/backend-api/payments/checkout/taxes",
++        "https://chatgpt.com/backend-api/payments/checkout/approve",
++    ]
++    observations = [
++        session.refresh_openai_request_headers("POST", url)[
++            "x-oai-is-client-observation"
++        ]
++        for url in urls
++    ]
++    assert observations[0] != observations[1]
++    assert observations[1] == observations[2] == observations[3]
++    assert observations[4] != observations[3]
++    assert observations[5] != observations[4]
++
++
+ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
+     class Session:
+         def __init__(self) -> None:
+@@ -229,6 +261,109 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
+     assert [name for name, _ in calls] == ["open", "init", "token", "cookie", "close"]
+ 
+ 
++def test_playwright_runtime_syncs_external_identity_to_transport() -> None:
++    session = SimpleNamespace(
++        headers={
++            "Cookie": "old=1",
++            "oai-web-deployment-attestation": "old-attestation",
++        }
++    )
++    provider = gopay_transport.PlaywrightSentinelProvider(
++        access_token="fixture-token",
++        device_id="original-device",
++        session_id="fixture-session",
++        user_agent="fixture-agent",
++        proxy="http://proxy.example:8080",
++        transport_session=session,
++    )
++    provider._apply_runtime(
++        {
++            "device_id": "live-device",
++            "session_id": "live-session",
++            "cookie_header": "",
++            "attestation": "",
++            "external_cdp": True,
++            "cookie_backed": True,
++            "user_agent": "live-agent",
++            "accept_language": "id-ID,id;q=0.9",
++            "language": "id-ID",
++            "timezone": "Asia/Jakarta",
++            "sec_ch_ua": '"Chrome";v="151"',
++            "sec_ch_ua_mobile": "?0",
++            "sec_ch_ua_platform": '"Windows"',
++        }
++    )
++    assert provider.device_id == "live-device"
++    assert session.openai_device_id == "live-device"
++    assert session.openai_did == "live-device"
++    assert session.openai_session_id == "live-session"
++    assert session.openai_external_cdp is True
++    assert session.headers["Cookie"] == "oai-did=live-device"
++    assert session.headers["oai-session-id"] == "live-session"
++    assert "oai-web-deployment-attestation" not in session.headers
++    assert session.headers["User-Agent"] == "live-agent"
++    assert session.headers["sec-ch-ua"] == '"Chrome";v="151"'
++
++
++def test_external_cdp_collapses_proxy_rotation_unless_opted_in(monkeypatch) -> None:
++    session = SimpleNamespace(
++        openai_proxy="http://browser.example:8080",
++        openai_sentinel_provider=SimpleNamespace(_external_cdp=True),
++        proxies={},
++    )
++    monkeypatch.delenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", raising=False)
++    assert gopay_transport.effective_gopay_proxy(
++        session, "http://configured.example:8080"
++    ) == "http://browser.example:8080"
++    monkeypatch.setenv("OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION", "1")
++    assert gopay_transport.effective_gopay_proxy(
++        session, "http://configured.example:8080"
++    ) == "http://configured.example:8080"
++
++
++def test_external_cdp_routes_chatgpt_requests_through_browser_fetch(monkeypatch) -> None:
++    calls: list[dict[str, object]] = []
++
++    class Provider:
++        _external_cdp = True
++
++        def browser_request(self, method, url, **kwargs):
++            calls.append({"method": method, "url": url, **kwargs})
++            return gopay_transport.BrowserHTTPResponse(
++                status_code=200,
++                text='{"state":"eligible"}',
++                headers={},
++                url=url,
++            )
++
++    class Session:
++        def __init__(self):
++            self.headers = {
++                "Authorization": "Bearer fixture",
++                "Cookie": "stale-cookie",
++            }
++            self.openai_sentinel_provider = Provider()
++
++        def request(self, *_args, **_kwargs):
++            raise AssertionError("external ChatGPT request must use browser fetch")
++
++    session = Session()
++    response = gopay_transport.stage_http_request(
++        session,
++        "eligibility",
++        "GET",
++        "https://chatgpt.com/backend-api/promo_campaign/check_coupon?coupon=fixture",
++        headers={"Referer": "https://chatgpt.com/"},
++    )
++    assert response.status_code == 200
++    assert len(calls) == 1
++    assert calls[0]["method"] == "GET"
++    assert calls[0]["headers"]["Authorization"] == "Bearer fixture"
++    assert calls[0]["headers"]["Cookie"] == "stale-cookie"
++    assert calls[0]["body"] is None
++    assert session.openai_browser_http_requests == 1
++
++
+ def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
+     class Session:
+         def __init__(self) -> None:
+@@ -260,6 +395,100 @@ def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
+     }
+ 
+ 
++def test_gopay_transport_accumulates_distinct_pending_receipts_until_ack() -> None:
++    class Session:
++        def __init__(self) -> None:
++            self.headers = {"x-oai-is-pending-updates": '{"v":3,"updates":[]}'}
++            self.receipts = iter(("receipt-a", "receipt-a", "receipt-b"))
++
++        def request(self, *_args, **_kwargs):
++            try:
++                receipt = next(self.receipts)
++            except StopIteration:
++                receipt = ""
++            return type(
++                "Response",
++                (),
++                {
++                    "status_code": 200,
++                    "text": "{}",
++                    "headers": (
++                        {"x-oai-is-receipt": receipt} if receipt else {}
++                    ),
++                },
++            )()
++
++    session = Session()
++    for _ in range(3):
++        gopay_transport.stage_http_request(
++            session,
++            "fixture",
++            "POST",
++            "https://chatgpt.com/backend-api/fixture",
++        )
++    assert json.loads(session.headers["x-oai-is-pending-updates"]) == {
++        "v": 3,
++        "updates": ["receipt-a", "receipt-b"],
++    }
++    session.request = lambda *_args, **_kwargs: type(
++        "Response", (), {"status_code": 200, "text": "{}", "headers": {"x-oai-is-pending-updates-ack": "ack"}}
++    )()
++    gopay_transport.stage_http_request(
++        session,
++        "fixture",
++        "POST",
++        "https://chatgpt.com/backend-api/fixture",
++    )
++    assert session.headers["x-oai-is-pending-updates"] == '{"v":3,"updates":[]}'
++
++
++def test_gopay_pending_queue_matches_two_receipt_tax_cadence() -> None:
++    class Session:
++        def __init__(self):
++            self.headers = {"x-oai-is-pending-updates": '{"v":3,"updates":[]}'}
++            self.receipts = iter(("snapshot-one", "snapshot-two", "taxes-one"))
++            self.observed: list[int] = []
++
++        def request(self, _method, _url, **kwargs):
++            pending = str((kwargs.get("headers") or {}).get("x-oai-is-pending-updates") or self.headers.get("x-oai-is-pending-updates") or "")
++            self.observed.append(len(json.loads(pending).get("updates", [])))
++            try:
++                receipt = next(self.receipts)
++            except StopIteration:
++                receipt = ""
++            return type(
++                "Response",
++                (),
++                {
++                    "status_code": 200,
++                    "text": "{}",
++                    "headers": (
++                        {"x-oai-is-receipt": receipt} if receipt else {}
++                    ),
++                },
++            )()
++
++    session = Session()
++    empty = {"x-oai-is-pending-updates": gopay_transport.EMPTY_PENDING_UPDATES}
++    for _ in range(3):
++        gopay_transport.stage_http_request(
++            session,
++            "fixture",
++            "POST",
++            "https://chatgpt.com/backend-api/payments/checkout/taxes",
++            headers=empty,
++        )
++    # The next taxes request is the first one allowed to carry the latest two
++    # receipts (the same shape as the canonical browser HAR).
++    gopay_transport.stage_http_request(
++        session,
++        "fixture",
++        "POST",
++        "https://chatgpt.com/backend-api/payments/checkout/taxes",
++    )
++    assert session.observed == [0, 0, 0, 2]
++
++
+ def test_gopay_transport_clears_pending_receipts_on_ack() -> None:
+     class Session:
+         def __init__(self) -> None:
+@@ -425,13 +654,35 @@ def test_gopay_stripe_metrics_seed_missing_browser_mid_cookie() -> None:
+             self.openai_sentinel_provider = Provider()
+ 
+     session = Session()
+-    ctx = {"muid": "muid-generated-fixture", "sid": "sid-generated-fixture"}
++    ctx = {"muid": "00000000-0000-0000-0000-000000000000", "sid": "sid-generated-fixture"}
+     gopay_transport.synchronize_stripe_browser_ids(session, ctx)
+-    assert installed == [("__stripe_mid", "muid-generated-fixture", False)]
+-    assert "__stripe_mid=muid-generated-fixture" in session.headers["Cookie"]
++    assert len(installed) == 1 and installed[0][0] == "__stripe_mid"
++    assert installed[0][2] is False and len(installed[0][1]) == 42
++    assert "__stripe_mid=" + installed[0][1] in session.headers["Cookie"]
+     assert ctx["sid"] == "NA"
+ 
+ 
++def test_external_cdp_stripe_metrics_seed_real_sid_cookie() -> None:
++    installed: list[tuple[str, str, bool]] = []
++
++    class Provider:
++        _external_cdp = True
++
++        def set_cookie(self, name, value, *, http_only=False):
++            installed.append((name, value, http_only))
++
++    session = SimpleNamespace(
++        headers={"Cookie": "oai-did=device-fixture"},
++        openai_sentinel_provider=Provider(),
++    )
++    ctx = {"sid": "NA"}
++    gopay_transport.synchronize_stripe_browser_ids(session, ctx)
++    assert installed and installed[0][0] == "__stripe_sid"
++    assert installed[0][2] is False
++    assert ctx["sid"] == installed[0][1]
++    assert len(ctx["sid"]) == 42
++
++
+ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -> None:
+     calls: list[str] = []
+     captured: dict[str, object] = {}
+@@ -474,6 +725,61 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
+     assert calls == []
+ 
+ 
++def test_gopay_external_cdp_eligibility_prepares_browser_before_get(monkeypatch) -> None:
++    order: list[str] = []
++
++    class Provider:
++        _session_cookie_binding_state = "matched"
++        _external_cdp = True
++        _cookies = "oai-did=device-fixture"
++        _session_cookie_source = "external"
++        _attestation = "a" * 291
++
++        def prepare(self):
++            order.append("prepare")
++
++    class Session:
++        def __init__(self):
++            self.openai_sentinel_provider = Provider()
++            self.openai_proxy = "http://browser.example:8080"
++            self.proxies = {}
++
++    class Response:
++        status_code = 200
++        text = '{"state":"eligible"}'
++        headers: dict[str, str] = {}
++
++        def json(self):
++            return {"state": "eligible"}
++
++    def fake_effective(_session, configured):
++        order.append("effective")
++        return configured
++
++    def fake_set_proxy(_session, _proxy):
++        order.append("proxy")
++
++    def fake_request(*_args, **_kwargs):
++        order.append("request")
++        return Response()
++
++    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_CDP_PORT", "61908")
++    monkeypatch.setattr(gopay_checkout, "prepare_openai_browser_session", lambda s: s.openai_sentinel_provider.prepare())
++    monkeypatch.setattr(gopay_checkout, "effective_gopay_proxy", fake_effective)
++    monkeypatch.setattr(gopay_checkout, "set_proxy_url", fake_set_proxy)
++    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    result = gopay_checkout.probe_coupon_eligibility(config, Session(), None)
++    assert result["eligible"] is True
++    assert order.index("prepare") < order.index("effective") < order.index("request")
++
++
+ def test_gopay_eligibility_stays_on_checkout_segment(monkeypatch) -> None:
+     observed: list[dict[str, str]] = []
+ 
+@@ -531,6 +837,8 @@ def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
+ 
+     class Session:
+         openai_sentinel_provider = Provider()
++        def __init__(self):
++            self.headers: dict[str, str] = {}
+ 
+     class Response:
+         status_code = 200
+@@ -545,6 +853,7 @@ def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
+         return Response()
+ 
+     monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
++    monkeypatch.setattr(gopay_checkout, "account_id", lambda _token: "account-fixture")
+     config = ExtractionConfig(
+         access_token="fixture-token",
+         checkout_proxy="http://proxy.example:8080",
+@@ -553,9 +862,10 @@ def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
+         payment_method="gopay",
+     )
+     commits: list[str] = []
++    session = Session()
+     checkout = gopay_checkout.create_checkout(
+         config,
+-        Session(),
++        session,
+         None,
+         commit_callback=lambda: commits.append("checkout_committed"),
+     )
+@@ -570,6 +880,7 @@ def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
+     assert captured["headers"]["Referer"] == "https://chatgpt.com/"
+     assert "OpenAI-Sentinel-SO-Token" not in captured["headers"]
+     assert len(captured["headers"]["oai-web-deployment-attestation"]) == 291
++    assert session.headers["chatgpt-account-id"] == "account-fixture"
+     assert commits == ["checkout_committed"]
+ 
+ 
+@@ -1434,6 +1745,7 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
+ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) -> None:
+     events: list[str] = []
+     elements_reuse: list[bool] = []
++    tax_pending_flags: list[bool] = []
+ 
+     monkeypatch.setattr(
+         gopay_cs_live,
+@@ -1495,7 +1807,9 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+     monkeypatch.setattr(
+         gopay_cs_live,
+         "cs_checkout_taxes",
+-        lambda *_args: events.append("taxes") or {},
++        lambda *_args, **kwargs: events.append("taxes")
++        or tax_pending_flags.append(bool(kwargs.get("use_pending_updates")))
++        or {},
+     )
+     monkeypatch.setattr(
+         gopay_cs_live,
+@@ -1557,6 +1871,7 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch)
+         "page_get",
+     ]
+     assert elements_reuse == [False]
++    assert tax_pending_flags == [False, True]
+ 
+ 
+ def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch) -> None:
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+index f6c6dbe..8372e14 100644
+--- a/tests/test_gopay_live_canary.py
++++ b/tests/test_gopay_live_canary.py
+@@ -108,6 +108,10 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
+                         "name": "__Secure-next-auth.session-token.1",
+                         "value": "chunk-one",
+                     },
++                    {"name": "oai-did", "value": "device-fixture"},
++                    {"name": "_account", "value": "account-fixture"},
++                    {"name": "__stripe_mid", "value": "mid-fixture"},
++                    {"name": "__stripe_sid", "value": "sid-fixture"},
+                     {
+                         "name": "__Secure-next-auth.session-token.bad",
+                         "value": "must-be-ignored",
+@@ -123,6 +127,10 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
+     assert cookies == (
+         ("__Secure-next-auth.session-token.0", "chunk-zero"),
+         ("__Secure-next-auth.session-token.1", "chunk-one"),
++        ("__stripe_mid", "mid-fixture"),
++        ("__stripe_sid", "sid-fixture"),
++        ("_account", "account-fixture"),
++        ("oai-did", "device-fixture"),
+     )
+     assert attestation == "a" * 291
+ 
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 242649a..17ffeff 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -28,6 +28,14 @@ def test_playwright_cookie_header_contains_no_empty_names() -> None:
+             {"name": "__stripe_mid", "value": "mid"},
+         ]
+     ) == "oai-did=device; __stripe_mid=mid"
++    preserved = sentinel._cookies_from_header(
++        "oai-did=browser-device; __Host-next-auth.csrf-token=csrf",
++        "at-derived-device",
++        preserve_device_id=True,
++    )
++    assert {item["name"]: item["value"] for item in preserved}["oai-did"] == (
++        "browser-device"
++    )
+ 
+ 
+ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
+@@ -53,8 +61,13 @@ def test_session_cookie_binding_probe_uses_cookies_without_bearer_header() -> No
+     assert asyncio.run(
+         sentinel._verify_session_cookie_binding(page, "user-fixture")
+     ) == "matched"
+-    assert calls[0]["expected"] == "user-fixture"
++    assert calls[0]["expected"] == {
++        "expected": "user-fixture",
++        "expectedEmail": "",
++        "expectedAccount": "",
++    }
+     assert "credentials: 'include'" in calls[0]["expression"]
++    assert "'/api/auth/session'" in calls[0]["expression"]
+     assert "authorization" not in calls[0]["expression"].lower()
+ 
+ 
+@@ -81,6 +94,26 @@ def test_session_cookie_binding_probe_keeps_unavailable_distinct() -> None:
+     ) == "identity_missing"
+ 
+ 
++def test_session_cookie_binding_probe_can_use_email_when_user_id_is_missing() -> None:
++    calls: list[dict[str, object]] = []
++
++    class Page:
++        async def evaluate(self, expression, expected):
++            calls.append({"expression": expression, "expected": expected})
++            return "matched"
++
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding(
++            Page(), "", "User@Example.test"
++        )
++    ) == "matched"
++    assert calls[0]["expected"] == {
++        "expected": "",
++        "expectedEmail": "user@example.test",
++        "expectedAccount": "",
++    }
++
++
+ def test_session_cookie_binding_retries_unavailable_in_same_runtime() -> None:
+     class Page:
+         def __init__(self):
+@@ -148,6 +181,27 @@ def test_imported_session_cookies_replace_stale_nextauth_chunks_only() -> None:
+     assert events[1][1] == imported
+ 
+ 
++def test_host_cookie_import_omits_domain_for_playwright() -> None:
++    cookies = sentinel._cookies_from_header(
++        "__Host-next-auth.csrf-token=csrf-fixture; oai-did=device-fixture",
++        "device-fixture",
++    )
++    by_name = {item["name"]: item for item in cookies}
++    assert "domain" not in by_name["__Host-next-auth.csrf-token"]
++    assert by_name["__Host-next-auth.csrf-token"]["url"] == "https://chatgpt.com/"
++    assert "path" not in by_name["__Host-next-auth.csrf-token"]
++    assert by_name["oai-did"]["domain"] == ".chatgpt.com"
++    assert sentinel._cookie_record(
++        "fixture-cookie", "value", http_only=True
++    )["httpOnly"] is True
++
++
++def test_chatgpt_origin_check_rejects_auth_routes() -> None:
++    assert sentinel._is_chatgpt_url("https://chatgpt.com/") is True
++    assert sentinel._is_chatgpt_url("https://chatgpt.com/auth/login") is False
++    assert sentinel._is_chatgpt_url("https://auth.openai.com/") is False
++
++
+ def test_explicit_nextauth_chunks_do_not_reimport_stale_header_chunks() -> None:
+     cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
+         (
+@@ -171,6 +225,17 @@ def test_explicit_nextauth_chunks_do_not_reimport_stale_header_chunks() -> None:
+     assert "__Secure-next-auth.session-token.2" not in by_name
+ 
+ 
++def test_explicit_nextauth_preserves_account_cookie_metadata() -> None:
++    cookies, _, _ = sentinel._browser_session_cookies(
++        "__Secure-next-auth.session-token.0=stale; _account=account-fixture",
++        "device-fixture",
++        "",
++        (("__Secure-next-auth.session-token.0", "fresh"),),
++    )
++    names = {item["name"] for item in cookies}
++    assert "_account" in names
++
++
+ def test_auxiliary_browser_cookies_do_not_replace_profile_nextauth() -> None:
+     cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
+         "__Secure-next-auth.session-token.0=profile-zero",
+@@ -197,6 +262,7 @@ def test_at_bound_fallback_discards_stale_profile_nextauth() -> None:
+     assert replace_nextauth is True
+     assert explicit_nextauth is False
+     assert "__Secure-next-auth.session-token.0" not in names
++    assert "__Host-next-auth.csrf-token" not in names
+     assert "__cf_bm" in names
+ 
+ 
+@@ -236,6 +302,100 @@ def test_at_only_bearer_probe_keeps_non_nextauth_browser_cookies() -> None:
+     assert "'chatgpt-account-id': account" in source
+ 
+ 
++def test_sdk_install_falls_back_to_pinned_local_asset(monkeypatch) -> None:
++    calls: list[dict[str, object]] = []
++
++    class Page:
++        async def evaluate(self, *_args):
++            return False
++
++        async def add_script_tag(self, **kwargs):
++            calls.append(kwargs)
++            if "url" in kwargs:
++                raise RuntimeError("fixture proxy asset failure")
++
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++    async def ready(*_args, **_kwargs):
++        return None
++
++    monkeypatch.setattr(sentinel, "_wait_for_sdk_ready", ready)
++    digest = asyncio.run(daemon._install_sdk(Page()))
++    assert digest == sentinel.PINNED_SENTINEL_SDK_SHA256
++    assert len(calls) == 2
++    assert calls[0]["url"].endswith("/backend-api/sentinel/sdk.js")
++    assert len(calls[1]["content"]) > 1000
++
++
++def test_page_bootstrap_syncs_attestation_and_session_id() -> None:
++    class Page:
++        async def evaluate(self, *_args):
++            return {
++                "attestation": "a" * 291,
++                "sessionId": "session-from-page",
++            }
++
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++    session = sentinel._BrowserSession(
++        context=SimpleNamespace(),
++        page=Page(),
++        profile_path=Path("runtime-profile"),
++        device_id="device-fixture",
++        session_id="transport-session",
++    )
++    asyncio.run(daemon._capture_page_attestation(session))
++    assert session.attestation == "a" * 291
++    assert session.session_id == "session-from-page"
++
++
++def test_sdk_fallback_uses_cdp_csp_bypass_on_attached_page(monkeypatch) -> None:
++    calls: list[tuple[str, object]] = []
++
++    class CDP:
++        async def send(self, method, params):
++            calls.append((method, params))
++
++        async def detach(self):
++            calls.append(("detach", None))
++
++    class Context:
++        async def new_cdp_session(self, _page):
++            return CDP()
++
++    class Page:
++        context = Context()
++        url = "https://chatgpt.com/"
++
++        async def evaluate(self, *_args):
++            return False
++
++        async def add_script_tag(self, **kwargs):
++            if "url" in kwargs:
++                raise RuntimeError("fixture remote failure")
++            calls.append(("inline", kwargs.get("content", "")))
++
++        async def set_extra_http_headers(self, headers):
++            calls.append(("headers", dict(headers)))
++
++        async def goto(self, url, **_kwargs):
++            self.url = url
++
++    async def ready(*_args, **_kwargs):
++        return None
++
++    monkeypatch.setattr(sentinel, "_wait_for_sdk_ready", ready)
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++    digest = asyncio.run(
++        daemon._install_sdk(Page(), {"oai-device-id": "device-fixture"})
++    )
++    assert digest == sentinel.PINNED_SENTINEL_SDK_SHA256
++    assert any(
++        method == "Page.setBypassCSP" and params == {"enabled": True}
++        for method, params in calls
++    )
++    assert any(method == "inline" for method, _ in calls)
++    assert any(method == "detach" for method, _ in calls)
++
++
+ def test_at_only_checkout_navigation_timeout_uses_same_page_fallback(
+     monkeypatch,
+ ) -> None:
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+index d681314..a3157dc 100644
+--- a/tools/gopay_live_canary.py
++++ b/tools/gopay_live_canary.py
+@@ -28,6 +28,10 @@ AUTH_COOKIE_NAMES = {
+     "__Secure-oai-is",
+     "oai-client-auth-info",
+     "oai-client-session-epoch",
++    "_account",
++    "oai-did",
++    "__stripe_mid",
++    "__stripe_sid",
+ }
+ 
+ 
