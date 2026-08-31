@@ -9,12 +9,13 @@
 | 指标 | 结果 |
 |---|---:|
 | 清理前工作区（实测） | 1,302,275,838 bytes |
-| 清理后工作区（实测） | 382,844,400 bytes |
-| 本轮减少 | 919,431,438 bytes（876.65 MiB） |
-| 清理后文件数 | 4,844 |
-| Git 跟踪、已脱敏文件 | 735 files / 11,631,562 bytes（11.09 MiB） |
-| 仅源码（排除 tracked artifacts） | 2,814,432 bytes（2.68 MiB） |
-| `git archive` 压缩包 | 3,668,634 bytes（3.50 MiB） |
+| 删除完成后工作区（不含本报告/制品提交） | 382,844,400 bytes |
+| 当前工作区（含本报告/制品与 Git 元数据） | 395,993,052 bytes（377.65 MiB） |
+| 相对清理前净减少 | 906,282,786 bytes（864.06 MiB） |
+| 当前文件数 | 5,461 |
+| Git 索引跟踪、已脱敏文件 | 747 files / 11,780,411 bytes（11.23 MiB） |
+| 仅源码（排除 tracked artifacts） | 2,818,392 bytes（2.69 MiB） |
+| `git archive` 压缩包 | 3,712,210 bytes（3.54 MiB） |
 | 跟踪文件敏感模式扫描 | 0 files |
 
 ## 已删除的垃圾/临时内容
@@ -41,11 +42,11 @@
 
 | 路径 | 当前大小 | 原因 |
 |---|---:|---|
-| `.venv` | 150,666,243 bytes | 已安装的 Python/Playwright 运行环境 |
+| `.venv` | 135,165,595 bytes | 已安装的 Python/Playwright 运行环境 |
 | `data/captures` | 181,384,900 bytes | GCash/Roxy 历史抓包证据 |
 | `artifacts-local/reference-GPT-utral-platform` | 43,311,337 bytes | 本地参考源码，不是缓存 |
-| 两个 capture profile（清理后） | 33,558,743 bytes | 保留 profile 元数据与后续抓包可用状态 |
-| `artifacts/` | 9,675,713 bytes | Git 跟踪的验证报告、差异和回滚制品 |
+| 两个 capture profile（清理后） | 9,630,444 bytes | 保留 profile 元数据与后续抓包可用状态 |
+| `artifacts/` | 9,820,602 bytes | Git 跟踪的验证报告、差异和回滚制品 |
 
 ## 后续自动防膨胀
 
@@ -75,5 +76,5 @@ GIT: git gc --prune=now; EXIT_STATUS=0
 BROWSER_AFTER_CLEANUP: CDP=61908; SESSION_STATUS=200; SESSION_USER=1; MAIN_PAGE=1
 ```
 
-当前提交会继续推送到 `origin/main`；本次源代码与测试变更提交为
-`0ba7e0d`，缓存自动清理补丁为 `f855dec`。
+当前提交已推送到 `origin/main`；本次源代码与测试变更提交为
+`0ba7e0d`，缓存自动清理补丁为 `f855dec`，清理报告制品提交为 `9953bed`。
