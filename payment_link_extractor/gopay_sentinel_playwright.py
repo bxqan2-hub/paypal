@@ -53,8 +53,11 @@ PROFILE_CACHE_RELATIVE_PATHS: tuple[str, ...] = (
     "Default/GrShaderCache",
     "Default/ShaderCache",
     "Default/DawnGraphiteCache",
+    "Default/DawnWebGPUCache",
+    "Default/GraphiteDawnCache",
     "Default/Service Worker/CacheStorage",
     "Default/Service Worker/ScriptCache",
+    "Default/Shared Dictionary/cache",
     "Cache",
     "Code Cache",
     "GPUCache",
@@ -65,7 +68,10 @@ PROFILE_CACHE_RELATIVE_PATHS: tuple[str, ...] = (
     "optimization_guide_model_store",
     "component_crx_cache",
     "BrowserMetrics",
+    "BrowserMetrics*",
     "Crashpad",
+    "CrashpadMetrics*",
+    "**/*.pma",
 )
 
 
@@ -135,20 +141,25 @@ def _purge_profile_caches(profile_path: Path) -> int:
     root = Path(profile_path).expanduser().resolve()
     removed = 0
     for relative in PROFILE_CACHE_RELATIVE_PATHS:
-        target = root / relative
-        if not target.exists():
-            continue
-        try:
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-            else:
-                target.unlink(missing_ok=True)
+        targets = (
+            list(root.glob(relative))
+            if any(token in relative for token in ("*", "?", "["))
+            else [root / relative]
+        )
+        for target in targets:
             if not target.exists():
-                removed += 1
-        except OSError:
-            # A running Chromium child can hold a cache file.  The next
-            # session retries cleanup; a transient lock never affects login.
-            continue
+                continue
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    target.unlink(missing_ok=True)
+                if not target.exists():
+                    removed += 1
+            except OSError:
+                # A running Chromium child can hold a cache file.  The next
+                # session retries cleanup; a transient lock never affects login.
+                continue
     return removed
 
 
