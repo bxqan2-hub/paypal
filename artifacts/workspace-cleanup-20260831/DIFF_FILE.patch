@@ -1,0 +1,185 @@
+diff --git a/.env.example b/.env.example
+index 2dad5ba..db42598 100644
+--- a/.env.example
++++ b/.env.example
+@@ -30,6 +30,9 @@ OPLL_GOPAY_EXTERNAL_CDP_ALLOW_PROXY_ROTATION=false
+ OPLL_GOPAY_EXTERNAL_CDP_BROWSER_HTTP=true
+ # Match Chrome's snapshot/taxes observation burst; disable only for diagnostics.
+ OPLL_GOPAY_BURST_OBSERVATION=true
++# Reclaim regenerable Chromium model/cache payloads after isolated runs while
++# retaining cookie, Login Data and other session-bearing profile files.
++OPLL_GOPAY_PROFILE_CACHE_CLEANUP=true
+ # Optional cccy-compatible GoPay route segments. Blank keeps A/A/A/A on the
+ # selected attempt proxy; set explicitly only when each ID segment is sticky.
+ OPLL_GOPAY_CHECKOUT_PROXY=
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index 73772e2..d6c8402 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -5,6 +5,7 @@ import atexit
+ import hashlib
+ import json
+ import os
++import shutil
+ import threading
+ import time
+ import uuid
+@@ -40,6 +41,39 @@ PINNED_SENTINEL_SDK_SHA256 = (
+ OPEN_SESSION_TIMEOUT_SECONDS = 240
+ FLOW_TIMEOUT_SECONDS = 210
+ 
++# Chromium writes a large, regenerable model/cache set into every persistent
++# profile.  GoPay rotates device ids between attempts, so leaving these files
++# in each profile causes the workspace to grow by tens of MiB per attempt.  The
++# authentication/session databases are deliberately outside this list and are
++# retained for cookie-backed continuity.
++PROFILE_CACHE_RELATIVE_PATHS: tuple[str, ...] = (
++    "Default/Cache",
++    "Default/Code Cache",
++    "Default/GPUCache",
++    "Default/GrShaderCache",
++    "Default/ShaderCache",
++    "Default/DawnGraphiteCache",
++    "Default/DawnWebGPUCache",
++    "Default/GraphiteDawnCache",
++    "Default/Service Worker/CacheStorage",
++    "Default/Service Worker/ScriptCache",
++    "Default/Shared Dictionary/cache",
++    "Cache",
++    "Code Cache",
++    "GPUCache",
++    "GrShaderCache",
++    "ShaderCache",
++    "DawnGraphiteCache",
++    "GPUPersistentCache",
++    "optimization_guide_model_store",
++    "component_crx_cache",
++    "BrowserMetrics",
++    "BrowserMetrics*",
++    "Crashpad",
++    "CrashpadMetrics*",
++    "**/*.pma",
++)
++
+ 
+ def _is_chatgpt_url(value: str) -> bool:
+     parsed = urlsplit(str(value or ""))
+@@ -88,6 +122,47 @@ def _profile_key(device_id: str) -> str:
+         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-profile:{device_id}"))
+ 
+ 
++def _profile_cache_cleanup_enabled() -> bool:
++    """Return whether regenerable Chromium profile caches are reclaimed."""
++    return _enabled(
++        os.getenv("OPLL_GOPAY_PROFILE_CACHE_CLEANUP", ""),
++        default=True,
++    )
++
++
++def _purge_profile_caches(profile_path: Path) -> int:
++    """Remove only regenerable cache/model paths from one persistent profile.
++
++    Cookies, Login Data, Local Storage, Preferences and other session-bearing
++    files remain intact.  A count is returned for diagnostics and tests.
++    """
++    if not _profile_cache_cleanup_enabled():
++        return 0
++    root = Path(profile_path).expanduser().resolve()
++    removed = 0
++    for relative in PROFILE_CACHE_RELATIVE_PATHS:
++        targets = (
++            list(root.glob(relative))
++            if any(token in relative for token in ("*", "?", "["))
++            else [root / relative]
++        )
++        for target in targets:
++            if not target.exists():
++                continue
++            try:
++                if target.is_dir():
++                    shutil.rmtree(target, ignore_errors=True)
++                else:
++                    target.unlink(missing_ok=True)
++                if not target.exists():
++                    removed += 1
++            except OSError:
++                # A running Chromium child can hold a cache file.  The next
++                # session retries cleanup; a transient lock never affects login.
++                continue
++    return removed
++
++
+ def _proxy_options(proxy_url: str) -> dict[str, str] | None:
+     text = str(proxy_url or "").strip()
+     if not text:
+@@ -968,6 +1043,9 @@ class PersistentPlaywrightDaemon:
+         else:
+             profile_path = _profile_root() / _profile_key(device_id)
+             profile_path.mkdir(parents=True, exist_ok=True)
++            # Remove model/cache payloads from a reused device profile before
++            # Chromium opens it.  Session-bearing files stay in place.
++            _purge_profile_caches(profile_path)
+             launch_options: dict[str, Any] = {
+                 "user_data_dir": str(profile_path),
+                 "headless": headless,
+@@ -1726,7 +1804,12 @@ class PersistentPlaywrightDaemon:
+                 except Exception:
+                     pass
+             else:
++                profile_path = session.profile_path
+                 await session.context.close()
++                # The profile can be several tens of MiB after Sentinel has
++                # loaded Chromium models.  Reclaim those files immediately
++                # while retaining NextAuth and device/session databases.
++                _purge_profile_caches(profile_path)
+ 
+     def close_session(self, runtime_id: str) -> None:
+         if runtime_id:
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 17ffeff..904d6d2 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -20,6 +20,43 @@ def test_playwright_proxy_and_profile_are_stable() -> None:
+     assert first != sentinel._profile_key("other-device")
+ 
+ 
++def test_profile_cache_cleanup_preserves_session_files(tmp_path) -> None:
++    profile = tmp_path / "profile"
++    cache = profile / "Default" / "Cache"
++    cache.mkdir(parents=True)
++    (cache / "data_0").write_bytes(b"cache")
++    model = profile / "optimization_guide_model_store"
++    model.mkdir(parents=True)
++    (model / "model.tflite").write_bytes(b"model")
++    (profile / "BrowserMetrics-spare.pma").write_bytes(b"metrics")
++    (profile / "CrashpadMetrics-active.pma").write_bytes(b"crash-metrics")
++    dawn = profile / "Default" / "DawnWebGPUCache"
++    dawn.mkdir(parents=True)
++    (dawn / "cache.bin").write_bytes(b"dawn")
++    cookies = profile / "Default" / "Network" / "Cookies"
++    cookies.parent.mkdir(parents=True)
++    cookies.write_bytes(b"session-cookie-db")
++
++    assert sentinel._purge_profile_caches(profile) >= 2
++    assert not cache.exists()
++    assert not model.exists()
++    assert not (profile / "BrowserMetrics-spare.pma").exists()
++    assert not (profile / "CrashpadMetrics-active.pma").exists()
++    assert not dawn.exists()
++    assert cookies.read_bytes() == b"session-cookie-db"
++
++
++def test_profile_cache_cleanup_can_be_disabled(tmp_path, monkeypatch) -> None:
++    profile = tmp_path / "profile"
++    cache = profile / "Default" / "Cache"
++    cache.mkdir(parents=True)
++    (cache / "data_0").write_bytes(b"cache")
++    monkeypatch.setenv("OPLL_GOPAY_PROFILE_CACHE_CLEANUP", "false")
++
++    assert sentinel._purge_profile_caches(profile) == 0
++    assert (cache / "data_0").read_bytes() == b"cache"
++
++
+ def test_playwright_cookie_header_contains_no_empty_names() -> None:
+     assert sentinel._cookie_header(
+         [

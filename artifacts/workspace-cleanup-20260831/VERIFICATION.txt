@@ -1,0 +1,70 @@
+CHANGED_BRANCH=main
+CHANGED_FIELDS=workspace_size,generated_gopay_profiles,runtime_credentials,browser_caches,python_caches,log_truncation,profile_cache_cleanup
+BASE_COMMIT=6b1a8cc80f01d632c2da47fb259f813a95e6ab6a
+MODIFIED_CODE_COMMIT=0ba7e0d2049504c59d006fd350a4dbf980bfd950
+
+ARTIFACT_PATHS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\workspace-cleanup-20260831\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\workspace-cleanup-20260831\DIFF_FILE.patch
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\workspace-cleanup-20260831\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\workspace-cleanup-20260831\ROLLBACK.sh
+
+KEY_FILE=C:\Users\Administrator\Desktop\提链\payment_link_extractor\gopay_sentinel_playwright.py
+ORIGINAL_SHA256=F8C9EDB16B4D6A4E6ADD37386286D9D591EA4C42EADE4B8271906FD5E7C4A418 
+MODIFIED_SHA256=F844A3567A08BD9160BAFEB5AE39B39B6F51655E7FE09EF16FAEF0E20148560E
+
+CLEANUP_SIZE:
+BEFORE_BYTES=1302275838
+AFTER_BYTES=382844400
+DELTA_BYTES=919431438
+AFTER_FILES=4844
+
+DELETED_TARGETS:
+data\gopay-sentinel-profiles | 7180 files | 653367750 bytes
+artifacts-local\gopay-runtime | 829 files | 116039399 bytes
+artifacts-local disposable local artifacts and raw canonical HAR | 1525 files | 51054511 bytes
+capture-profile regenerable caches/models | 369 files | 62532020 bytes
+Python __pycache__/.pytest_cache | 1618 files | 28713818 bytes
+data\payment-link.log truncate | 7381047 bytes
+
+SANITIZED_SIZE:
+COMMAND=git ls-files + git archive --format=zip
+LITERAL_OUTPUT=TRACKED_FILES=735;TRACKED_BYTES=11631562;TRACKED_MIB=11.09;SOURCE_WITHOUT_TRACKED_ARTIFACTS_BYTES=2814432;SOURCE_WITHOUT_TRACKED_ARTIFACTS_MIB=2.68;SANITIZED_GIT_ARCHIVE_ZIP_BYTES=3668634;SANITIZED_GIT_ARCHIVE_ZIP_MIB=3.50;SANITIZED_SECRET_PATTERN_FILES=0
+EXIT_STATUS=0
+RESULT=PASS
+
+BASELINE:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
+INPUT=main at 6b1a8cc before cache-cleanup code
+LITERAL_OUTPUT=290 passed in 1.81s
+EXIT_STATUS=0
+RESULT=PASS
+
+MODIFIED:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --cache-clear
+INPUT=main at 0ba7e0d with automatic profile cache cleanup tests
+LITERAL_OUTPUT=292 passed in 1.81s
+EXIT_STATUS=0
+RESULT=PASS
+
+ROLLBACK:
+COMMAND=C:\Program Files\Git\bin\bash.exe artifacts\workspace-cleanup-20260831\ROLLBACK.sh TARGET_COPY SOURCE_REPO
+INPUT=separate Git worktree at artifacts-local\workspace-cleanup-rollback-test-20260831
+LITERAL_OUTPUT=RESTORED_TRACKED_FILES=3;REMOVED_NEW_FILES=1;RESTORED_STATUS=PASS;HASH_MATCH=True;ROLLBACK_SCRIPT_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+GIT_GC:
+COMMAND=git gc --prune=now
+LITERAL_OUTPUT=GIT_OBJECTS_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+BROWSER_AFTER_CLEANUP:
+COMMAND=Playwright CDP check at 127.0.0.1:61908
+LITERAL_OUTPUT=CAPTURE_BROWSER_PRESERVED=1;CAPTURE_RETURNED_MAIN=1;CAPTURE_NEXT_CYCLE_READY=1;PAGES=2;SESSION_STATUS=200;SESSION_USER=1
+EXIT_STATUS=0
+RESULT=PASS
+
+RESTORED_BEHAVIOR=Rollback copy restores the pre-cleanup source branch and passes its baseline suite; current main remains on the cache-cleanup branch.
+RESTORED_STATUS=PASS
