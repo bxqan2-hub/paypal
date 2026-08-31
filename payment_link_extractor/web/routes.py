@@ -296,19 +296,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("checkout proxy is required")
     payment_method = normalize_payment_method(payment_method)
     channel = payment_channel(payment_method)
-    gopay_segment_values: dict[str, str] = {}
-    for field, env_name in (
-        ("gopay_checkout_proxy", "OPLL_GOPAY_CHECKOUT_PROXY"),
-        ("gopay_promotion_proxy", "OPLL_GOPAY_PROMOTION_PROXY"),
-        ("gopay_provider_proxy", "OPLL_GOPAY_PROVIDER_PROXY"),
-        ("gopay_approve_proxy", "OPLL_GOPAY_APPROVE_PROXY"),
-    ):
-        value = payload.get(field, os.getenv(env_name, ""))
-        if value is not None and not isinstance(value, str):
-            raise ConfigurationError(f"{field} must be a string")
-        gopay_segment_values[field] = str(value or "").strip()
-    if payment_method == "gopay" and not str(update_proxy or "").strip():
-        update_proxy = gopay_segment_values["gopay_promotion_proxy"]
     if (
         apply_update
         and channel.uses_checkout_update
@@ -351,7 +338,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         checkout_proxy_attempts=checkout_proxy_attempts,
         update_proxy_attempts=update_proxy_attempts,
         proxy_pool=submitted_pool,
-        **gopay_segment_values,
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
         session_token=extract_session_token(payload),

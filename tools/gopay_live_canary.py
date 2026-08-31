@@ -31,9 +31,14 @@ def _unique(values: list[str]) -> list[str]:
     return result
 
 
-def _rollout_user_texts(path: Path) -> list[str]:
+def load_tokens(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8-sig")
+    return _unique([item.replace("\\_", "_") for item in JWT_RE.findall(text)])
+
+
+def load_rollout_proxies(path: Path) -> list[str]:
     texts: list[str] = []
-    for line in path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         try:
             item = json.loads(line)
         except (TypeError, ValueError):
@@ -44,24 +49,8 @@ def _rollout_user_texts(path: Path) -> list[str]:
         if payload.get("type") != "message" or payload.get("role") != "user":
             continue
         for content in payload.get("content") or []:
-            if isinstance(content, dict) and content.get("type") in {
-                "input_text",
-                "text",
-            }:
+            if isinstance(content, dict) and content.get("type") in {"input_text", "text"}:
                 texts.append(str(content.get("text") or ""))
-    return texts
-
-
-def load_tokens(path: Path) -> list[str]:
-    rollout_texts = _rollout_user_texts(path)
-    text = "\n".join(rollout_texts) if rollout_texts else path.read_text(
-        encoding="utf-8-sig"
-    )
-    return _unique([item.replace("\\", "") for item in JWT_RE.findall(text)])
-
-
-def load_rollout_proxies(path: Path) -> list[str]:
-    texts = _rollout_user_texts(path)
     raw = _unique([item.rstrip("),.;") for item in PROXY_RE.findall("\n".join(texts))])
     return [normalize_proxy_url(item) for item in raw]
 
@@ -73,9 +62,7 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
     except (TypeError, ValueError):
         status = None
     message = str(exc).lower()
-    if "browser checkout readiness" in message:
-        category = "browser_session_incomplete"
-    elif "attestation" in message:
+    if "attestation" in message:
         category = "attestation_missing"
     elif "sentinel proof generation" in message or "sentinel provider" in message:
         category = "sentinel_browser"
@@ -96,13 +83,6 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
     safe_context = getattr(exc, "safe_context", None)
     if isinstance(safe_context, dict):
         result["safe_context"] = safe_context
-    causes: list[str] = []
-    current = exc.__cause__ or exc.__context__
-    while current is not None and len(causes) < 5:
-        causes.append(type(current).__name__)
-        current = current.__cause__ or current.__context__
-    if causes:
-        result["cause_types"] = causes
     return result
 
 
@@ -123,12 +103,6 @@ def main() -> int:
     parser.add_argument("--proxy-rollout", type=Path, required=True)
     parser.add_argument("--token-index", type=int, required=True, help="one-based token slot")
     parser.add_argument("--start-proxy-slot", type=int, default=1)
-    parser.add_argument(
-        "--precommit-retries",
-        type=int,
-        default=3,
-        help="same-proxy retries for browser/network failures before Checkout POST",
-    )
     args = parser.parse_args()
 
     tokens = load_tokens(args.tokens_file)
@@ -145,6 +119,21 @@ def main() -> int:
     attempts: list[dict[str, Any]] = []
     for proxy_index in range(start, len(proxies)):
         proxy = proxies[proxy_index]
+        stages: list[str] = []
+        committed = False
+
+        def stage_callback(stage: str) -> None:
+            nonlocal committed
+            normalized = str(stage)
+            stages.append(normalized)
+            if normalized == "checkout_committed":
+                committed = True
+            print(
+                f"CANARY_STAGE token_slot={args.token_index} "
+                f"proxy_slot={proxy_index + 1} stage={normalized}",
+                flush=True,
+            )
+
         config = ExtractionConfig(
             access_token=token,
             checkout_proxy=proxy,
@@ -159,84 +148,42 @@ def main() -> int:
             update_proxy_attempts=(proxy,),
             proxy_pool=(proxy,),
         )
-        for precommit_try in range(1, max(1, args.precommit_retries) + 1):
-            stages: list[str] = []
-            committed = False
-
-            def stage_callback(stage: str) -> None:
-                nonlocal committed
-                normalized = str(stage)
-                stages.append(normalized)
-                if normalized == "checkout_committed":
-                    committed = True
-                print(
-                    f"CANARY_STAGE token_slot={args.token_index} "
-                    f"proxy_slot={proxy_index + 1} precommit_try={precommit_try} "
-                    f"stage={normalized}",
-                    flush=True,
-                )
-
-            try:
-                result = extract_gopay_payment_link(
-                    config, stage_callback=stage_callback
-                )
-            except Exception as exc:
-                error = _safe_error(exc)
-                attempt = {
-                    "proxy_slot": proxy_index + 1,
-                    "precommit_try": precommit_try,
-                    "committed": committed,
-                    "last_stage": stages[-1] if stages else "not_started",
-                    "error": error,
-                }
-                attempts.append(attempt)
-                print(
-                    "CANARY_ATTEMPT="
-                    + json.dumps(attempt, separators=(",", ":")),
-                    flush=True,
-                )
-                if committed or error["status_code"] == 401:
-                    final = {
-                        "status": (
-                            "consumed_failure" if committed else "auth_failure"
-                        ),
-                        "token_slot": args.token_index,
-                        "attempts": attempts,
-                    }
-                    print(
-                        "CANARY_RESULT="
-                        + json.dumps(final, separators=(",", ":")),
-                        flush=True,
-                    )
-                    return 20 if committed else 21
-                retry_same_proxy = (
-                    attempt["last_stage"] == "checkout"
-                    and error["category"] in {"sentinel_browser", "network"}
-                    and precommit_try < max(1, args.precommit_retries)
-                )
-                if retry_same_proxy:
-                    continue
-                break
-
-            data = result.to_dict()
-            provider = str(
-                data.get("gopay_url") or data.get("provider_url") or ""
-            )
-            final = {
-                "status": "success",
-                "token_slot": args.token_index,
+        try:
+            result = extract_gopay_payment_link(config, stage_callback=stage_callback)
+        except BaseException as exc:
+            error = _safe_error(exc)
+            attempt = {
                 "proxy_slot": proxy_index + 1,
-                "checkout_committed": committed,
-                "amount_due_minor": data.get("amount_due_minor"),
-                "currency": data.get("currency"),
-                "provider": _provider_shape(provider),
-                "stages": stages,
+                "committed": committed,
+                "last_stage": stages[-1] if stages else "not_started",
+                "error": error,
             }
-            print(
-                "CANARY_RESULT=" + json.dumps(final, separators=(",", ":")),
-                flush=True,
-            )
-            return 0
+            attempts.append(attempt)
+            print("CANARY_ATTEMPT=" + json.dumps(attempt, separators=(",", ":")), flush=True)
+            if committed or error["status_code"] == 401:
+                final = {
+                    "status": "consumed_failure" if committed else "auth_failure",
+                    "token_slot": args.token_index,
+                    "attempts": attempts,
+                }
+                print("CANARY_RESULT=" + json.dumps(final, separators=(",", ":")), flush=True)
+                return 20 if committed else 21
+            continue
+
+        data = result.to_dict()
+        provider = str(data.get("gopay_url") or data.get("provider_url") or "")
+        final = {
+            "status": "success",
+            "token_slot": args.token_index,
+            "proxy_slot": proxy_index + 1,
+            "checkout_committed": committed,
+            "amount_due_minor": data.get("amount_due_minor"),
+            "currency": data.get("currency"),
+            "provider": _provider_shape(provider),
+            "stages": stages,
+        }
+        print("CANARY_RESULT=" + json.dumps(final, separators=(",", ":")), flush=True)
+        return 0
 
     final = {
         "status": "no_checkout_committed",

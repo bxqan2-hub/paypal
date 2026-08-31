@@ -1064,9 +1064,9 @@
 
   function stageLabel(stage) {
     const labels = {
-      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout", checkout_amount_confirmed: "Checkout 金额守门通过",
+      queued: "等待执行", running: "开始执行", eligibility_check: "检查优惠资格", eligibility_confirmed: "试用资格已确认，继续创建 Checkout", checkout: "创建 Checkout",
       retrying: "更换代理 IP 后完整重试",
-      checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", promotion_amount_confirmed: "优惠刷新金额守门通过", stripe_init: "初始化支付", elements_session: "准备支付方式",
+      checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", stripe_init: "初始化支付", elements_session: "准备支付方式",
       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
       zero_amount_validation: "校验 GoPay 链接金额是否为 0 元", zero_amount_confirmed: "GoPay 0 元链接校验通过",
       completed: "任务完成", cancelled: "任务已取消", failed: "任务失败",

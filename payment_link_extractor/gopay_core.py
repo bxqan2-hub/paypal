@@ -19,7 +19,7 @@ from .gopay_checkout import (
     require_country_currency,
     update_checkout,
 )
-from .gopay_cs_live import extract_cs_live_provider, require_gopay_fail_fast_amount
+from .gopay_cs_live import extract_cs_live_provider
 from .gopay_oaics import extract_oaics_provider
 from .gopay_stripe_common import extract_checkout_totals
 from .gopay_transport import GoPayTransportFactory, TransportFactory, safe_close
@@ -33,28 +33,20 @@ GOPAY_RESULT_FIELD = "gopay_url"
 
 
 def pin_gopay_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
-    """Resolve the four GoPay routing segments for one full attempt.
+    """Bind every request in one GoPay attempt to its selected proxy.
 
-    By default every segment inherits the selected attempt proxy. Explicit
-    cccy-compatible segment values may separate promotion/provider/approve,
-    but each segment remains sticky for the complete attempt.
+    The task manager may select a different proxy only when it starts a new
+    full attempt.  Downstream eligibility, Checkout, Stripe and provider code
+    receives a single-entry view so it cannot switch mid-attempt.
     """
     proxy = str(config.checkout_proxy or "").strip()
-    checkout_proxy = str(config.gopay_checkout_proxy or proxy).strip()
-    promotion_proxy = str(config.gopay_promotion_proxy or checkout_proxy).strip()
-    provider_proxy = str(config.gopay_provider_proxy or checkout_proxy).strip()
-    approve_proxy = str(config.gopay_approve_proxy or checkout_proxy).strip()
     return replace(
         config,
-        checkout_proxy=checkout_proxy,
-        update_proxy=promotion_proxy,
-        checkout_proxy_attempts=(checkout_proxy,),
-        update_proxy_attempts=(promotion_proxy,),
-        proxy_pool=(checkout_proxy,),
-        gopay_checkout_proxy=checkout_proxy,
-        gopay_promotion_proxy=promotion_proxy,
-        gopay_provider_proxy=provider_proxy,
-        gopay_approve_proxy=approve_proxy,
+        checkout_proxy=proxy,
+        update_proxy=proxy,
+        checkout_proxy_attempts=(proxy,),
+        update_proxy_attempts=(proxy,),
+        proxy_pool=(proxy,),
     )
 
 
@@ -159,15 +151,6 @@ def extract_gopay_payment_link(
             commit_callback=lambda: checkpoint("checkout_committed"),
         )
         checkpoint(f"checkout_kind:{checkout['session_kind']}")
-        if zero_trial_validation:
-            checkout_amount, _ = checkout_payable_amount_with_presence(checkout)
-            if checkout_amount is not None:
-                require_gopay_fail_fast_amount(
-                    checkout_amount,
-                    "checkout bootstrap",
-                    enabled=True,
-                )
-                checkpoint("checkout_amount_confirmed")
         if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
             raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
         require_country_currency(checkout, config)
@@ -179,15 +162,6 @@ def extract_gopay_payment_link(
             # check; there is no standalone check_coupon request in that flow.
             checkpoint("promotion_applied")
             require_country_currency(checkout, config)
-            if zero_trial_validation:
-                promotion_amount, _ = checkout_payable_amount_with_presence(checkout)
-                if promotion_amount is not None:
-                    require_gopay_fail_fast_amount(
-                        promotion_amount,
-                        "promotion refresh",
-                        enabled=True,
-                    )
-                    checkpoint("promotion_amount_confirmed")
         stripe = factory.stripe(config)
         checkpoint("stripe_init")
         if checkout["session_kind"] == "stripe_checkout":
@@ -233,15 +207,6 @@ def extract_gopay_payment_link(
                 "payment_route": "gopay_paypal_core_copy",
                 "gopay_optimization_base": "78c1357",
                 "gopay_zero_trial_validation": zero_trial_validation,
-                "gopay_segmented_proxy_routing": len(
-                    {
-                        config.gopay_checkout_proxy,
-                        config.gopay_promotion_proxy,
-                        config.gopay_provider_proxy,
-                        config.gopay_approve_proxy,
-                    }
-                )
-                > 1,
             },
         )
         checkpoint("completed")

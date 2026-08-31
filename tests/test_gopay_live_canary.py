@@ -55,38 +55,3 @@ def test_canary_provider_shape_outputs_no_order_identifier() -> None:
         "path_prefix": "/snap/v4",
     }
     assert "private-order-id" not in json.dumps(shape)
-
-
-def test_canary_loader_removes_repeated_markdown_escapes(tmp_path: Path) -> None:
-    tokens = tmp_path / "escaped.txt"
-    tokens.write_text(
-        r"eyJheader.payload.sig\\\_part\\\_tail",
-        encoding="utf-8",
-    )
-    assert MODULE.load_tokens(tokens) == ["eyJheader.payload.sig_part_tail"]
-
-
-def test_canary_loader_parses_jsonl_before_matching_token(tmp_path: Path) -> None:
-    rollout = tmp_path / "runtime.jsonl"
-    rollout.write_text(
-        json.dumps(
-            {
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": r"eyJheader.payload.signature\\\_tail"
-                            + "\nnext line",
-                        }
-                    ],
-                }
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert MODULE.load_tokens(rollout) == [
-        "eyJheader.payload.signature_tail"
-    ]

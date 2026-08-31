@@ -25,12 +25,6 @@ class ExtractionConfig:
     # MK-style single proxy pool. Legacy checkout/update fields remain as
     # transport aliases, but new web tasks populate both from this one pool.
     proxy_pool: tuple[str, ...] = ()
-    # GoPay-only logical routing segments. Blank values inherit the selected
-    # attempt proxy, preserving the one-physical-proxy default.
-    gopay_checkout_proxy: str = ""
-    gopay_promotion_proxy: str = ""
-    gopay_provider_proxy: str = ""
-    gopay_approve_proxy: str = ""
     # Optional account metadata accepted by the upstream MK app.py account
     # object. GCash uses these before falling back to JWT profile claims.
     account_name: str = ""

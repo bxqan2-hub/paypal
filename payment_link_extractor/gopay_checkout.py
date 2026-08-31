@@ -293,49 +293,6 @@ def create_checkout(
     # Neither complete GoPay HAR sends the optional observer token on the
     # protected checkout/approve requests.
     sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
-    if config.gopay_zero_trial_validation:
-        cookie_header = str(
-            sentinel_headers.get("Cookie")
-            or getattr(chatgpt, "headers", {}).get("Cookie")
-            or ""
-        )
-        cookie_names = sorted(
-            {
-                item.split("=", 1)[0].strip()
-                for item in cookie_header.split(";")
-                if "=" in item and item.split("=", 1)[0].strip()
-            }
-        )
-        has_session_token = any(
-            name == "__Secure-next-auth.session-token"
-            or name.startswith("__Secure-next-auth.session-token.")
-            for name in cookie_names
-        )
-        attestation_length = len(
-            str(
-                sentinel_headers.get("oai-web-deployment-attestation") or ""
-            ).strip()
-        )
-        if not has_session_token or attestation_length < 64:
-            missing = []
-            if not has_session_token:
-                missing.append("session_token")
-            if attestation_length < 64:
-                missing.append("attestation")
-            error = ProtocolError(
-                412,
-                "GoPay browser checkout readiness missing: " + ",".join(missing),
-            )
-            error.failure_mode = "browser_session_incomplete"
-            error.retryable = False
-            error.safe_context = {
-                "cookie_names": cookie_names,
-                "attestation_length": attestation_length,
-                "sentinel_token_length": len(
-                    str(sentinel_headers.get("OpenAI-Sentinel-Token") or "")
-                ),
-            }
-            raise error
     headers.update(sentinel_headers)
     if commit_callback is not None:
         commit_callback()
@@ -381,15 +338,12 @@ def probe_coupon_eligibility(
     log: Any | None,
 ) -> dict[str, Any]:
     """Read the Plus trial state without creating or updating Checkout."""
-    eligibility_proxy = str(
-        config.gopay_checkout_proxy or config.checkout_proxy
-    ).strip()
-    if not eligibility_proxy:
-        raise ConfigurationError("checkout proxy is required for eligibility check")
+    if not str(config.update_proxy or "").strip():
+        raise ConfigurationError("update proxy is required for eligibility check")
     path = "/backend-api/promo_campaign/check_coupon"
     coupon = "plus-1-month-free"
     url = f"https://chatgpt.com{path}?coupon={coupon}&is_coupon_from_query_param=true"
-    set_proxy_url(chatgpt, eligibility_proxy)
+    set_proxy_url(chatgpt, config.update_proxy)
     try:
         # The reference account audit performs this authenticated GET as a
         # standalone probe. The existing GoPay session already carries the

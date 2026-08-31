@@ -25,9 +25,6 @@ def _clean_token(value: Any) -> str:
         token = token[7:].strip()
     # Markdown and chat exports often escape URL-safe JWT/JWE characters.
     token = re.sub(r"\\([A-Za-z0-9._~+/=-])", r"\1", token)
-    # Some JSON/Markdown round-trips double or triple the escape before `_`.
-    # Backslash is never a compact JWT/JWE character, so remove all residue.
-    token = token.replace("\\", "")
     return re.sub(r"\s+", "", token)
 
 

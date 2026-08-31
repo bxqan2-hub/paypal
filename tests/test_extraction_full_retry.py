@@ -242,34 +242,6 @@ def test_route_config_maps_mk_proxy_pool_to_every_payment_step() -> None:
     )
 
 
-def test_route_config_accepts_explicit_gopay_four_segment_proxies() -> None:
-    config = _config_from_payload(
-        {
-            "access_token": "fixture-token",
-            "payment_method": "gopay",
-            "country": "ID",
-            "checkout_proxy": "http://legacy-entry.example:8080",
-            "update_proxy": "http://legacy-update.example:8080",
-            "gopay_checkout_proxy": "http://a.example:8080",
-            "gopay_promotion_proxy": "http://b.example:8080",
-            "gopay_provider_proxy": "http://c.example:8080",
-            "gopay_approve_proxy": "http://d.example:8080",
-            "retry_count": 0,
-        }
-    )
-    assert (
-        config.gopay_checkout_proxy,
-        config.gopay_promotion_proxy,
-        config.gopay_provider_proxy,
-        config.gopay_approve_proxy,
-    ) == (
-        "http://a.example:8080",
-        "http://b.example:8080",
-        "http://c.example:8080",
-        "http://d.example:8080",
-    )
-
-
 def test_gopay_401_stops_attempts_but_other_protocol_errors_retry() -> None:
     calls: list[str] = []
 

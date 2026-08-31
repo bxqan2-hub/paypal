@@ -494,38 +494,6 @@ def prepare_openai_browser_flow(
     return False
 
 
-def rotate_openai_approval_context(
-    session: Any,
-    config: ExtractionConfig,
-    proxy: str,
-) -> bool:
-    """Move approval Sentinel/HTTP traffic to its explicit sticky segment."""
-    normalized = normalize_proxy_url(proxy)
-    current = normalize_proxy_url(str(getattr(session, "openai_proxy", "") or ""))
-    if not normalized or normalized == current:
-        return False
-    previous = getattr(session, "openai_sentinel_provider", None)
-    close = getattr(previous, "close", None)
-    if callable(close):
-        close()
-    set_proxy_url(session, normalized)
-    session.openai_proxy = normalized
-    provider = PlaywrightSentinelProvider(
-        access_token=str(getattr(session, "openai_access_token", "") or config.access_token),
-        device_id=str(getattr(session, "openai_device_id", "") or ""),
-        session_id=str(getattr(session, "openai_session_id", "") or ""),
-        user_agent=str(getattr(session, "openai_user_agent", "") or DEFAULT_USER_AGENT),
-        proxy=normalized,
-        transport_session=session,
-        session_token=str(getattr(session, "openai_session_token", "") or config.session_token),
-        language=str(getattr(session, "openai_language", "") or country_locale(config)),
-        timezone=str(getattr(session, "openai_timezone", "") or country_timezone(config)),
-    )
-    session.openai_sentinel_provider = provider
-    session.openai_approve_proxy = normalized
-    return True
-
-
 def _session_cookie_value(session: Any, name: str) -> str:
     target = str(name or "").strip()
     headers = getattr(session, "headers", None)
@@ -1597,12 +1565,6 @@ class DefaultTransportFactory:
         session.openai_device_id = device_id
         session.openai_did = device_id
         session.openai_proxy = proxy
-        session.openai_access_token = config.access_token
-        session.openai_session_id = session_id
-        session.openai_user_agent = user_agent
-        session.openai_language = country_locale(config)
-        session.openai_timezone = country_timezone(config)
-        session.openai_session_token = str(getattr(config, "session_token", "") or "")
         session.openai_client_observation = session.headers.get(
             "x-oai-is-client-observation", ""
         )
@@ -1713,12 +1675,7 @@ class DefaultTransportFactory:
                 ),
             }
         )
-        stripe_proxy = (
-            config.gopay_provider_proxy
-            if normalize_payment_method(config.payment_method) == "gopay"
-            else config.checkout_proxy
-        )
-        set_proxy_url(session, stripe_proxy or config.checkout_proxy)
+        set_proxy_url(session, config.checkout_proxy)
         return session
 
 

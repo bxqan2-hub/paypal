@@ -343,7 +343,6 @@ def test_import_recognizes_compact_jwe_with_empty_encrypted_key() -> None:
     escaped = jwe.replace("_", r"\_")
 
     assert extract_access_token(escaped) == jwe
-    assert extract_access_token(jwe.replace("_", r"\\\_")) == jwe
     assert extract_access_token(f'{escaped}","authProvider":"openai') == jwe
     assert _credential_value({"credential": {"AT": escaped}}) == jwe
 

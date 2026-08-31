@@ -25,15 +25,7 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
     if (
         config.apply_checkout_update
         and channel.uses_checkout_update
-        and not str(
-            config.update_proxy
-            or (
-                config.gopay_promotion_proxy
-                if channel.name == "gopay"
-                else ""
-            )
-            or ""
-        ).strip()
+        and not str(config.update_proxy or "").strip()
     ):
         raise ConfigurationError("update proxy is required")
     country = country_for_payment_method(payment_method, config.country)
@@ -53,23 +45,12 @@ def _normalize_config(config: ExtractionConfig) -> ExtractionConfig:
         config,
         access_token=token,
         checkout_proxy=str(config.checkout_proxy).strip(),
-        update_proxy=str(
-            config.update_proxy
-            or (
-                config.gopay_promotion_proxy
-                if payment_method == "gopay"
-                else ""
-            )
-        ).strip(),
+        update_proxy=str(config.update_proxy).strip(),
         session_token=str(config.session_token or "").strip(),
         stripe_hcaptcha_token=str(config.stripe_hcaptcha_token or "").strip(),
         country=country,
         payment_method=payment_method,
         proxy_pool=proxy_pool,
-        gopay_checkout_proxy=str(config.gopay_checkout_proxy or "").strip(),
-        gopay_promotion_proxy=str(config.gopay_promotion_proxy or "").strip(),
-        gopay_provider_proxy=str(config.gopay_provider_proxy or "").strip(),
-        gopay_approve_proxy=str(config.gopay_approve_proxy or "").strip(),
     )
 
 

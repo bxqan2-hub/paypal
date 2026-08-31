@@ -53,7 +53,6 @@ from .gopay_transport import (
     EMPTY_PENDING_UPDATES,
     openai_sentinel_headers,
     prepare_openai_browser_flow,
-    rotate_openai_approval_context,
     response_json,
     safe_close,
     set_proxy_url,
@@ -63,43 +62,14 @@ from .gopay_transport import (
 
 
 GOPAY_STRIPE_RUNTIME_VERSION = STRIPE_RV_BUILD[:10]
-GOPAY_FAIL_FAST_MAX_MINOR = 50
-
-
-def require_gopay_fail_fast_amount(
-    value: Any,
-    phase: str,
-    *,
-    enabled: bool,
-) -> int | None:
-    if not enabled:
-        return None
-    if value in (None, ""):
-        raise ProtocolError(409, f"{phase} amount is missing")
-    try:
-        amount = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolError(409, f"{phase} amount is invalid") from exc
-    if amount > GOPAY_FAIL_FAST_MAX_MINOR:
-        raise ProtocolError(
-            409,
-            f"{phase} amount exceeds fail-fast threshold: {amount}",
-        )
-    return amount
 
 
 def prefetch_checkout_approval_proof(
-    config: ExtractionConfig,
     chatgpt: Any,
     checkout: CheckoutData,
     log: Any | None,
 ) -> None:
     """Prefetch the approval challenge at the browser-HAR position."""
-    rotate_openai_approval_context(
-        chatgpt,
-        config,
-        config.gopay_approve_proxy or config.checkout_proxy,
-    )
     processor = processor_entity_for_country(
         str(checkout.get("billing_country") or "GB"),
         str(checkout.get("processor_entity") or ""),
@@ -235,9 +205,10 @@ def _cs_update_tax_region_fields(
     fields: tuple[str, ...],
     accumulated: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    # cccy sends cumulative address stages while retaining one payment-page
-    # session. A stage may add several fields atomically (for example the
-    # city+postal final stage) before state is committed last.
+    # Stripe's custom-checkout browser sends a cumulative five-step address
+    # update (country → line1 → city → state → postal_code).  Keeping the
+    # same Elements session and adding one field per request is important for
+    # automatic-tax recalculation and for the confirm checksum contract.
     common = cs_elements_client_params(ctx)
     common.update(stripe_additional_elements_params("client_attribution_metadata"))
     common.update({"key": stripe_key(checkout), "_stripe_version": STRIPE_VERSION_FULL})
@@ -247,35 +218,34 @@ def _cs_update_tax_region_fields(
         value = str(billing.get(field) or "").strip()
         if value:
             accumulated[field] = value
-    if not accumulated:
-        return last_payload, accumulated
-    data = dict(common)
-    data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
-    stage_name = "+".join(fields)
-    response = stage_http_request(
-        stripe,
-        f"Stripe tax_region ({stage_name})",
-        "POST",
-        f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
-        log,
-        data=data,
-        headers=cs_stripe_headers(),
-        timeout=DEFAULT_TIMEOUT,
-    )
-    if response.status_code >= 400:
-        emit_log(log, f"Stripe tax_region failed ({stage_name}): {response.text[:300]}")
-        return last_payload, accumulated
-    payload = response_json(response, "Stripe tax_region")
-    if isinstance(payload, dict):
-        last_payload = payload
-        checkout_config_id = str(payload.get("config_id") or "").strip()
-        if checkout_config_id:
-            ctx["checkout_config_id"] = checkout_config_id
-        amount = (payload.get("total_summary") or {}).get("total")
-        if amount is None:
-            amount = (payload.get("total_summary") or {}).get("due")
-        if amount is not None:
-            ctx["checkout_amount"] = amount
+        if not accumulated:
+            continue
+        data = dict(common)
+        data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
+        response = stage_http_request(
+            stripe,
+            f"Stripe tax_region ({field})",
+            "POST",
+            f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
+            log,
+            data=data,
+            headers=cs_stripe_headers(),
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if response.status_code >= 400:
+            emit_log(log, f"Stripe tax_region failed ({field}): {response.text[:300]}")
+            return last_payload, accumulated
+        payload = response_json(response, "Stripe tax_region")
+        if isinstance(payload, dict):
+            last_payload = payload
+            checkout_config_id = str(payload.get("config_id") or "").strip()
+            if checkout_config_id:
+                ctx["checkout_config_id"] = checkout_config_id
+            amount = (payload.get("total_summary") or {}).get("total")
+            if amount is None:
+                amount = (payload.get("total_summary") or {}).get("due")
+            if amount is not None:
+                ctx["checkout_amount"] = amount
     return last_payload, accumulated
 
 
@@ -286,25 +256,14 @@ def cs_update_tax_region(
     billing: dict[str, str],
     log: Any | None,
 ) -> dict[str, Any]:
-    accumulated: dict[str, str] = {}
-    payload: dict[str, Any] = {}
-    # cccy browser order: country -> partial -> final -> state. Each stage is
-    # cumulative and reuses one Stripe Elements/payment-page session.
-    for fields in (
-        ("country",),
-        ("line1",),
-        ("city", "postal_code"),
-        ("state",),
-    ):
-        payload, accumulated = _cs_update_tax_region_fields(
-            stripe,
-            checkout,
-            ctx,
-            billing,
-            log,
-            fields,
-            accumulated,
-        )
+    payload, _ = _cs_update_tax_region_fields(
+        stripe,
+        checkout,
+        ctx,
+        billing,
+        log,
+        ("country", "line1", "city", "state", "postal_code"),
+    )
     return payload
 
 
@@ -630,9 +589,6 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
         str(checkout.get("processor_entity") or ""),
     )
     referer = f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
-    approve_proxy = str(getattr(chatgpt, "openai_approve_proxy", "") or "").strip()
-    if approve_proxy:
-        set_proxy_url(chatgpt, approve_proxy)
     # SentinelSDK.token(flow) consumes the challenge prefetched after
     # Elements, performs the final browser ping, and exposes the exact ping
     # telemetry. It does not issue another /sentinel/req on this path.
@@ -763,54 +719,65 @@ def extract_cs_live_provider(
     checkout["payable_amount_minor"] = totals.get("due")
     checkout["currency"] = str(totals.get("currency") or checkout.get("currency") or "GBP").upper()
     ensure_payment_method_offered(init_payload, payment_method, "cs_live Stripe init")
-    require_gopay_fail_fast_amount(
-        totals.get("due"),
-        "custom checkout bootstrap",
-        enabled=bool(config.gopay_zero_trial_validation),
-    )
     hosted_url = str(init_payload.get("stripe_hosted_url") or "").strip()
     if not hosted_url:
         raise ProtocolError(502, "cs_live Stripe init missing stripe_hosted_url")
     ctx = stripe_context(init_payload, checkout, stripe_js_id)
     ctx["browser_timezone"] = config_timezone(config)
     synchronize_stripe_browser_ids(chatgpt, ctx)
+    initial_elements_amount = str(ctx.get("checkout_amount") or "0")
     if stage_callback:
         stage_callback("elements_session")
     elements_payload = cs_elements_session(stripe, checkout, init_payload, ctx, log)
     if elements_payload:
         ensure_payment_method_offered(elements_payload, payment_method, "cs_live Elements session")
-    prefetch_checkout_approval_proof(config, chatgpt, checkout, log)
-    provider_proxy = str(config.gopay_provider_proxy or config.checkout_proxy).strip()
-    if provider_proxy:
-        set_proxy_url(chatgpt, provider_proxy)
+    prefetch_checkout_approval_proof(chatgpt, checkout, log)
     stripe_consumer_session_lookup(stripe, checkout, billing, log)
     if stage_callback:
         stage_callback("taxes")
-    cs_update_tax_region(stripe, checkout, ctx, billing, log)
-    for _round in range(2):
-        cs_snapshot_billing(chatgpt, checkout, billing, log)
-        cs_checkout_taxes(config, chatgpt, checkout, billing, log)
-        cs_checkout_page_refresh(stripe, checkout, ctx, log)
-        require_gopay_fail_fast_amount(
-            ctx.get("checkout_amount"),
-            "taxes refresh",
-            enabled=bool(config.gopay_zero_trial_validation),
-        )
-    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
-    refreshed_elements = cs_elements_session(
+    # Reproduce the second complete HAR's deterministic address/tax cadence:
+    # country -> line1 -> city -> snapshot -> state -> snapshot -> taxes ->
+    # page refresh -> postal -> taxes -> page refresh.
+    _, tax_region = _cs_update_tax_region_fields(
         stripe,
         checkout,
-        init_payload,
         ctx,
+        billing,
         log,
-        reuse_session=True,
+        ("country", "line1", "city"),
     )
-    if refreshed_elements:
-        ensure_payment_method_offered(
-            refreshed_elements,
-            payment_method,
-            "cs_live forced-reuse Elements session",
-        )
+    cs_snapshot_billing(chatgpt, checkout, billing, log)
+    _, tax_region = _cs_update_tax_region_fields(
+        stripe,
+        checkout,
+        ctx,
+        billing,
+        log,
+        ("state",),
+        tax_region,
+    )
+    cs_snapshot_billing(chatgpt, checkout, billing, log)
+    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+    _cs_update_tax_region_fields(
+        stripe,
+        checkout,
+        ctx,
+        billing,
+        log,
+        ("postal_code",),
+        tax_region,
+    )
+    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_page_refresh(stripe, checkout, ctx, log)
+    checkout["payable_amount_minor"] = ctx.get("checkout_amount")
+    final_elements_amount = str(ctx.get("checkout_amount") or "0")
+    if final_elements_amount != initial_elements_amount:
+        refreshed_elements = cs_elements_session(stripe, checkout, init_payload, ctx, log, reuse_session=True)
+        if refreshed_elements:
+            ensure_payment_method_offered(refreshed_elements, payment_method, "cs_live refreshed Elements session")
+    else:
+        emit_log(log, f"CS Elements refresh skipped: amount unchanged ({final_elements_amount})")
     if stage_callback:
         stage_callback("payment_confirmation")
     confirm_payload = stripe_confirm_cs_live(

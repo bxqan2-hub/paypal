@@ -464,47 +464,6 @@ def test_gopay_promo_probe_does_not_create_browser_checkout_state(monkeypatch) -
     assert calls == []
 
 
-def test_gopay_eligibility_stays_on_checkout_segment(monkeypatch) -> None:
-    observed: list[dict[str, str]] = []
-
-    class Response:
-        status_code = 200
-        text = '{"state":"eligible"}'
-        headers: dict[str, str] = {}
-
-        def json(self):
-            return {"state": "eligible"}
-
-    class Session:
-        def __init__(self):
-            self.proxies: dict[str, str] = {}
-
-    session = Session()
-
-    def fake_request(owner, *_args, **_kwargs):
-        observed.append(dict(owner.proxies))
-        return Response()
-
-    monkeypatch.setattr(gopay_checkout, "stage_http_request", fake_request)
-    config = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://a.example:8080",
-        update_proxy="http://b.example:8080",
-        country="ID",
-        payment_method="gopay",
-        gopay_checkout_proxy="http://a.example:8080",
-        gopay_promotion_proxy="http://b.example:8080",
-    )
-    result = gopay_checkout.probe_coupon_eligibility(config, session, None)
-    assert result["eligible"] is True
-    assert observed == [
-        {
-            "http": "http://a.example:8080",
-            "https": "http://a.example:8080",
-        }
-    ]
-
-
 def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -514,7 +473,6 @@ def test_gopay_checkout_starts_from_promo_context(monkeypatch) -> None:
                 "OpenAI-Sentinel-Token": "proof-fixture",
                 "OpenAI-Sentinel-SO-Token": "observer-fixture",
                 "oai-web-deployment-attestation": "a" * 291,
-                "Cookie": "oai-did=device-fixture; __Secure-next-auth.session-token.0=session-fixture",
             }
 
     class Session:
@@ -569,7 +527,7 @@ def test_gopay_required_sentinel_proof_fails_closed() -> None:
         )
 
 
-def test_gopay_checkout_readiness_rejects_missing_browser_session_before_commit(monkeypatch) -> None:
+def test_gopay_checkout_commits_with_required_playwright_token_without_attestation(monkeypatch) -> None:
     class Provider:
         def headers(self, _flow, **_kwargs):
             return {"OpenAI-Sentinel-Token": "proof-fixture"}
@@ -582,23 +540,24 @@ def test_gopay_checkout_readiness_rejects_missing_browser_session_before_commit(
         country="ID",
         payment_method="gopay",
     )
-    monkeypatch.setattr(
-        gopay_checkout,
-        "stage_http_request",
-        lambda *_args, **_kwargs: pytest.fail("Checkout POST must not be sent"),
-    )
+    class Response:
+        status_code = 200
+        text = '{"checkout_session_id":"cs_fixture"}'
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {"checkout_session_id": "cs_fixture"}
+
+    monkeypatch.setattr(gopay_checkout, "stage_http_request", lambda *_args, **_kwargs: Response())
     committed: list[bool] = []
-    with pytest.raises(Exception, match="browser checkout readiness missing") as caught:
-        gopay_checkout.create_checkout(
-            config,
-            session,
-            None,
-            commit_callback=lambda: committed.append(True),
-        )
-    assert getattr(caught.value, "status_code", None) == 412
-    assert getattr(caught.value, "failure_mode", "") == "browser_session_incomplete"
-    assert getattr(caught.value, "retryable", None) is False
-    assert committed == []
+    checkout = gopay_checkout.create_checkout(
+        config,
+        session,
+        None,
+        commit_callback=lambda: committed.append(True),
+    )
+    assert checkout["cs_id"] == "cs_fixture"
+    assert committed == [True]
 
 
 def test_gopay_sentinel_init_script_uses_dedicated_assets() -> None:
@@ -793,7 +752,6 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) -> 
         def __init__(self):
             self.headers = {"Cookie": "current-approve-cookie"}
             self.openai_sentinel_provider = Provider(self)
-            self.openai_proxy = "http://proxy.example:8080"
 
     def fake_request(*_args, **kwargs):
         requests.append({**kwargs, "session_cookie": _args[0].headers["Cookie"]})
@@ -802,15 +760,7 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) -> 
     monkeypatch.setattr(gopay_cs_live, "stage_http_request", fake_request)
     checkout = {"cs_id": "cs_live_fixture", "billing_country": "ID"}
     session = Session()
-    config = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://proxy.example:8080",
-        update_proxy="http://proxy.example:8080",
-        country="ID",
-        payment_method="gopay",
-        gopay_approve_proxy="http://proxy.example:8080",
-    )
-    gopay_cs_live.prefetch_checkout_approval_proof(config, session, checkout, None)
+    gopay_cs_live.prefetch_checkout_approval_proof(session, checkout, None)
     gopay_cs_live.chatgpt_approve(
         session,
         checkout,
@@ -1147,144 +1097,26 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
     assert tax_keys == [
         ["tax_region[country]"],
         ["tax_region[country]", "tax_region[line1]"],
+        ["tax_region[country]", "tax_region[line1]", "tax_region[city]"],
         [
             "tax_region[country]",
             "tax_region[line1]",
             "tax_region[city]",
-            "tax_region[postal_code]",
-        ],
-        [
-            "tax_region[country]",
-            "tax_region[line1]",
-            "tax_region[city]",
-            "tax_region[postal_code]",
             "tax_region[state]",
         ],
+        [
+            "tax_region[country]",
+            "tax_region[line1]",
+            "tax_region[city]",
+            "tax_region[state]",
+            "tax_region[postal_code]",
+        ],
     ]
-    assert ctx["checkout_config_id"] == "checkout-config-4"
-
-
-def test_gopay_cccy_fail_fast_threshold() -> None:
-    assert gopay_cs_live.require_gopay_fail_fast_amount(
-        0, "fixture", enabled=True
-    ) == 0
-    assert gopay_cs_live.require_gopay_fail_fast_amount(
-        50, "fixture", enabled=True
-    ) == 50
-    with pytest.raises(Exception, match="exceeds fail-fast threshold"):
-        gopay_cs_live.require_gopay_fail_fast_amount(
-            51, "fixture", enabled=True
-        )
-    with pytest.raises(Exception, match="amount is missing"):
-        gopay_cs_live.require_gopay_fail_fast_amount(
-            None, "fixture", enabled=True
-        )
-
-
-def test_gopay_four_segment_route_defaults_and_explicit_values() -> None:
-    base = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://entry.example:8080",
-        update_proxy="http://legacy-update-must-not-split.example:8080",
-        country="ID",
-        payment_method="gopay",
-    )
-    default = gopay_core.pin_gopay_attempt_proxy(base)
-    assert (
-        default.gopay_checkout_proxy,
-        default.gopay_promotion_proxy,
-        default.gopay_provider_proxy,
-        default.gopay_approve_proxy,
-    ) == ("http://entry.example:8080",) * 4
-
-    explicit = gopay_core.pin_gopay_attempt_proxy(
-        ExtractionConfig(
-            access_token="fixture-token",
-            checkout_proxy="http://entry.example:8080",
-            update_proxy="http://legacy.example:8080",
-            country="ID",
-            payment_method="gopay",
-            gopay_checkout_proxy="http://a.example:8080",
-            gopay_promotion_proxy="http://b.example:8080",
-            gopay_provider_proxy="http://c.example:8080",
-            gopay_approve_proxy="http://d.example:8080",
-        )
-    )
-    assert (
-        explicit.checkout_proxy,
-        explicit.update_proxy,
-        explicit.gopay_provider_proxy,
-        explicit.gopay_approve_proxy,
-    ) == (
-        "http://a.example:8080",
-        "http://b.example:8080",
-        "http://c.example:8080",
-        "http://d.example:8080",
-    )
-
-
-def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypatch) -> None:
-    class HttpSession:
-        def __init__(self):
-            self.headers = {}
-            self.proxies = {}
-
-    monkeypatch.setattr(gopay_transport, "new_session", HttpSession)
-    config = ExtractionConfig(
-        access_token="fixture-token",
-        checkout_proxy="http://a.example:8080",
-        update_proxy="http://b.example:8080",
-        country="ID",
-        payment_method="gopay",
-        gopay_provider_proxy="http://c.example:8080",
-        gopay_approve_proxy="http://d.example:8080",
-    )
-    stripe = gopay_transport.GoPayTransportFactory().stripe(config)
-    assert stripe.proxies == {
-        "http": "http://c.example:8080",
-        "https": "http://c.example:8080",
-    }
-
-    closed: list[bool] = []
-    created: list[str] = []
-
-    class OldProvider:
-        def close(self):
-            closed.append(True)
-
-    class NewProvider:
-        def __init__(self, **kwargs):
-            created.append(kwargs["proxy"])
-
-    monkeypatch.setattr(gopay_transport, "PlaywrightSentinelProvider", NewProvider)
-    chatgpt = SimpleNamespace(
-        openai_proxy="http://a.example:8080",
-        openai_sentinel_provider=OldProvider(),
-        openai_access_token="fixture-token",
-        openai_device_id="device-fixture",
-        openai_session_id="session-fixture",
-        openai_user_agent="fixture-agent",
-        openai_session_token="",
-        openai_language="id-ID",
-        openai_timezone="Asia/Jakarta",
-        headers={},
-        proxies={},
-    )
-    assert gopay_transport.rotate_openai_approval_context(
-        chatgpt, config, config.gopay_approve_proxy
-    ) is True
-    assert closed == [True]
-    assert created == ["http://d.example:8080"]
-    assert chatgpt.proxies == {
-        "http": "http://d.example:8080",
-        "https": "http://d.example:8080",
-    }
-    assert chatgpt.openai_approve_proxy == "http://d.example:8080"
+    assert ctx["checkout_config_id"] == "checkout-config-5"
 
 
 def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) -> None:
     events: list[str] = []
-    elements_reuse: list[bool] = []
 
     monkeypatch.setattr(
         gopay_cs_live,
@@ -1315,11 +1147,11 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) 
         },
     )
     monkeypatch.setattr(gopay_cs_live, "synchronize_stripe_browser_ids", lambda *_args: None)
-    def elements(*_args, **kwargs):
-        elements_reuse.append(bool(kwargs.get("reuse_session")))
-        return {"payment_method_types": ["gopay"]}
-
-    monkeypatch.setattr(gopay_cs_live, "cs_elements_session", elements)
+    monkeypatch.setattr(
+        gopay_cs_live,
+        "cs_elements_session",
+        lambda *_args, **_kwargs: {"payment_method_types": ["gopay"]},
+    )
     monkeypatch.setattr(
         gopay_cs_live,
         "prefetch_checkout_approval_proof",
@@ -1389,24 +1221,22 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) 
         "postal_code": "10220",
     }
     result = gopay_cs_live.extract_cs_live_provider(
-        config, SimpleNamespace(proxies={}), object(), checkout, billing, None
+        config, object(), object(), checkout, billing, None
     )
     assert result["gopay_url"].startswith("https://app.midtrans.com/")
     assert events == [
         "approval_init",
         "consumer_lookup",
-        "tax_region:country",
-        "tax_region:line1",
-        "tax_region:city,postal_code",
+        "tax_region:country,line1,city",
+        "snapshot",
         "tax_region:state",
         "snapshot",
         "taxes",
         "page_get",
-        "snapshot",
+        "tax_region:postal_code",
         "taxes",
         "page_get",
     ]
-    assert elements_reuse == [False, True]
 
 
 def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch) -> None:
@@ -1557,15 +1387,13 @@ def test_gopay_core_uses_promotion_update_before_provider(monkeypatch) -> None:
     result = gopay_core.extract_gopay_payment_link(
         config, transport_factory=Factory(), stage_callback=stages.append
     )
-    assert stages[:8] == [
+    assert stages[:6] == [
         "eligibility_check",
         "eligibility_confirmed",
         "checkout",
         "checkout_kind:stripe_checkout",
-        "checkout_amount_confirmed",
         "checkout_update",
         "promotion_applied",
-        "promotion_amount_confirmed",
     ]
     assert stages[-3:] == [
         "zero_amount_validation",
