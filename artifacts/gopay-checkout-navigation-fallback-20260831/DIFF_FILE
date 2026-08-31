@@ -1,0 +1,582 @@
+diff --git a/docs/2026-08-31_gopay-three-at-retest-navigation-fix.md b/docs/2026-08-31_gopay-three-at-retest-navigation-fix.md
+new file mode 100644
+index 0000000..f35eabc
+--- /dev/null
++++ b/docs/2026-08-31_gopay-three-at-retest-navigation-fix.md
+@@ -0,0 +1,166 @@
++# GoPay 三 AT 复测：Checkout 浏览器刷新超时修复
++
++## 结论
++
++本轮安全载入了用户提供的 3 个有效 AT 和 10 条 ID 代理。三个 AT 使用代理槽位 1
++执行独立优惠资格 GET，均返回 `HTTP 200 / state=eligible`，资格阶段没有创建
++Checkout。
++
++当前 CDP `127.0.0.1:61908` 浏览器具有 NextAuth `.0/.1` 和长度 291 的实时
++attestation，但 cookie-only `/backend-api/me` 与三个 AT 的匹配数为 0。因此本轮没有
++跨账号复用该浏览器的 NextAuth，只向 AT-bound 实验路径提供实时 attestation。
++
++首次完整实验暴露出一个独立于 `approve=blocked` 的真实缺陷：ChatGPT Checkout 已
++成功创建后，GoPay core 在 `checkout_browser_refresh` 导航 Checkout 页面时等待
++`domcontentloaded` 超时，流程在进入 promotion/Stripe 前结束。本轮已经修复这个
++超时路径；后续 AT 槽位 2 复验能够完成 promotion、Stripe init、Elements、taxes、
++Stripe confirm 和完整 approval proof，最终 ChatGPT approve 返回业务结果
++`blocked`。
++
++因此本轮修复结果分成两层：
++
++1. **已修复**：AT-only Checkout 页面导航超时不再终止已创建的唯一 Checkout；同一
++   Page、同一 browser runtime 通过 `window.stop()` 和 `history.replaceState()` 继续
++   Sentinel init，没有重发 Checkout。
++2. **仍然存在的最终差异**：AT 槽位 2 到达 approve 时具有真实 Chrome 151、持久
++   runtime/profile、正确 SDK、291 字符 attestation、approval token、空 pending
++   envelope，但 `session_cookie_binding_state=not_present`，Cookie 中没有 NextAuth
++   session-token。最终仍为 `approve_blocked`。
++
++## 输入与保护边界
++
++- AT：3 个；JWT、稳定 user id、account id 和 email claim 均可解析。
++- 代理：10 个；原始值仅保存在 Git 忽略的 runtime 文件。
++- 资格 GET：三个 AT 在代理槽位 1 均为 eligible。
++- 当前浏览器：NextAuth 分片 2 个，attestation 长度 291，cookie-only `/me` 为 200，
++  但与三个 AT 均不匹配。
++- 本报告不记录 AT、Cookie 值、代理凭据、账号标识、Checkout ID、邮箱或跳转 nonce。
++
++## 实验过程
++
++### AT 槽位 1：定位刷新超时
++
++阶段：
++
++```text
++eligibility_check
++→ eligibility_confirmed
++→ checkout
++→ checkout_committed
++→ checkout_kind:stripe_checkout
++→ checkout_browser_refresh
++→ TimeoutError
++```
++
++该错误发生于唯一 Checkout 已返回之后的 Playwright `page.goto(checkout_url)`，不是
++Checkout POST 自身，也没有到 Stripe confirm 或最终 approve。
++
++### 修复 1：Checkout 导航超时同页继续
++
++修改 `payment_link_extractor/gopay_sentinel_playwright.py`：
++
++- Checkout 导航超时默认上限从固定 90 秒改为可配置、边界为 5–90 秒。
++- 只捕获 Playwright navigation timeout，不吞 TLS、页面关闭等其他异常。
++- 仅 AT-only browser session 可以 fallback；cookie-backed session 仍严格失败关闭。
++- fallback 前确认 page 仍位于 `https://chatgpt.com`。
++- 在同一 page 调用 `window.stop()`，随后恢复精确 Checkout history URL。
++- 继续 SDK install、attestation 捕获、Sentinel init；不创建新 page、不重发 Checkout。
++- runtime 记录 `checkout_navigation_fallback=true` 和错误类别 `timeout`。
++
++### 修复 2：AT-only 绑定探针不再悬挂
++
++- 没有 NextAuth 时，cookie-only `/me` 探针直接返回 `not_present`，不再发无意义请求。
++- cookie-backed `/me` 加 10 秒 AbortController，并保持同 runtime 有界重试。
++- Bearer 自检在 AT-only 模式保留 Cloudflare/browser Cookie，并显式带 account header；
++  cookie-backed 模式继续 `credentials=omit`，防止 NextAuth 掩盖 Bearer 结果。
++
++### AT 槽位 2：修复后完整复验
++
++阶段：
++
++```text
++eligibility_check
++→ eligibility_confirmed
++→ checkout
++→ checkout_committed
++→ checkout_kind:stripe_checkout
++→ checkout_browser_refresh
++→ checkout_update
++→ promotion_applied
++→ stripe_init
++→ elements_session
++→ taxes
++→ payment_confirmation
++→ approve_blocked
++```
++
++最终脱敏上下文：
++
++```text
++browser_channel=chrome
++browser_version=151.0.7922.170
++persistent_runtime=true
++persistent_profile=true
++account_binding_verified=true
++session_cookie_binding_verified=false
++session_cookie_binding_state=not_present
++session_cookie_source=none
++checkout_navigation_fallback=true
++checkout_navigation_error=timeout
++sdk_sha256=49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd
++approval_token_length=3910
++attestation_length=291
++pending_updates_length=20
++```
++
++approval 的 `prepare_events` 和 `token_events` 都包含正确的 zero-body Sentinel ping；
++最终 Cookie 有 Cloudflare、OAI 和 Stripe 状态，但没有 NextAuth session-token。
++
++## 浏览器级抓包
++
++当前外部 CDP 浏览器抓包摘要已保存：
++
++- `C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-captures\gopay-cdp-capture-20260831-153331.summary.md`
++- `C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-captures\gopay-cdp-capture-20260831-153331.gopay.md`
++
++```text
++CAPTURE_ENTRIES=27
++CAPTURE_SHA256=68338279FCB0BB75E76A9ACF6D1419D47720BC0C0662614316110215D51064C5
++CAPTURE_API_STRIPE_ENTRIES=0
++CAPTURE_COMPLETENESS=partial
++```
++
++该 recorder 连接的是外部 `61908` 浏览器；本次 canary 的 ChatGPT/Stripe mutation
++由 curl session 和独立 Playwright runtime 发出，因此该 HAR 只覆盖外部页面背景流量，
++未标记为 GoPay canonical。原始 partial HAR 在记录 SHA-256 后已删除，只保留脱敏摘要；
++完整故障证据来自 canary 阶段和 provider safe context。
++
++## 验证
++
++```powershell
++$env:PYTHONDONTWRITEBYTECODE='1'
++.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
++```
++
++结果：
++
++```text
++275 passed in 1.71s
++FULL_TEST_EXIT=0
++```
++
++新增测试覆盖：
++
++- AT-only Checkout navigation timeout 只调用一次 goto 并在同一 page fallback。
++- timeout 后先 `window.stop()`，再修复 history URL。
++- cookie-backed navigation timeout 保持严格失败。
++- timeout 配置上下界。
++- 无 NextAuth 时不发 cookie binding 网络请求。
++- provider 传播 navigation fallback/error 诊断。
++
++## 最终判断
++
++本轮已经把流程从 `checkout_browser_refresh TimeoutError` 修到完整
++`payment_confirmation → approve`。最终 `blocked` 继续与缺少同账号 NextAuth 登录态
++一致；attestation、真实浏览器、Sentinel proof、Stripe 链路和导航 timeout 已不再是
++本次最终阻塞点。
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 318df9e..71b5d4f 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -769,6 +769,12 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+             "session_cookie_source": str(
+                 getattr(provider, "_session_cookie_source", "") or ""
+             ),
++            "checkout_navigation_fallback": bool(
++                getattr(provider, "_checkout_navigation_fallback", False)
++            ),
++            "checkout_navigation_error": str(
++                getattr(provider, "_checkout_navigation_error", "") or ""
++            ),
+             "sdk_sha256": str(getattr(provider, "_sdk_sha256", "") or ""),
+             "challenge_shapes": list(getattr(provider, "_challenge_shapes", []) or []),
+             "prepare_events": list(
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index 867c7ac..ff69e8e 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -19,10 +19,16 @@ from .auth import (
+ )
+
+ try:
+-    from playwright.async_api import BrowserContext, Page, async_playwright
++    from playwright.async_api import (
++        BrowserContext,
++        Page,
++        TimeoutError as PlaywrightTimeoutError,
++        async_playwright,
++    )
+ except ImportError:  # pragma: no cover - dependency is validated at runtime
+     BrowserContext = Any  # type: ignore[misc,assignment]
+     Page = Any  # type: ignore[misc,assignment]
++    PlaywrightTimeoutError = TimeoutError  # type: ignore[assignment]
+     async_playwright = None  # type: ignore[assignment]
+
+
+@@ -37,6 +43,14 @@ def _enabled(value: str, *, default: bool) -> bool:
+     return text not in {"0", "false", "off", "disabled", "no"}
+
+
++def _checkout_navigation_timeout_ms() -> int:
++    try:
++        value = int(os.getenv("OPLL_GOPAY_CHECKOUT_NAVIGATION_TIMEOUT_MS", "45000"))
++    except ValueError:
++        value = 45_000
++    return max(5_000, min(90_000, value))
++
++
+ def _profile_root() -> Path:
+     configured = os.getenv("OPLL_GOPAY_SENTINEL_PROFILE_DIR", "").strip()
+     if configured:
+@@ -173,6 +187,9 @@ class _BrowserSession:
+     account_binding_verified: bool = False
+     session_cookie_binding_verified: bool = False
+     session_cookie_binding_state: str = "unverified"
++    cookie_backed: bool = False
++    checkout_navigation_fallback: bool = False
++    checkout_navigation_error: str = ""
+
+
+ async def _verify_session_cookie_binding(
+@@ -193,11 +210,14 @@ async def _verify_session_cookie_binding(
+     try:
+         state = await page.evaluate(
+             """async expected => {
++                const controller = new AbortController();
++                const timer = setTimeout(() => controller.abort(), 10000);
+                 try {
+                     const response = await fetch('/backend-api/me', {
+                         credentials: 'include',
+                         cache: 'no-store',
+                         headers: {accept: 'application/json'},
++                        signal: controller.signal,
+                     });
+                     if (!response.ok) return 'unavailable';
+                     let payload;
+@@ -208,6 +228,8 @@ async def _verify_session_cookie_binding(
+                     return actual === expected ? 'matched' : 'mismatched';
+                 } catch (_) {
+                     return 'unavailable';
++                } finally {
++                    clearTimeout(timer);
+                 }
+             }""",
+             expected,
+@@ -229,7 +251,9 @@ async def _verify_session_cookie_binding_with_retry(
+     delay_seconds: float = 0.2,
+ ) -> str:
+     """Retry only inconclusive probes inside the same browser runtime."""
+-    budget = max(1, min(4, int(attempts))) if cookie_backed else 1
++    if not cookie_backed:
++        return "not_present"
++    budget = max(1, min(4, int(attempts)))
+     state = "unavailable"
+     for attempt in range(budget):
+         state = await _verify_session_cookie_binding(page, expected_user_id)
+@@ -545,6 +569,7 @@ class PersistentPlaywrightDaemon:
+             is_nextauth_session_cookie_name(item.get("name"))
+             for item in current_cookies
+         )
++        session.cookie_backed = cookie_backed
+         bootstrap_headers = _bootstrap_headers(
+             access_token=access_token,
+             account_id=account_id,
+@@ -587,23 +612,37 @@ class PersistentPlaywrightDaemon:
+         )
+         try:
+             binding = await page.evaluate(
+-                """async ({token, expected}) => {
++                """async ({token, expected, account, cookieBacked}) => {
++                    const controller = new AbortController();
++                    const timer = setTimeout(() => controller.abort(), 10000);
+                     try {
+                         const response = await fetch('/backend-api/me', {
+-                            credentials: 'omit',
++                            // AT-only mode has already cleared NextAuth. Keep
++                            // its Cloudflare/browser cookies; cookie-backed
++                            // mode omits all cookies so Bearer is independent.
++                            credentials: cookieBacked ? 'omit' : 'include',
+                             headers: {
+                                 accept: 'application/json',
+                                 authorization: `Bearer ${token}`,
++                                ...(account ? {'chatgpt-account-id': account} : {}),
+                             },
++                            signal: controller.signal,
+                         });
+                         if (!response.ok) return false;
+                         const payload = await response.json();
+                         return Boolean(expected && String(payload?.id || '') === expected);
+                     } catch (_) {
+                         return false;
++                    } finally {
++                        clearTimeout(timer);
+                     }
+                 }""",
+-                {"token": access_token, "expected": expected_user_id},
++                {
++                    "token": access_token,
++                    "expected": expected_user_id,
++                    "account": account_id,
++                    "cookieBacked": cookie_backed,
++                },
+             )
+             session.account_binding_verified = bool(binding)
+         except Exception:
+@@ -657,11 +696,28 @@ class PersistentPlaywrightDaemon:
+         ):
+             await session.context.set_extra_http_headers(session.bootstrap_headers)
+             try:
+-                await session.page.goto(
+-                    parsed.geturl(),
+-                    wait_until="domcontentloaded",
+-                    timeout=90_000,
+-                )
++                try:
++                    await session.page.goto(
++                        parsed.geturl(),
++                        wait_until="domcontentloaded",
++                        timeout=_checkout_navigation_timeout_ms(),
++                    )
++                except PlaywrightTimeoutError:
++                    if session.cookie_backed:
++                        raise
++                    current_page = urlsplit(str(session.page.url or ""))
++                    if (
++                        current_page.scheme != "https"
++                        or current_page.netloc != "chatgpt.com"
++                    ):
++                        raise
++                    # AT-only browser sessions can leave the Checkout document
++                    # pending even though the existing ChatGPT page and SDK are
++                    # still usable. Keep the same runtime and repair only the
++                    # history URL; never issue another Checkout POST.
++                    await session.page.evaluate("() => { window.stop(); return true; }")
++                    session.checkout_navigation_fallback = True
++                    session.checkout_navigation_error = "timeout"
+             finally:
+                 await session.context.set_extra_http_headers({})
+             await self._install_sdk(session.page)
+@@ -670,7 +726,7 @@ class PersistentPlaywrightDaemon:
+                 await _verify_session_cookie_binding_with_retry(
+                     session.page,
+                     session.expected_user_id,
+-                    cookie_backed=True,
++                    cookie_backed=session.cookie_backed,
+                 )
+             )
+             session.session_cookie_binding_verified = (
+@@ -714,6 +770,8 @@ class PersistentPlaywrightDaemon:
+                 session.session_cookie_binding_verified
+             ),
+             "session_cookie_binding_state": session.session_cookie_binding_state,
++            "checkout_navigation_fallback": session.checkout_navigation_fallback,
++            "checkout_navigation_error": session.checkout_navigation_error,
+         }
+
+     def prepare_flow(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+@@ -755,6 +813,8 @@ class PersistentPlaywrightDaemon:
+                 session.session_cookie_binding_verified
+             ),
+             "session_cookie_binding_state": session.session_cookie_binding_state,
++            "checkout_navigation_fallback": session.checkout_navigation_fallback,
++            "checkout_navigation_error": session.checkout_navigation_error,
+         }
+
+     def token(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index f629047..af85ffd 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -1404,6 +1404,8 @@ class PlaywrightSentinelProvider:
+         self._session_cookie_binding_verified = False
+         self._session_cookie_binding_state = "unverified"
+         self._session_cookie_source = "none"
++        self._checkout_navigation_fallback = False
++        self._checkout_navigation_error = ""
+         self._started = False
+         self._closed = False
+         self._failed = False
+@@ -1469,6 +1471,14 @@ class PlaywrightSentinelProvider:
+             self._session_cookie_source = str(
+                 result.get("session_cookie_source") or "none"
+             )
++        if "checkout_navigation_fallback" in result:
++            self._checkout_navigation_fallback = bool(
++                result.get("checkout_navigation_fallback")
++            )
++        if "checkout_navigation_error" in result:
++            self._checkout_navigation_error = str(
++                result.get("checkout_navigation_error") or ""
++            )
+         headers = getattr(self.transport_session, "headers", None)
+         if headers is not None:
+             if self._cookies:
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 7d2ca46..5fe412e 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -148,6 +148,8 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
+                     {"path": "/backend-api/sentinel/req", "body_length": 700},
+                     {"path": "/backend-api/sentinel/ping", "body_length": 0},
+                 ],
++                "checkout_navigation_fallback": True,
++                "checkout_navigation_error": "timeout",
+             }
+
+         def token(self, runtime_id, flow, page_url):
+@@ -205,6 +207,8 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
+     assert provider._session_cookie_binding_verified is True
+     assert provider._session_cookie_binding_state == "matched"
+     assert provider._session_cookie_source == "explicit"
++    assert provider._checkout_navigation_fallback is True
++    assert provider._checkout_navigation_error == "timeout"
+     assert session.openai_sentinel_prepare_events == [
+         {"path": "/backend-api/sentinel/req", "body_length": 700},
+         {"path": "/backend-api/sentinel/ping", "body_length": 0},
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 8f44d04..242649a 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -4,6 +4,8 @@ import asyncio
+ from pathlib import Path
+ from types import SimpleNamespace
+
++import pytest
++
+ from payment_link_extractor import gopay_sentinel_playwright as sentinel
+
+
+@@ -103,6 +105,20 @@ def test_session_cookie_binding_retries_unavailable_in_same_runtime() -> None:
+     assert page.calls == 3
+
+
++def test_session_cookie_binding_skips_network_without_nextauth() -> None:
++    class Page:
++        async def evaluate(self, *_args):
++            raise AssertionError("AT-only binding must not issue cookie probe")
++
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding_with_retry(
++            Page(),
++            "expected-user",
++            cookie_backed=False,
++        )
++    ) == "not_present"
++
++
+ def test_imported_session_cookies_replace_stale_nextauth_chunks_only() -> None:
+     events: list[tuple[str, object]] = []
+
+@@ -212,3 +228,116 @@ def test_at_only_bootstrap_keeps_explicit_bearer_fallback() -> None:
+     )
+     assert headers["Authorization"] == "Bearer token-fixture"
+     assert headers["chatgpt-account-id"] == "account-fixture"
++
++
++def test_at_only_bearer_probe_keeps_non_nextauth_browser_cookies() -> None:
++    source = Path(sentinel.__file__).read_text(encoding="utf-8")
++    assert "credentials: cookieBacked ? 'omit' : 'include'" in source
++    assert "'chatgpt-account-id': account" in source
++
++
++def test_at_only_checkout_navigation_timeout_uses_same_page_fallback(
++    monkeypatch,
++) -> None:
++    events: list[object] = []
++
++    class Page:
++        url = "https://chatgpt.com/?promo_campaign=plus-1-month-free"
++
++        async def goto(self, url, **kwargs):
++            events.append(("goto", url, kwargs["timeout"]))
++            raise sentinel.PlaywrightTimeoutError("fixture timeout")
++
++        async def evaluate(self, expression, *args):
++            events.append(("evaluate", expression, args))
++            return None
++
++    class Context:
++        async def set_extra_http_headers(self, headers):
++            events.append(("headers", dict(headers)))
++
++    async def no_op(*_args, **_kwargs):
++        return None
++
++    async def binding(*_args, **_kwargs):
++        return "unavailable"
++
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++    monkeypatch.setattr(daemon, "_install_sdk", no_op)
++    monkeypatch.setattr(daemon, "_capture_page_attestation", no_op)
++    monkeypatch.setattr(
++        sentinel, "_verify_session_cookie_binding_with_retry", binding
++    )
++    monkeypatch.setenv("OPLL_GOPAY_CHECKOUT_NAVIGATION_TIMEOUT_MS", "5000")
++    session = sentinel._BrowserSession(
++        context=Context(),
++        page=Page(),
++        profile_path=Path("runtime-profile"),
++        device_id="device-fixture",
++        expected_user_id="user-fixture",
++        bootstrap_headers={"Authorization": "Bearer fixture"},
++        cookie_backed=False,
++    )
++    target = "https://chatgpt.com/checkout/openai_llc/cs_fixture"
++    asyncio.run(daemon._set_page_url(session, target))
++    assert session.checkout_navigation_fallback is True
++    assert session.checkout_navigation_error == "timeout"
++    assert session.active_page_url == target
++    assert ("headers", {}) in events
++    assert sum(item[0] == "goto" for item in events) == 1
++    stop_index = next(
++        index
++        for index, item in enumerate(events)
++        if item[0] == "evaluate" and "window.stop" in item[1]
++    )
++    history_index = next(
++        index
++        for index, item in enumerate(events)
++        if item[0] == "evaluate" and "history.replaceState" in item[1]
++    )
++    assert stop_index < history_index
++    assert any(
++        item[0] == "evaluate" and "history.replaceState" in item[1]
++        for item in events
++    )
++
++
++def test_cookie_backed_checkout_navigation_timeout_still_fails(
++    monkeypatch,
++) -> None:
++    class Page:
++        url = "https://chatgpt.com/"
++
++        async def goto(self, *_args, **_kwargs):
++            raise sentinel.PlaywrightTimeoutError("fixture timeout")
++
++    class Context:
++        async def set_extra_http_headers(self, _headers):
++            return None
++
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++    session = sentinel._BrowserSession(
++        context=Context(),
++        page=Page(),
++        profile_path=Path("runtime-profile"),
++        device_id="device-fixture",
++        expected_user_id="user-fixture",
++        cookie_backed=True,
++    )
++    with pytest.raises(sentinel.PlaywrightTimeoutError):
++        asyncio.run(
++            daemon._set_page_url(
++                session,
++                "https://chatgpt.com/checkout/openai_llc/cs_fixture",
++            )
++        )
++    assert session.checkout_navigation_fallback is False
++
++
++def test_checkout_navigation_timeout_configuration_is_bounded(monkeypatch) -> None:
++    monkeypatch.setenv("OPLL_GOPAY_CHECKOUT_NAVIGATION_TIMEOUT_MS", "invalid")
++    assert sentinel._checkout_navigation_timeout_ms() == 45_000
++    monkeypatch.setenv("OPLL_GOPAY_CHECKOUT_NAVIGATION_TIMEOUT_MS", "1")
++    assert sentinel._checkout_navigation_timeout_ms() == 5_000
++    monkeypatch.setenv("OPLL_GOPAY_CHECKOUT_NAVIGATION_TIMEOUT_MS", "999999")
++    assert sentinel._checkout_navigation_timeout_ms() == 90_000
