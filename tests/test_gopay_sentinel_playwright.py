@@ -20,6 +20,35 @@ def test_playwright_proxy_and_profile_are_stable() -> None:
     assert first != sentinel._profile_key("other-device")
 
 
+def test_profile_cache_cleanup_preserves_session_files(tmp_path) -> None:
+    profile = tmp_path / "profile"
+    cache = profile / "Default" / "Cache"
+    cache.mkdir(parents=True)
+    (cache / "data_0").write_bytes(b"cache")
+    model = profile / "optimization_guide_model_store"
+    model.mkdir(parents=True)
+    (model / "model.tflite").write_bytes(b"model")
+    cookies = profile / "Default" / "Network" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"session-cookie-db")
+
+    assert sentinel._purge_profile_caches(profile) >= 2
+    assert not cache.exists()
+    assert not model.exists()
+    assert cookies.read_bytes() == b"session-cookie-db"
+
+
+def test_profile_cache_cleanup_can_be_disabled(tmp_path, monkeypatch) -> None:
+    profile = tmp_path / "profile"
+    cache = profile / "Default" / "Cache"
+    cache.mkdir(parents=True)
+    (cache / "data_0").write_bytes(b"cache")
+    monkeypatch.setenv("OPLL_GOPAY_PROFILE_CACHE_CLEANUP", "false")
+
+    assert sentinel._purge_profile_caches(profile) == 0
+    assert (cache / "data_0").read_bytes() == b"cache"
+
+
 def test_playwright_cookie_header_contains_no_empty_names() -> None:
     assert sentinel._cookie_header(
         [

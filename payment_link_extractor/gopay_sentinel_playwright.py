@@ -5,6 +5,7 @@ import atexit
 import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -39,6 +40,33 @@ PINNED_SENTINEL_SDK_SHA256 = (
 )
 OPEN_SESSION_TIMEOUT_SECONDS = 240
 FLOW_TIMEOUT_SECONDS = 210
+
+# Chromium writes a large, regenerable model/cache set into every persistent
+# profile.  GoPay rotates device ids between attempts, so leaving these files
+# in each profile causes the workspace to grow by tens of MiB per attempt.  The
+# authentication/session databases are deliberately outside this list and are
+# retained for cookie-backed continuity.
+PROFILE_CACHE_RELATIVE_PATHS: tuple[str, ...] = (
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/GrShaderCache",
+    "Default/ShaderCache",
+    "Default/DawnGraphiteCache",
+    "Default/Service Worker/CacheStorage",
+    "Default/Service Worker/ScriptCache",
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "GrShaderCache",
+    "ShaderCache",
+    "DawnGraphiteCache",
+    "GPUPersistentCache",
+    "optimization_guide_model_store",
+    "component_crx_cache",
+    "BrowserMetrics",
+    "Crashpad",
+)
 
 
 def _is_chatgpt_url(value: str) -> bool:
@@ -86,6 +114,42 @@ def _profile_key(device_id: str) -> str:
         return str(uuid.UUID(str(device_id)))
     except (TypeError, ValueError):
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-profile:{device_id}"))
+
+
+def _profile_cache_cleanup_enabled() -> bool:
+    """Return whether regenerable Chromium profile caches are reclaimed."""
+    return _enabled(
+        os.getenv("OPLL_GOPAY_PROFILE_CACHE_CLEANUP", ""),
+        default=True,
+    )
+
+
+def _purge_profile_caches(profile_path: Path) -> int:
+    """Remove only regenerable cache/model paths from one persistent profile.
+
+    Cookies, Login Data, Local Storage, Preferences and other session-bearing
+    files remain intact.  A count is returned for diagnostics and tests.
+    """
+    if not _profile_cache_cleanup_enabled():
+        return 0
+    root = Path(profile_path).expanduser().resolve()
+    removed = 0
+    for relative in PROFILE_CACHE_RELATIVE_PATHS:
+        target = root / relative
+        if not target.exists():
+            continue
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                target.unlink(missing_ok=True)
+            if not target.exists():
+                removed += 1
+        except OSError:
+            # A running Chromium child can hold a cache file.  The next
+            # session retries cleanup; a transient lock never affects login.
+            continue
+    return removed
 
 
 def _proxy_options(proxy_url: str) -> dict[str, str] | None:
@@ -968,6 +1032,9 @@ class PersistentPlaywrightDaemon:
         else:
             profile_path = _profile_root() / _profile_key(device_id)
             profile_path.mkdir(parents=True, exist_ok=True)
+            # Remove model/cache payloads from a reused device profile before
+            # Chromium opens it.  Session-bearing files stay in place.
+            _purge_profile_caches(profile_path)
             launch_options: dict[str, Any] = {
                 "user_data_dir": str(profile_path),
                 "headless": headless,
@@ -1726,7 +1793,12 @@ class PersistentPlaywrightDaemon:
                 except Exception:
                     pass
             else:
+                profile_path = session.profile_path
                 await session.context.close()
+                # The profile can be several tens of MiB after Sentinel has
+                # loaded Chromium models.  Reclaim those files immediately
+                # while retaining NextAuth and device/session databases.
+                _purge_profile_caches(profile_path)
 
     def close_session(self, runtime_id: str) -> None:
         if runtime_id:
