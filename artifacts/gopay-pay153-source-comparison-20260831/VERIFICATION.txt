@@ -1,0 +1,89 @@
+CHANGED_BRANCH=main
+CHANGED_FIELDS=session_cookie_binding_state,session_cookie_binding_verified,session_cookie_source
+BASE_COMMIT=450994c99840ee039cf20b563a9e2e4661547ed4
+REFERENCE_PROJECT=C:\Users\Administrator\Downloads\pay153-checkout-link-main
+REFERENCE_FINDING=The downloaded directory contains a local reimplementation plus black-box cccy probes; its documented 10/10 blocked result belongs to a closed-source cccy job and is not local-engine success evidence.
+
+ARTIFACT_PATHS:
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-pay153-source-comparison-20260831\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-pay153-source-comparison-20260831\DIFF_FILE
+VERIFICATION=C:\Users\Administrator\Desktop\提链\artifacts\gopay-pay153-source-comparison-20260831\VERIFICATION.txt
+ROLLBACK=C:\Users\Administrator\Desktop\提链\artifacts\gopay-pay153-source-comparison-20260831\ROLLBACK.sh
+
+KEY_FILE=C:\Users\Administrator\Desktop\提链\payment_link_extractor\gopay_sentinel_playwright.py
+ORIGINAL_OBSERVED_KEY_SHA256=873A0A6845C06C1F7E8AD69383996E698205A21787B881B9676909355A476135
+ORIGINAL_CANONICAL_KEY_SHA256=FE454829DA9D7F26CC09EACB7CAFF0C6347F3535A980BDBCD4697AD8A985DAEB
+MODIFIED_KEY_SHA256=00E6B6F5A1B28F97F8E443182C404766D2CF686108673310989DF6A81372448A
+
+CHANGED_PATH_HASHES (path | baseline git-blob SHA256 | modified SHA256):
+payment_link_extractor/auth.py | 05A7AA7D23BEDD781024A3D60C6F12F1C54626C2EE0F0E404D078BFB19742A50 | C11082EC3BE08EDD0DC1B4D65E25BD65F96E98354E77715DC790E46C4CBFBE9C
+payment_link_extractor/gopay_checkout.py | 48A2474772254AA2BF2DDB174D6AEDFE48D067AE911AC4A3E616B949E4B86992 | 39D11F7F055360565CC045BCD6429CAAB02339D416642084F81F73B961754F91
+payment_link_extractor/gopay_cs_live.py | 88A25311740E39302CA0885C63DCCBA624310DE3E3BE46CFADEA48B89A17311C | 09F962B7F047A6F71EDEAA7F7558C4FEE4F80CD79B75FA066D8D5BE5C7947E33
+payment_link_extractor/gopay_sentinel_playwright.py | FE454829DA9D7F26CC09EACB7CAFF0C6347F3535A980BDBCD4697AD8A985DAEB | 00E6B6F5A1B28F97F8E443182C404766D2CF686108673310989DF6A81372448A
+payment_link_extractor/gopay_transport.py | F7C33F44CFAC5CD1A3098CBDBF3F1CFC30FEE465346A383AC1535DBD7469EA72 | 9B723833EABEF37EC90CDBF635DAB704CC2D4BC7CBCAC0A65A76094A88DF4C51
+tests/test_gopay_browser_session_material.py | 3906BA14FD06AE4BD28794597A91CC0E342FA32AB72D4C0A27ECBAB3B0A7DA23 | 2924EF5AA0DE578300393D9B38C591C1B1C595962416937FE024145E39EB121B
+tests/test_gopay_isolated_optimization.py | DF4C4274282423426B5AD103A464F3B6709D00DF2D120521A1D401D3CFDECE3A | 56889D2FE8090674BD32539FE02C0110D8A31115276BA312FA9DFF6FAE2C50E1
+tests/test_gopay_live_canary.py | F49E3C4461909C07494AF57980DC25E311E131BAD4BD95C1E63A9492B16F4F81 | A447B183166FF53D0A28CD142F071B25FC047623FB1FA3DCEE7118381263858C
+tests/test_gopay_sentinel_playwright.py | 9BB46E4200FB63377CF6679EC912688B4889CAB1C5D240FC9DC2C531BA38DD21 | 889F1D9776E30DE8CEF8CCD51161245AA04E39664CA0147D199F4CB42B38AC61
+tools/gopay_live_canary.py | 5D87D4D9C9802C8922745BF44EE56F283D21B83964C6DBFACE8606F1E0B8736F | 2646243EEB8F31DF515A564325F283A4CB3A7D46B56DE80F4DBA12BA8DB1AB1A
+docs/2026-08-31_gopay-pay153-source-comparison.md | MISSING | 63DD56DD74E31CC2FD6014F3AFEC84F8545FA32E6F8CC255D2F52412291268E7
+
+BASELINE:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_playwright.py tests\test_gopay_browser_session_material.py tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_gopay_support.py tests\test_channel_isolation.py
+INPUT=main at 450994c99840ee039cf20b563a9e2e4661547ed4, before source modification
+LITERAL_OUTPUT=........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 0.53s
+EXIT_STATUS=0
+RESULT=PASS
+
+MODIFIED:
+COMMAND=.\.venv\Scripts\python.exe -m pytest -q tests\test_gopay_sentinel_playwright.py tests\test_gopay_browser_session_material.py tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_gopay_support.py tests\test_channel_isolation.py
+INPUT=final working tree with exact NextAuth parsing, stale-chunk cleanup, page-native binding states, bounded same-runtime retries, cookie-native bootstrap, Checkout guard, and approval-runtime guard
+LITERAL_OUTPUT=........................................................................ [ 80%]
+.................                                                        [100%]
+89 passed in 0.48s
+MODIFIED_BASELINE_COMMAND_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+MODIFIED_FULL_REPOSITORY:
+COMMAND=$env:PYTHONDONTWRITEBYTECODE='1'; .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+INPUT=final modified working tree
+LITERAL_OUTPUT=........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+......................................................                   [100%]
+270 passed in 1.74s
+FULL_TEST_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+ROLLBACK:
+COMMAND=C:\Program Files\Git\bin\bash.exe /c/Users/Administrator/Desktop/提链/artifacts/gopay-pay153-source-comparison-20260831/ROLLBACK.sh /c/Users/Administrator/Desktop/提链/artifacts-local/gopay-rollback-livecopy3-20260831 /c/Users/Administrator/Desktop/提链
+INPUT=separate temporary copy containing all 11 final modified/new files; source repository supplies baseline commit 450994c99840ee039cf20b563a9e2e4661547ed4
+LITERAL_OUTPUT=ROLLBACK_TARGET=/c/Users/Administrator/Desktop/提链/artifacts-local/gopay-rollback-livecopy3-20260831
+RESTORED_TRACKED_FILES=10
+REMOVED_NEW_FILES=1
+RESTORED_STATUS=PASS
+BEFORE_SHA256=00e6b6f5a1b28f97f8e443182c404766d2cf686108673310989df6a81372448a
+RESTORED_SHA256=fe454829da9d7f26cc09eacb7caff0c6347f3535a980bdbcd4697ad8a985daeb
+EXPECTED_SHA256=fe454829da9d7f26cc09eacb7caff0c6347f3535a980bdbcd4697ad8a985daeb
+HASH_MATCH=True
+ROLLBACK_SCRIPT_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+ROLLBACK_TEST:
+COMMAND=$env:PYTHONDONTWRITEBYTECODE='1'; C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests\test_gopay_sentinel_playwright.py tests\test_gopay_browser_session_material.py tests\test_gopay_isolated_optimization.py tests\test_extraction_full_retry.py tests\test_gopay_support.py tests\test_channel_isolation.py
+INPUT=C:\Users\Administrator\Desktop\提链\artifacts-local\gopay-rollback-livecopy3-20260831 after final ROLLBACK.sh
+LITERAL_OUTPUT=........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 0.78s
+ROLLBACK_TEST_EXIT=0
+EXIT_STATUS=0
+RESULT=PASS
+
+RESTORED_BEHAVIOR=The rollback copy no longer has exact-name parsing, cookie-only binding states, bounded probe retries, stale-session cleanup, or approval-runtime guard; all six baseline suites return their original 75-pass behavior.
+RESTORED_STATUS=CLEAN_FOR_CHANGED_PATHS
+LIVE_GOPAY_APPROVAL_VALIDATION=NOT_RUN; no new eligible AT with a matching logged-in browser session was supplied in this task.

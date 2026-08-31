@@ -1,0 +1,1465 @@
+diff --git a/docs/2026-08-31_gopay-pay153-source-comparison.md b/docs/2026-08-31_gopay-pay153-source-comparison.md
+new file mode 100644
+index 0000000..cce3475
+--- /dev/null
++++ b/docs/2026-08-31_gopay-pay153-source-comparison.md
+@@ -0,0 +1,200 @@
++# GoPay：pay153 外部源码对比与 blocked 定向修复
++
++## 结论
++
++本轮只审计了 `C:\Users\Administrator\Downloads\pay153-checkout-link-main` 中与
++GoPay 提链直接相关的代码，并与本站 GoPay 独立渠道实现及最近提交记录逐项比较。
++
++下载目录包含 pay153 的本地重实现，以及对闭源 cccy 前端/API 的黑盒探查资料；
++它不是 cccy 后端源码。其调试文档记录一次闭源 cccy 黑盒 job 的 Stripe confirm `10/10`
++成功、ChatGPT approve `10/10 blocked`，并没有给出本地 `opll_extractor` 跑通证据。
++因此不能把该目录的四段代理、approve 前换设备、空 JSON ping 或十次整链重建
++直接移植为成功方案。
++
++本站当前更接近真实成功 HAR。最近五个零元账号在不同修复组合下仍最终 blocked，
++而成功的浏览器样本同时具有匹配账号的 NextAuth 登录 Cookie、实时 deployment
++attestation 和连续 Cookie 演进。这个“同账号浏览器登录态”仍是最高概率、尚未用
++匹配账号完成 one-shot 实测的变量。
++
++本轮据此修复了一个实际校验漏洞：旧代码用 Bearer AT 请求 `/backend-api/me`，只能
++证明 AT 自己有效，却把结果误当成浏览器 Cookie 与 AT 同账号。新实现会独立执行
++cookie-only 身份核验，清除持久 profile 中陈旧的 NextAuth 分片；明确错号会在
++Checkout POST/commit 前终止，瞬时不可核验则在同 runtime 重试后返回可重试状态。
++
++## 外部项目中真正相关的 GoPay 文件
++
++| 文件 | GoPay 职责 |
++|---|---|
++| `app.py:2249-2360` | GoPay 分支、ID/IDR 固定策略、四段代理选择、调用桥接层 |
++| `opll_bridge.py:61-190` | 构造提链配置、进入整链重建、整理 `gopay_url` 结果 |
++| `opll_extractor/application.py:63-138,263-395` | 整链重建与 Checkout/Stripe 分发 |
++| `opll_extractor/checkout.py:131-332` | Checkout 创建、promo、checkout/update |
++| `opll_extractor/flows/cs_live.py:51-687` | Stripe init/Elements/billing/confirm、ChatGPT approve、redirect |
++| `opll_extractor/transport.py:88-307,740-815` | HTTP 会话、代理、Sentinel 子进程、approve 会话克隆 |
++| `opll_extractor/sentinel_browser.py:89-323` | 单次 Playwright Sentinel token 生成 |
++| `opll_extractor/providers/gopay.py:4-14` | GoPay/Midtrans 终态域名与 `gopay_url` 字段 |
++| `provider_checkout.py:295-425` | 外层默认账单生成；其 ID 回退存在混合 US/ID 地址问题 |
++| `docs/gopay-promo-debug-summary.md` | 对闭源 cccy 的黑盒 job 记录与本地改造说明 |
++
++外部目录没有 Git 元数据和测试目录。它的 GoPay provider 文件与本站
++`payment_link_extractor/providers/gopay.py` 的 SHA-256 完全一致：
++`49554EB3017250A82144543A5CCBFC32089AF3C39A33629D4809BE73F4E88D7C`。
++所以差别不在最终 Midtrans/GoPay 域名识别，而在 Checkout、浏览器登录态、Sentinel
++和 approve 编排。
++
++## 两边调用链
++
++### 外部下载目录
++
++```text
++app.py GoPay 分支
++→ opll_bridge.run_opll_extract
++→ extract_payment_link_with_rebuild(max_attempts=10)
++→ create_checkout（创建时内联 promo）
++→ checkout/update
++→ Stripe init / Elements
++→ provider_proxy 上的 Stripe billing / tax_region / confirm
++→ entry ChatGPT 会话上的 taxes / snapshot
++→ clone ChatGPT 会话并轮换 device/UA
++→ 手工 sentinel/ping
++→ checkout/approve
++→ 仍在 provider_proxy 上的 Stripe poll
++→ Midtrans/GoPay redirect
++```
++
++### 本站
++
++```text
++channels.py 的 gopay 独立注册项
++→ gopay_channel.extract_gopay_payment_link
++→ gopay_core.extract_gopay_payment_link
++→ check_coupon 资格预检
++→ 四字段 Checkout
++→ 同一持久 Playwright runtime 的第二次 checkout Sentinel init
++→ checkout/update 应用 promo
++→ Stripe init / Elements
++→ approval challenge 预取
++→ consumer lookup
++→ tax_region / snapshot / taxes / payment-page cadence
++→ Stripe confirm
++→ 同一 approval runtime token + Cookie + attestation
++→ checkout/approve
++→ Stripe poll
++→ Midtrans/GoPay redirect
++```
++
++## 关键差异
++
++| 环节 | 外部下载目录 | 本站判断 |
++|---|---|---|
++| 成功证据 | 文档中的闭源 cccy 黑盒 job 为 confirm 10/10、approve blocked 10/10；本地引擎无成功证据 | 有两份完整成功 HAR和一份新成功非零 HAR；零元账号仍需匹配登录态验证 |
++| Checkout promo | `checkout.py:143-153` 在创建正文内联 promo | 保留成功 HAR 的四字段创建正文，随后 update；不移植未证实的内联变体 |
++| 资格检测 | 主流程跳过独立 check_coupon | 本站先预检，未创建 Checkout 时可换资格代理，避免消耗一次机会 |
++| Sentinel 生命周期 | 每次子进程取 token，未持有 NextAuth/attestation | 持久 Playwright runtime/profile，`init → token` 连续 |
++| Approve | `cs_live.py:525-574` 新 device/UA + 空 JSON ping；approve 未生成匹配 proof | 同一 runtime/device，最终 token 后立即 approve，带 attestation、当前 Cookie和空 pending envelope |
++| 登录态 | `opll_extractor` 没有 NextAuth 或 deployment attestation 代码 | 精确解析并导入 NextAuth 分片及指定浏览器认证材料，跟踪 Cookie 演进并执行 readiness/binding gate |
++| 代理 | 外部尝试为四段选择不同代理字符串，但不保证不同真实出口，且 provider pool/options、Stripe poll 分段仍有缺口 | 支持显式四段；默认保持完整尝试连续，避免把代理变化误当已验证根因 |
++| 重试 | 最多 10 次重建，但 blocked 又被定义为内部 terminal | Checkout 真正提交后不再重建；资格/前置网络错误才换代理 |
++| 账单 | 外层 ID 不在默认 rows 中，可能形成 ID 国家配 US 城市/州 | `config.py:33,51` 为原生 IDR/Jakarta/DKI Jakarta 账单 |
++| 结果字段 | `gopay_url` + Midtrans/GoPay host | 与本站 provider 文件逐字节相同 |
++
++## 为什么外部代码不能解释本站 blocked
++
++1. 外部文档 `gopay-promo-debug-summary.md:97-103,174-180` 明确记录其调用的
++   cccy 黑盒 job 仍是 `10/10 blocked`，而非本地引擎成功。
++2. 同文档 `:107-125,182-197` 说明真正 cccy 后端闭源；下载目录由本地重实现和
++   黑盒探查产物组成。
++3. 外部 approve 在新设备上没有生成与新设备匹配的 approval proof，也没有本站已
++   对齐的 attestation、pending envelope 和同 runtime Cookie 连续性。
++4. 外部四段代理还存在 Sentinel token 出口记录仍指向 entry、provider pool 未完整
++   传入任务 options 等实现缺口。
++5. 外部默认 ID 账单会从 US row 回退，形成混合地址；本站的固定印尼账单更完整。
++
++## 本站最近 blocked 证据
++
++- `docs/2026-08-31_gopay-three-at-continuation-report.md:5-9,119-128`：三个零元账号
++  最终 blocked；新成功非零 HAR 同时有匹配 NextAuth、291 字符 attestation 与
++  Cookie 演进。
++- `docs/2026-08-31_gopay-two-at-risk-final-report.md:5-7,67-74,87-92`：另两个账号
++  最终 blocked；其中一个带实时 291 字符 attestation 仍 blocked，但缺匹配账号
++  NextAuth。
++- 最近提交已经逐项验证真实 Playwright、approval proof/ping、consumer lookup、
++  Stripe ID、tax cadence、设备轮换和 attestation 单项；这些都不是充分条件。
++
++因此结论是：匹配账号的完整浏览器登录态是最高优先级未验证变量，而不是已经确认的
++唯一根因。若 matched-cookie + fresh attestation 的 one-shot 仍 blocked，下一项受控
++实验应是让 protected Checkout/approve POST 在同一持久 Playwright context 内执行，
++而不是回退到外部项目的 curl + 空 ping 路径。
++
++## 本轮修复
++
++### 1. cookie-only 三态账号绑定
++
++`payment_link_extractor/gopay_sentinel_playwright.py:178-240,577-586,669-677`
++
++- 在已打开页面里以原生 `fetch` 发起不带 Authorization 的 `/backend-api/me`。
++- 只使用浏览器 Cookie，并与 AT 内 `expected_user_id` 比较。
++- 明确区分 `matched / mismatched / unavailable / identity_missing`；只有明确不同账号
++  才终态拒绝，网络/响应不可核验为 HTTP 503、`retryable=True`。
++- `unavailable` 在同一 browser runtime 内最多做三次有界重试；Checkout 页面导航、
++  Cookie 演进后会在 SDK init 前再次核验，不重建 Checkout。
++- Bearer AT 检查使用 `credentials=omit` 单独执行，不再冒充 Cookie 账号检查。
++
++### 2. 清理陈旧 NextAuth 分片
++
++`payment_link_extractor/auth.py:20-22,154-156`、
++`payment_link_extractor/gopay_sentinel_playwright.py:110-156,242-250`、
++`payment_link_extractor/gopay_transport.py:540-592`
++
++- NextAuth 名称统一只接受 unchunked 或数字 `.0/.1/...` 分片，拒绝 `.bad` 等后缀。
++- 导入新 NextAuth 时只清理旧的 session-token Cookie。
++- 清理仅针对 NextAuth session-token；其他 Cookie 保留，本轮不把它们判定为无关
++  或当作账号绑定凭据。
++- callback/CSRF 等辅助 Cookie 不会触发 NextAuth 清理，也不会被误设为 HttpOnly。
++- 避免新旧账号分片并存或旧高编号分片残留。
++- approval 切换显式代理时，优先采用当前 transport/browser 合并 Cookie 中的
++  NextAuth 分片与最新 attestation，不再退回任务最初导入的旧 seed。
++
++### 3. cookie-native 浏览器 bootstrap
++
++`payment_link_extractor/gopay_sentinel_playwright.py:254-287,509-548`
++
++- 检测到 NextAuth 浏览器登录态时，不再把 Bearer Authorization 和
++  `chatgpt-account-id` 作为 context-wide 页面 header。
++- 保留 device/session/language/build 与实时 attestation。
++- AT-only 显式实验仍保留原 bearer fallback，但生产 readiness 不会把它当成匹配的
++  NextAuth 登录态。
++- 显式开启 AT-only fallback 且没有导入 NextAuth 时，会先移除 profile 中陈旧的
++  NextAuth，避免旧登录态意外阻断 fallback。
++
++### 4. Checkout 前 fail-closed
++
++`payment_link_extractor/gopay_checkout.py:25-74,435-440`
++
++- 有 NextAuth Cookie 且 cookie-only 身份明确不匹配时返回 HTTP 412。
++- `failure_mode=browser_session_account_mismatch`、`retryable=False`。
++- 探针不可用返回 `browser_session_binding_unavailable`、HTTP 503、`retryable=True`；
++  AT 缺稳定 user id 返回独立 `access_token_identity_missing`。
++- Checkout commit callback 与 POST 都不会发生，避免把错账号登录态推进到最终 blocked。
++
++### 5. approval 新 runtime 再校验
++
++`payment_link_extractor/gopay_cs_live.py:93-156`
++
++- 显式 approval 代理创建的新 Playwright runtime 在 Stripe confirm/ChatGPT approve 前
++  再做 cookie-only 绑定校验。
++- 新 runtime 错号或不可核验时不发送最终 approve，避免把代理切换造成的会话丢失
++  表现成新的 `blocked`。
++
++### 6. 脱敏诊断
++
++- `payment_link_extractor/gopay_transport.py:1355-1472` 传播绑定状态、来源和布尔值。
++- `payment_link_extractor/gopay_cs_live.py:693-790` 在 blocked safe context 中记录状态。
++- `tools/gopay_live_canary.py:112-120` 输出独立错误类别，不输出 Cookie、AT 或账号值。
++
++## 验证边界
++
++本轮单元测试验证了请求头、Cookie 清理、匹配/错配判断、Checkout 前终止、blocked
++诊断和渠道隔离。测试不包含真实账号或代理，也不把 mock 通过描述为真实
++`approve=approved`。下一轮真实验证应使用一个新的 eligible AT，并保证实时浏览器
++登录的就是该账号；Checkout 只提交一次。
+diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
+index ed3d4e0..9e3bd36 100644
+--- a/payment_link_extractor/auth.py
++++ b/payment_link_extractor/auth.py
+@@ -17,6 +17,9 @@ _SESSION_TOKEN_KEYS = {
+     "securenextauthsessiontoken",
+ }
+ _NEXTAUTH_COOKIE_PREFIX = "__Secure-next-auth.session-token"
++NEXTAUTH_SESSION_COOKIE_PATTERN = re.compile(
++    r"^__Secure-next-auth\.session-token(?:\.\d+)?$"
++)
+ _ATTESTATION_KEYS = {
+     "gopay_deployment_attestation",
+     "deployment_attestation",
+@@ -148,6 +151,11 @@ def extract_session_token(raw: Any) -> str:
+     return _find_session_token(value)
+
+
++def is_nextauth_session_cookie_name(value: Any) -> bool:
++    """Return whether a cookie is the exact token or a numeric chunk."""
++    return bool(NEXTAUTH_SESSION_COOKIE_PATTERN.fullmatch(str(value or "").strip()))
++
++
+ def extract_nextauth_session_cookies(raw: Any) -> tuple[tuple[str, str], ...]:
+     """Extract exact NextAuth cookie names, including .0/.1 chunks."""
+     found: dict[str, str] = {}
+@@ -157,7 +165,7 @@ def extract_nextauth_session_cookies(raw: Any) -> tuple[tuple[str, str], ...]:
+             cookie_name = str(value.get("name") or "").strip()
+             cookie_value = value.get("value")
+             if (
+-                cookie_name.startswith(_NEXTAUTH_COOKIE_PREFIX)
++                is_nextauth_session_cookie_name(cookie_name)
+                 and isinstance(cookie_value, str)
+                 and cookie_value.strip()
+             ):
+@@ -165,7 +173,7 @@ def extract_nextauth_session_cookies(raw: Any) -> tuple[tuple[str, str], ...]:
+             for key, nested in value.items():
+                 selected = str(key or "").strip()
+                 if (
+-                    selected.startswith(_NEXTAUTH_COOKIE_PREFIX)
++                    is_nextauth_session_cookie_name(selected)
+                     and isinstance(nested, str)
+                     and nested.strip()
+                 ):
+diff --git a/payment_link_extractor/gopay_checkout.py b/payment_link_extractor/gopay_checkout.py
+index 008c1a1..7358111 100644
+--- a/payment_link_extractor/gopay_checkout.py
++++ b/payment_link_extractor/gopay_checkout.py
+@@ -6,6 +6,7 @@ import os
+ import re
+ from typing import Any, Callable
+
++from .auth import is_nextauth_session_cookie_name
+ from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
+ from .errors import ConfigurationError, ProtocolError
+ from .logging_utils import safe_log_text
+@@ -21,6 +22,60 @@ CHECKOUT_SESSION_ID_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
+ PUBLISHABLE_KEY_RE = re.compile(r"pk_live_[A-Za-z0-9]+")
+
+
++def require_gopay_browser_session_binding(
++    provider: Any,
++    *,
++    has_session_token: bool,
++    cookie_names: list[str] | tuple[str, ...] = (),
++    attestation_length: int = 0,
++) -> None:
++    """Fail before a protected mutation unless cookie identity is verified."""
++    if not has_session_token:
++        return
++    state = str(
++        getattr(provider, "_session_cookie_binding_state", "") or ""
++    ).strip().lower()
++    verified = bool(
++        getattr(provider, "_session_cookie_binding_verified", False)
++    )
++    if state in {"", "unverified"} and verified:
++        state = "matched"
++    if state == "matched":
++        return
++    safe_context = {
++        "cookie_names": list(cookie_names),
++        "attestation_length": int(attestation_length or 0),
++        "account_binding_verified": bool(
++            getattr(provider, "_account_binding_verified", False)
++        ),
++        "session_cookie_binding_verified": False,
++        "session_cookie_binding_state": state or "unverified",
++    }
++    if state == "mismatched":
++        error = ProtocolError(
++            412,
++            "GoPay browser session account does not match the access token",
++        )
++        error.failure_mode = "browser_session_account_mismatch"
++        error.retryable = False
++    elif state == "identity_missing":
++        error = ProtocolError(
++            401,
++            "GoPay access token is missing the browser user identity",
++        )
++        error.failure_mode = "access_token_identity_missing"
++        error.retryable = False
++    else:
++        error = ProtocolError(
++            503,
++            "GoPay browser session account verification is unavailable",
++        )
++        error.failure_mode = "browser_session_binding_unavailable"
++        error.retryable = True
++    error.safe_context = safe_context
++    raise error
++
++
+ class CheckoutCreateError(ProtocolError):
+     """Structured GoPay Checkout failure used by retry orchestration."""
+
+@@ -332,9 +387,7 @@ def create_checkout(
+             }
+         )
+         has_session_token = any(
+-            name == "__Secure-next-auth.session-token"
+-            or name.startswith("__Secure-next-auth.session-token.")
+-            for name in cookie_names
++            is_nextauth_session_cookie_name(name) for name in cookie_names
+         )
+         attestation_length = len(
+             str(
+@@ -379,6 +432,12 @@ def create_checkout(
+                 "allow_at_bound_browser": allow_at_bound_browser,
+             }
+             raise error
++        require_gopay_browser_session_binding(
++            provider,
++            has_session_token=has_session_token,
++            cookie_names=cookie_names,
++            attestation_length=attestation_length,
++        )
+     headers.update(sentinel_headers)
+     if commit_callback is not None:
+         commit_callback()
+diff --git a/payment_link_extractor/gopay_cs_live.py b/payment_link_extractor/gopay_cs_live.py
+index 72a6e86..318df9e 100644
+--- a/payment_link_extractor/gopay_cs_live.py
++++ b/payment_link_extractor/gopay_cs_live.py
+@@ -1,17 +1,19 @@
+ from __future__ import annotations
+
+-from typing import Callable
+-from typing import Any
++import os
++import random
++import time
++import uuid
++from typing import Any, Callable
+
++from .auth import is_nextauth_session_cookie_name
+ from .gopay_checkout import (
+     chatgpt_success_return_url,
+     merge_checkout_payload,
+     openai_checkout_email,
++    require_gopay_browser_session_binding,
+     update_checkout,
+ )
+-import random
+-import time
+-import uuid
+
+ from .config import (
+     DEFAULT_TIMEOUT,
+@@ -111,6 +113,46 @@ def prefetch_checkout_approval_proof(
+         referer=referer,
+         required=True,
+     )
++    provider = getattr(chatgpt, "openai_sentinel_provider", None)
++    cookie_header = str(getattr(provider, "_cookies", "") or "")
++    cookie_names = sorted(
++        {
++            item.split("=", 1)[0].strip()
++            for item in cookie_header.split(";")
++            if "=" in item and item.split("=", 1)[0].strip()
++        }
++    )
++    has_session_token = any(
++        is_nextauth_session_cookie_name(name) for name in cookie_names
++    )
++    attestation_length = len(str(getattr(provider, "_attestation", "") or ""))
++    allow_at_bound_browser = (
++        os.getenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", "false")
++        .strip()
++        .lower()
++        in {"1", "true", "on", "enabled", "yes"}
++        and bool(getattr(provider, "_account_binding_verified", False))
++    )
++    if (
++        not has_session_token or attestation_length < 64
++    ) and not allow_at_bound_browser:
++        error = ProtocolError(412, "GoPay approval browser session is incomplete")
++        error.failure_mode = "browser_session_incomplete"
++        error.retryable = False
++        error.safe_context = {
++            "cookie_names": cookie_names,
++            "attestation_length": attestation_length,
++            "account_binding_verified": bool(
++                getattr(provider, "_account_binding_verified", False)
++            ),
++        }
++        raise error
++    require_gopay_browser_session_binding(
++        provider,
++        has_session_token=has_session_token,
++        cookie_names=cookie_names,
++        attestation_length=attestation_length,
++    )
+
+
+ def cs_elements_session(
+@@ -718,6 +760,15 @@ def chatgpt_approve(chatgpt: Any, checkout: CheckoutData, log: Any | None) -> No
+             "account_binding_verified": bool(
+                 getattr(provider, "_account_binding_verified", False)
+             ),
++            "session_cookie_binding_verified": bool(
++                getattr(provider, "_session_cookie_binding_verified", False)
++            ),
++            "session_cookie_binding_state": str(
++                getattr(provider, "_session_cookie_binding_state", "") or ""
++            ),
++            "session_cookie_source": str(
++                getattr(provider, "_session_cookie_source", "") or ""
++            ),
+             "sdk_sha256": str(getattr(provider, "_sdk_sha256", "") or ""),
+             "challenge_shapes": list(getattr(provider, "_challenge_shapes", []) or []),
+             "prepare_events": list(
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index fc2d0ad..867c7ac 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -13,6 +13,11 @@ from pathlib import Path
+ from typing import Any, Coroutine
+ from urllib.parse import unquote, urlsplit
+
++from .auth import (
++    NEXTAUTH_SESSION_COOKIE_PATTERN,
++    is_nextauth_session_cookie_name,
++)
++
+ try:
+     from playwright.async_api import BrowserContext, Page, async_playwright
+ except ImportError:  # pragma: no cover - dependency is validated at runtime
+@@ -95,19 +100,69 @@ def _cookies_from_header(
+             "domain": ".chatgpt.com",
+             "path": "/",
+             "secure": True,
+-            "httpOnly": name.startswith("__Secure-next-auth.session-token"),
++            "httpOnly": is_nextauth_session_cookie_name(name),
+         }
+         for name, selected in values.items()
+         if name and selected
+     ]
+
+
++def _browser_session_cookies(
++    cookie_header: str,
++    device_id: str,
++    session_token: str,
++    session_cookies: tuple[tuple[str, str], ...],
++    *,
++    discard_nextauth: bool = False,
++) -> tuple[list[dict[str, Any]], bool, bool]:
++    """Merge browser cookies without re-importing stale NextAuth chunks."""
++    selected = tuple(session_cookies or ())
++    explicit_nextauth = bool(session_token) or any(
++        is_nextauth_session_cookie_name(name) for name, _value in selected
++    )
++    replace_nextauth = bool(explicit_nextauth or discard_nextauth)
++    cookies = _cookies_from_header(cookie_header, device_id, ())
++    if replace_nextauth:
++        cookies = [
++            item
++            for item in cookies
++            if not is_nextauth_session_cookie_name(item.get("name"))
++        ]
++    if selected:
++        for name, value in selected:
++            cookies.append(
++                {
++                    "name": str(name),
++                    "value": str(value),
++                    "domain": ".chatgpt.com",
++                    "path": "/",
++                    "secure": True,
++                    "httpOnly": is_nextauth_session_cookie_name(name),
++                }
++            )
++    if session_token and not any(
++        is_nextauth_session_cookie_name(name) for name, _value in selected
++    ):
++        cookies.append(
++            {
++                "name": "__Secure-next-auth.session-token",
++                "value": str(session_token),
++                "domain": ".chatgpt.com",
++                "path": "/",
++                "secure": True,
++                "httpOnly": True,
++            }
++        )
++    return cookies, replace_nextauth, explicit_nextauth
++
++
+ @dataclass
+ class _BrowserSession:
+     context: BrowserContext
+     page: Page
+     profile_path: Path
+     device_id: str
++    expected_user_id: str = ""
+     attestation: str = ""
+     request_events: list[dict[str, Any]] = field(default_factory=list)
+     latest_receipt: str = ""
+@@ -116,6 +171,116 @@ class _BrowserSession:
+     bootstrap_headers: dict[str, str] = field(default_factory=dict)
+     active_page_url: str = ""
+     account_binding_verified: bool = False
++    session_cookie_binding_verified: bool = False
++    session_cookie_binding_state: str = "unverified"
++
++
++async def _verify_session_cookie_binding(
++    page: Page,
++    expected_user_id: str,
++) -> str:
++    """Verify the imported browser login independently from the bearer AT.
++
++    A bearer-authenticated ``/backend-api/me`` request only proves that the AT
++    is valid. GoPay approval also depends on the NextAuth browser session, so
++    this browser-native probe sends cookies without an Authorization header.
++    It returns a state so network/response failures are not mislabeled as a
++    confirmed account mismatch.
++    """
++    expected = str(expected_user_id or "").strip()
++    if not expected:
++        return "identity_missing"
++    try:
++        state = await page.evaluate(
++            """async expected => {
++                try {
++                    const response = await fetch('/backend-api/me', {
++                        credentials: 'include',
++                        cache: 'no-store',
++                        headers: {accept: 'application/json'},
++                    });
++                    if (!response.ok) return 'unavailable';
++                    let payload;
++                    try { payload = await response.json(); }
++                    catch (_) { return 'unavailable'; }
++                    const actual = String(payload?.id || '');
++                    if (!actual) return 'unavailable';
++                    return actual === expected ? 'matched' : 'mismatched';
++                } catch (_) {
++                    return 'unavailable';
++                }
++            }""",
++            expected,
++        )
++    except Exception:
++        return "unavailable"
++    normalized = str(state or "").strip().lower()
++    if normalized in {"matched", "mismatched"}:
++        return normalized
++    return "unavailable"
++
++
++async def _verify_session_cookie_binding_with_retry(
++    page: Page,
++    expected_user_id: str,
++    *,
++    cookie_backed: bool,
++    attempts: int = 3,
++    delay_seconds: float = 0.2,
++) -> str:
++    """Retry only inconclusive probes inside the same browser runtime."""
++    budget = max(1, min(4, int(attempts))) if cookie_backed else 1
++    state = "unavailable"
++    for attempt in range(budget):
++        state = await _verify_session_cookie_binding(page, expected_user_id)
++        if state != "unavailable" or attempt + 1 >= budget:
++            return state
++        await asyncio.sleep(max(0.0, float(delay_seconds)) * (attempt + 1))
++    return state
++
++
++async def _replace_imported_session_cookies(
++    context: BrowserContext,
++    cookies: list[dict[str, Any]],
++    *,
++    replace_nextauth: bool,
++) -> None:
++    """Replace stale NextAuth chunks while preserving unrelated profile state."""
++    if replace_nextauth:
++        await context.clear_cookies(name=NEXTAUTH_SESSION_COOKIE_PATTERN)
++    await context.add_cookies(cookies)
++
++
++def _bootstrap_headers(
++    *,
++    access_token: str,
++    account_id: str,
++    device_id: str,
++    session_id: str,
++    language: str,
++    attestation: str,
++    cookie_backed: bool,
++) -> dict[str, str]:
++    """Build page headers without leaking bearer identity into cookie sessions."""
++    headers = {
++        "oai-device-id": device_id,
++        "oai-session-id": session_id,
++        "oai-language": language,
++        "oai-client-build-number": os.getenv(
++            "OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"
++        ),
++        "oai-client-version": os.getenv(
++            "OPLL_OAI_CLIENT_VERSION",
++            "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
++        ),
++    }
++    if not cookie_backed:
++        headers["Authorization"] = f"Bearer {access_token}"
++        if account_id:
++            headers["chatgpt-account-id"] = account_id
++    if attestation:
++        headers["oai-web-deployment-attestation"] = attestation
++    return headers
+
+
+ class PersistentPlaywrightDaemon:
+@@ -343,6 +508,7 @@ class PersistentPlaywrightDaemon:
+             page=page,
+             profile_path=profile_path,
+             device_id=device_id,
++            expected_user_id=str(expected_user_id or "").strip(),
+             attestation=str(deployment_attestation or "").strip(),
+         )
+         self._sessions[runtime_id] = session
+@@ -354,47 +520,40 @@ class PersistentPlaywrightDaemon:
+             "response",
+             lambda response: asyncio.create_task(self._capture_response(runtime_id, response)),
+         )
+-        cookies = _cookies_from_header(
++        explicit_nextauth = bool(session_token) or any(
++            is_nextauth_session_cookie_name(name)
++            for name, _value in tuple(session_cookies or ())
++        )
++        allow_at_bound_browser = _enabled(
++            os.getenv("OPLL_GOPAY_ALLOW_AT_BOUND_BROWSER", ""),
++            default=False,
++        )
++        cookies, replace_nextauth, explicit_nextauth = _browser_session_cookies(
+             cookie_header,
+             device_id,
++            session_token,
+             tuple(session_cookies or ()),
++            discard_nextauth=bool(allow_at_bound_browser and not explicit_nextauth),
++        )
++        await _replace_imported_session_cookies(
++            context,
++            cookies,
++            replace_nextauth=replace_nextauth,
++        )
++        current_cookies = await context.cookies(CHATGPT_ORIGIN)
++        cookie_backed = any(
++            is_nextauth_session_cookie_name(item.get("name"))
++            for item in current_cookies
++        )
++        bootstrap_headers = _bootstrap_headers(
++            access_token=access_token,
++            account_id=account_id,
++            device_id=device_id,
++            session_id=session_id,
++            language=language,
++            attestation=session.attestation,
++            cookie_backed=cookie_backed,
+         )
+-        if session_token:
+-            cookies = [
+-                item
+-                for item in cookies
+-                if item["name"] != "__Secure-next-auth.session-token"
+-            ]
+-            cookies.append(
+-                {
+-                    "name": "__Secure-next-auth.session-token",
+-                    "value": session_token,
+-                    "domain": ".chatgpt.com",
+-                    "path": "/",
+-                    "secure": True,
+-                    "httpOnly": True,
+-                }
+-            )
+-        await context.add_cookies(cookies)
+-        bootstrap_headers = {
+-            "Authorization": f"Bearer {access_token}",
+-            "oai-device-id": device_id,
+-            "oai-session-id": session_id,
+-            "oai-language": language,
+-            "oai-client-build-number": os.getenv(
+-                "OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"
+-            ),
+-            "oai-client-version": os.getenv(
+-                "OPLL_OAI_CLIENT_VERSION",
+-                "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+-            ),
+-        }
+-        if account_id:
+-            bootstrap_headers["chatgpt-account-id"] = account_id
+-        if session.attestation:
+-            bootstrap_headers[
+-                "oai-web-deployment-attestation"
+-            ] = session.attestation
+         session.bootstrap_headers = dict(bootstrap_headers)
+         await context.set_extra_http_headers(bootstrap_headers)
+         try:
+@@ -409,12 +568,29 @@ class PersistentPlaywrightDaemon:
+             await context.set_extra_http_headers({})
+         await self._install_sdk(page)
+         await self._capture_page_attestation(session)
++        try:
++            binding_attempts = int(
++                os.getenv("OPLL_GOPAY_BINDING_PROBE_ATTEMPTS", "3")
++            )
++        except ValueError:
++            binding_attempts = 3
++        session.session_cookie_binding_state = (
++            await _verify_session_cookie_binding_with_retry(
++                page,
++                expected_user_id,
++                cookie_backed=cookie_backed,
++                attempts=binding_attempts,
++            )
++        )
++        session.session_cookie_binding_verified = (
++            session.session_cookie_binding_state == "matched"
++        )
+         try:
+             binding = await page.evaluate(
+                 """async ({token, expected}) => {
+                     try {
+                         const response = await fetch('/backend-api/me', {
+-                            credentials: 'include',
++                            credentials: 'omit',
+                             headers: {
+                                 accept: 'application/json',
+                                 authorization: `Bearer ${token}`,
+@@ -446,6 +622,15 @@ class PersistentPlaywrightDaemon:
+             "browser_channel": browser_channel or "bundled-chromium",
+             "browser_version": browser_version,
+             "account_binding_verified": session.account_binding_verified,
++            "session_cookie_binding_verified": (
++                session.session_cookie_binding_verified
++            ),
++            "session_cookie_binding_state": session.session_cookie_binding_state,
++            "session_cookie_source": (
++                "explicit"
++                if explicit_nextauth
++                else "profile" if cookie_backed else "none"
++            ),
+         }
+
+     def open_session(self, **kwargs: Any) -> dict[str, Any]:
+@@ -481,6 +666,16 @@ class PersistentPlaywrightDaemon:
+                 await session.context.set_extra_http_headers({})
+             await self._install_sdk(session.page)
+             await self._capture_page_attestation(session)
++            session.session_cookie_binding_state = (
++                await _verify_session_cookie_binding_with_retry(
++                    session.page,
++                    session.expected_user_id,
++                    cookie_backed=True,
++                )
++            )
++            session.session_cookie_binding_verified = (
++                session.session_cookie_binding_state == "matched"
++            )
+             # Auth-only AT sessions may be redirected while the checkout shell
+             # loads. Restore the exact Checkout URL before SDK.init so its
+             # zero-length ping carries the HAR checkout Referer.
+@@ -515,6 +710,10 @@ class PersistentPlaywrightDaemon:
+             "request_events": session.request_events[before:],
+             "challenge_shapes": list(session.challenge_shapes),
+             "sdk_sha256": session.sdk_sha256,
++            "session_cookie_binding_verified": (
++                session.session_cookie_binding_verified
++            ),
++            "session_cookie_binding_state": session.session_cookie_binding_state,
+         }
+
+     def prepare_flow(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+@@ -552,6 +751,10 @@ class PersistentPlaywrightDaemon:
+             "elapsed_ms": elapsed_ms,
+             "challenge_shapes": list(session.challenge_shapes),
+             "sdk_sha256": session.sdk_sha256,
++            "session_cookie_binding_verified": (
++                session.session_cookie_binding_verified
++            ),
++            "session_cookie_binding_state": session.session_cookie_binding_state,
+         }
+
+     def token(self, runtime_id: str, flow: str, page_url: str) -> dict[str, Any]:
+@@ -574,7 +777,13 @@ class PersistentPlaywrightDaemon:
+             ]
+         )
+         cookies = await session.context.cookies(CHATGPT_ORIGIN)
+-        return {"cookie_header": _cookie_header(cookies)}
++        return {
++            "cookie_header": _cookie_header(cookies),
++            "session_cookie_binding_verified": (
++                session.session_cookie_binding_verified
++            ),
++            "session_cookie_binding_state": session.session_cookie_binding_state,
++        }
+
+     def set_cookie(
+         self, runtime_id: str, name: str, value: str, http_only: bool
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 68c8ad4..f629047 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -21,7 +21,7 @@ try:
+ except ImportError:  # pragma: no cover - installation issue handled at runtime
+     requests = None  # type: ignore
+
+-from .auth import account_id, account_user_id
++from .auth import account_id, account_user_id, is_nextauth_session_cookie_name
+ from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
+ from .errors import ConfigurationError, NetworkError, ProtocolError
+ from .logging_utils import compact_url, emit_log, safe_log_text
+@@ -537,6 +537,22 @@ def rotate_openai_approval_context(
+         close()
+     set_proxy_url(session, normalized)
+     session.openai_proxy = normalized
++    current_session_cookies = _nextauth_session_cookies(
++        merged_session_cookie_header(session)
++    )
++    seed_session_cookies = current_session_cookies or tuple(
++        config.gopay_session_cookies or ()
++    )
++    seed_session_token = (
++        ""
++        if current_session_cookies
++        else str(getattr(session, "openai_session_token", "") or config.session_token)
++    )
++    current_attestation = str(
++        getattr(session, "headers", {}).get("oai-web-deployment-attestation")
++        or config.gopay_deployment_attestation
++        or ""
++    )
+     provider = PlaywrightSentinelProvider(
+         access_token=str(getattr(session, "openai_access_token", "") or config.access_token),
+         device_id=str(getattr(session, "openai_device_id", "") or ""),
+@@ -544,11 +560,9 @@ def rotate_openai_approval_context(
+         user_agent=str(getattr(session, "openai_user_agent", "") or DEFAULT_USER_AGENT),
+         proxy=normalized,
+         transport_session=session,
+-        session_token=str(getattr(session, "openai_session_token", "") or config.session_token),
+-        session_cookies=tuple(config.gopay_session_cookies or ()),
+-        deployment_attestation=str(
+-            config.gopay_deployment_attestation or ""
+-        ),
++        session_token=seed_session_token,
++        session_cookies=seed_session_cookies,
++        deployment_attestation=current_attestation,
+         language=str(getattr(session, "openai_language", "") or country_locale(config)),
+         timezone=str(getattr(session, "openai_timezone", "") or country_timezone(config)),
+     )
+@@ -557,6 +571,27 @@ def rotate_openai_approval_context(
+     return True
+
+
++def _nextauth_session_cookies(cookie_header: str) -> tuple[tuple[str, str], ...]:
++    """Extract exact current NextAuth chunks from a browser Cookie header."""
++    found: dict[str, str] = {}
++    prefix = "__Secure-next-auth.session-token"
++    for part in str(cookie_header or "").split(";"):
++        name, separator, value = part.strip().partition("=")
++        if separator and is_nextauth_session_cookie_name(name) and value:
++            found[name] = value
++
++    def order(item: tuple[str, str]) -> tuple[int, int, str]:
++        name = item[0]
++        if name == prefix:
++            return (0, 0, name)
++        suffix = name[len(prefix) :]
++        if suffix.startswith(".") and suffix[1:].isdigit():
++            return (1, int(suffix[1:]), name)
++        return (2, 0, name)
++
++    return tuple(sorted(found.items(), key=order))
++
++
+ def _session_cookie_value(session: Any, name: str) -> str:
+     target = str(name or "").strip()
+     headers = getattr(session, "headers", None)
+@@ -1366,6 +1401,9 @@ class PlaywrightSentinelProvider:
+         self._challenge_shapes: list[dict[str, Any]] = []
+         self._sdk_sha256 = ""
+         self._account_binding_verified = False
++        self._session_cookie_binding_verified = False
++        self._session_cookie_binding_state = "unverified"
++        self._session_cookie_source = "none"
+         self._started = False
+         self._closed = False
+         self._failed = False
+@@ -1416,6 +1454,21 @@ class PlaywrightSentinelProvider:
+             self._account_binding_verified = bool(
+                 result.get("account_binding_verified")
+             )
++        if "session_cookie_binding_verified" in result:
++            self._session_cookie_binding_verified = bool(
++                result.get("session_cookie_binding_verified")
++            )
++        if "session_cookie_binding_state" in result:
++            self._session_cookie_binding_state = str(
++                result.get("session_cookie_binding_state") or "unverified"
++            )
++            self._session_cookie_binding_verified = (
++                self._session_cookie_binding_state == "matched"
++            )
++        if "session_cookie_source" in result:
++            self._session_cookie_source = str(
++                result.get("session_cookie_source") or "none"
++            )
+         headers = getattr(self.transport_session, "headers", None)
+         if headers is not None:
+             if self._cookies:
+diff --git a/tests/test_gopay_browser_session_material.py b/tests/test_gopay_browser_session_material.py
+index ef0c84f..6de1286 100644
+--- a/tests/test_gopay_browser_session_material.py
++++ b/tests/test_gopay_browser_session_material.py
+@@ -57,6 +57,27 @@ def test_extracts_exact_nextauth_chunks_and_attestation() -> None:
+     assert auth.extract_deployment_attestation(payload) == "a" * 291
+
+
++def test_nextauth_cookie_names_require_numeric_chunks() -> None:
++    assert auth.is_nextauth_session_cookie_name(
++        "__Secure-next-auth.session-token"
++    )
++    assert auth.is_nextauth_session_cookie_name(
++        "__Secure-next-auth.session-token.0"
++    )
++    assert auth.is_nextauth_session_cookie_name(
++        "__Secure-next-auth.session-token.12"
++    )
++    assert not auth.is_nextauth_session_cookie_name(
++        "__Secure-next-auth.session-token.bad"
++    )
++    assert auth.extract_nextauth_session_cookies(
++        {
++            "__Secure-next-auth.session-token.bad": "ignored",
++            "__Secure-next-auth.session-token.1": "accepted",
++        }
++    ) == (("__Secure-next-auth.session-token.1", "accepted"),)
++
++
+ def test_playwright_cookie_import_preserves_chunks_and_overrides_device() -> None:
+     cookies = gopay_sentinel_playwright._cookies_from_header(
+         "oai-did=stale; __cf_bm=cloudflare",
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index dfb7660..7d2ca46 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -135,6 +135,8 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
+                 "cookie_header": "oai-did=device-fixture",
+                 "latest_receipt": "receipt-fixture",
+                 "profile_path": "C:/runtime/profile",
++                "session_cookie_binding_state": "matched",
++                "session_cookie_source": "explicit",
+             }
+
+         def prepare_flow(self, runtime_id, flow, page_url):
+@@ -200,6 +202,9 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
+
+     assert headers["OpenAI-Sentinel-Token"] == "proof-fixture"
+     assert len(headers["oai-web-deployment-attestation"]) == 291
++    assert provider._session_cookie_binding_verified is True
++    assert provider._session_cookie_binding_state == "matched"
++    assert provider._session_cookie_source == "explicit"
+     assert session.openai_sentinel_prepare_events == [
+         {"path": "/backend-api/sentinel/req", "body_length": 700},
+         {"path": "/backend-api/sentinel/ping", "body_length": 0},
+@@ -510,6 +515,8 @@ def test_gopay_checkout_starts_with_successful_har_body(monkeypatch) -> None:
+     captured: dict[str, object] = {}
+
+     class Provider:
++        _session_cookie_binding_verified = True
++
+         def headers(self, _flow, **_kwargs):
+             return {
+                 "OpenAI-Sentinel-Token": "proof-fixture",
+@@ -601,6 +608,86 @@ def test_gopay_checkout_readiness_rejects_missing_browser_session_before_commit(
+     assert committed == []
+
+
++def test_gopay_checkout_rejects_browser_session_from_a_different_account(
++    monkeypatch,
++) -> None:
++    class Provider:
++        _account_binding_verified = True
++        # The explicit state must remain authoritative over a stale legacy bool.
++        _session_cookie_binding_verified = True
++        _session_cookie_binding_state = "mismatched"
++
++        def headers(self, _flow, **_kwargs):
++            return {
++                "OpenAI-Sentinel-Token": "proof-fixture",
++                "oai-web-deployment-attestation": "a" * 291,
++                "Cookie": (
++                    "oai-did=device-fixture; "
++                    "__Secure-next-auth.session-token.0=session-fixture"
++                ),
++            }
++
++    session = SimpleNamespace(openai_sentinel_provider=Provider())
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    monkeypatch.setattr(
++        gopay_checkout,
++        "stage_http_request",
++        lambda *_args, **_kwargs: pytest.fail("Checkout POST must not be sent"),
++    )
++    with pytest.raises(Exception, match="does not match") as caught:
++        gopay_checkout.create_checkout(config, session, None)
++    assert getattr(caught.value, "status_code", None) == 412
++    assert (
++        getattr(caught.value, "failure_mode", "")
++        == "browser_session_account_mismatch"
++    )
++    assert getattr(caught.value, "retryable", None) is False
++
++
++def test_gopay_checkout_treats_binding_probe_outage_as_retryable(
++    monkeypatch,
++) -> None:
++    class Provider:
++        _account_binding_verified = True
++        _session_cookie_binding_verified = False
++        _session_cookie_binding_state = "unavailable"
++
++        def headers(self, _flow, **_kwargs):
++            return {
++                "OpenAI-Sentinel-Token": "proof-fixture",
++                "oai-web-deployment-attestation": "a" * 291,
++                "Cookie": "__Secure-next-auth.session-token.0=session-fixture",
++            }
++
++    session = SimpleNamespace(openai_sentinel_provider=Provider())
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    monkeypatch.setattr(
++        gopay_checkout,
++        "stage_http_request",
++        lambda *_args, **_kwargs: pytest.fail("Checkout POST must not be sent"),
++    )
++    with pytest.raises(Exception, match="verification is unavailable") as caught:
++        gopay_checkout.create_checkout(config, session, None)
++    assert getattr(caught.value, "status_code", None) == 503
++    assert (
++        getattr(caught.value, "failure_mode", "")
++        == "browser_session_binding_unavailable"
++    )
++    assert getattr(caught.value, "retryable", None) is True
++
++
+ def test_gopay_sentinel_init_script_uses_dedicated_assets() -> None:
+     script = gopay_transport.BrowserSentinelProvider._build_sentinel_init_script()
+     assert "window.SentinelSDK = SentinelSDK" in script
+@@ -775,6 +862,13 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) ->
+     class Provider:
+         def __init__(self, owner):
+             self.owner = owner
++            self._cookies = (
++                "__Secure-next-auth.session-token.0=session-zero; "
++                "__Secure-next-auth.session-token.1=session-one"
++            )
++            self._attestation = "a" * 291
++            self._session_cookie_binding_verified = True
++            self._session_cookie_binding_state = "matched"
+
+         def headers(self, flow, **_kwargs):
+             events.append(f"headers:{flow}")
+@@ -830,6 +924,44 @@ def test_gopay_approve_requests_checkout_session_approval_proof(monkeypatch) ->
+     assert "_gopay_checkout_approval_headers" not in checkout
+
+
++def test_gopay_approval_context_rejects_mismatched_browser_before_confirm() -> None:
++    class Provider:
++        _cookies = (
++            "__Secure-next-auth.session-token.0=session-zero; "
++            "__Secure-next-auth.session-token.1=session-one"
++        )
++        _attestation = "a" * 291
++        _account_binding_verified = True
++        _session_cookie_binding_verified = False
++        _session_cookie_binding_state = "mismatched"
++
++        def prepare_flow(self, **_kwargs):
++            return None
++
++    session = SimpleNamespace(
++        openai_sentinel_provider=Provider(),
++        openai_proxy="http://proxy.example:8080",
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++        gopay_approve_proxy="http://proxy.example:8080",
++    )
++    checkout = {"cs_id": "cs_live_fixture", "billing_country": "ID"}
++    with pytest.raises(Exception, match="does not match") as caught:
++        gopay_cs_live.prefetch_checkout_approval_proof(
++            config, session, checkout, None
++        )
++    assert (
++        getattr(caught.value, "failure_mode", "")
++        == "browser_session_account_mismatch"
++    )
++    assert getattr(caught.value, "retryable", None) is False
++
++
+ def test_gopay_taxes_does_not_mint_an_extra_sentinel_proof(monkeypatch) -> None:
+     captured: dict[str, object] = {}
+
+@@ -1246,7 +1378,7 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
+     }
+
+     closed: list[bool] = []
+-    created: list[str] = []
++    created: list[dict[str, object]] = []
+
+     class OldProvider:
+         def close(self):
+@@ -1254,7 +1386,7 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
+
+     class NewProvider:
+         def __init__(self, **kwargs):
+-            created.append(kwargs["proxy"])
++            created.append(kwargs)
+
+     monkeypatch.setattr(gopay_transport, "PlaywrightSentinelProvider", NewProvider)
+     chatgpt = SimpleNamespace(
+@@ -1267,14 +1399,27 @@ def test_gopay_provider_and_approval_segments_use_their_sticky_proxies(monkeypat
+         openai_session_token="",
+         openai_language="id-ID",
+         openai_timezone="Asia/Jakarta",
+-        headers={},
++        headers={
++            "Cookie": (
++                "oai-did=device-fixture; "
++                "__Secure-next-auth.session-token.0=current-zero; "
++                "__Secure-next-auth.session-token.1=current-one"
++            ),
++            "oai-web-deployment-attestation": "current-attestation",
++        },
+         proxies={},
+     )
+     assert gopay_transport.rotate_openai_approval_context(
+         chatgpt, config, config.gopay_approve_proxy
+     ) is True
+     assert closed == [True]
+-    assert created == ["http://d.example:8080"]
++    assert [item["proxy"] for item in created] == ["http://d.example:8080"]
++    assert created[0]["session_cookies"] == (
++        ("__Secure-next-auth.session-token.0", "current-zero"),
++        ("__Secure-next-auth.session-token.1", "current-one"),
++    )
++    assert created[0]["session_token"] == ""
++    assert created[0]["deployment_attestation"] == "current-attestation"
+     assert chatgpt.proxies == {
+         "http": "http://d.example:8080",
+         "https": "http://d.example:8080",
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+index f953d20..f6c6dbe 100644
+--- a/tests/test_gopay_live_canary.py
++++ b/tests/test_gopay_live_canary.py
+@@ -108,6 +108,10 @@ def test_canary_loads_runtime_browser_state_without_exposing_values(
+                         "name": "__Secure-next-auth.session-token.1",
+                         "value": "chunk-one",
+                     },
++                    {
++                        "name": "__Secure-next-auth.session-token.bad",
++                        "value": "must-be-ignored",
++                    },
+                     {"name": "__cf_bm", "value": "must-be-ignored"},
+                 ],
+                 "oai-web-deployment-attestation": "a" * 291,
+@@ -137,3 +141,22 @@ def test_canary_accepts_attestation_only_runtime_state(tmp_path: Path) -> None:
+     cookies, attestation = MODULE.load_browser_state(state)
+     assert cookies == ()
+     assert attestation == "a" * 291
++
++
++def test_canary_classifies_mismatched_browser_account() -> None:
++    error = RuntimeError(
++        "GoPay browser session account does not match the access token"
++    )
++    error.failure_mode = "browser_session_account_mismatch"
++    result = MODULE._safe_error(error)
++    assert result["category"] == "browser_session_account_mismatch"
++    assert result["failure_mode"] == "browser_session_account_mismatch"
++
++
++def test_canary_classifies_browser_binding_outage() -> None:
++    error = RuntimeError(
++        "GoPay browser session account verification is unavailable"
++    )
++    error.failure_mode = "browser_session_binding_unavailable"
++    result = MODULE._safe_error(error)
++    assert result["category"] == "browser_session_binding_unavailable"
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 2d711ea..8f44d04 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+
++import asyncio
+ from pathlib import Path
++from types import SimpleNamespace
+
+ from payment_link_extractor import gopay_sentinel_playwright as sentinel
+
+@@ -35,3 +37,178 @@ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
+     assert '"headless": headless' in source
+     assert '"chrome"' in source
+     assert "jsdom" not in source.lower()
++
++
++def test_session_cookie_binding_probe_uses_cookies_without_bearer_header() -> None:
++    calls: list[dict[str, object]] = []
++
++    class Page:
++        async def evaluate(self, expression, expected):
++            calls.append({"expression": expression, "expected": expected})
++            return "matched"
++
++    page = Page()
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding(page, "user-fixture")
++    ) == "matched"
++    assert calls[0]["expected"] == "user-fixture"
++    assert "credentials: 'include'" in calls[0]["expression"]
++    assert "authorization" not in calls[0]["expression"].lower()
++
++
++def test_session_cookie_binding_probe_rejects_a_different_user() -> None:
++    class Page:
++        async def evaluate(self, *_args):
++            return "mismatched"
++
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding(Page(), "expected-user")
++    ) == "mismatched"
++
++
++def test_session_cookie_binding_probe_keeps_unavailable_distinct() -> None:
++    class Page:
++        async def evaluate(self, *_args):
++            raise TimeoutError("fixture timeout")
++
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding(Page(), "expected-user")
++    ) == "unavailable"
++    assert asyncio.run(
++        sentinel._verify_session_cookie_binding(Page(), "")
++    ) == "identity_missing"
++
++
++def test_session_cookie_binding_retries_unavailable_in_same_runtime() -> None:
++    class Page:
++        def __init__(self):
++            self.states = iter(("unavailable", "unavailable", "matched"))
++            self.calls = 0
++
++        async def evaluate(self, *_args):
++            self.calls += 1
++            return next(self.states)
++
++    page = Page()
++    state = asyncio.run(
++        sentinel._verify_session_cookie_binding_with_retry(
++            page,
++            "expected-user",
++            cookie_backed=True,
++            attempts=3,
++            delay_seconds=0,
++        )
++    )
++    assert state == "matched"
++    assert page.calls == 3
++
++
++def test_imported_session_cookies_replace_stale_nextauth_chunks_only() -> None:
++    events: list[tuple[str, object]] = []
++
++    class Context:
++        async def clear_cookies(self, **kwargs):
++            events.append(("clear", kwargs["name"]))
++
++        async def add_cookies(self, cookies):
++            events.append(("add", cookies))
++
++    imported = [
++        {
++            "name": "__Secure-next-auth.session-token.0",
++            "value": "chunk-zero",
++            "domain": ".chatgpt.com",
++            "path": "/",
++        }
++    ]
++    asyncio.run(
++        sentinel._replace_imported_session_cookies(
++            Context(), imported, replace_nextauth=True
++        )
++    )
++    assert [name for name, _value in events] == ["clear", "add"]
++    assert events[0][1].match("__Secure-next-auth.session-token.2")
++    assert not events[0][1].match("__cf_bm")
++    assert events[1][1] == imported
++
++
++def test_explicit_nextauth_chunks_do_not_reimport_stale_header_chunks() -> None:
++    cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
++        (
++            "__cf_bm=cloudflare; "
++            "__Secure-next-auth.session-token.0=stale-zero; "
++            "__Secure-next-auth.session-token.2=stale-two"
++        ),
++        "device-fixture",
++        "",
++        (
++            ("__Secure-next-auth.session-token.0", "fresh-zero"),
++            ("__Secure-next-auth.session-token.1", "fresh-one"),
++        ),
++    )
++    by_name = {item["name"]: item["value"] for item in cookies}
++    assert replace_nextauth is True
++    assert explicit_nextauth is True
++    assert by_name["__cf_bm"] == "cloudflare"
++    assert by_name["__Secure-next-auth.session-token.0"] == "fresh-zero"
++    assert by_name["__Secure-next-auth.session-token.1"] == "fresh-one"
++    assert "__Secure-next-auth.session-token.2" not in by_name
++
++
++def test_auxiliary_browser_cookies_do_not_replace_profile_nextauth() -> None:
++    cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
++        "__Secure-next-auth.session-token.0=profile-zero",
++        "device-fixture",
++        "",
++        (("__Secure-next-auth.callback-url", "callback"),),
++    )
++    by_name = {item["name"]: item for item in cookies}
++    assert replace_nextauth is False
++    assert explicit_nextauth is False
++    assert by_name["__Secure-next-auth.session-token.0"]["value"] == "profile-zero"
++    assert by_name["__Secure-next-auth.callback-url"]["httpOnly"] is False
++
++
++def test_at_bound_fallback_discards_stale_profile_nextauth() -> None:
++    cookies, replace_nextauth, explicit_nextauth = sentinel._browser_session_cookies(
++        "__Secure-next-auth.session-token.0=stale; __cf_bm=cloudflare",
++        "device-fixture",
++        "",
++        (),
++        discard_nextauth=True,
++    )
++    names = {item["name"] for item in cookies}
++    assert replace_nextauth is True
++    assert explicit_nextauth is False
++    assert "__Secure-next-auth.session-token.0" not in names
++    assert "__cf_bm" in names
++
++
++def test_cookie_backed_bootstrap_omits_bearer_and_account_headers() -> None:
++    headers = sentinel._bootstrap_headers(
++        access_token="token-fixture",
++        account_id="account-fixture",
++        device_id="device-fixture",
++        session_id="session-fixture",
++        language="id-ID",
++        attestation="a" * 291,
++        cookie_backed=True,
++    )
++    assert "Authorization" not in headers
++    assert "chatgpt-account-id" not in headers
++    assert headers["oai-device-id"] == "device-fixture"
++    assert len(headers["oai-web-deployment-attestation"]) == 291
++
++
++def test_at_only_bootstrap_keeps_explicit_bearer_fallback() -> None:
++    headers = sentinel._bootstrap_headers(
++        access_token="token-fixture",
++        account_id="account-fixture",
++        device_id="device-fixture",
++        session_id="session-fixture",
++        language="id-ID",
++        attestation="",
++        cookie_backed=False,
++    )
++    assert headers["Authorization"] == "Bearer token-fixture"
++    assert headers["chatgpt-account-id"] == "account-fixture"
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+index a4802d6..d681314 100644
+--- a/tools/gopay_live_canary.py
++++ b/tools/gopay_live_canary.py
+@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
+
+ from payment_link_extractor.gopay_core import extract_gopay_payment_link
+ from payment_link_extractor.gopay_transport import normalize_proxy_url
++from payment_link_extractor.auth import is_nextauth_session_cookie_name
+ from payment_link_extractor.models import ExtractionConfig
+
+
+@@ -86,7 +87,7 @@ def load_browser_state(path: Path | None) -> tuple[tuple[tuple[str, str], ...],
+         name = str(item.get("name") or "").strip()
+         value = str(item.get("value") or "").strip()
+         if (
+-            name.startswith("__Secure-next-auth.session-token")
++            is_nextauth_session_cookie_name(name)
+             or name in AUTH_COOKIE_NAMES
+         ) and value:
+             selected[name] = value
+@@ -108,7 +109,13 @@ def _safe_error(exc: BaseException) -> dict[str, Any]:
+     except (TypeError, ValueError):
+         status = None
+     message = str(exc).lower()
+-    if "browser checkout readiness" in message:
++    if "browser session account does not match" in message:
++        category = "browser_session_account_mismatch"
++    elif "browser session account verification is unavailable" in message:
++        category = "browser_session_binding_unavailable"
++    elif "access token is missing the browser user identity" in message:
++        category = "access_token_identity_missing"
++    elif "browser checkout readiness" in message:
+         category = "browser_session_incomplete"
+     elif "attestation" in message:
+         category = "attestation_missing"
