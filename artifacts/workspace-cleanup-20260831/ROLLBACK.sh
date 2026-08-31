@@ -3,7 +3,7 @@ set -euo pipefail
 TARGET="$1"
 SOURCE_REPO="$2"
 BASELINE="6b1a8cc80f01d632c2da47fb259f813a95e6ab6a"
-tracked_files=".env.example payment_link_extractor/gopay_sentinel_playwright.py tests/test_gopay_sentinel_playwright.py"
+tracked_files=".env.example payment_link_extractor/gopay_sentinel_playwright.py payment_link_extractor/sentinel_assets/sentinel_sdk.js tests/test_gopay_sentinel_playwright.py"
 new_files="docs/2026-08-31_workspace-cleanup-report.md"
 key_file="payment_link_extractor/gopay_sentinel_playwright.py"
 before_sha256="$(sha256sum "$TARGET/$key_file" | awk '{print $1}')"
