@@ -55,6 +55,11 @@ class TransportFactory(Protocol):
     def stripe(self, config: ExtractionConfig) -> Any: ...
 
 
+def _env_or_default(name: str, default: str) -> str:
+    """Treat blank .env entries as unset so HAR defaults remain active."""
+    return os.getenv(name, "").strip() or default
+
+
 def new_session() -> Any:
     if CurlCffiSession is not None:
         return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
@@ -677,8 +682,10 @@ class BrowserSentinelProvider:
                 # deployed checkout build below.  Keep both values overridable
                 # because the web client rotates them independently of the
                 # payment flow.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
-                "oai-client-version": os.getenv(
+                "oai-client-build-number": _env_or_default(
+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
+                ),
+                "oai-client-version": _env_or_default(
                     "OPLL_OAI_CLIENT_VERSION",
                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
@@ -786,12 +793,14 @@ class DefaultTransportFactory:
                 "oai-session-id": session_id,
                 # ChatGPT's API language is the browser UI locale; the
                 # country-specific Accept-Language remains separate above.
-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
+                "oai-language": _env_or_default("OPLL_OAI_LANGUAGE", "en-US"),
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
-                "oai-client-version": os.getenv(
+                "oai-client-build-number": _env_or_default(
+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
+                ),
+                "oai-client-version": _env_or_default(
                     "OPLL_OAI_CLIENT_VERSION",
                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),
@@ -805,12 +814,14 @@ class DefaultTransportFactory:
                     "OPLL_OAI_IS_CLIENT_OBSERVATION",
                     f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                 ),
-                "sec-ch-ua": os.getenv(
+                "sec-ch-ua": _env_or_default(
                     "OPLL_SEC_CH_UA",
                     '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
                 ),
                 "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
+                "sec-ch-ua-platform": _env_or_default(
+                    "OPLL_SEC_CH_UA_PLATFORM", '"Windows"'
+                ),
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
@@ -894,7 +905,7 @@ class DefaultTransportFactory:
         session = new_session()
         session.headers.update(
             {
-                "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
+                "User-Agent": _env_or_default("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
             }
         )

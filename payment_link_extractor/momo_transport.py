@@ -116,17 +116,19 @@ class MomoTransportFactory:
                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
-                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "en-US"),
+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
                 "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
-                ),
+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
+                ).strip()
+                or "9748354",
                 "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION",
-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
-                ),
+                    "OPLL_OAI_CLIENT_VERSION", ""
+                ).strip()
+                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 "x-oai-is-pending-updates": os.getenv(
-                    "OPLL_X_OAI_IS_PENDING_UPDATES", MOMO_EMPTY_PENDING_UPDATES
-                ),
+                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
+                ).strip()
+                or MOMO_EMPTY_PENDING_UPDATES,
                 "x-oai-is-client-observation": observation
                 or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                 "Sec-CH-UA": self.profile["sec_ch_ua"],

@@ -1134,11 +1134,14 @@ class BrowserSentinelProvider:
                 "oai-language": self.language,
                 # Keep deployed checkout build identifiers overridable because
                 # the web client rotates them independently of payment flow.
-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
+                "oai-client-build-number": os.getenv(
+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
+                ).strip()
+                or "10012890",
                 "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION",
-                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
-                ),
+                    "OPLL_OAI_CLIENT_VERSION", ""
+                ).strip()
+                or "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
             }
             account = account_id(self.access_token)
             if account:
@@ -1654,8 +1657,9 @@ class DefaultTransportFactory:
                     )
                 ),
                 "x-oai-is-pending-updates": os.getenv(
-                    "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
-                ),
+                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
+                ).strip()
+                or '{"v":3,"updates":[]}',
                 # The browser keeps one observation id for a request burst;
                 # callers may pin a captured value for diagnostics, while the
                 # default remains fresh for every transport session.
@@ -1663,15 +1667,16 @@ class DefaultTransportFactory:
                     "OPLL_OAI_IS_CLIENT_OBSERVATION",
                     f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                 ),
-                "sec-ch-ua": os.getenv(
-                    "OPLL_SEC_CH_UA",
-                    (profile or {}).get(
-                        "sec_ch_ua",
-                        '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-                    ),
+                "sec-ch-ua": os.getenv("OPLL_SEC_CH_UA", "").strip()
+                or (profile or {}).get(
+                    "sec_ch_ua",
+                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
                 ),
                 "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
+                "sec-ch-ua-platform": os.getenv(
+                    "OPLL_SEC_CH_UA_PLATFORM", ""
+                ).strip()
+                or '"Windows"',
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
