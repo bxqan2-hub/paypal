@@ -850,7 +850,11 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
             "marker": "payment.momo.vn/v2/gateway/querySession",
             "path_pattern": (r"^/v2/gateway/querySession$",),
             "method": "POST",
-            "requires_request_body": True,
+            # The browser gateway polls this endpoint with Content-Length: 0;
+            # the session is carried by the gateway cookie.  The extraction
+            # client may send a JSON sessionId, but a browser HAR must not
+            # require a request body that the real flow does not emit.
+            "requires_request_body": False,
         },
     ],
 }

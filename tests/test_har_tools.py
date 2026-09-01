@@ -507,6 +507,22 @@ def test_momo_audit_uses_vietnam_gateway_checkpoints() -> None:
     assert audit["issues"] == []
 
 
+def test_momo_audit_accepts_bodyless_browser_query_session_poll() -> None:
+    entries = [
+        {
+            "request": {"method": "GET", "url": "https://payment.momo.vn/v2/gateway/pay"},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+        {
+            "request": {"method": "POST", "url": "https://payment.momo.vn/v2/gateway/querySession"},
+            "response": {"status": 200, "content": {"text": "{\"status\":1000}"}},
+        },
+    ]
+    audit = audit_har_completeness({"log": {"entries": entries}})
+    assert audit["channel"] == "momo"
+    assert "momo_query_session:request_body_missing" not in audit["issues"]
+
+
 def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
     har = _gopay_fixture(include_redirect=True)
     complete = audit_har_completeness(har)

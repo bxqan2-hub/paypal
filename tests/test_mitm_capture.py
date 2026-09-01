@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 from tools.mitm_capture import (
     TLS_PASSTHROUGH_HOSTS,
     find_mitm_binary,
+    finalize_capture,
     parse_upstream,
     read_devtools_port,
     require_free_port,
@@ -65,3 +67,32 @@ def test_require_free_port_rejects_occupied_port() -> None:
         listener.bind(("127.0.0.1", 0))
         with pytest.raises(RuntimeError, match="already in use"):
             require_free_port(listener.getsockname()[1], "proxy")
+
+
+def test_finalize_capture_writes_redacted_summary_for_momo(tmp_path: Path) -> None:
+    output = tmp_path / "momo.har"
+    output.write_text(
+        json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "request": {
+                                "method": "GET",
+                                "url": "https://payment.momo.vn/v2/gateway/pay?t=secret",
+                            },
+                            "response": {"status": 200, "content": {"text": "{}"}},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = finalize_capture(output, "momo")
+    summary = output.with_suffix(".summary.md")
+    assert result["summary"] == summary
+    assert summary.is_file()
+    text = summary.read_text(encoding="utf-8")
+    assert "# MOMO capture summary (redacted)" in text
+    assert "secret" not in text

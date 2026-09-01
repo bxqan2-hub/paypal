@@ -35,6 +35,13 @@ def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
     assert args.stop_file.name == "capture.stop"
 
 
+def test_browser_capture_accepts_channel_for_momo_logging() -> None:
+    args = build_parser().parse_args(
+        ["--cdp-port", "60943", "--output", "capture.har", "--channel", "momo"]
+    )
+    assert args.channel == "momo"
+
+
 def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:
     def entry(url: str, method: str, status: int, request_body: str = "", response_body: str = "") -> dict:
         value = {
@@ -63,3 +70,18 @@ def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targ
     assert "gopay_checkout_snapshot:response_body_missing" not in audit["issues"]
     assert "gopay_redirect:response_body_missing" not in audit["issues"]
     assert "gopay_stripe_init:entry_missing" in audit["issues"]
+
+
+def test_capture_audit_classifies_momo_gateway_flow() -> None:
+    entries = [
+        {
+            "request": {"method": "GET", "url": "https://payment.momo.vn/v2/gateway/pay"},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+        {
+            "request": {"method": "POST", "url": "https://payment.momo.vn/v2/gateway/querySession"},
+            "response": {"status": 200, "content": {"text": "{\"status\":1000}"}},
+        },
+    ]
+    audit = _capture_completeness_audit({"log": {"entries": entries}})
+    assert audit["channel"] == "momo"

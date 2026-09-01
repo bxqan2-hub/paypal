@@ -38,6 +38,61 @@ TLS_PASSTHROUGH_HOSTS = (
 )
 
 
+def render_channel_summary(
+    output: Path,
+    channel: str,
+    analysis: dict[str, object],
+    audit: dict[str, object],
+) -> str:
+    """Render a compact, channel-neutral summary without payload values."""
+    counts = analysis.get("counts") if isinstance(analysis.get("counts"), dict) else {}
+    hosts = counts.get("hosts", {}) if isinstance(counts, dict) else {}
+    statuses = counts.get("statuses", {}) if isinstance(counts, dict) else {}
+    methods = counts.get("methods", {}) if isinstance(counts, dict) else {}
+    critical = audit.get("critical") if isinstance(audit.get("critical"), list) else []
+    checkpoints = [
+        {
+            "name": item.get("name"),
+            "count": item.get("count"),
+            "requestBody": item.get("requestBody"),
+            "responseBody": item.get("responseBody"),
+        }
+        for item in critical
+        if isinstance(item, dict)
+    ]
+    raw = output.read_bytes()
+    return "\n".join(
+        [
+            f"# {channel.upper()} capture summary (redacted)",
+            "",
+            "> This summary contains structural counts only; credentials, cookies, tokens, session IDs, order IDs, and payload values are omitted.",
+            "",
+            f"- source: `{output.resolve()}`",
+            f"- size_bytes: `{len(raw)}`",
+            f"- sha256: `{hashlib.sha256(raw).hexdigest().upper()}`",
+            f"- entries: `{analysis.get('entry_count', 0)}`",
+            f"- audit_channel: `{audit.get('channel', 'unknown')}`",
+            f"- complete: `{bool(audit.get('complete'))}`",
+            f"- critical_complete: `{bool(audit.get('criticalComplete'))}`",
+            "",
+            "## Counts",
+            "",
+            f"- hosts: `{json.dumps(hosts, ensure_ascii=False, sort_keys=True)}`",
+            f"- statuses: `{json.dumps(statuses, ensure_ascii=False, sort_keys=True)}`",
+            f"- methods: `{json.dumps(methods, ensure_ascii=False, sort_keys=True)}`",
+            "",
+            "## Critical checkpoints",
+            "",
+            f"```json\n{json.dumps(checkpoints, ensure_ascii=False, indent=2)}\n```",
+            "",
+            "## Issues",
+            "",
+            f"```json\n{json.dumps(audit.get('issues', []), ensure_ascii=False, indent=2)}\n```",
+            "",
+        ]
+    )
+
+
 def find_mitm_binary(name: str, explicit: str = "") -> Path:
     candidates = [Path(explicit)] if explicit else []
     path_value = os.getenv("PATH", "")
@@ -320,11 +375,14 @@ def finalize_capture(output: Path, channel: str) -> dict[str, object]:
     capture.setdefault("recorder", "mitmproxy")
     output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
     report_path = output.with_suffix(".report.md")
-    report_path.write_text(markdown_report(analyze_har(output)), encoding="utf-8")
-    summary_path: Path | None = None
+    analysis = analyze_har(output)
+    report_path.write_text(markdown_report(analysis), encoding="utf-8")
+    summary_path: Path | None = output.with_suffix(".summary.md")
     if channel == "gopay":
-        summary_path = output.with_suffix(".summary.md")
-        summary_path.write_text(render_gopay_summary(summarize_gopay(output)), encoding="utf-8")
+        summary_text = render_gopay_summary(summarize_gopay(output))
+    else:
+        summary_text = render_channel_summary(output, channel, analysis, audit)
+    summary_path.write_text(summary_text, encoding="utf-8")
     raw = output.read_bytes()
     entries = har.get("log", {}).get("entries", [])
     return {

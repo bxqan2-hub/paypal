@@ -132,6 +132,15 @@ def cleanup_stale_mitmweb(ports: tuple[int, ...]) -> None:
         )
 
 
+def request_cdp_stop(
+    cdp_process: subprocess.Popen[str] | None,
+    cdp_stop_file: Path | None,
+) -> None:
+    """Ask the CDP recorder to stop without killing its HAR finalizer."""
+    if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
+        cdp_stop_file.write_text("stop", encoding="ascii")
+
+
 def roxy_request(
     base_url: str,
     path: str,
@@ -370,6 +379,8 @@ class CaptureState:
                 str(self.root / "tools" / "har_capture_browser_attach.py"),
                 "--cdp-port",
                 str(cdp_port),
+                "--channel",
+                channel,
                 "--output",
                 str(cdp_output),
                 "--stop-file",
@@ -428,13 +439,11 @@ class CaptureState:
             channel = self.channel
             self.status = "stopping"
             self.message = "正在保存并合并 HAR"
-        if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
-            cdp_stop_file.write_text("stop", encoding="ascii")
-            if os.name == "nt":
-                try:
-                    cdp_process.send_signal(signal.CTRL_BREAK_EVENT)
-                except OSError:
-                    pass
+        # The CDP recorder watches the stop marker and raises SIGINT in its
+        # own process so that its finally block can flush the HAR.  Sending
+        # CTRL_BREAK_EVENT terminates a Windows child with
+        # STATUS_CONTROL_C_EXIT before that finalization runs.
+        request_cdp_stop(cdp_process, cdp_stop_file)
         if process is not None and process.poll() is None:
             try:
                 if stop_file is not None:

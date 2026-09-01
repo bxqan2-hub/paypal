@@ -24,9 +24,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 try:
-    from .har_capture import CDPWebSocket, HARRecorder, network_enable_params
+    from .har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
 except ImportError:  # direct ``python tools/har_capture_browser_attach.py``
-    from har_capture import CDPWebSocket, HARRecorder, network_enable_params
+    from har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
 
 
 TARGET_TYPES = {"page", "iframe", "worker", "service_worker", "shared_worker"}
@@ -341,10 +341,18 @@ def _capture_completeness_audit(har: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Keep the browser recorder's save-time audit aligned with the channel-aware
+# proxy audit.  The legacy implementation above remains available in source
+# history, while this wrapper handles Momo/GCash/PayPal consistently.
+def _capture_completeness_audit(har: dict[str, Any]) -> dict[str, Any]:
+    return audit_har_completeness(har)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cdp-port", type=int, required=True)
     parser.add_argument("--output", "-o", type=Path, required=True)
+    parser.add_argument("--channel", choices=("paypal", "gopay", "gcash", "momo"), default="gopay")
     parser.add_argument("--max-body-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument(
         "--fetch-responses",
@@ -443,7 +451,10 @@ def main() -> int:
         print("CAPTURE_TARGET_MODE=browser-auto-attach-flatten", flush=True)
         print(f"CAPTURE_OUTPUT={args.output.resolve()}", flush=True)
         print("CAPTURE_READY=1", flush=True)
-        print("CAPTURE_ACTION=perform the complete GoPay flow; send the stop instruction when finished", flush=True)
+        print(
+            f"CAPTURE_ACTION=perform the complete {args.channel.upper()} flow; send the stop instruction when finished",
+            flush=True,
+        )
         heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
         last_heartbeat = time.monotonic()
         while True:
@@ -512,6 +523,7 @@ def main() -> int:
                 "_capture": {
                     "title": page_url,
                     "entryCount": len(all_entries),
+                    "channelRequested": args.channel,
                     "targetMode": "browser-auto-attach-flatten",
                     "targetCount": target_count_seen,
                     "targetTypes": sorted(target_types_seen),

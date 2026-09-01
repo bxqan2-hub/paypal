@@ -10,6 +10,7 @@ from tools.roxy_mitm_control import (
     cleanup_stale_mitmweb,
     create_roxy_window,
     merge_hybrid_har,
+    request_cdp_stop,
     resolve_workspace_id,
 )
 
@@ -71,6 +72,19 @@ def test_roxy_workspace_and_window_payload() -> None:
 def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
     monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
     cleanup_stale_mitmweb((8899, 8081))
+
+
+def test_request_cdp_stop_uses_marker_without_ctrl_break(tmp_path: Path) -> None:
+    class Process:
+        def poll(self) -> None:
+            return None
+
+        def send_signal(self, _signal: object) -> None:
+            raise AssertionError("CDP stop must not send CTRL_BREAK_EVENT")
+
+    marker = tmp_path / "capture-cdp.stop"
+    request_cdp_stop(Process(), marker)
+    assert marker.read_text(encoding="ascii") == "stop"
 
 
 def test_hybrid_merge_only_supplements_tls_passthrough_hosts(tmp_path: Path, monkeypatch) -> None:
