@@ -4,18 +4,9 @@
 
 ## 0. 一键 BAT
 
-直接双击根目录的 `HAR_CAPTURE.bat` 即可启动面向 RoxyBrowser 的 mitmweb 手动抓包。默认渠道为 GoPay，输出保存到 Git 忽略的 `artifacts-local`。启动时会无回显地要求输入上游代理，随后自动打开 `http://127.0.0.1:8081/`；RoxyBrowser 固定填写 HTTP 代理 `127.0.0.1:8899`，用户名和密码留空。也可以传入输出路径和起始 URL：
+直接双击根目录的 `HAR_CAPTURE.bat` 会打开本机控制页 `http://127.0.0.1:8080/`。在页面中输入上游 SOCKS5 代理、Roxy API Key、抓包渠道和窗口名称，点击“开始并新建窗口”；控制服务会启动 mitmproxy、自动创建随机指纹 Roxy 窗口，并为新窗口设置 HTTP 代理 `127.0.0.1:8899`（用户名和密码留空）。代理和 API Key 只保存在当前进程内存，不写入文件、日志或 Git。
 
-```cmd
-set OPLL_CAPTURE_CHANNEL=gcash
-HAR_CAPTURE.bat "artifacts-local\gcash-mitm-capture.har" "https://chatgpt.com/"
-```
-
-第 3、4 个参数可直接选择代理端口和 Web 管理端口：
-
-```cmd
-HAR_CAPTURE.bat "artifacts-local\gopay.har" "https://chatgpt.com/" 8899 8081
-```
+控制页端口默认为 `8080`，mitmweb 为 `8081`，Roxy HTTP 代理为 `8899`。停止抓包只关闭记录器和本地桥接，新建的 Roxy 窗口保持打开。
 
 安装和自检：
 

@@ -260,7 +260,15 @@ def stop_proxy(process: subprocess.Popen[bytes]) -> None:
         process.send_signal(signal.CTRL_BREAK_EVENT)
         process.wait(timeout=60)
     except (OSError, subprocess.TimeoutExpired):
-        process.terminate()
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            process.terminate()
         try:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:
