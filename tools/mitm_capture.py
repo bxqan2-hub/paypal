@@ -313,11 +313,11 @@ def finalize_capture(output: Path, channel: str) -> dict[str, object]:
     capture = har["log"].setdefault("_capture", {})
     capture.update(
         {
-            "recorder": "mitmproxy",
             "channelRequested": channel,
             "completenessAudit": audit,
         }
     )
+    capture.setdefault("recorder", "mitmproxy")
     output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
     report_path = output.with_suffix(".report.md")
     report_path.write_text(markdown_report(analyze_har(output)), encoding="utf-8")

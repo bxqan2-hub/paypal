@@ -4,7 +4,14 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from tools.roxy_mitm_control import cleanup_stale_mitmweb, create_roxy_window, resolve_workspace_id
+from pathlib import Path
+
+from tools.roxy_mitm_control import (
+    cleanup_stale_mitmweb,
+    create_roxy_window,
+    merge_hybrid_har,
+    resolve_workspace_id,
+)
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -64,3 +71,53 @@ def test_roxy_workspace_and_window_payload() -> None:
 def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
     monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
     cleanup_stale_mitmweb((8899, 8081))
+
+
+def test_hybrid_merge_only_supplements_tls_passthrough_hosts(tmp_path: Path, monkeypatch) -> None:
+    def entry(url: str, marker: str) -> dict[str, object]:
+        return {
+            "startedDateTime": f"2026-09-01T00:00:0{marker}Z",
+            "request": {"method": "POST", "url": url, "postData": {"text": "{}"}},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        }
+
+    mitm_output = tmp_path / "capture.har"
+    cdp_output = tmp_path / "capture-cdp.har"
+    mitm_output.write_text(
+        json.dumps({"log": {"entries": [entry("https://api.stripe.com/v1/payment_pages/test/init", "2")]}}),
+        encoding="utf-8",
+    )
+    cdp_output.write_text(
+        json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        entry("https://chatgpt.com/backend-api/payments/checkout", "1"),
+                        entry("https://api.stripe.com/v1/payment_pages/test/init", "3"),
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("tools.roxy_mitm_control.audit_har_completeness", lambda _har: {"complete": True})
+
+    def fake_finalize(output: Path, _channel: str) -> dict[str, object]:
+        har = json.loads(output.read_text(encoding="utf-8"))
+        return {"entries": len(har["log"]["entries"]), "audit": {"complete": True}}
+
+    monkeypatch.setattr("tools.roxy_mitm_control.finalize_capture", fake_finalize)
+    result = merge_hybrid_har(mitm_output, cdp_output, "gopay")
+    merged = json.loads(mitm_output.read_text(encoding="utf-8"))
+    entries = merged["log"]["entries"]
+
+    assert result["entries"] == 2
+    assert [item["request"]["url"] for item in entries] == [
+        "https://chatgpt.com/backend-api/payments/checkout",
+        "https://api.stripe.com/v1/payment_pages/test/init",
+    ]
+    assert entries[0]["_capture"]["source"] == "roxy-cdp-supplement"
+    assert merged["log"]["_capture"]["recorder"] == "mitmproxy+roxy-cdp"
+    assert merged["log"]["_capture"]["cdpSupplementEntryCount"] == 1
+    assert not cdp_output.exists()

@@ -350,11 +350,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-fetch-responses", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--heartbeat-seconds", type=float, default=5.0)
+    parser.add_argument("--stop-file", type=Path)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    stop_file = args.stop_file.resolve() if args.stop_file else None
+    if stop_file is not None:
+        stop_file.unlink(missing_ok=True)
     browser = BrowserConnection(_browser_websocket(args.cdp_port))
     recorders: dict[str, TargetRecorder] = {}
     target_sessions: dict[str, str] = {}
@@ -432,6 +436,8 @@ def main() -> int:
         heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
         last_heartbeat = time.monotonic()
         while True:
+            if stop_file is not None and stop_file.exists():
+                break
             try:
                 session_id, message = browser.recv_any()
             except socket.timeout:
@@ -525,6 +531,8 @@ def main() -> int:
             f"CAPTURE_MISSING={json.dumps(completeness.get('issues', []), ensure_ascii=False)}",
             flush=True,
         )
+        if stop_file is not None:
+            stop_file.unlink(missing_ok=True)
         browser.close()
     return 0
 

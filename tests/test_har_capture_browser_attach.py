@@ -26,10 +26,13 @@ def test_browser_connection_prioritizes_target_lifecycle_events() -> None:
 
 
 def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
-    args = build_parser().parse_args(["--cdp-port", "60943", "--output", "capture.har"])
+    args = build_parser().parse_args(
+        ["--cdp-port", "60943", "--output", "capture.har", "--stop-file", "capture.stop"]
+    )
     assert args.fetch_responses is False
     assert args.no_fetch_responses is False
     assert args.heartbeat_seconds == 5.0
+    assert args.stop_file.name == "capture.stop"
 
 
 def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:

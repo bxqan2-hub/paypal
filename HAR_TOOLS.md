@@ -6,8 +6,8 @@
 
 直接双击根目录的 `HAR_CAPTURE.bat` 会打开本机控制页 `http://127.0.0.1:8080/`。在页面中输入上游 SOCKS5 代理、Roxy API Key、抓包渠道和窗口名称，点击“开始并新建窗口”；控制服务会启动 mitmproxy、自动创建随机指纹 Roxy 窗口，并为新窗口设置 HTTP 代理 `127.0.0.1:8899`（用户名和密码留空）。代理和 API Key 只保存在当前进程内存，不写入文件、日志或 Git。
 
-控制页端口默认为 `8080`，mitmweb 为 `8081`，Roxy HTTP 代理为 `8899`。停止抓包只关闭记录器和本地桥接，新建的 Roxy 窗口保持打开。
-控制页通过本地停止标记通知抓包编排器，等待 mitmweb 完整写盘、转换 HAR 并生成报告后才显示停止完成；不要直接关闭 BAT 窗口或结束 Python 进程。
+控制页端口默认为 `8080`，mitmweb 为 `8081`，Roxy HTTP 代理为 `8899`。控制服务会同时附加新建 Roxy 窗口的浏览器级 CDP：mitmproxy 负责主流量，CDP 只补充 TLS 透传域名。停止时自动合并为同一份最终 HAR，并删除临时 CDP HAR；新建的 Roxy 窗口保持打开。
+控制页通过本地停止标记同时通知两个记录器，等待 mitmweb 完整写盘、CDP 保存、HAR 合并和报告生成后才显示停止完成；不要直接关闭 BAT 窗口或结束 Python 进程。
 
 安装和自检：
 
@@ -20,9 +20,9 @@ py -3 tools\mitm_capture.py --doctor
 
 需要上游代理时可在 BAT 提示中输入，或只通过本地环境变量传入，不写进脚本或配置。mitmproxy 12 不直接支持 SOCKS5 上游，工具会自动建立仅监听回环地址的临时 HTTP 桥接，退出时一并清理：
 
-RoxyBrowser 的桌面主进程不使用 Windows 系统 CA。工具仅对 `ipcheck.roxybrowser.com` 和 `ipcheck.roxybrowser.co` 两个内置 IP 检测域名启用 TLS 透传，避免 Roxy 的“测试代理 IP”误报证书错误；其余业务域名仍由 mitmproxy 正常解密和记录。
+RoxyBrowser 的桌面主进程不使用 Windows 系统 CA。工具对 Roxy 内置 IP 检测域名启用 TLS 透传，避免“测试代理 IP”误报证书错误；其余支付业务域名仍由 mitmproxy正常解密和记录。
 
-ChatGPT 首页和登录域名同样使用 TLS 透传，以保留 RoxyChrome 的 TLS 指纹并避免 Cloudflare 返回未激活的静态页面。PayPal、GoPay、GCash、Stripe、Midtrans 等支付与渠道域名不在透传名单内，仍由 mitmproxy 正常记录和解析。
+ChatGPT 首页和登录域名同样使用 TLS 透传，以保留 RoxyChrome 的 TLS 指纹并避免 Cloudflare 返回未激活的静态页面。`checkout`、`taxes`、`snapshot`、`approve` 等 ChatGPT 请求由同窗口 CDP 自动补入最终 HAR；PayPal、GoPay、GCash、Stripe、Midtrans 等支付与渠道域名仍由 mitmproxy 正常记录和解析。
 
 ```powershell
 $env:OPLL_CAPTURE_UPSTREAM = 'HOST:PORT:USERNAME:PASSWORD'

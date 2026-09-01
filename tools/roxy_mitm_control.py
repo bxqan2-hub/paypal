@@ -16,11 +16,77 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+try:
+    from .har_capture import audit_har_completeness
+    from .mitm_capture import finalize_capture
+    from .roxy_har_capture import default_roxy_cache, discover_roxy_targets
+except ImportError:
+    from har_capture import audit_har_completeness
+    from mitm_capture import finalize_capture
+    from roxy_har_capture import default_roxy_cache, discover_roxy_targets
 
 
 CHANNELS = {"paypal", "gopay", "gcash"}
 DEFAULT_ROXY_API = "http://127.0.0.1:50000"
+CDP_SUPPLEMENT_HOSTS = {"chatgpt.com", "auth.openai.com", "auth0.openai.com", "login.openai.com"}
+
+
+def wait_for_roxy_cdp(dir_id: str, existing_ports: set[int], timeout: float = 45) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        targets = discover_roxy_targets(default_roxy_cache(), timeout=0.5)
+        exact = [target for target in targets if target.profile_id == dir_id]
+        fresh = [target for target in targets if target.port not in existing_ports]
+        selected = exact or fresh
+        if selected:
+            return selected[0].port
+        time.sleep(0.3)
+    raise TimeoutError("Roxy 新窗口没有开放 CDP 调试端口")
+
+
+def merge_hybrid_har(mitm_output: Path, cdp_output: Path, channel: str) -> dict[str, object]:
+    mitm_har = json.loads(mitm_output.read_text(encoding="utf-8"))
+    cdp_har = json.loads(cdp_output.read_text(encoding="utf-8"))
+    mitm_log = mitm_har.get("log") if isinstance(mitm_har.get("log"), dict) else {}
+    cdp_log = cdp_har.get("log") if isinstance(cdp_har.get("log"), dict) else {}
+    mitm_entries = mitm_log.get("entries") if isinstance(mitm_log.get("entries"), list) else []
+    cdp_entries = cdp_log.get("entries") if isinstance(cdp_log.get("entries"), list) else []
+    supplemented: list[dict[str, Any]] = []
+    for entry in cdp_entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        host = (urlsplit(str(request.get("url") or "")).hostname or "").lower()
+        if host not in CDP_SUPPLEMENT_HOSTS:
+            continue
+        detail = entry.setdefault("_capture", {})
+        if isinstance(detail, dict):
+            detail["source"] = "roxy-cdp-supplement"
+        supplemented.append(entry)
+    combined = [entry for entry in mitm_entries if isinstance(entry, dict)] + supplemented
+    combined.sort(key=lambda entry: str(entry.get("startedDateTime") or ""))
+    mitm_log["entries"] = combined
+    capture = mitm_log.setdefault("_capture", {})
+    if not isinstance(capture, dict):
+        capture = {}
+        mitm_log["_capture"] = capture
+    capture.update(
+        {
+            "recorder": "mitmproxy+roxy-cdp",
+            "mitmEntryCount": len(mitm_entries),
+            "cdpSupplementEntryCount": len(supplemented),
+            "entryCount": len(combined),
+            "completenessAudit": audit_har_completeness(mitm_har),
+        }
+    )
+    mitm_har["log"] = mitm_log
+    mitm_output.write_text(json.dumps(mitm_har, ensure_ascii=False, indent=2), encoding="utf-8")
+    result = finalize_capture(mitm_output, channel)
+    cdp_output.unlink(missing_ok=True)
+    return result
 
 
 def cleanup_stale_mitmweb(ports: tuple[int, ...]) -> None:
@@ -164,12 +230,16 @@ class CaptureState:
     proxy_port: int
     web_port: int
     process: subprocess.Popen[str] | None = None
+    cdp_process: subprocess.Popen[str] | None = None
     status: str = "idle"
     message: str = "等待设置上游代理"
     output: str = ""
     dir_id: str = ""
     window_name: str = ""
     stop_file: Path | None = None
+    cdp_stop_file: Path | None = None
+    cdp_output: Path | None = None
+    channel: str = "gopay"
     logs: list[str] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -181,6 +251,7 @@ class CaptureState:
                 "message": self.message,
                 "running": running,
                 "output": self.output,
+                "captureMode": "mitmproxy+roxy-cdp" if self.cdp_process is not None else "mitmproxy",
                 "dirId": self.dir_id,
                 "windowName": self.window_name,
                 "proxy": f"127.0.0.1:{self.proxy_port}",
@@ -217,6 +288,10 @@ class CaptureState:
             self.message = "正在启动 mitmproxy"
             self.logs.clear()
             self.output = ""
+            self.cdp_process = None
+            self.cdp_stop_file = None
+            self.cdp_output = None
+            self.channel = channel
             self.dir_id = ""
             self.window_name = window_name
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
@@ -273,6 +348,7 @@ class CaptureState:
             self.stop()
             raise RuntimeError("mitmproxy 启动失败，请查看状态日志")
         try:
+            existing_ports = {target.port for target in discover_roxy_targets(default_roxy_cache())}
             workspace_id = resolve_workspace_id(api_base, api_key)
             dir_id = create_roxy_window(
                 api_base,
@@ -282,12 +358,55 @@ class CaptureState:
                 self.proxy_port,
             )
             open_roxy_window(api_base, api_key, workspace_id, dir_id)
+            cdp_port = wait_for_roxy_cdp(dir_id, existing_ports)
+            cdp_output = output.with_name(f"{output.stem}-cdp.har")
+            cdp_stop_file = output.with_name(f"{output.stem}-cdp.stop")
+            cdp_output.unlink(missing_ok=True)
+            cdp_stop_file.unlink(missing_ok=True)
+            cdp_command = [
+                sys.executable,
+                str(self.root / "tools" / "har_capture_browser_attach.py"),
+                "--cdp-port",
+                str(cdp_port),
+                "--output",
+                str(cdp_output),
+                "--stop-file",
+                str(cdp_stop_file),
+            ]
+            cdp_process = subprocess.Popen(
+                cdp_command,
+                cwd=self.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creation_flags,
+            )
+            cdp_ready = threading.Event()
+
+            def read_cdp_output() -> None:
+                assert cdp_process.stdout is not None
+                for line in cdp_process.stdout:
+                    self.append_log(f"CDP {line}")
+                    if line.startswith("CAPTURE_READY=1"):
+                        cdp_ready.set()
+                if cdp_process.poll() is not None and not cdp_ready.is_set():
+                    cdp_ready.set()
+
+            threading.Thread(target=read_cdp_output, daemon=True).start()
+            with self.lock:
+                self.cdp_process = cdp_process
+                self.cdp_stop_file = cdp_stop_file
+                self.cdp_output = cdp_output
+            if not cdp_ready.wait(30) or cdp_process.poll() is not None:
+                raise RuntimeError("Roxy CDP 补充记录器启动失败")
         except Exception:
             self.stop()
             raise
         with self.lock:
             self.status = "running"
-            self.message = "抓包已就绪，Roxy 新窗口已打开"
+            self.message = "混合抓包已就绪：mitmproxy 主抓，CDP 自动补齐 ChatGPT"
             self.dir_id = dir_id
         return self.snapshot()
 
@@ -295,8 +414,15 @@ class CaptureState:
         with self.lock:
             process = self.process
             stop_file = self.stop_file
+            cdp_process = self.cdp_process
+            cdp_stop_file = self.cdp_stop_file
+            cdp_output = self.cdp_output
+            output = Path(self.output) if self.output else None
+            channel = self.channel
             self.status = "stopping"
-            self.message = "正在保存 HAR"
+            self.message = "正在保存并合并 HAR"
+        if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
+            cdp_stop_file.write_text("stop", encoding="ascii")
         if process is not None and process.poll() is None:
             try:
                 if stop_file is not None:
@@ -312,13 +438,47 @@ class CaptureState:
                     process.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     process.kill()
+        if cdp_process is not None and cdp_process.poll() is None:
+            try:
+                cdp_process.wait(timeout=180)
+            except subprocess.TimeoutExpired:
+                cdp_process.terminate()
+                try:
+                    cdp_process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    cdp_process.kill()
+        merge_result: dict[str, object] | None = None
+        merge_error = ""
+        if output is not None and cdp_output is not None:
+            try:
+                merge_result = merge_hybrid_har(output, cdp_output, channel)
+                audit = merge_result.get("audit") if isinstance(merge_result.get("audit"), dict) else {}
+                missing = audit.get("issues") if isinstance(audit, dict) else []
+                self.append_log(f"CAPTURE_HYBRID_ENTRIES={merge_result.get('entries', 0)}")
+                self.append_log(f"CAPTURE_HYBRID_COMPLETENESS={'complete' if audit.get('complete') else 'partial'}")
+                self.append_log(f"CAPTURE_HYBRID_MISSING={json.dumps(missing, ensure_ascii=False)}")
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+                merge_error = str(exc)
+                self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
         with self.lock:
             self.process = None
+            self.cdp_process = None
             self.stop_file = None
+            self.cdp_stop_file = None
+            self.cdp_output = None
             self.status = "idle"
-            self.message = "抓包已停止；Roxy 窗口保持打开"
+            if merge_error:
+                self.message = f"抓包已停止，但自动合并失败：{merge_error}"
+            elif merge_result is not None:
+                audit = merge_result.get("audit") if isinstance(merge_result.get("audit"), dict) else {}
+                state = "完整" if audit.get("complete") else "部分完整"
+                self.message = f"混合 HAR 已保存（{state}）；Roxy 窗口保持打开"
+            else:
+                self.message = "抓包已停止；Roxy 窗口保持打开"
         if stop_file is not None:
             stop_file.unlink(missing_ok=True)
+        if cdp_stop_file is not None:
+            cdp_stop_file.unlink(missing_ok=True)
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         return self.snapshot()
 
