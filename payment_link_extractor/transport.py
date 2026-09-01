@@ -737,12 +737,37 @@ class BrowserSentinelProvider:
         )
         self._eval(expression, timeout=30)
 
+    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
+        """Initialize a named Sentinel context before requesting its token."""
+        with self._lock:
+            if self._failed:
+                raise RuntimeError("Sentinel browser provider failed during startup")
+            if not self._started:
+                self._start()
+            selected = str(flow or "").strip() or "chatgpt_checkout"
+            self._eval(
+                "(async()=>{if(typeof SentinelSDK.init==='function'){await "
+                "SentinelSDK.init(" + json.dumps(selected) + ");}return true})()",
+                timeout=90,
+            )
+
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         with self._lock:
             if self._failed:
                 raise RuntimeError("Sentinel browser provider failed during startup")
             if not self._started:
                 self._start()
+            # A fresh init binds the proof to the current checkout/approval
+            # flow instead of reusing the landing-page challenge.
+            try:
+                self._eval(
+                    "(async()=>{if(typeof SentinelSDK.init==='function'){await "
+                    "SentinelSDK.init(" + json.dumps(str(flow or "chatgpt_checkout"))
+                    + ");}return true})()",
+                    timeout=90,
+                )
+            except Exception:
+                pass
             self._ping(referer)
             raw = self._eval(
                 "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
