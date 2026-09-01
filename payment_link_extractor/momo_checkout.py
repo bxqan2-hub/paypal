@@ -76,7 +76,11 @@ def request(
 
 
 def create_checkout(
-    session: Any, *, account_email: str = "", trial_eligible: bool = False
+    session: Any,
+    *,
+    account_email: str = "",
+    trial_eligible: bool = False,
+    campaign_id: str = "",
 ) -> dict[str, Any]:
     path = "/backend-api/payments/checkout"
     body: dict[str, Any] = {
@@ -87,8 +91,8 @@ def create_checkout(
     }
     if trial_eligible:
         body["promo_campaign"] = {
-            "promo_campaign_id": "plus-1-month-free",
-            "is_coupon_from_query_param": True,
+            "promo_campaign_id": str(campaign_id or "plus-1-month-free"),
+            "is_coupon_from_query_param": False,
         }
     payload = request(
         session,
