@@ -187,19 +187,17 @@ class MomoTransportFactory:
             return dynamic
 
         session.refresh_momo_request_headers = refresh_momo_request_headers
-        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+        attestation = os.getenv(
+            "OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", ""
+        ).strip()
         if attestation:
             session.headers["oai-web-deployment-attestation"] = attestation
         # A browser-generated proof is preferred. Explicit values remain a
         # useful runtime fallback for deployments that inject their own proof.
-        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
-            "OPLL_OPENAI_SENTINEL_TOKEN", ""
-        ).strip()
+        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip()
         if sentinel:
             session.openai_sentinel_token = sentinel
-        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
-            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
-        ).strip()
+        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip()
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         _set_proxy(session, proxy)
@@ -310,7 +308,7 @@ def momo_sentinel_headers(
     token = str(
         getattr(session, "openai_sentinel_token", "")
         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
-        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+        or ""
     ).strip()
     if token and not any(
         key.lower() == "openai-sentinel-token" for key in result
@@ -319,7 +317,7 @@ def momo_sentinel_headers(
     so_token = str(
         getattr(session, "openai_sentinel_so_token", "")
         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
-        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+        or ""
     ).strip()
     if so_token and not any(
         key.lower() == "openai-sentinel-so-token" for key in result
@@ -327,7 +325,7 @@ def momo_sentinel_headers(
         result["OpenAI-Sentinel-SO-Token"] = so_token
     attestation = str(
         getattr(session, "openai_web_deployment_attestation", "")
-        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
+        or os.getenv("OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
     ).strip()
     if attestation and not any(
         key.lower() == "oai-web-deployment-attestation" for key in result
