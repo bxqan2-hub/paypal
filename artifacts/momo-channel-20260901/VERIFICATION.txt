@@ -14,7 +14,7 @@ Artifacts:
 - ROLLBACK.sh: artifacts/momo-channel-20260901/ROLLBACK.sh
 
 BASELINE: `py -m pytest -q`
-BASELINE result: 255 passed, 1 failed (pre-existing Sentinel SDK SHA assertion in tests/test_gopay_isolated_optimization.py; expected 49d028..., observed 97bc85...). Exit status 1.
+BASELINE result: 251 passed, 1 failed (pre-existing Sentinel SDK SHA assertion in tests/test_gopay_isolated_optimization.py; expected 49d028..., observed 97bc85...). Exit status 1.
 MODIFIED: `py -m pytest -q`
 MODIFIED result: 255 passed, 1 failed (same pre-existing Sentinel SDK SHA assertion; no Momo failure). Exit status 1.
 重点: `py -m pytest -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_gcash_support.py`
