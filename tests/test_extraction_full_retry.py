@@ -315,6 +315,45 @@ def test_gopay_checkout_boundary_consumes_account_and_blocks_retry() -> None:
         manager.close()
 
 
+def test_momo_checkout_boundary_consumes_account_and_blocks_retry() -> None:
+    calls: list[str] = []
+
+    def extractor(config, *, cancel_event, stage_callback):
+        del cancel_event
+        calls.append(config.checkout_proxy)
+        stage_callback("checkout")
+        stage_callback("checkout_committed")
+        stage_callback("stripe_init")
+        raise ProtocolError(409, "Momo provider confirmation failed")
+
+    proxies = (
+        "http://momo-proxy-1.example:8080",
+        "http://momo-proxy-2.example:8080",
+    )
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy=proxies[0],
+        update_proxy=proxies[0],
+        payment_method="momo",
+        country="VN",
+        retry_count=1,
+        checkout_proxy_attempts=proxies,
+        update_proxy_attempts=proxies,
+        proxy_pool=proxies,
+    )
+    manager = TaskManager(extractor, max_workers=1)
+    try:
+        task_id = manager.create(config)["task_id"]
+        snapshot = _wait_for_terminal(manager, task_id)
+        assert snapshot["status"] == "failed"
+        assert snapshot["attempt"] == 1
+        assert snapshot["max_attempts"] == 2
+        assert snapshot["checkout_opportunity_consumed"] is True
+        assert len(calls) == 1
+    finally:
+        manager.close()
+
+
 def test_gopay_proxy_pool_attempts_are_random_and_same_proxy_per_attempt() -> None:
     calls: list[tuple[str, str]] = []
 

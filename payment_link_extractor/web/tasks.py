@@ -637,7 +637,7 @@ class TaskManager:
                     is_gopay = record.config.payment_method == "gopay"
                     # Momo may restart a fresh full attempt with the same AT;
                     # each attempt gets a new proxy and browser fingerprint.
-                    is_checkout_sensitive = record.config.payment_method == "gopay"
+                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
                     explicit_retryable = getattr(exc, "retryable", None)
                     status_code = getattr(exc, "status_code", None)
                     try:
