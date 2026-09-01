@@ -25,4 +25,6 @@
 - Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
 - `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
 - 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
+- 提链第一步先用当前 VN 代理请求 `/backend-api/accounts/check/v4-2023-04-27`，读取账号 `eligible_promo_campaigns.plus`；未返回活动标识时切换代理继续检查，确认资格后才创建 Checkout。
+- `momo_zero_trial_validation` 只控制金额闸门：开启时 taxes 后要求 VND payable minor units 为 0，关闭时跳过该金额判断；资格预检仍保持在 Checkout 之前。
 - 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
