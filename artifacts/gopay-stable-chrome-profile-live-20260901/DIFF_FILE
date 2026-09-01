@@ -3,7 +3,7 @@ index f9d2015..03ad188 100644
 --- a/payment_link_extractor/gopay_transport.py
 +++ b/payment_link_extractor/gopay_transport.py
 @@ -2,8 +2,8 @@ from __future__ import annotations
- 
+
  import os
  import base64
 +import hashlib
@@ -13,7 +13,7 @@ index f9d2015..03ad188 100644
  import secrets
  import shutil
 @@ -93,11 +93,11 @@ class TransportFactory(Protocol):
- 
+
  GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
      {
 -        "name": "chrome152",
@@ -46,8 +46,8 @@ index f9d2015..03ad188 100644
          "weight": 10,
      },
  )
- 
- 
+
+
 -def select_gopay_browser_profile() -> dict[str, Any]:
 -    """Select a weighted browser profile, with an env override for diagnostics."""
 +def select_gopay_browser_profile(
@@ -88,13 +88,13 @@ index f9d2015..03ad188 100644
 +            return dict(profile)
 +        ticket -= weight
 +    return dict(profiles[-1])
- 
- 
+
+
  def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
 @@ -145,6 +181,18 @@ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
      return True
- 
- 
+
+
 +def gopay_browser_identity(config: ExtractionConfig) -> tuple[str, dict[str, Any]]:
 +    """Return the stable device and paired browser profile for one GoPay AT."""
 +    device_id = str(
@@ -143,7 +143,7 @@ index f9d2015..03ad188 100644
              {
 @@ -1739,17 +1787,47 @@ class DefaultTransportFactory:
          return session
- 
+
      def stripe(self, config: ExtractionConfig) -> Any:
 -        session = new_session()
 +        is_gopay = normalize_payment_method(config.payment_method) == "gopay"
@@ -191,15 +191,15 @@ index f9d2015..03ad188 100644
 +            session.gopay_tls_impersonate = impersonate
          set_proxy_url(session, config.checkout_proxy)
          return session
- 
+
 diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
 index 72a0051..cb9fc05 100644
 --- a/tests/test_gopay_isolated_optimization.py
 +++ b/tests/test_gopay_isolated_optimization.py
 @@ -106,7 +106,7 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
- 
+
      monkeypatch.setattr(gopay_transport, "new_session", Session)
- 
+
 -    def build(token: str) -> str:
 +    def build(token: str) -> tuple[str, str, str, str]:
          config = ExtractionConfig(
@@ -220,12 +220,12 @@ index 72a0051..cb9fc05 100644
 +            session.gopay_tls_impersonate,
 +            session.headers["User-Agent"],
 +        )
- 
+
      assert build("fixture-token-a") == build("fixture-token-a")
 -    assert build("fixture-token-a") != build("fixture-token-b")
 +    assert build("fixture-token-a")[0] != build("fixture-token-b")[0]
- 
- 
+
+
  def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> None:
      monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
      profiles = {
@@ -261,8 +261,8 @@ index 72a0051..cb9fc05 100644
          "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
 @@ -140,6 +168,48 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
          )
- 
- 
+
+
 +def test_gopay_chatgpt_and_stripe_share_one_browser_identity(monkeypatch) -> None:
 +    sessions: list[object] = []
 +    impersonates: list[str] = []
@@ -314,12 +314,12 @@ index 3ec959d..cba0f43 100644
 +++ b/tests/test_gopay_live_canary.py
 @@ -1,6 +1,7 @@
  from __future__ import annotations
- 
+
  import importlib.util
 +import io
  import json
  from pathlib import Path
- 
+
 @@ -55,3 +56,19 @@ def test_canary_provider_shape_outputs_no_order_identifier() -> None:
          "path_prefix": "/snap/v4",
      }
@@ -346,7 +346,7 @@ index bdaa990..7d25f71 100644
 +++ b/tools/gopay_live_canary.py
 @@ -1,6 +1,8 @@
  from __future__ import annotations
- 
+
  import argparse
 +import getpass
 +import io
@@ -355,8 +355,8 @@ index bdaa990..7d25f71 100644
  import sys
 @@ -55,6 +57,26 @@ def load_rollout_proxies(path: Path) -> list[str]:
      return [normalize_proxy_url(item) for item in raw]
- 
- 
+
+
 +def load_runtime_input(stream: io.TextIOBase) -> tuple[list[str], list[str]]:
 +    """Read one token and an explicit proxy count without echoing either value."""
 +    def read_value() -> str:
@@ -394,7 +394,7 @@ index bdaa990..7d25f71 100644
 +    parser.add_argument("--token-index", type=int, default=1, help="one-based token slot")
      parser.add_argument("--start-proxy-slot", type=int, default=1)
      args = parser.parse_args()
- 
+
 -    tokens = load_tokens(args.tokens_file)
 -    proxies = load_rollout_proxies(args.proxy_rollout)
 +    if args.runtime_stdin:
