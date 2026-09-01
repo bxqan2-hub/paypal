@@ -60,6 +60,7 @@ class MomoSentinelProvider:
             language="vi-VN",
             client_build_number="10109010",
             client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
+            locale="vi-VN",
         )
 
     @property

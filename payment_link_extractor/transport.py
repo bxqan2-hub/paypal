@@ -522,6 +522,7 @@ class BrowserSentinelProvider:
         language: str = "en-US",
         client_build_number: str = "",
         client_version: str = "",
+        locale: str = "en-PH",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -534,14 +535,19 @@ class BrowserSentinelProvider:
         self.language = str(language or "en-US").strip() or "en-US"
         self.client_build_number = str(client_build_number or "").strip()
         self.client_version = str(client_version or "").strip()
+        self.locale = str(locale or "en-PH").strip() or "en-PH"
+        language_list = json.dumps([self.locale, self.locale.split("-", 1)[0]])
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
         self.locale_script = self.temp_dir / "locale.js"
         self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
+            "Object.defineProperty(navigator, 'language', {get: () => "
+            + json.dumps(self.locale)
+            + "});Object.defineProperty(navigator, 'languages', {get: () => "
+            + language_list
+            + "});",
             encoding="utf-8",
         )
         self._lock = threading.RLock()
