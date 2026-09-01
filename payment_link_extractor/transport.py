@@ -519,6 +519,9 @@ class BrowserSentinelProvider:
         transport_session: Any,
         log: Any | None = None,
         enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
+        language: str = "en-US",
+        client_build_number: str = "",
+        client_version: str = "",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -528,6 +531,9 @@ class BrowserSentinelProvider:
         self.transport_session = transport_session
         self.log = log
         self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
+        self.language = str(language or "en-US").strip() or "en-US"
+        self.client_build_number = str(client_build_number or "").strip()
+        self.client_version = str(client_version or "").strip()
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
@@ -677,15 +683,15 @@ class BrowserSentinelProvider:
                 "Authorization": f"Bearer {self.access_token}",
                 "oai-device-id": self.device_id,
                 "oai-session-id": self.session_id,
-                "oai-language": "en-US",
+                "oai-language": self.language,
                 # The current browser HAR (m.gcash.com111.har) uses the
                 # deployed checkout build below.  Keep both values overridable
                 # because the web client rotates them independently of the
                 # payment flow.
-                "oai-client-build-number": _env_or_default(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
-                ),
-                "oai-client-version": _env_or_default(
+                "oai-client-build-number": self.client_build_number
+                or _env_or_default("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+                "oai-client-version": self.client_version
+                or _env_or_default(
                     "OPLL_OAI_CLIENT_VERSION",
                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                 ),

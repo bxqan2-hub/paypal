@@ -99,7 +99,8 @@ def test_vnd_uses_zero_decimal_minor_units() -> None:
 
 
 def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
-    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150", "chrome152"}
+    assert MomoTransportFactory().profile["name"] == "chrome152"
     assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
     assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
 
