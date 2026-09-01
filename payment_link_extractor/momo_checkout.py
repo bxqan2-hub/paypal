@@ -177,7 +177,11 @@ def create_checkout(
         value = _walk(payload, keys)
         if value not in (None, "", [], {}):
             checkout[target] = value
-    checkout["promo_campaign"] = _walk(payload, ("promo_campaign",)) or body.get(
+    server_promo_campaign = _walk(payload, ("promo_campaign",))
+    checkout["promo_campaign_response"] = (
+        server_promo_campaign if isinstance(server_promo_campaign, dict) else {}
+    )
+    checkout["promo_campaign"] = server_promo_campaign or body.get(
         "promo_campaign", {}
     )
     return checkout
@@ -254,7 +258,8 @@ def momo_checkout_method_state(checkout: dict[str, Any]) -> bool | None:
 
 def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
     """Require the initial Checkout response to carry the 100% discount."""
-    campaign = checkout.get("promo_campaign")
+    campaign_response = checkout.get("promo_campaign_response")
+    campaign = campaign_response if isinstance(campaign_response, dict) else {}
     campaign_id = campaign.get("promo_campaign_id") if isinstance(campaign, dict) else ""
     amount = checkout_amount_minor(checkout)
     currency = str(checkout.get("currency") or "").strip().upper()
@@ -265,7 +270,7 @@ def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
     subtotal_minor = subtotal.get("minorUnitsAmount")
     discount_minor = discount.get("minorUnitsAmount")
     if campaign_id != "plus-1-month-free":
-        raise ProtocolError(409, "Momo Checkout promo campaign was not attached")
+        raise ProtocolError(409, "Momo Checkout promo campaign was not echoed")
     if not isinstance(campaign, dict) or campaign.get("is_coupon_from_query_param") is not False:
         raise ProtocolError(409, "Momo Checkout promo query flag was not false")
     if currency != MOMO_CURRENCY:
@@ -281,12 +286,13 @@ def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
                 )
         except ValueError as exc:
             raise ProtocolError(409, "Momo Checkout top-level amount is invalid") from exc
-    if subtotal_minor not in (None, "") and discount_minor not in (None, ""):
-        try:
-            if int(discount_minor) != int(subtotal_minor):
-                raise ProtocolError(409, "Momo Checkout discount is not 100 percent")
-        except (TypeError, ValueError) as exc:
-            raise ProtocolError(409, "Momo Checkout discount fields are invalid") from exc
+    if subtotal_minor in (None, "") or discount_minor in (None, ""):
+        raise ProtocolError(409, "Momo Checkout discount fields are missing")
+    try:
+        if int(discount_minor) != int(subtotal_minor):
+            raise ProtocolError(409, "Momo Checkout discount is not 100 percent")
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(409, "Momo Checkout discount fields are invalid") from exc
 
 def taxes(
     session: Any,

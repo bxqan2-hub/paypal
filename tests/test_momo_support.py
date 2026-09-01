@@ -24,6 +24,7 @@ from payment_link_extractor.momo_stripe import (
     validate_momo_url,
 )
 from payment_link_extractor.momo_checkout import create_checkout, momo_checkout_method_state
+from payment_link_extractor.momo_checkout import validate_zero_trial_checkout
 from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
@@ -282,6 +283,33 @@ def test_momo_checkout_method_state_detects_hidden_custom_method() -> None:
     assert momo_checkout_method_state({"payment_method_types": ["card", "link"]}) is False
     assert momo_checkout_method_state({"checkout_state": {"customPaymentMethods": [{"id": "momo"}]}}) is True
     assert momo_checkout_method_state({}) is None
+
+
+def test_momo_zero_gate_requires_server_promo_echo_and_full_discount() -> None:
+    base = {
+        "currency": "VND",
+        "promo_campaign_response": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
+        "checkout_state": {
+            "currency": "VND",
+            "total": {
+                "subtotal": {"minorUnitsAmount": 475000},
+                "discount": {"minorUnitsAmount": 475000},
+                "total": {"minorUnitsAmount": 0},
+            },
+        },
+    }
+    validate_zero_trial_checkout(base)
+    missing_echo = dict(base)
+    missing_echo["promo_campaign_response"] = {}
+    try:
+        validate_zero_trial_checkout(missing_echo)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 409
+    else:
+        raise AssertionError("missing server promo echo was accepted")
 
 
 def test_momo_elements_customer_and_stripe_ids_are_forwarded() -> None:
