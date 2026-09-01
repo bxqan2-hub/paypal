@@ -75,13 +75,19 @@ class MomoSentinelProvider:
         self._delegate.close()
 
 
+def _curl_profile_supported(impersonate: str) -> bool:
+    """Check the installed curl_cffi enum before selecting a TLS profile."""
+    try:
+        from curl_cffi.requests.impersonate import BrowserType
+
+        return str(impersonate or "").lower() in {
+            str(item.value).lower() for item in BrowserType
+        }
+    except Exception:
+        return True
+
+
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
-    {
-        "name": "chrome152",
-        "impersonate": "chrome152",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
-    },
     {
         "name": "chrome150",
         "impersonate": "chrome150",
@@ -100,6 +106,12 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
     },
+    {
+        "name": "chrome152",
+        "impersonate": "chrome152",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+    },
 )
 
 
@@ -109,6 +121,8 @@ class MomoTransportFactory:
     def __init__(self, fingerprint: str = "") -> None:
         requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
         matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
+        if matches and not _curl_profile_supported(matches[0]["impersonate"]):
+            matches = []
         # Bind the current Momo HAR identity by default. Older profiles remain
         # available only through an explicit per-attempt override.
         self.profile = dict(matches[0] if matches else MOMO_BROWSER_PROFILES[0])
