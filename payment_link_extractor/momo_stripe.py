@@ -125,10 +125,6 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "payment_method_data[billing_details][address][country]": "VN",
         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
         "payment_method_data[billing_details][address][state]": billing["state"],
-        # The captured MoMo Elements request keeps this field present but
-        # empty; sending the VN billing phone makes Stripe classify it as an
-        # unsupported parameter for the MoMo method.
-        "payment_method_data[phone]": "",
         "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
         "payment_method_data[referrer]": "https://chatgpt.com",
         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
