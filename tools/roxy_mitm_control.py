@@ -423,6 +423,11 @@ class CaptureState:
             self.message = "正在保存并合并 HAR"
         if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
             cdp_stop_file.write_text("stop", encoding="ascii")
+            if os.name == "nt":
+                try:
+                    cdp_process.send_signal(signal.CTRL_BREAK_EVENT)
+                except OSError:
+                    pass
         if process is not None and process.poll() is None:
             try:
                 if stop_file is not None:
@@ -440,7 +445,7 @@ class CaptureState:
                     process.kill()
         if cdp_process is not None and cdp_process.poll() is None:
             try:
-                cdp_process.wait(timeout=180)
+                cdp_process.wait(timeout=45)
             except subprocess.TimeoutExpired:
                 cdp_process.terminate()
                 try:
@@ -449,7 +454,7 @@ class CaptureState:
                     cdp_process.kill()
         merge_result: dict[str, object] | None = None
         merge_error = ""
-        if output is not None and cdp_output is not None:
+        if output is not None and cdp_output is not None and cdp_output.is_file():
             try:
                 merge_result = merge_hybrid_har(output, cdp_output, channel)
                 audit = merge_result.get("audit") if isinstance(merge_result.get("audit"), dict) else {}
@@ -457,6 +462,9 @@ class CaptureState:
                 self.append_log(f"CAPTURE_HYBRID_ENTRIES={merge_result.get('entries', 0)}")
                 self.append_log(f"CAPTURE_HYBRID_COMPLETENESS={'complete' if audit.get('complete') else 'partial'}")
                 self.append_log(f"CAPTURE_HYBRID_MISSING={json.dumps(missing, ensure_ascii=False)}")
+        elif cdp_output is not None and not cdp_output.is_file():
+            merge_error = "CDP HAR 未写出，已保留 mitmproxy 主 HAR"
+            self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 merge_error = str(exc)
                 self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
