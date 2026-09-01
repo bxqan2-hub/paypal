@@ -27,4 +27,4 @@ ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:paymen
 
 Restored behavior/status: rollback test copy restored; working tree remains on modified Momo branch. No AT, Cookie, Sentinel, proxy credential, or order identifier is recorded here.
 
-CANARY: first run had closed stdin and returned 401 before Checkout. Runtime-bound retry reached `CANARY_STAGE=checkout` and returned `CANARY_STATUS=failed`, `CANARY_ERROR_TYPE=ReadTimeout`; exit status 1. No `checkout_committed` stage was observed and no order was created.
+CANARY: earlier runtime-bound run reached `CANARY_STAGE=checkout` and returned `ReadTimeout`. Final runtime-bound retry after proxy normalization and fingerprint rotation reached `CANARY_STAGE=checkout` and returned `CANARY_STATUS=failed`, `CANARY_ERROR_TYPE=Timeout`; exit status 1. No `checkout_committed` stage was observed and no order was created.
