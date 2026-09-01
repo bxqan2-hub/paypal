@@ -32,6 +32,7 @@ MITMPROXY_BIN_DIRS = (
     Path(r"C:\Program Files (x86)\mitmproxy\bin"),
 )
 CHANNELS = ("paypal", "gopay", "gcash")
+ROXY_IP_CHECK_IGNORE_HOSTS = r"^ipcheck\.roxybrowser\.(?:com|co):443$"
 
 
 def find_mitm_binary(name: str, explicit: str = "") -> Path:
@@ -390,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
             "--web-open-browser",
             "--set",
             "http3=false",
+            "--ignore-hosts",
+            ROXY_IP_CHECK_IGNORE_HOSTS,
             "--save-stream-file",
             str(flow_file),
             "--quiet",

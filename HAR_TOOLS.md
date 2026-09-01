@@ -28,6 +28,8 @@ py -3 tools\mitm_capture.py --doctor
 
 需要上游代理时可在 BAT 提示中输入，或只通过本地环境变量传入，不写进脚本或配置。mitmproxy 12 不直接支持 SOCKS5 上游，工具会自动建立仅监听回环地址的临时 HTTP 桥接，退出时一并清理：
 
+RoxyBrowser 的桌面主进程不使用 Windows 系统 CA。工具仅对 `ipcheck.roxybrowser.com` 和 `ipcheck.roxybrowser.co` 两个内置 IP 检测域名启用 TLS 透传，避免 Roxy 的“测试代理 IP”误报证书错误；其余业务域名仍由 mitmproxy 正常解密和记录。
+
 ```powershell
 $env:OPLL_CAPTURE_UPSTREAM = 'HOST:PORT:USERNAME:PASSWORD'
 $env:OPLL_CAPTURE_CHANNEL = 'gopay'
