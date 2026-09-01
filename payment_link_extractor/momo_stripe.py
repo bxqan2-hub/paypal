@@ -58,7 +58,24 @@ def _stripe_error_code(response: Any) -> str:
         param = str(error.get("param") or "").strip()
         if code and param:
             return f"{code};param={param}"
-        return code
+    return code
+
+
+def _find_client_secret(value: Any) -> str:
+    if isinstance(value, dict):
+        direct = str(value.get("client_secret") or "").strip()
+        if direct:
+            return direct
+        for child in value.values():
+            found = _find_client_secret(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_client_secret(child)
+            if found:
+                return found
+    return ""
     return ""
 
 
@@ -210,13 +227,16 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
     payload = json_payload(response, "Momo checkout confirm")
-    if str(payload.get("status") or "").lower() != "success" or "client_secret" not in payload:
+    client_secret = _find_client_secret(payload)
+    if client_secret:
+        payload.setdefault("client_secret", client_secret)
+    if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
         raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
     return payload
 
 
 def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed: dict[str, Any]) -> dict[str, Any]:
-    secret = str(confirmed.get("client_secret") or "")
+    secret = _find_client_secret(confirmed)
     intent_id = secret.split("_secret_", 1)[0]
     if not intent_id.startswith(("pi_", "seti_")):
         raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")

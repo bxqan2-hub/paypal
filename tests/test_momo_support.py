@@ -266,6 +266,24 @@ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
     assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]
 
 
+def test_momo_confirm_accepts_nested_setup_intent_secret() -> None:
+    class Session:
+        headers = {}
+
+        def request(self, method, url, **kwargs):
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "status": "open",
+                    "setup_intent": {"client_secret": "seti_fixture_secret"},
+                },
+            )
+
+    checkout = {"cs_id": "oaics_fixture", "processor_entity": "openai_llc"}
+    result = checkout_confirm(Session(), checkout, "ctoken_fixture")
+    assert result["client_secret"] == "seti_fixture_secret"
+
+
 def test_momo_redirect_follows_stripe_authorize_hop() -> None:
     target = "https://payment.momo.vn/v2/gateway/pay?t=opaque&s=signature"
 
