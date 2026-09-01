@@ -15,7 +15,7 @@ index 04d1be3..c860b2f 100644
 +- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
-index 98a8ec6..9d9a376 100644
+index 98a8ec6..1a9cba5 100644
 --- a/payment_link_extractor/momo_checkout.py
 +++ b/payment_link_extractor/momo_checkout.py
 @@ -8,6 +8,7 @@ from typing import Any
@@ -59,6 +59,20 @@ index 98a8ec6..9d9a376 100644
          headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
      )
      sid = session_id(payload)
+@@ -78,7 +96,12 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+     checkout = {
+         "cs_id": sid,
+         "session_kind": "openai_custom_checkout",
+-        "processor_entity": str(_walk(payload, ("processor_entity", "processorEntity")) or "openai_ie"),
++        # The complete VN HAR uses the OpenAI LLC checkout route.  Prefer the
++        # server value, while keeping this captured route as the fallback for
++        # responses that omit the display-only processor field.
++        "processor_entity": str(
++            _walk(payload, ("processor_entity", "processorEntity")) or "openai_llc"
++        ),
+         "billing_country": MOMO_COUNTRY,
+         "currency": MOMO_CURRENCY,
+         "account_email": account_email,
 diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
 index 51a8cc0..fa5cd73 100644
 --- a/payment_link_extractor/momo_core.py
@@ -115,7 +129,7 @@ index 51a8cc0..fa5cd73 100644
              raise ProtocolError(int(response.status_code), "Momo querySession failed")
          try:
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
-index 6713d52..6a22527 100644
+index 6713d52..63ac1a9 100644
 --- a/payment_link_extractor/momo_stripe.py
 +++ b/payment_link_extractor/momo_stripe.py
 @@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
@@ -126,12 +140,14 @@ index 6713d52..6a22527 100644
  
  
  def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
-@@ -71,7 +72,25 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+@@ -71,7 +72,31 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
  
  def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
      path = "/backend-api/payments/checkout/confirm"
 -    response = session.request("POST", "https://chatgpt.com" + path, json={"checkout_session_id": checkout["cs_id"], "confirm_token": token, "selected_payment_method_type": "momo"}, timeout=30)
 +    url = "https://chatgpt.com" + path
++    processor = str(checkout.get("processor_entity") or "openai_llc")
++    referer = f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
 +    response = session.request(
 +        "POST",
 +        url,
@@ -145,9 +161,13 @@ index 6713d52..6a22527 100644
 +            session,
 +            "POST",
 +            url,
-+            {"Referer": f"https://chatgpt.com/checkout/{checkout['cs_id']}"},
++            {
++                "Referer": referer,
++                "x-openai-target-path": path,
++                "x-openai-target-route": path,
++            },
 +            flow="checkout_session_approval",
-+            referer=f"https://chatgpt.com/checkout/{checkout['cs_id']}",
++            referer=referer,
 +        ),
 +    )
      if int(getattr(response, "status_code", 0) or 0) >= 400:
@@ -637,19 +657,22 @@ index 56966fd..f37baf5 100644
      calls: list[tuple[str, str]] = []
  
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..917fb67 100644
+index fb47546..2a5dc63 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
-@@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
+@@ -9,8 +9,9 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
+ from payment_link_extractor.config import billing_for_country
  from payment_link_extractor.models import ExtractionConfig
  from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
- from payment_link_extractor.momo_stripe import validate_momo_url
+-from payment_link_extractor.momo_stripe import validate_momo_url
 -from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
++from payment_link_extractor.momo_stripe import checkout_confirm, validate_momo_url
++from payment_link_extractor.momo_checkout import create_checkout
 +from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
  from payment_link_extractor.web.app import create_app
  from payment_link_extractor.web.tasks import TaskManager
  from payment_link_extractor.web.routes import _config_from_payload
-@@ -46,9 +46,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
+@@ -46,9 +47,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
  
      class Session:
          def request(self, method, endpoint, **kwargs):
@@ -663,7 +686,7 @@ index fb47546..917fb67 100644
              return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
  
      assert query_gateway(Session(), url)["status_code"] == 1000
-@@ -66,6 +70,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
+@@ -66,6 +71,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
      assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
  
  
@@ -680,7 +703,7 @@ index fb47546..917fb67 100644
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
      for value in (None, 1, -1):
-@@ -86,3 +100,69 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+@@ -86,3 +101,96 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -750,3 +773,30 @@ index fb47546..917fb67 100644
 +    )
 +    assert capture_momo_csrf_token(session, response) == "csrf-from-page"
 +    assert session.momo_csrf_token == "csrf-from-page"
++
++
++def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
++    calls = []
++
++    class Session:
++        headers = {}
++
++        def request(self, method, url, **kwargs):
++            calls.append((method, url, kwargs))
++            if url.endswith("/payments/checkout"):
++                return SimpleNamespace(
++                    status_code=200,
++                    json=lambda: {"checkout_session_id": "oaics_fixture"},
++                )
++            return SimpleNamespace(
++                status_code=200,
++                json=lambda: {"status": "success", "client_secret": "pi_fixture_secret_x"},
++            )
++
++    session = Session()
++    checkout = create_checkout(session)
++    assert checkout["processor_entity"] == "openai_llc"
++    checkout_confirm(session, checkout, "ctoken_fixture")
++    confirm_headers = calls[-1][2]["headers"]
++    assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
++    assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]
