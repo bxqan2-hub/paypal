@@ -115,6 +115,7 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     factory = transport_factory or MomoTransportFactory()
     trial_eligible = False
     trial_campaign = ""
+    chatgpt = None
     if bool(getattr(config, "momo_trial_eligibility_check", True)):
         if stage_callback:
             stage_callback("eligibility_check")
@@ -126,6 +127,7 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         )
         trial_eligible = bool(eligibility.get("eligible"))
         trial_campaign = str(eligibility.get("campaign_id") or "").strip()
+        chatgpt = eligibility.pop("_chatgpt_session", None)
         selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
         config = replace(
             config,
@@ -146,7 +148,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     if email:
         billing_profile = replace(billing_profile, email=email)
     billing = billing_profile.to_dict()
-    chatgpt = factory.chatgpt(config, config.checkout_proxy)
+    if chatgpt is None:
+        chatgpt = factory.chatgpt(config, config.checkout_proxy)
     stripe = None
     momo = None
     try:
@@ -193,4 +196,5 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         if momo is stripe:
             stripe = None
         close(stripe)
+        close(chatgpt)
         close(chatgpt)

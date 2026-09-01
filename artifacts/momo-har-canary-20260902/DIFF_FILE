@@ -116,10 +116,14 @@ index df4b3ba..7e3aa9c 100644
      momo_fingerprint: str = ""
      verbose: bool = True
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
-index 98a8ec6..25e9770 100644
+index 98a8ec6..95338de 100644
 --- a/payment_link_extractor/momo_checkout.py
 +++ b/payment_link_extractor/momo_checkout.py
-@@ -8,6 +8,7 @@ from typing import Any
+@@ -5,9 +5,11 @@ from __future__ import annotations
+ import json
+ import re
+ from typing import Any
++from urllib.parse import quote
  
  from .config import billing_for_country, processor_entity_for_country
  from .errors import ProtocolError
@@ -127,7 +131,7 @@ index 98a8ec6..25e9770 100644
  
  MOMO_COUNTRY = "VN"
  MOMO_CURRENCY = "VND"
-@@ -50,26 +51,45 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
+@@ -50,27 +52,80 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
      return value
  
  
@@ -157,7 +161,14 @@ index 98a8ec6..25e9770 100644
      return json_payload(response, stage)
  
  
- def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+-def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
++def create_checkout(
++    session: Any,
++    *,
++    account_email: str = "",
++    trial_eligible: bool = False,
++    campaign_id: str = "",
++) -> dict[str, Any]:
      path = "/backend-api/payments/checkout"
 +    body: dict[str, Any] = {
 +        "entry_point": "all_plans_pricing_modal",
@@ -165,6 +176,30 @@ index 98a8ec6..25e9770 100644
 +        "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
 +        "checkout_ui_mode": "custom",
 +    }
++    referer = "https://chatgpt.com/"
++    # The complete zero-due MoMo HAR has this campaign object on the initial
++    # Checkout request (body length 245).  It does not use checkout/update.
++    if trial_eligible:
++        campaign = str(campaign_id or "plus-1-month-free").strip()
++        body["promo_campaign"] = {
++            "promo_campaign_id": campaign,
++            "is_coupon_from_query_param": False,
++        }
++        referer = (
++            "https://chatgpt.com/?promo_campaign=" + quote(campaign, safe="")
++        )
++        # The browser establishes the promo landing-page context before the
++        # POST. Keep this warm-up best-effort so a slow proxy does not hide the
++        # Checkout response that remains the source of truth.
++        try:
++            session.request(
++                "GET",
++                referer,
++                headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
++                timeout=30,
++            )
++        except Exception:
++            pass
      payload = request(
          session,
          "POST",
@@ -175,13 +210,18 @@ index 98a8ec6..25e9770 100644
 -            "plan_name": "chatgptplusplan",
 -            "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
 -            "checkout_ui_mode": "custom",
--        },
 +        json=body,
 +        sentinel_flow="chatgpt_checkout",
-         headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
++        headers={
++            "Referer": referer,
++            "x-openai-target-path": path,
++            "x-openai-target-route": path,
+         },
+-        headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
      )
      sid = session_id(payload)
-@@ -78,18 +98,37 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+     if not sid.startswith("oaics_"):
+@@ -78,18 +133,37 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
      checkout = {
          "cs_id": sid,
          "session_kind": "openai_custom_checkout",
@@ -225,7 +265,7 @@ index 98a8ec6..25e9770 100644
      path = "/backend-api/payments/checkout/taxes"
      processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
 diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
-index 51a8cc0..78e3da3 100644
+index 51a8cc0..6b6832e 100644
 --- a/payment_link_extractor/momo_core.py
 +++ b/payment_link_extractor/momo_core.py
 @@ -14,8 +14,14 @@ from .config import billing_for_country, currency_minor_scale
@@ -282,11 +322,13 @@ index 51a8cc0..78e3da3 100644
          if int(getattr(response, "status_code", 0) or 0) >= 400:
              raise ProtocolError(int(response.status_code), "Momo querySession failed")
          try:
-@@ -80,6 +112,25 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+@@ -80,6 +112,29 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
          raise ConfigurationError("Momo core requires payment_method=momo")
      if str(config.country or "").upper() != MOMO_COUNTRY:
          raise ConfigurationError("Momo core requires country=VN")
 +    factory = transport_factory or MomoTransportFactory()
++    trial_eligible = False
++    trial_campaign = ""
 +    if bool(getattr(config, "momo_trial_eligibility_check", True)):
 +        if stage_callback:
 +            stage_callback("eligibility_check")
@@ -296,6 +338,8 @@ index 51a8cc0..78e3da3 100644
 +            cancel_event=cancel_event,
 +            stage_callback=stage_callback,
 +        )
++        trial_eligible = bool(eligibility.get("eligible"))
++        trial_campaign = str(eligibility.get("campaign_id") or "").strip()
 +        selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
 +        config = replace(
 +            config,
@@ -308,7 +352,7 @@ index 51a8cc0..78e3da3 100644
      config = pin_momo_attempt_proxy(config)
      def checkpoint(stage: str) -> None:
          if cancel_event is not None and cancel_event.is_set():
-@@ -91,13 +142,15 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+@@ -91,13 +146,17 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
      if email:
          billing_profile = replace(billing_profile, email=email)
      billing = billing_profile.to_dict()
@@ -322,11 +366,13 @@ index 51a8cc0..78e3da3 100644
 +        checkout = create_checkout(
 +            chatgpt,
 +            account_email=email,
++            trial_eligible=trial_eligible,
++            campaign_id=trial_campaign,
 +        )
          checkpoint("checkout_committed")
          checkpoint("checkout_kind:openai_custom_checkout")
          for _ in range(3):
-@@ -117,6 +170,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+@@ -117,6 +176,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
          confirmed = checkout_confirm(chatgpt, checkout, token)
          intent = intent_confirm(stripe, checkout, token, confirmed)
          raw = redirect_url(intent)
@@ -543,7 +589,7 @@ index 0000000..2397032
 +        retryable=True,
 +    )
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
-index 6713d52..d8630b5 100644
+index 6713d52..3aba10b 100644
 --- a/payment_link_extractor/momo_stripe.py
 +++ b/payment_link_extractor/momo_stripe.py
 @@ -3,6 +3,8 @@ from __future__ import annotations
@@ -687,7 +733,7 @@ index 6713d52..d8630b5 100644
      body: dict[str, Any] = {
          "payment_method_data[type]": "momo",
          "payment_method_data[billing_details][name]": billing["name"],
-@@ -41,52 +145,116 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+@@ -41,52 +145,123 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
          "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
          "payment_method_data[referrer]": "https://chatgpt.com",
          "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
@@ -786,11 +832,19 @@ index 6713d52..d8630b5 100644
          raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
      payload = json_payload(response, "Momo checkout confirm")
 -    if str(payload.get("status") or "").lower() != "success" or "client_secret" not in payload:
+-        raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
 +    client_secret = _find_client_secret(payload)
 +    if client_secret:
 +        payload.setdefault("client_secret", client_secret)
 +    if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
-         raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
++        nested = payload.get("setup_intent") or payload.get("payment_intent") or {}
++        nested_keys = ",".join(sorted(str(key) for key in nested.keys())) if isinstance(nested, dict) else ""
++        top_keys = ",".join(sorted(str(key) for key in payload.keys()))
++        raise ProtocolError(
++            409,
++            "Momo checkout confirm did not return a client secret "
++            f"(status={payload.get('status') or '-'}, top_keys={top_keys}, nested_keys={nested_keys})",
++        )
      return payload
  
  
@@ -819,7 +873,7 @@ index 6713d52..d8630b5 100644
  
  
  def redirect_url(payload: dict[str, Any]) -> str:
-@@ -101,6 +269,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
+@@ -101,6 +276,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
      return ""
  
  
@@ -861,10 +915,10 @@ index 6713d52..d8630b5 100644
      parsed = urlparse(str(value or ""))
      query = parse_qs(parsed.query)
 diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
-index efe8e02..ae664fb 100644
+index efe8e02..be0e246 100644
 --- a/payment_link_extractor/momo_transport.py
 +++ b/payment_link_extractor/momo_transport.py
-@@ -2,15 +2,74 @@ from __future__ import annotations
+@@ -2,16 +2,85 @@ from __future__ import annotations
  
  """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
  
@@ -925,6 +979,10 @@ index efe8e02..ae664fb 100644
 +            proxy=_browser_proxy_for(proxy),
 +            transport_session=transport_session,
 +            enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
++            language="vi-VN",
++            client_build_number="10109010",
++            client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
++            locale="vi-VN",
 +        )
 +
 +    @property
@@ -939,9 +997,26 @@ index efe8e02..ae664fb 100644
 +
 +
  MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
++    {
++        "name": "chrome152",
++        "impersonate": "chrome152",
++        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
++        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
++    },
      {
          "name": "chrome150",
-@@ -43,19 +102,112 @@ class MomoTransportFactory:
+         "impersonate": "chrome150",
+@@ -37,25 +106,120 @@ class MomoTransportFactory:
+     """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
+ 
+     def __init__(self, fingerprint: str = "") -> None:
+-        requested = str(fingerprint or "").strip().lower()
++        requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
+         matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
+-        self.profile = dict(matches[0] if matches else secrets.choice(MOMO_BROWSER_PROFILES))
++        # Bind the current Momo HAR identity by default. Older profiles remain
++        # available only through an explicit per-attempt override.
++        self.profile = dict(matches[0] if matches else MOMO_BROWSER_PROFILES[0])
  
      def chatgpt(self, config: Any, proxy: str) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -960,15 +1035,15 @@ index efe8e02..ae664fb 100644
                  "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
 +                "oai-device-id": device_id,
 +                "oai-session-id": session_id,
-+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
++                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
 +                "oai-client-build-number": os.getenv(
 +                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
 +                ).strip()
-+                or "9748354",
++                or "10109010",
 +                "oai-client-version": os.getenv(
 +                    "OPLL_OAI_CLIENT_VERSION", ""
 +                ).strip()
-+                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
++                or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
 +                "x-oai-is-pending-updates": os.getenv(
 +                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
 +                ).strip()
@@ -1055,7 +1130,7 @@ index efe8e02..ae664fb 100644
          return session
  
      def stripe(self, config: Any) -> requests.Session:
-@@ -72,7 +224,16 @@ class MomoTransportFactory:
+@@ -72,7 +236,16 @@ class MomoTransportFactory:
  
      def momo(self, config: Any) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -1073,7 +1148,7 @@ index efe8e02..ae664fb 100644
          _set_proxy(session, config.checkout_proxy)
          return session
  
-@@ -86,16 +247,172 @@ def _new_session(impersonate: str) -> Any:
+@@ -86,16 +259,172 @@ def _new_session(impersonate: str) -> Any:
  
  
  def _set_proxy(session: Any, proxy: str) -> None:
@@ -1254,7 +1329,7 @@ index efe8e02..ae664fb 100644
 +    if callable(getattr(session, "close", None)):
          session.close()
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 1a1ade5..c0222cf 100644
+index 1a1ade5..00113d5 100644
 --- a/payment_link_extractor/transport.py
 +++ b/payment_link_extractor/transport.py
 @@ -55,6 +55,11 @@ class TransportFactory(Protocol):
@@ -1269,23 +1344,45 @@ index 1a1ade5..c0222cf 100644
  def new_session() -> Any:
      if CurlCffiSession is not None:
          return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
-@@ -513,6 +518,7 @@ class BrowserSentinelProvider:
+@@ -513,6 +518,11 @@ class BrowserSentinelProvider:
          proxy: str,
          transport_session: Any,
          log: Any | None = None,
 +        enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
++        language: str = "en-US",
++        client_build_number: str = "",
++        client_version: str = "",
++        locale: str = "en-PH",
      ) -> None:
          self.access_token = str(access_token or "").strip()
          self.device_id = str(device_id or "").strip()
-@@ -521,6 +527,7 @@ class BrowserSentinelProvider:
+@@ -521,14 +531,23 @@ class BrowserSentinelProvider:
          self.proxy = str(proxy or "").strip()
          self.transport_session = transport_session
          self.log = log
 +        self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
++        self.language = str(language or "en-US").strip() or "en-US"
++        self.client_build_number = str(client_build_number or "").strip()
++        self.client_version = str(client_version or "").strip()
++        self.locale = str(locale or "en-PH").strip() or "en-PH"
++        language_list = json.dumps([self.locale, self.locale.split("-", 1)[0]])
          self.binary = _agent_browser_binary()
          self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
          self.session_name = "checkout_" + uuid.uuid4().hex[:12]
-@@ -541,7 +548,7 @@ class BrowserSentinelProvider:
+         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
+         self.locale_script = self.temp_dir / "locale.js"
+         self.locale_script.write_text(
+-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
+-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
++            "Object.defineProperty(navigator, 'language', {get: () => "
++            + json.dumps(self.locale)
++            + "});Object.defineProperty(navigator, 'languages', {get: () => "
++            + language_list
++            + "});",
+             encoding="utf-8",
+         )
+         self._lock = threading.RLock()
+@@ -541,7 +560,7 @@ class BrowserSentinelProvider:
  
      @property
      def enabled(self) -> bool:
@@ -1294,20 +1391,26 @@ index 1a1ade5..c0222cf 100644
          return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
  
      def _base_command(self) -> list[str]:
-@@ -675,8 +682,10 @@ class BrowserSentinelProvider:
+@@ -670,13 +689,15 @@ class BrowserSentinelProvider:
+                 "Authorization": f"Bearer {self.access_token}",
+                 "oai-device-id": self.device_id,
+                 "oai-session-id": self.session_id,
+-                "oai-language": "en-US",
++                "oai-language": self.language,
+                 # The current browser HAR (m.gcash.com111.har) uses the
                  # deployed checkout build below.  Keep both values overridable
                  # because the web client rotates them independently of the
                  # payment flow.
 -                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
 -                "oai-client-version": os.getenv(
-+                "oai-client-build-number": _env_or_default(
-+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
-+                ),
-+                "oai-client-version": _env_or_default(
++                "oai-client-build-number": self.client_build_number
++                or _env_or_default("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
++                "oai-client-version": self.client_version
++                or _env_or_default(
                      "OPLL_OAI_CLIENT_VERSION",
                      "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                  ),
-@@ -784,12 +793,14 @@ class DefaultTransportFactory:
+@@ -784,12 +805,14 @@ class DefaultTransportFactory:
                  "oai-session-id": session_id,
                  # ChatGPT's API language is the browser UI locale; the
                  # country-specific Accept-Language remains separate above.
@@ -1325,7 +1428,7 @@ index 1a1ade5..c0222cf 100644
                      "OPLL_OAI_CLIENT_VERSION",
                      "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                  ),
-@@ -803,12 +814,14 @@ class DefaultTransportFactory:
+@@ -803,12 +826,14 @@ class DefaultTransportFactory:
                      "OPLL_OAI_IS_CLIENT_OBSERVATION",
                      f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                  ),
@@ -1342,7 +1445,7 @@ index 1a1ade5..c0222cf 100644
                  "sec-fetch-dest": "empty",
                  "sec-fetch-mode": "cors",
                  "sec-fetch-site": "same-origin",
-@@ -892,7 +905,7 @@ class DefaultTransportFactory:
+@@ -892,7 +917,7 @@ class DefaultTransportFactory:
          session = new_session()
          session.headers.update(
              {
@@ -1447,7 +1550,7 @@ index 56966fd..f37baf5 100644
      calls: list[tuple[str, str]] = []
  
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..52e5708 100644
+index fb47546..beff7bd 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
 @@ -6,11 +6,13 @@ from types import SimpleNamespace
@@ -1506,7 +1609,7 @@ index fb47546..52e5708 100644
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
      for value in (None, 1, -1):
-@@ -77,6 +94,10 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+@@ -77,8 +94,13 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
              raise AssertionError("non-zero or missing Momo amount was accepted")
  
  
@@ -1515,9 +1618,13 @@ index fb47546..52e5708 100644
 +
 +
  def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
-     assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+-    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
++    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150", "chrome152"}
++    assert MomoTransportFactory().profile["name"] == "chrome152"
      assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
-@@ -86,3 +107,186 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+     assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
+ 
+@@ -86,3 +108,194 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -1668,8 +1775,16 @@ index fb47546..52e5708 100644
 +            )
 +
 +    session = Session()
-+    checkout = create_checkout(session)
++    checkout = create_checkout(
++        session, trial_eligible=True, campaign_id="plus-1-month-free"
++    )
 +    assert checkout["processor_entity"] == "openai_llc"
++    checkout_call = next(item for item in calls if item[0] == "POST")
++    assert checkout_call[2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
++    assert checkout_call[2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
++    import json
++
++    assert len(json.dumps(checkout_call[2]["json"], separators=(",", ":"))) == 245
 +    checkout_confirm(session, checkout, "ctoken_fixture")
 +    confirm_headers = calls[-1][2]["headers"]
 +    assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"

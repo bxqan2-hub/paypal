@@ -523,6 +523,7 @@ class BrowserSentinelProvider:
         client_build_number: str = "",
         client_version: str = "",
         locale: str = "en-PH",
+        timezone: str = "Asia/Manila",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -536,6 +537,7 @@ class BrowserSentinelProvider:
         self.client_build_number = str(client_build_number or "").strip()
         self.client_version = str(client_version or "").strip()
         self.locale = str(locale or "en-PH").strip() or "en-PH"
+        self.timezone = str(timezone or "Asia/Manila").strip() or "Asia/Manila"
         language_list = json.dumps([self.locale, self.locale.split("-", 1)[0]])
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
@@ -590,7 +592,7 @@ class BrowserSentinelProvider:
         env = dict(os.environ)
         # Chromium uses TZ when constructing the browser fingerprint.  Keep
         # the browser and the PH checkout locale coherent when supported.
-        env.setdefault("TZ", "Asia/Manila")
+        env.setdefault("TZ", self.timezone)
         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         status = -1

@@ -11,14 +11,14 @@ from dataclasses import replace
 import threading
 from typing import Any, Callable
 
-from .auth import account_id, normalize_access_token
+from .auth import normalize_access_token
 from .config import normalize_payment_method
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .momo_transport import MomoTransportFactory, close, momo_request_headers
 
 
 MOMO_TRIAL_COUPON = "plus-1-month-free"
-MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+MOMO_ELIGIBILITY_PATH = "/backend-api/promo_campaign/check_coupon"
 
 
 class MomoEligibilityError(ProtocolError):
@@ -75,19 +75,32 @@ def probe_momo_trial_eligibility(
             stage_callback(f"eligibility_proxy:{index}")
         attempt = _attempt_config(replace(config, access_token=token), proxy)
         chatgpt = factory.chatgpt(attempt, proxy)
+        campaign_url = (
+            "https://chatgpt.com/?promo_campaign=" + MOMO_TRIAL_COUPON
+        )
         url = (
             f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
+            f"?coupon={MOMO_TRIAL_COUPON}&is_coupon_from_query_param=true"
         )
-        selected_account = account_id(token)
         eligibility_headers = {
             "Accept": "application/json",
-            "Referer": "https://chatgpt.com/",
+            "Referer": campaign_url,
             "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
             "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
         }
-        if selected_account:
-            eligibility_headers["chatgpt-account-id"] = selected_account
+        session_kept = False
         try:
+            # Establish the same promo landing-page context used by the
+            # successful zero-due HAR before asking for coupon eligibility.
+            try:
+                chatgpt.request(
+                    "GET",
+                    campaign_url,
+                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
+                    timeout=30,
+                )
+            except Exception:
+                pass
             response = chatgpt.request(
                 "GET",
                 url,
@@ -132,23 +145,23 @@ def probe_momo_trial_eligibility(
                     }
                 )
                 continue
+            state = ""
+            eligible = False
+            redeemed = False
+            campaign_id = ""
             if not isinstance(payload, dict):
                 state = ""
-                eligible = False
             else:
-                accounts = payload.get("accounts")
-                accounts = accounts if isinstance(accounts, dict) else {}
-                account = accounts.get(selected_account) or accounts.get("default") or {}
-                account = account if isinstance(account, dict) else {}
-                campaigns = account.get("eligible_promo_campaigns")
-                campaigns = campaigns if isinstance(campaigns, dict) else {}
-                plus = campaigns.get("plus")
-                plus = plus if isinstance(plus, dict) else {}
-                campaign_id = str(
-                    plus.get("id") or plus.get("campaign_id") or ""
-                ).strip()
-                state = "eligible" if campaign_id else "not_eligible"
-                eligible = bool(campaign_id)
+                state = str(payload.get("state") or "").strip().lower()
+                redemption = payload.get("redemption")
+                redemption = redemption if isinstance(redemption, dict) else {}
+                redeemed = bool(
+                    redemption.get("redeemed")
+                    or redemption.get("redeemed_by_user")
+                    or redemption.get("redeemed_by_workspace")
+                )
+                eligible = state == "eligible" and not redeemed
+                campaign_id = MOMO_TRIAL_COUPON if eligible else ""
             probes.append(
                 {
                     "attempt": index,
@@ -158,11 +171,13 @@ def probe_momo_trial_eligibility(
                     "eligible": eligible,
                     "coupon": MOMO_TRIAL_COUPON,
                     "campaign_id": campaign_id if eligible else "",
+                    "redeemed": redeemed if isinstance(payload, dict) else False,
                 }
             )
             if eligible:
                 if stage_callback is not None:
                     stage_callback("eligibility_confirmed")
+                session_kept = True
                 return {
                     "ok": True,
                     "eligible": True,
@@ -177,6 +192,9 @@ def probe_momo_trial_eligibility(
                     "campaign_id": campaign_id,
                     "source": "chatgpt_check_coupon",
                     "probes": probes,
+                    # Internal-only handle; the core reuses this exact
+                    # device/session/cookie context for Checkout.
+                    "_chatgpt_session": chatgpt,
                 }
         except MomoEligibilityError:
             raise
@@ -192,7 +210,8 @@ def probe_momo_trial_eligibility(
                 }
             )
         finally:
-            close(chatgpt)
+            if not session_kept:
+                close(chatgpt)
 
     raise MomoEligibilityError(
         409,

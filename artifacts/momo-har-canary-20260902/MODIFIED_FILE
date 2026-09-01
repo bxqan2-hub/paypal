@@ -57,6 +57,10 @@ class MomoSentinelProvider:
             proxy=_browser_proxy_for(proxy),
             transport_session=transport_session,
             enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
+            language="vi-VN",
+            client_build_number="10109010",
+            client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
+            locale="vi-VN",
         )
 
     @property
@@ -71,6 +75,12 @@ class MomoSentinelProvider:
 
 
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+    {
+        "name": "chrome152",
+        "impersonate": "chrome152",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+    },
     {
         "name": "chrome150",
         "impersonate": "chrome150",
@@ -96,9 +106,11 @@ class MomoTransportFactory:
     """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
 
     def __init__(self, fingerprint: str = "") -> None:
-        requested = str(fingerprint or "").strip().lower()
+        requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
         matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
-        self.profile = dict(matches[0] if matches else secrets.choice(MOMO_BROWSER_PROFILES))
+        # Bind the current Momo HAR identity by default. Older profiles remain
+        # available only through an explicit per-attempt override.
+        self.profile = dict(matches[0] if matches else MOMO_BROWSER_PROFILES[0])
 
     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
         session = _new_session(self.profile["impersonate"])
@@ -116,15 +128,15 @@ class MomoTransportFactory:
                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
-                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
                 "oai-client-build-number": os.getenv(
                     "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
                 ).strip()
-                or "9748354",
+                or "10109010",
                 "oai-client-version": os.getenv(
                     "OPLL_OAI_CLIENT_VERSION", ""
                 ).strip()
-                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", ""
                 ).strip()

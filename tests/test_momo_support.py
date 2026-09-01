@@ -185,17 +185,9 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
 
         def json(self):
             return {
-                "accounts": {
-                    "default": {
-                        "eligible_promo_campaigns": {
-                            "plus": (
-                                {"campaign_id": "plus-1-month-free"}
-                                if self.state == "eligible"
-                                else {}
-                            )
-                        }
-                    }
-                }
+                "coupon": "plus-1-month-free",
+                "state": "eligible" if self.state == "eligible" else "not_eligible",
+                "redemption": {"redeemed": False},
             }
 
     class Session:
@@ -205,8 +197,10 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
 
         def request(self, method, url, **kwargs):
             assert method == "GET"
-            assert "/accounts/check/v4-2023-04-27" in url
-            return Response(self.state)
+            if "/promo_campaign/check_coupon" in url:
+                return Response(self.state)
+            assert "?promo_campaign=plus-1-month-free" in url
+            return SimpleNamespace(status_code=200, headers={}, text="")
 
         def close(self):
             pass
@@ -233,6 +227,8 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
     )
     assert result["eligible"] is True
     assert result["proxy"] == "proxy-2"
+    assert result["campaign_id"] == "plus-1-month-free"
+    assert result["_chatgpt_session"] is not None
     assert events == ["eligibility_proxy:1", "eligibility_proxy:2", "eligibility_confirmed"]
 
 
