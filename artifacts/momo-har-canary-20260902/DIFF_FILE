@@ -14,6 +14,77 @@ index 04d1be3..c860b2f 100644
 +- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
 +- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 03ad188..5697603 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -1134,11 +1134,14 @@ class BrowserSentinelProvider:
+                 "oai-language": self.language,
+                 # Keep deployed checkout build identifiers overridable because
+                 # the web client rotates them independently of payment flow.
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"),
++                "oai-client-build-number": os.getenv(
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
++                ).strip()
++                or "10012890",
+                 "oai-client-version": os.getenv(
+-                    "OPLL_OAI_CLIENT_VERSION",
+-                    "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+-                ),
++                    "OPLL_OAI_CLIENT_VERSION", ""
++                ).strip()
++                or "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
+             }
+             account = account_id(self.access_token)
+             if account:
+@@ -1654,8 +1657,9 @@ class DefaultTransportFactory:
+                     )
+                 ),
+                 "x-oai-is-pending-updates": os.getenv(
+-                    "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
+-                ),
++                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
++                ).strip()
++                or '{"v":3,"updates":[]}',
+                 # The browser keeps one observation id for a request burst;
+                 # callers may pin a captured value for diagnostics, while the
+                 # default remains fresh for every transport session.
+@@ -1663,15 +1667,16 @@ class DefaultTransportFactory:
+                     "OPLL_OAI_IS_CLIENT_OBSERVATION",
+                     f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+                 ),
+-                "sec-ch-ua": os.getenv(
+-                    "OPLL_SEC_CH_UA",
+-                    (profile or {}).get(
+-                        "sec_ch_ua",
+-                        '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+-                    ),
++                "sec-ch-ua": os.getenv("OPLL_SEC_CH_UA", "").strip()
++                or (profile or {}).get(
++                    "sec_ch_ua",
++                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+                 ),
+                 "sec-ch-ua-mobile": "?0",
+-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
++                "sec-ch-ua-platform": os.getenv(
++                    "OPLL_SEC_CH_UA_PLATFORM", ""
++                ).strip()
++                or '"Windows"',
+                 "sec-fetch-dest": "empty",
+                 "sec-fetch-mode": "cors",
+                 "sec-fetch-site": "same-origin",
+@@ -1822,8 +1827,9 @@ class DefaultTransportFactory:
+                     or str(profile.get("sec_ch_ua") or ""),
+                     "sec-ch-ua-mobile": "?0",
+                     "sec-ch-ua-platform": os.getenv(
+-                        "OPLL_SEC_CH_UA_PLATFORM", '"Windows"'
+-                    ),
++                        "OPLL_SEC_CH_UA_PLATFORM", ""
++                    ).strip()
++                    or '"Windows"',
+                 }
+             )
+             session.gopay_browser_profile = str(profile.get("name") or "")
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
 index 98a8ec6..1a9cba5 100644
 --- a/payment_link_extractor/momo_checkout.py
@@ -174,7 +245,7 @@ index 6713d52..63ac1a9 100644
          raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
      payload = json_payload(response, "Momo checkout confirm")
 diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
-index efe8e02..1a7d545 100644
+index efe8e02..ae664fb 100644
 --- a/payment_link_extractor/momo_transport.py
 +++ b/payment_link_extractor/momo_transport.py
 @@ -2,15 +2,74 @@ from __future__ import annotations
@@ -254,7 +325,7 @@ index efe8e02..1a7d545 100644
  MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
      {
          "name": "chrome150",
-@@ -43,19 +102,110 @@ class MomoTransportFactory:
+@@ -43,19 +102,112 @@ class MomoTransportFactory:
  
      def chatgpt(self, config: Any, proxy: str) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -273,17 +344,19 @@ index efe8e02..1a7d545 100644
                  "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
 +                "oai-device-id": device_id,
 +                "oai-session-id": session_id,
-+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "en-US"),
++                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
 +                "oai-client-build-number": os.getenv(
-+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
-+                ),
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
++                ).strip()
++                or "9748354",
 +                "oai-client-version": os.getenv(
-+                    "OPLL_OAI_CLIENT_VERSION",
-+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
-+                ),
++                    "OPLL_OAI_CLIENT_VERSION", ""
++                ).strip()
++                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
 +                "x-oai-is-pending-updates": os.getenv(
-+                    "OPLL_X_OAI_IS_PENDING_UPDATES", MOMO_EMPTY_PENDING_UPDATES
-+                ),
++                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
++                ).strip()
++                or MOMO_EMPTY_PENDING_UPDATES,
 +                "x-oai-is-client-observation": observation
 +                or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                  "Sec-CH-UA": self.profile["sec_ch_ua"],
@@ -366,7 +439,7 @@ index efe8e02..1a7d545 100644
          return session
  
      def stripe(self, config: Any) -> requests.Session:
-@@ -72,7 +222,16 @@ class MomoTransportFactory:
+@@ -72,7 +224,16 @@ class MomoTransportFactory:
  
      def momo(self, config: Any) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -384,7 +457,7 @@ index efe8e02..1a7d545 100644
          _set_proxy(session, config.checkout_proxy)
          return session
  
-@@ -86,16 +245,172 @@ def _new_session(impersonate: str) -> Any:
+@@ -86,16 +247,172 @@ def _new_session(impersonate: str) -> Any:
  
  
  def _set_proxy(session: Any, proxy: str) -> None:
@@ -565,10 +638,22 @@ index efe8e02..1a7d545 100644
 +    if callable(getattr(session, "close", None)):
          session.close()
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 1a1ade5..78a48b3 100644
+index 1a1ade5..c0222cf 100644
 --- a/payment_link_extractor/transport.py
 +++ b/payment_link_extractor/transport.py
-@@ -513,6 +513,7 @@ class BrowserSentinelProvider:
+@@ -55,6 +55,11 @@ class TransportFactory(Protocol):
+     def stripe(self, config: ExtractionConfig) -> Any: ...
+ 
+ 
++def _env_or_default(name: str, default: str) -> str:
++    """Treat blank .env entries as unset so HAR defaults remain active."""
++    return os.getenv(name, "").strip() or default
++
++
+ def new_session() -> Any:
+     if CurlCffiSession is not None:
+         return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
+@@ -513,6 +518,7 @@ class BrowserSentinelProvider:
          proxy: str,
          transport_session: Any,
          log: Any | None = None,
@@ -576,7 +661,7 @@ index 1a1ade5..78a48b3 100644
      ) -> None:
          self.access_token = str(access_token or "").strip()
          self.device_id = str(device_id or "").strip()
-@@ -521,6 +522,7 @@ class BrowserSentinelProvider:
+@@ -521,6 +527,7 @@ class BrowserSentinelProvider:
          self.proxy = str(proxy or "").strip()
          self.transport_session = transport_session
          self.log = log
@@ -584,7 +669,7 @@ index 1a1ade5..78a48b3 100644
          self.binary = _agent_browser_binary()
          self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
          self.session_name = "checkout_" + uuid.uuid4().hex[:12]
-@@ -541,7 +543,7 @@ class BrowserSentinelProvider:
+@@ -541,7 +548,7 @@ class BrowserSentinelProvider:
  
      @property
      def enabled(self) -> bool:
@@ -593,6 +678,63 @@ index 1a1ade5..78a48b3 100644
          return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
  
      def _base_command(self) -> list[str]:
+@@ -675,8 +682,10 @@ class BrowserSentinelProvider:
+                 # deployed checkout build below.  Keep both values overridable
+                 # because the web client rotates them independently of the
+                 # payment flow.
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+-                "oai-client-version": os.getenv(
++                "oai-client-build-number": _env_or_default(
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
++                ),
++                "oai-client-version": _env_or_default(
+                     "OPLL_OAI_CLIENT_VERSION",
+                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                 ),
+@@ -784,12 +793,14 @@ class DefaultTransportFactory:
+                 "oai-session-id": session_id,
+                 # ChatGPT's API language is the browser UI locale; the
+                 # country-specific Accept-Language remains separate above.
+-                "oai-language": os.getenv("OPLL_OAI_LANGUAGE", "en-US"),
++                "oai-language": _env_or_default("OPLL_OAI_LANGUAGE", "en-US"),
+                 # These values match the current browser checkout contract;
+                 # environment overrides keep the transport forward-compatible
+                 # when the web deployment rotates its build identifier.
+-                "oai-client-build-number": os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+-                "oai-client-version": os.getenv(
++                "oai-client-build-number": _env_or_default(
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
++                ),
++                "oai-client-version": _env_or_default(
+                     "OPLL_OAI_CLIENT_VERSION",
+                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                 ),
+@@ -803,12 +814,14 @@ class DefaultTransportFactory:
+                     "OPLL_OAI_IS_CLIENT_OBSERVATION",
+                     f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+                 ),
+-                "sec-ch-ua": os.getenv(
++                "sec-ch-ua": _env_or_default(
+                     "OPLL_SEC_CH_UA",
+                     '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+                 ),
+                 "sec-ch-ua-mobile": "?0",
+-                "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
++                "sec-ch-ua-platform": _env_or_default(
++                    "OPLL_SEC_CH_UA_PLATFORM", '"Windows"'
++                ),
+                 "sec-fetch-dest": "empty",
+                 "sec-fetch-mode": "cors",
+                 "sec-fetch-site": "same-origin",
+@@ -892,7 +905,7 @@ class DefaultTransportFactory:
+         session = new_session()
+         session.headers.update(
+             {
+-                "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
++                "User-Agent": _env_or_default("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
+                 "Accept-Language": f"{country_locale(config)},en;q=0.9",
+             }
+         )
 diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
 index 5c0a889..6f9718c 100644
 --- a/payment_link_extractor/web/tasks.py
