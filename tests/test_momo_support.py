@@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import validate_momo_url
-from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, normalize_momo_proxy
+from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
 from payment_link_extractor.web.routes import _config_from_payload
@@ -96,3 +96,49 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
 def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
     config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
     assert TaskManager._total_attempts(config) == 3
+
+
+def test_momo_chatgpt_headers_follow_har_contract(monkeypatch) -> None:
+    monkeypatch.setenv("OPLL_MOMO_SENTINEL_BROWSER", "off")
+    config = ExtractionConfig("opaque.token", "http://proxy", "", country="VN", payment_method="momo")
+    session = MomoTransportFactory("chrome150").chatgpt(config, "http://proxy")
+    try:
+        keys = {str(key).lower() for key in session.headers}
+        assert {"oai-device-id", "oai-session-id", "oai-client-build-number", "oai-client-version"} <= keys
+        assert "chatgpt-account-id" not in keys
+        headers = momo_request_headers(
+            session,
+            "POST",
+            "https://chatgpt.com/backend-api/payments/checkout",
+            {"Referer": "https://chatgpt.com/"},
+            flow="chatgpt_checkout",
+        )
+        assert headers["oai-telemetry"] == "[1,null]"
+        assert headers["Referer"] == "https://chatgpt.com/"
+    finally:
+        from payment_link_extractor.momo_transport import close
+
+        close(session)
+
+
+def test_momo_request_headers_refreshes_sentinel_per_flow() -> None:
+    calls = []
+
+    class Provider:
+        def headers(self, flow, *, referer=""):
+            calls.append((flow, referer))
+            return {"OpenAI-Sentinel-Token": "runtime-proof"}
+
+    session = SimpleNamespace(
+        openai_sentinel_provider=Provider(),
+        refresh_momo_request_headers=lambda method, url: {"x-oai-is-client-observation": "v1.r.p.fixture"},
+    )
+    headers = momo_request_headers(
+        session,
+        "POST",
+        "https://chatgpt.com/backend-api/payments/checkout",
+        flow="chatgpt_checkout",
+        referer="https://chatgpt.com/",
+    )
+    assert headers["OpenAI-Sentinel-Token"] == "runtime-proof"
+    assert calls == [("chatgpt_checkout", "https://chatgpt.com/")]

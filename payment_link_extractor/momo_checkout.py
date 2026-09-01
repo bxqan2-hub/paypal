@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import billing_for_country, processor_entity_for_country
 from .errors import ProtocolError
+from .momo_transport import momo_request_headers
 
 MOMO_COUNTRY = "VN"
 MOMO_CURRENCY = "VND"
@@ -50,7 +51,23 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
     return value
 
 
-def request(session: Any, method: str, url: str, stage: str, **kwargs: Any) -> dict[str, Any]:
+def request(
+    session: Any,
+    method: str,
+    url: str,
+    stage: str,
+    *,
+    sentinel_flow: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs["headers"] = momo_request_headers(
+        session,
+        method,
+        url,
+        kwargs.get("headers"),
+        flow=sentinel_flow,
+        referer=str((kwargs.get("headers") or {}).get("Referer") or ""),
+    )
     response = session.request(method, url, timeout=30, **kwargs)
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         raise ProtocolError(int(response.status_code), f"{stage} failed")
@@ -70,6 +87,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
             "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
             "checkout_ui_mode": "custom",
         },
+        sentinel_flow="chatgpt_checkout",
         headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
     )
     sid = session_id(payload)

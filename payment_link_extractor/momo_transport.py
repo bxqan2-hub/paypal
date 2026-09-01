@@ -2,13 +2,71 @@ from __future__ import annotations
 
 """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
 
-from typing import Any
+import json
+import os
+import time
+import uuid
+from typing import Any, Mapping
 import secrets
 from urllib.parse import quote
 
 import requests
 
+from .auth import account_id
 from .config import DEFAULT_USER_AGENT
+
+
+MOMO_EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
+
+
+def _browser_proxy_for(proxy: str) -> str:
+    """Give a browser a CONNECT-capable proxy without changing Momo's API proxy."""
+    try:
+        from .web.socks5_bridge import http_proxy_for
+
+        return http_proxy_for(proxy)
+    except Exception:
+        return proxy
+
+
+class MomoSentinelProvider:
+    """Momo-owned adapter for the shared Sentinel browser primitive.
+
+    The Momo flow owns the context, proxy and lifecycle; the shared primitive
+    only performs browser proof generation.  No GoPay/PayPal state is imported.
+    """
+
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        device_id: str,
+        session_id: str,
+        user_agent: str,
+        proxy: str,
+        transport_session: Any,
+    ) -> None:
+        from .transport import BrowserSentinelProvider
+
+        self._delegate = BrowserSentinelProvider(
+            access_token=access_token,
+            device_id=device_id,
+            session_id=session_id,
+            user_agent=user_agent,
+            proxy=_browser_proxy_for(proxy),
+            transport_session=transport_session,
+            enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(getattr(self._delegate, "enabled", False))
+
+    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+        return dict(self._delegate.headers(flow, referer=referer) or {})
+
+    def close(self) -> None:
+        self._delegate.close()
 
 
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
@@ -43,19 +101,110 @@ class MomoTransportFactory:
 
     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
         session = _new_session(self.profile["impersonate"])
+        device_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        observation = os.getenv("OPLL_MOMO_OAI_IS_CLIENT_OBSERVATION", "").strip()
         session.headers.update(
             {
                 "Authorization": f"Bearer {config.access_token}",
                 "User-Agent": self.profile["user_agent"],
-                "Accept": "application/json",
+                "Accept": "*/*",
                 "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+                "Content-Type": "application/json",
                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "oai-device-id": device_id,
+                "oai-session-id": session_id,
+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "en-US"),
+                "oai-client-build-number": os.getenv(
+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
+                ),
+                "oai-client-version": os.getenv(
+                    "OPLL_OAI_CLIENT_VERSION",
+                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                ),
+                "x-oai-is-pending-updates": os.getenv(
+                    "OPLL_X_OAI_IS_PENDING_UPDATES", MOMO_EMPTY_PENDING_UPDATES
+                ),
+                "x-oai-is-client-observation": observation
+                or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                 "Sec-CH-UA": self.profile["sec_ch_ua"],
                 "Sec-CH-UA-Mobile": "?0",
                 "Sec-CH-UA-Platform": '"Windows"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                "Cookie": f"oai-did={device_id}",
             }
         )
+        account = account_id(str(getattr(config, "access_token", "") or ""))
+        if account:
+            session.headers["chatgpt-account-id"] = account
+        session.openai_device_id = device_id
+        session.openai_did = device_id
+        session.openai_session_id = session_id
+        session.openai_proxy = proxy
+        session.openai_request_started = time.perf_counter()
+
+        def refresh_momo_request_headers(method: str, url: str) -> dict[str, str]:
+            pinned = observation or os.getenv(
+                "OPLL_MOMO_OAI_IS_CLIENT_OBSERVATION", ""
+            ).strip()
+            value = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
+            session.headers["x-oai-is-client-observation"] = value
+            dynamic: dict[str, str] = {"x-oai-is-client-observation": value}
+            if method.upper() == "POST":
+                normalized = str(url or "").lower()
+                if normalized.endswith("/backend-api/payments/checkout"):
+                    dynamic["oai-telemetry"] = os.getenv(
+                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
+                    )
+                elif normalized.endswith("/backend-api/payments/checkout/confirm"):
+                    elapsed = round(
+                        (time.perf_counter() - session.openai_request_started) * 1000,
+                        1,
+                    )
+                    dynamic["oai-telemetry"] = json.dumps(
+                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
+                        separators=(",", ":"),
+                    )
+            return dynamic
+
+        session.refresh_momo_request_headers = refresh_momo_request_headers
+        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+        if attestation:
+            session.headers["oai-web-deployment-attestation"] = attestation
+        # A browser-generated proof is preferred. Explicit values remain a
+        # useful runtime fallback for deployments that inject their own proof.
+        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
+            "OPLL_OPENAI_SENTINEL_TOKEN", ""
+        ).strip()
+        if sentinel:
+            session.openai_sentinel_token = sentinel
+        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
+            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
+        ).strip()
+        if sentinel_so:
+            session.openai_sentinel_so_token = sentinel_so
         _set_proxy(session, proxy)
+        mode = os.getenv("OPLL_MOMO_SENTINEL_BROWSER", "auto").strip().lower()
+        if mode not in {"0", "false", "off", "disabled", "no"}:
+            try:
+                from .transport import _agent_browser_binary
+
+                if _agent_browser_binary():
+                    session.openai_sentinel_provider = MomoSentinelProvider(
+                        access_token=str(getattr(config, "access_token", "") or ""),
+                        device_id=device_id,
+                        session_id=session_id,
+                        user_agent=self.profile["user_agent"],
+                        proxy=normalize_momo_proxy(proxy),
+                        transport_session=session,
+                    )
+            except Exception:
+                # Keep the explicit token fallback and let the API return its
+                # actual status when a browser helper cannot be started.
+                pass
         return session
 
     def stripe(self, config: Any) -> requests.Session:
@@ -120,6 +269,77 @@ def normalize_momo_proxy(proxy: str) -> str:
     return f"{scheme}://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
 
+def momo_sentinel_headers(
+    session: Any, *, flow: str = "", referer: str = ""
+) -> dict[str, str]:
+    """Return fresh Momo Sentinel proof plus runtime-injected fallbacks."""
+    result: dict[str, str] = {}
+    provider = getattr(session, "openai_sentinel_provider", None)
+    if flow and provider is not None:
+        try:
+            result.update(provider.headers(flow, referer=referer) or {})
+        except Exception:
+            # The API response remains the source of truth if the optional
+            # browser helper is unavailable; no captured proof is replayed.
+            pass
+    token = str(
+        getattr(session, "openai_sentinel_token", "")
+        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
+        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+    ).strip()
+    if token and not any(
+        key.lower() == "openai-sentinel-token" for key in result
+    ):
+        result["OpenAI-Sentinel-Token"] = token
+    so_token = str(
+        getattr(session, "openai_sentinel_so_token", "")
+        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
+        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+    ).strip()
+    if so_token and not any(
+        key.lower() == "openai-sentinel-so-token" for key in result
+    ):
+        result["OpenAI-Sentinel-SO-Token"] = so_token
+    attestation = str(
+        getattr(session, "openai_web_deployment_attestation", "")
+        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
+    ).strip()
+    if attestation and not any(
+        key.lower() == "oai-web-deployment-attestation" for key in result
+    ):
+        result["oai-web-deployment-attestation"] = attestation
+    return result
+
+
+def momo_request_headers(
+    session: Any,
+    method: str,
+    url: str,
+    headers: Mapping[str, str] | None = None,
+    *,
+    flow: str = "",
+    referer: str = "",
+) -> dict[str, str]:
+    """Merge per-request Momo headers without mutating caller dictionaries."""
+    merged = dict(headers or {})
+    refresh = getattr(session, "refresh_momo_request_headers", None)
+    if callable(refresh):
+        dynamic = refresh(str(method).upper(), url) or {}
+        merged.update(dynamic)
+    if flow:
+        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
+    return merged
+
+
 def close(session: Any) -> None:
-    if session is not None and callable(getattr(session, "close", None)):
+    if session is None:
+        return
+    provider = getattr(session, "openai_sentinel_provider", None)
+    shutdown = getattr(provider, "close", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+    if callable(getattr(session, "close", None)):
         session.close()

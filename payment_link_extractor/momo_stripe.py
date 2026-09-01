@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
 from .errors import ProtocolError
 from .momo_checkout import json_payload
+from .momo_transport import momo_request_headers
 
 
 def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +72,25 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
 
 def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
     path = "/backend-api/payments/checkout/confirm"
-    response = session.request("POST", "https://chatgpt.com" + path, json={"checkout_session_id": checkout["cs_id"], "confirm_token": token, "selected_payment_method_type": "momo"}, timeout=30)
+    url = "https://chatgpt.com" + path
+    response = session.request(
+        "POST",
+        url,
+        json={
+            "checkout_session_id": checkout["cs_id"],
+            "confirm_token": token,
+            "selected_payment_method_type": "momo",
+        },
+        timeout=30,
+        headers=momo_request_headers(
+            session,
+            "POST",
+            url,
+            {"Referer": f"https://chatgpt.com/checkout/{checkout['cs_id']}"},
+            flow="checkout_session_approval",
+            referer=f"https://chatgpt.com/checkout/{checkout['cs_id']}",
+        ),
+    )
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
     payload = json_payload(response, "Momo checkout confirm")

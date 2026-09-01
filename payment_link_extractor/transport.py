@@ -513,6 +513,7 @@ class BrowserSentinelProvider:
         proxy: str,
         transport_session: Any,
         log: Any | None = None,
+        enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -521,6 +522,7 @@ class BrowserSentinelProvider:
         self.proxy = str(proxy or "").strip()
         self.transport_session = transport_session
         self.log = log
+        self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
@@ -541,7 +543,7 @@ class BrowserSentinelProvider:
 
     @property
     def enabled(self) -> bool:
-        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
+        mode = os.getenv(self.enabled_env, "auto").strip().lower()
         return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
 
     def _base_command(self) -> list[str]:
