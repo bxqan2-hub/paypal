@@ -909,7 +909,11 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
                 issues.append(f"{name}:entry_missing")
             elif requires_request_body and not request_body:
                 issues.append(f"{name}:request_body_missing")
-            elif not response_body:
+            elif not response_body and not all(
+                int((entry.get("response") or {}).get("status", 0) or 0) in {101, 204, 205, 304}
+                for entry in matches
+                if isinstance(entry, dict)
+            ):
                 issues.append(f"{name}:response_body_missing")
 
     if channel == "gopay":
@@ -925,6 +929,9 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
         if not detail.get("responseBodyMissing"):
             continue
         request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+        if int(response.get("status", 0) or 0) in {101, 204, 205, 304}:
+            continue
         parsed = urlsplit(str(request.get("url") or ""))
         missing_responses.append(
             {

@@ -470,6 +470,19 @@ def _gopay_fixture(*, include_redirect: bool = True) -> dict:
     return {"log": {"entries": entries, "_capture": {}}}
 
 
+def test_gopay_audit_accepts_bodyless_204_snapshot() -> None:
+    har = _gopay_fixture()
+    snapshot = next(
+        entry for entry in har["log"]["entries"]
+        if entry["request"]["url"].endswith("/backend-api/payments/checkout/snapshot")
+    )
+    snapshot["response"] = {"status": 204, "content": {}}
+    snapshot["_capture"] = {"responseBodyMissing": True}
+    audit = audit_har_completeness(har)
+    assert "gopay_checkout_snapshot:response_body_missing" not in audit["issues"]
+    assert audit["complete"] is True
+
+
 def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
     har = _gopay_fixture(include_redirect=True)
     complete = audit_har_completeness(har)
