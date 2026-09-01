@@ -75,7 +75,13 @@ def request(
     return json_payload(response, stage)
 
 
-def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+def create_checkout(
+    session: Any,
+    *,
+    account_email: str = "",
+    trial_eligible: bool = False,
+    campaign_id: str = "",
+) -> dict[str, Any]:
     path = "/backend-api/payments/checkout"
     body: dict[str, Any] = {
         "entry_point": "all_plans_pricing_modal",
@@ -83,6 +89,13 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
         "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
         "checkout_ui_mode": "custom",
     }
+    # The complete zero-due MoMo HAR has this campaign object on the initial
+    # Checkout request (body length 245).  It does not use checkout/update.
+    if trial_eligible:
+        body["promo_campaign"] = {
+            "promo_campaign_id": str(campaign_id or "plus-1-month-free"),
+            "is_coupon_from_query_param": False,
+        }
     payload = request(
         session,
         "POST",
