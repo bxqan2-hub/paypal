@@ -25,10 +25,9 @@
 # 抓包工具快速准备规则
 
 - 当用户说“抓包”“开始抓包”“准备抓包”或“继续抓包”时，先扫描当前浏览器的 `DevToolsActivePort`，确认可用 CDP 端口和页面，再准备记录器；不创建新的浏览器配置，除非用户明确要求。
-- GoPay 默认使用浏览器级多目标记录器：
-  `C:\Users\Administrator\Desktop\提链\.venv\Scripts\python.exe tools\har_capture_browser_attach.py --cdp-port <CDP_PORT> --output artifacts-local\gopay-cdp-capture-<YYYYMMDD-HHMMSS>.har`
-  该模式使用 `Target.setAutoAttach(flatten=true)`，覆盖 page/iframe/worker，并默认采用非阻塞响应体采集。
-- RoxyBrowser 页面默认使用 `tools\roxy_har_capture.py`；普通独立 Chrome 页面使用 `tools\har_capture.py`。根据用户指定渠道选择对应入口，不交叉复用渠道记录器。
+- PayPal、GoPay、GCash 默认统一使用 `tools\mitm_capture.py` 和系统安装的 mitmproxy；通过 `--channel` 隔离输出、完整性规则和摘要，不交叉复用渠道结果。根目录 `HAR_CAPTURE.bat` 是默认入口。
+- mitmproxy 使用 `data\mitmproxy-capture-profile` 持久 Chrome、`127.0.0.1:8899` regular proxy、`http://127.0.0.1:8081/` mitmweb 管理页和禁用 QUIC 的 HTTPS/TCP 捕获。管理页默认自动打开；代理端口与 Web 端口可分别用 `OPLL_MITM_PROXY_PORT`、`OPLL_MITM_WEB_PORT` 选择。已有非 mitmproxy 浏览器只用于识别页面，不作为正式抓包来源；需要抓包时复用上述唯一持久 profile，不创建逐轮 profile。
+- 只有 mitmproxy 无法启动时才允许临时回退到渠道旧记录器：GoPay 使用 `tools\har_capture_browser_attach.py`，RoxyBrowser 使用 `tools\roxy_har_capture.py`，普通独立 Chrome 使用 `tools\har_capture.py`；回退原因必须写入当轮结果。
 - 启动后必须确认并返回 `CAPTURE_READY=1`、`CAPTURE_CDP`、`CAPTURE_OUTPUT` 和首个 `CAPTURE_TARGET_ATTACHED`；记录器保持运行，等待用户完成操作。用户说“停止抓包”后发送 Ctrl+C，确认 `CAPTURE_SAVED`、`CAPTURE_ENTRIES`、`CAPTURE_SHA256`、`CAPTURE_COMPLETENESS` 和 `CAPTURE_MISSING`。
 - 停止后自动生成脱敏摘要并执行完整性审计；GoPay 至少核对 checkout、taxes、snapshot、Stripe init/elements/confirm、approve、redirect 和 Midtrans transaction。仅将完整性最高的同渠道 HAR 标记为 canonical，旧的同渠道原始 HAR 删除，其他渠道 HAR 保持隔离。
 - AT、Cookie、Sentinel、代理用户名/密码和订单标识只允许从本地环境变量或运行时会话读取，不写入规则、日志、Git、摘要或回复；禁止重放 HAR 内请求。

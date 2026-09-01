@@ -9,6 +9,7 @@ __pycache__/
 data/*.log
 data/captures/
 data/har-capture-profile/
+data/mitmproxy-capture-profile/
 data/gopay-sentinel-profiles/
 artifacts/screenshots/
 artifacts/gopay-cdp-capture-20260830/raw_capture.har

@@ -1,14 +1,50 @@
 # HAR 抓包与解析工具
 
-工具位于本站根目录的 `tools` 文件夹，使用 Python 标准库和本机 Chrome/Edge，不需要额外安装抓包库。
+工具位于本站根目录的 `tools` 文件夹。默认抓包引擎为系统安装的 mitmproxy 12.2.3，使用本机 Chrome 和持久 profile。
 
 ## 0. 一键 BAT
 
-直接双击根目录的 `HAR_CAPTURE.bat` 即可启动手动抓包；脚本会先要求手动输入认证 SOCKS5 代理，连通性检查通过后才启动独立 Chrome，默认保存到 `data\captures`。也可以在命令行传入输出路径和起始 URL：
+直接双击根目录的 `HAR_CAPTURE.bat` 即可启动 mitmweb 手动抓包。默认渠道为 GoPay，输出保存到 Git 忽略的 `artifacts-local`，并复用 `data\mitmproxy-capture-profile`。启动后自动打开 `http://127.0.0.1:8081/`，可实时筛选和查看请求；浏览器实际使用的代理端口默认为 `127.0.0.1:8899`。也可以传入输出路径和起始 URL：
 
 ```cmd
-HAR_CAPTURE.bat "data\captures\gcash-success.har" "https://chatgpt.com/?promo_campaign=plus-1-month-free"
+set OPLL_CAPTURE_CHANNEL=gcash
+HAR_CAPTURE.bat "artifacts-local\gcash-mitm-capture.har" "https://chatgpt.com/"
 ```
+
+第 3、4 个参数可直接选择代理端口和 Web 管理端口：
+
+```cmd
+HAR_CAPTURE.bat "artifacts-local\gopay.har" "https://chatgpt.com/" 8899 8081
+```
+
+安装和自检：
+
+```powershell
+winget install --id mitmproxy.mitmproxy -e --source winget
+py -3 tools\mitm_capture.py --doctor
+```
+
+首次安装会在 `%USERPROFILE%\.mitmproxy` 生成本机 CA。当前用户必须信任 `mitmproxy-ca-cert.cer`；证书私钥、原始 HAR、Cookie、令牌和代理凭据都不得提交到 Git。抓包进程默认禁用 HTTP/3/QUIC，避免浏览器绕过 HTTPS/TCP 代理。
+
+需要上游代理时只通过本地环境变量传入，不写进脚本或配置：
+
+```powershell
+$env:OPLL_CAPTURE_UPSTREAM = 'HOST:PORT:USERNAME:PASSWORD'
+$env:OPLL_CAPTURE_CHANNEL = 'gopay'
+.\HAR_CAPTURE.bat
+```
+
+停止时按 Ctrl+C。编排器会先把浏览器返回 `https://chatgpt.com/`，保留 profile 和登录态，再让 mitmproxy 写入 HAR，并自动生成脱敏 `.report.md`；GoPay 额外生成 `.summary.md` 和检查点完整性结果。
+
+端口可通过本地环境变量选择：
+
+```powershell
+$env:OPLL_MITM_PROXY_PORT = '8899'
+$env:OPLL_MITM_WEB_PORT = '8081'
+.\HAR_CAPTURE.bat
+```
+
+Web UI 端口用于打开管理网站，代理端口用于接收浏览器流量。mitmweb 会自动打开带一次性认证 token 的页面；直接访问不带 token 的裸地址时出现 `403 Authentication Required` 属于正常保护。正在运行的持久 Chrome 已绑定代理端口；如需更换代理端口，应先关闭该持久 Chrome，再重新启动抓包。
 
 双击 `HAR_ANALYZE.bat` 会要求输入 HAR 路径并生成同目录的 `.report.md`；命令行调用方式：
 
