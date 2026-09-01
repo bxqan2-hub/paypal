@@ -11,7 +11,7 @@ from dataclasses import replace
 import threading
 from typing import Any, Callable
 
-from .auth import normalize_access_token
+from .auth import account_id, normalize_access_token
 from .config import normalize_payment_method
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .momo_transport import MomoTransportFactory, close, momo_request_headers
@@ -100,6 +100,48 @@ def probe_momo_trial_eligibility(
                     timeout=30,
                 )
                 setattr(chatgpt, "momo_promo_context_ready", True)
+            except Exception:
+                pass
+            # The complete browser flow warms the account catalog immediately
+            # before coupon evaluation. Keep both calls on the same session;
+            # their responses are diagnostic, while check_coupon below is the
+            # authoritative eligibility decision.
+            selected_account = account_id(token)
+            account_headers = {
+                "Accept": "application/json",
+                "Referer": campaign_url,
+                "x-openai-target-path": "/backend-api/accounts/optimized/check",
+                "x-openai-target-route": "/backend-api/accounts/optimized/check",
+            }
+            if selected_account:
+                account_headers["chatgpt-account-id"] = selected_account
+            try:
+                chatgpt.request(
+                    "GET",
+                    "https://chatgpt.com/backend-api/accounts/optimized/check",
+                    headers=momo_request_headers(
+                        chatgpt,
+                        "GET",
+                        "https://chatgpt.com/backend-api/accounts/optimized/check",
+                        account_headers,
+                    ),
+                    timeout=30,
+                )
+            except Exception:
+                pass
+            account_path = "/backend-api/accounts/check/v4-2023-04-27"
+            account_url = "https://chatgpt.com" + account_path + "?timezone_offset_min=-420"
+            account_headers["x-openai-target-path"] = account_path
+            account_headers["x-openai-target-route"] = account_path
+            try:
+                chatgpt.request(
+                    "GET",
+                    account_url,
+                    headers=momo_request_headers(
+                        chatgpt, "GET", account_url, account_headers
+                    ),
+                    timeout=30,
+                )
             except Exception:
                 pass
             response = chatgpt.request(
