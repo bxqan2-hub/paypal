@@ -162,18 +162,26 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         )
         checkpoint("checkout_committed")
         checkpoint("checkout_kind:openai_custom_checkout")
+        # The successful zero-due HAR initializes Stripe Elements from the
+        # Checkout's initial total before taxes are refreshed. This binds the
+        # deferred intent to the zero amount instead of letting a later tax
+        # request create a fresh paid intent.
+        stripe = factory.stripe(config)
+        checkpoint("stripe_init")
+        elements_session(stripe, checkout)
+        checkpoint("stripe_elements")
         for _ in range(3):
             checkpoint("taxes")
             taxes(chatgpt, checkout, billing)
+        # Refresh the Elements session after the final tax response; the HAR
+        # performs this second phase before creating the confirmation token.
+        elements_session(stripe, checkout)
+        checkpoint("stripe_elements")
         amount_minor = momo_checkout_payable_amount(checkout)
         if config.momo_zero_trial_validation:
             checkpoint("zero_amount_validation")
             validate_momo_amount(amount_minor)
             checkpoint("zero_amount_confirmed")
-        stripe = factory.stripe(config)
-        checkpoint("stripe_init")
-        elements_session(stripe, checkout)
-        checkpoint("stripe_elements")
         token = confirmation_token(stripe, checkout, billing, config.stripe_hcaptcha_token)
         checkpoint("payment_confirmation")
         confirmed = checkout_confirm(chatgpt, checkout, token)
