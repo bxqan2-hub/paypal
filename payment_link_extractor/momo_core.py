@@ -13,7 +13,7 @@ from .auth import account_email
 from .config import billing_for_country, currency_minor_scale
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .models import ExtractionConfig, PaymentLinkResult
-from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, apply_trial_promotion, create_checkout, taxes
+from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
 from .momo_eligibility import probe_momo_trial_eligibility
 from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 from .momo_transport import (
@@ -113,8 +113,6 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     if str(config.country or "").upper() != MOMO_COUNTRY:
         raise ConfigurationError("Momo core requires country=VN")
     factory = transport_factory or MomoTransportFactory()
-    trial_eligible = False
-    trial_campaign = ""
     if bool(getattr(config, "momo_trial_eligibility_check", True)):
         if stage_callback:
             stage_callback("eligibility_check")
@@ -124,8 +122,6 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
             cancel_event=cancel_event,
             stage_callback=stage_callback,
         )
-        trial_eligible = bool(eligibility.get("eligible"))
-        trial_campaign = str(eligibility.get("campaign_id") or "").strip()
         selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
         config = replace(
             config,
@@ -157,11 +153,6 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         )
         checkpoint("checkout_committed")
         checkpoint("checkout_kind:openai_custom_checkout")
-        if trial_eligible and config.momo_zero_trial_validation:
-            checkpoint("promotion_applied")
-            apply_trial_promotion(
-                chatgpt, checkout, campaign_id=trial_campaign
-            )
         for _ in range(3):
             checkpoint("taxes")
             taxes(chatgpt, checkout, billing)
