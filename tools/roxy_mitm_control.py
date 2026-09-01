@@ -386,6 +386,8 @@ class CaptureState:
                 "--stop-file",
                 str(cdp_stop_file),
             ]
+            # The recorder polls its stop marker and must remain alive long
+            # enough to run its finally block and write the HAR.
             cdp_process = subprocess.Popen(
                 cdp_command,
                 cwd=self.root,
@@ -394,7 +396,7 @@ class CaptureState:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=creation_flags,
+                creationflags=0,
             )
             cdp_ready = threading.Event()
 
