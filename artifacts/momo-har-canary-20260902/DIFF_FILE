@@ -1,10 +1,60 @@
+diff --git a/.env.example b/.env.example
+index 66c5044..59ca09b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -20,6 +20,24 @@ OPLL_SENTINEL_HEADLESS=true
+ OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL=chrome
+ OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT=true
+ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
++# MoMo VN runtime values are channel-isolated; leave proof/session values
++# blank so each attempt derives them from its current browser context.
++OPLL_MOMO_SENTINEL_BROWSER=auto
++OPLL_MOMO_BROWSER_PROFILE=
++OPLL_MOMO_OAI_LANGUAGE=vi-VN
++OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER=
++OPLL_MOMO_OAI_CLIENT_VERSION=
++OPLL_MOMO_X_OAI_IS_PENDING_UPDATES=
++OPLL_MOMO_OAI_CHECKOUT_TELEMETRY=
++OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION=
++OPLL_MOMO_OPENAI_SENTINEL_TOKEN=
++OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN=
++OPLL_MOMO_BROWSER_TIMEZONE=Asia/Saigon
++OPLL_MOMO_STRIPE_RUNTIME_VERSION=
++OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN=
++OPLL_MOMO_ZERO_TRIAL_VALIDATION=true
++OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK=true
++OPLL_SESSION_TOKEN=
+ # MK GCash runtime: prewarm its shared Playwright Chromium and bound only the
+ # dead-proxy TCP connect phase. The upstream 30-second request timeout remains.
+ MK_GCASH_PREWARM=true
 diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
-index 04d1be3..2b9a7e7 100644
+index 04d1be3..37ba29a 100644
 --- a/docs/MOMO_HAR_STATE_MACHINE.md
 +++ b/docs/MOMO_HAR_STATE_MACHINE.md
-@@ -18,3 +18,13 @@
+@@ -1,6 +1,6 @@
+ # Momo HAR 状态机（脱敏）
+ 
+-来源：本机 `payment.momo.vn.har`，仅离线读取，未重放请求。原始 SHA-256 记录在验证制品中。
++来源：本机 `artifacts-local/momo-roxy-mitm-20260902-023932.har`，仅离线读取，未重放请求。原始 SHA-256 记录在验证制品中。
+ 
+ ## 观察到的链路
+ 
+@@ -8,13 +8,23 @@
+ 2. `POST /backend-api/payments/checkout` 返回 `oaics_*`，界面类型为 custom，账单国家 `VN`、币种 `VND`。
+ 3. 浏览器连续三次 `POST /backend-api/payments/checkout/taxes` 刷新税费和可用支付方式；HAR 没有 `checkout/update`。
+ 4. Stripe 使用 Elements 会话，然后 `POST /v1/confirmation_tokens`，表单字段明确为 `payment_method_data[type]=momo`，Stripe 版本为 `2025-03-31.basil`。
+-5. ChatGPT `POST /backend-api/payments/checkout/confirm` 后，Stripe `payment_intents/{pi_*}/confirm` 返回外部跳转。
++5. ChatGPT `POST /backend-api/payments/checkout/confirm` 后，Stripe `payment_intents/{pi_*}` 或 `setup_intents/{seti_*}/confirm` 返回外部跳转。
+ 6. `pm-redirects.stripe.com/authorize/...` 返回 302，最终落到 `https://payment.momo.vn/v2/gateway/pay?t=<opaque>&s=<opaque>`。
+-7. Momo 页面通过 `POST https://payment.momo.vn/v2/gateway/querySession` 携带 JSON `sessionId` 轮询；HAR 观察到 `status_code=1000`、`redirect=false` 的待确认状态。
++7. Momo 页面通过无请求体的 `POST https://payment.momo.vn/v2/gateway/querySession` 轮询（会话绑定在网关页面 Cookie）；旧适配器若不支持空请求体才使用 JSON `sessionId` 回退。HAR 观察到多次 `status_code=1000`、`redirect=false`，最终以 `status_code=9000`、`redirect=true` 和零金额回调结束。
+ 
+ ## 固定契约
+ 
+ - 渠道名称 `momo`，适配器 `payment_link_extractor.momo_channel`，结果字段 `momo_url`。
  - Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
- - 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
+-- 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
++- 一个完整尝试固定同一个代理，并让 ChatGPT、Stripe、Momo 各自的 Cookie 会话只服务本次尝试；Checkout 提交后由任务层禁止在同一尝试创建第二单。
  - AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
 +
 +## 运行时适配
@@ -13,9 +63,35 @@ index 04d1be3..2b9a7e7 100644
 +- Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
 +- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
 +- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
-+- 提链第一步先用当前 VN 代理请求 `/backend-api/accounts/check/v4-2023-04-27`，读取账号 `eligible_promo_campaigns.plus`；未返回活动标识时切换代理继续检查，确认资格后才创建 Checkout。
++- 提链第一步先在同一 VN 代理/设备会话中读取账号 `eligible_promo_campaigns.plus.id`，再请求 `promo_campaign/check_coupon` 校验活动回显、`state=eligible` 和未兑换状态；任一代理不满足就切换下一条，确认资格后才创建 Checkout。
 +- `momo_zero_trial_validation` 只控制金额闸门：开启时 taxes 后要求 VND payable minor units 为 0，关闭时跳过该金额判断；资格预检仍保持在 Checkout 之前。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
+diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
+index d42cede..7d1f564 100644
+--- a/payment_link_extractor/auth.py
++++ b/payment_link_extractor/auth.py
+@@ -166,6 +166,21 @@ def account_email(access_token: str) -> str:
+     return ""
+ 
+ 
++def account_name(access_token: str) -> str:
++    """Extract the browser account display name for billing snapshots."""
++    payload = decode_jwt_payload(access_token)
++    profile = payload.get("https://api.openai.com/profile")
++    if isinstance(profile, dict):
++        value = str(profile.get("name") or "").strip()
++        if value:
++            return value
++    for key in ("name", "given_name"):
++        value = str(payload.get(key) or "").strip()
++        if value:
++            return value
++    return ""
++
++
+ def account_id(access_token: str) -> str:
+     """Extract the ChatGPT account UUID used by the browser API headers."""
+     payload = decode_jwt_payload(access_token)
 diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
 index 720a5a9..240b32a 100644
 --- a/payment_link_extractor/config.py
@@ -116,12 +192,14 @@ index df4b3ba..7e3aa9c 100644
      momo_fingerprint: str = ""
      verbose: bool = True
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
-index 98a8ec6..95338de 100644
+index 98a8ec6..b39a69c 100644
 --- a/payment_link_extractor/momo_checkout.py
 +++ b/payment_link_extractor/momo_checkout.py
-@@ -5,9 +5,11 @@ from __future__ import annotations
+@@ -4,10 +4,13 @@ from __future__ import annotations
+ 
  import json
  import re
++import time
  from typing import Any
 +from urllib.parse import quote
  
@@ -131,7 +209,7 @@ index 98a8ec6..95338de 100644
  
  MOMO_COUNTRY = "VN"
  MOMO_CURRENCY = "VND"
-@@ -50,27 +52,80 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
+@@ -50,27 +53,84 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
      return value
  
  
@@ -174,7 +252,6 @@ index 98a8ec6..95338de 100644
 +        "entry_point": "all_plans_pricing_modal",
 +        "plan_name": "chatgptplusplan",
 +        "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
-+        "checkout_ui_mode": "custom",
 +    }
 +    referer = "https://chatgpt.com/"
 +    # The complete zero-due MoMo HAR has this campaign object on the initial
@@ -191,15 +268,20 @@ index 98a8ec6..95338de 100644
 +        # The browser establishes the promo landing-page context before the
 +        # POST. Keep this warm-up best-effort so a slow proxy does not hide the
 +        # Checkout response that remains the source of truth.
-+        try:
-+            session.request(
-+                "GET",
-+                referer,
-+                headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
-+                timeout=30,
-+            )
-+        except Exception:
-+            pass
++        if not bool(getattr(session, "momo_promo_context_ready", False)):
++            try:
++                session.request(
++                    "GET",
++                    referer,
++                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
++                    timeout=30,
++                )
++            except Exception:
++                pass
++    body["checkout_ui_mode"] = "custom"
++    flow_started_at = float(
++        getattr(session, "momo_flow_started_at", 0.0) or time.perf_counter()
++    )
      payload = request(
          session,
          "POST",
@@ -221,7 +303,7 @@ index 98a8ec6..95338de 100644
      )
      sid = session_id(payload)
      if not sid.startswith("oaics_"):
-@@ -78,18 +133,37 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+@@ -78,21 +138,178 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
      checkout = {
          "cs_id": sid,
          "session_kind": "openai_custom_checkout",
@@ -234,10 +316,13 @@ index 98a8ec6..95338de 100644
 +        ),
          "billing_country": MOMO_COUNTRY,
          "currency": MOMO_CURRENCY,
++        "requested_currency": MOMO_CURRENCY,
          "account_email": account_email,
-     }
--    for key in ("checkout_session", "checkout_state", "publishable_key", "customer_session_client_secret", "confirm_return_url"):
--        value = _walk(payload, (key,))
++        "flow_started_at": flow_started_at,
++    }
++    server_currency = _walk(payload, ("currency",))
++    if isinstance(server_currency, str) and server_currency.strip():
++        checkout["currency"] = server_currency.strip().upper()
 +    aliases = {
 +        "checkout_session": ("checkout_session", "checkoutSession"),
 +        "checkout_state": ("checkout_state", "checkoutState"),
@@ -252,83 +337,441 @@ index 98a8ec6..95338de 100644
 +        ),
 +        "customer": ("customer", "customer_id", "customerId"),
 +        "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
-+    }
++        "payment_method_types": ("payment_method_types", "paymentMethodTypes"),
++        "selected_payment_method_type": (
++            "selected_payment_method_type",
++            "selectedPaymentMethodType",
++        ),
+     }
+-    for key in ("checkout_session", "checkout_state", "publishable_key", "customer_session_client_secret", "confirm_return_url"):
+-        value = _walk(payload, (key,))
 +    for target, keys in aliases.items():
 +        value = _walk(payload, keys)
          if value not in (None, "", [], {}):
 -            checkout[key] = value
 +            checkout[target] = value
++    server_promo_campaign = _walk(payload, ("promo_campaign",))
++    checkout["promo_campaign_response"] = (
++        server_promo_campaign if isinstance(server_promo_campaign, dict) else {}
++    )
++    checkout["promo_campaign"] = server_promo_campaign or body.get(
++        "promo_campaign", {}
++    )
      return checkout
  
--
- def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
+ 
+-def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
++def checkout_amount_minor(checkout: dict[str, Any]) -> int | None:
++    def coerce(value: Any) -> int | None:
++        if value in (None, ""):
++            return None
++        try:
++            return int(value)
++        except (TypeError, ValueError):
++            try:
++                number = float(str(value).strip())
++            except (TypeError, ValueError):
++                return None
++            return int(number) if number.is_integer() else None
++
++    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
++    total = state.get("total") if isinstance(state.get("total"), dict) else {}
++    due = total.get("total") if isinstance(total.get("total"), dict) else {}
++    nested = coerce(due.get("minorUnitsAmount"))
++    if nested is not None:
++        return nested
++    parsed_total = coerce(checkout.get("amount_total"))
++    if parsed_total is not None:
++        return parsed_total
++    return coerce(checkout.get("payable_amount_minor"))
++
++
++def momo_checkout_method_state(checkout: dict[str, Any]) -> bool | None:
++    """Return whether Checkout advertises MoMo, or ``None`` if absent."""
++    values: list[Any] = []
++    for key in (
++        "custom_payment_methods",
++        "payment_method_types",
++        "selected_payment_method_type",
++    ):
++        if key in checkout:
++            values.append(checkout.get(key))
++    state = checkout.get("checkout_state")
++    if isinstance(state, dict):
++        for key in ("customPaymentMethods", "custom_payment_methods", "paymentMethodTypes"):
++            if key in state:
++                values.append(state.get(key))
++    if not values:
++        return None
++
++    found_any = False
++    found_momo = False
++
++    def visit(value: Any) -> None:
++        nonlocal found_any, found_momo
++        if isinstance(value, str):
++            text = value.strip().lower()
++            if text:
++                found_any = True
++                if "momo" in text:
++                    found_momo = True
++        elif isinstance(value, dict):
++            for key, child in value.items():
++                if "momo" in str(key).lower():
++                    found_any = True
++                    found_momo = True
++                visit(child)
++        elif isinstance(value, (list, tuple)):
++            for child in value:
++                visit(child)
++
++    for value in values:
++        visit(value)
++    return found_momo if found_any else None
++
++
++def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
++    """Require the initial Checkout response to carry the 100% discount."""
++    campaign_response = checkout.get("promo_campaign_response")
++    campaign = campaign_response if isinstance(campaign_response, dict) else {}
++    campaign_id = campaign.get("promo_campaign_id") if isinstance(campaign, dict) else ""
++    amount = checkout_amount_minor(checkout)
++    currency = str(checkout.get("currency") or "").strip().upper()
++    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
++    total = state.get("total") if isinstance(state.get("total"), dict) else {}
++    subtotal = total.get("subtotal") if isinstance(total.get("subtotal"), dict) else {}
++    discount = total.get("discount") if isinstance(total.get("discount"), dict) else {}
++    subtotal_minor = subtotal.get("minorUnitsAmount")
++    discount_minor = discount.get("minorUnitsAmount")
++    if campaign_id != "plus-1-month-free":
++        raise ProtocolError(409, "Momo Checkout promo campaign was not echoed")
++    if not isinstance(campaign, dict) or campaign.get("is_coupon_from_query_param") is not False:
++        raise ProtocolError(409, "Momo Checkout promo query flag was not false")
++    if currency != MOMO_CURRENCY:
++        raise ProtocolError(409, f"Momo Checkout currency mismatch: {currency}")
++    if amount is None or amount != 0:
++        raise ProtocolError(409, f"Momo Checkout zero amount validation failed: {amount}")
++    top_amount = checkout.get("amount_total")
++    if top_amount not in (None, ""):
++        try:
++            if float(str(top_amount)) != 0:
++                raise ProtocolError(
++                    409, f"Momo Checkout top-level amount is non-zero: {top_amount}"
++                )
++        except ValueError as exc:
++            raise ProtocolError(409, "Momo Checkout top-level amount is invalid") from exc
++    if subtotal_minor in (None, "") or discount_minor in (None, ""):
++        raise ProtocolError(409, "Momo Checkout discount fields are missing")
++    try:
++        if int(discount_minor) != int(subtotal_minor):
++            raise ProtocolError(409, "Momo Checkout discount is not 100 percent")
++    except (TypeError, ValueError) as exc:
++        raise ProtocolError(409, "Momo Checkout discount fields are invalid") from exc
++
++def taxes(
++    session: Any,
++    checkout: dict[str, Any],
++    billing: dict[str, str],
++    *,
++    phase: int = 2,
++) -> dict[str, Any]:
      path = "/backend-api/payments/checkout/taxes"
      processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
++    address = {
++        "line1": billing["line1"],
++        "city": billing["city"],
++        "country": MOMO_COUNTRY,
++        "postal_code": billing["postal_code"] if int(phase) >= 2 else "",
++        "state": billing["state"] if int(phase) >= 1 else "",
++    }
+     payload = request(
+         session,
+         "POST",
+@@ -105,10 +322,42 @@ def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> di
+             "billing_name": billing["name"],
+             "currency": MOMO_CURRENCY.lower(),
+             "processor_entity": processor,
+-            "tax_id": None,
+-            "billing_address": {"line1": billing["line1"], "line2": "", "city": billing["city"], "country": MOMO_COUNTRY, "postal_code": billing["postal_code"], "state": billing["state"]},
++            "billing_address": address,
+         },
+         headers={"Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}", "x-openai-target-path": path, "x-openai-target-route": path},
+     )
+-    checkout.update({k: v for k, v in payload.items() if k in {"checkout_session", "checkout_state", "custom_payment_methods", "confirm_return_url"}})
++    checkout.update(
++        {
++            k: v
++            for k, v in payload.items()
++            if k
++            in {
++                "checkout_session",
++                "checkout_state",
++                "custom_payment_methods",
++                "confirm_return_url",
++                "amount_total",
++                "total_details",
++                "payment_method_types",
++            }
++        }
++    )
++    nested = payload.get("checkout_session")
++    if isinstance(nested, dict):
++        # Tax responses wrap the authoritative amount and state one level
++        # deeper than the initial Checkout response.
++        for key in (
++            "checkout_state",
++            "amount_total",
++            "total_details",
++            "payment_method_types",
++            "custom_payment_methods",
++            "confirm_return_url",
++            "processor_entity",
++            "publishable_key",
++            "customer_session_client_secret",
++            "customer",
++        ):
++            if nested.get(key) not in (None, "", [], {}):
++                checkout[key] = nested[key]
+     return payload
 diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
-index 51a8cc0..6b6832e 100644
+index 51a8cc0..cd5514e 100644
 --- a/payment_link_extractor/momo_core.py
 +++ b/payment_link_extractor/momo_core.py
-@@ -14,8 +14,14 @@ from .config import billing_for_country, currency_minor_scale
+@@ -9,40 +9,77 @@ from dataclasses import replace
+ from typing import Any, Callable
+ from urllib.parse import parse_qs, urlparse
+ 
+-from .auth import account_email
++from .auth import account_email, account_name
+ from .config import billing_for_country, currency_minor_scale
  from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
  from .models import ExtractionConfig, PaymentLinkResult
- from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
+-from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
 -from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
 -from .momo_transport import MomoTransportFactory, close
++from .momo_checkout import (
++    MOMO_COUNTRY,
++    MOMO_CURRENCY,
++    checkout_amount_minor,
++    create_checkout,
++    momo_checkout_method_state,
++    taxes,
++    validate_zero_trial_checkout,
++)
 +from .momo_eligibility import probe_momo_trial_eligibility
-+from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
++from .momo_stripe import (
++    checkout_confirm,
++    confirmation_token,
++    elements_session,
++    intent_confirm,
++    redirect_url,
++    resolve_momo_redirect,
++    synchronize_momo_stripe_ids,
++    validate_momo_url,
++)
 +from .momo_transport import (
 +    MomoTransportFactory,
 +    capture_momo_csrf_token,
 +    close,
 +    momo_gateway_headers,
++    momo_gateway_navigation_headers,
 +)
  
  MOMO_RESULT_FIELD = "momo_url"
  
-@@ -58,9 +64,35 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
+ 
+ def momo_checkout_payable_amount(checkout: dict[str, Any]) -> int | None:
+-    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+-    total = state.get("total") if isinstance(state.get("total"), dict) else {}
+-    due = total.get("total") if isinstance(total.get("total"), dict) else {}
+-    raw = due.get("minorUnitsAmount")
+-    if raw in (None, ""):
+-        raw = checkout.get("payable_amount_minor")
+-    try:
+-        return None if raw in (None, "") else int(raw)
+-    except (TypeError, ValueError):
+-        return None
++    return checkout_amount_minor(checkout)
+ 
+ 
+ def validate_momo_amount(amount_due_minor: int | None) -> None:
+     if amount_due_minor is None:
+         raise ProtocolError(409, "Momo expected zero amount, got missing")
+-    if int(amount_due_minor) != 0:
++    try:
++        value = int(amount_due_minor)
++    except (TypeError, ValueError):
++        try:
++            parsed = float(str(amount_due_minor).strip())
++        except (TypeError, ValueError):
++            raise ProtocolError(409, "Momo expected zero amount, got invalid")
++        value = int(parsed) if parsed.is_integer() else -1
++    if value != 0:
+         raise ProtocolError(409, f"Momo expected zero amount, got {amount_due_minor}")
+ 
+ 
+ def pin_momo_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
+     proxy = str(config.checkout_proxy or "").strip()
+-    return replace(config, checkout_proxy=proxy, update_proxy=proxy, checkout_proxy_attempts=(proxy,), update_proxy_attempts=(proxy,), proxy_pool=(proxy,))
++    pool = tuple(
++        dict.fromkeys(
++            str(value).strip()
++            for value in (config.proxy_pool or (proxy,))
++            if str(value).strip()
++        )
++    )
++    return replace(
++        config,
++        checkout_proxy=proxy,
++        update_proxy=proxy,
++        checkout_proxy_attempts=(proxy,),
++        update_proxy_attempts=(proxy,),
++        proxy_pool=pool,
++    )
+ 
+ 
+ def _gateway_session_id(url: str) -> str:
+@@ -54,13 +91,80 @@ def _gateway_session_id(url: str) -> str:
+         return ""
+ 
+ 
+-def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
++def query_gateway(
++    session: Any,
++    url: str,
++    *,
++    polls: int = 17,
++    require_redirect: bool = False,
++    poll_interval: float = 4.0,
++    expected_amount: int | None = None,
++    cancel_event: Any = None,
++    deadline_seconds: float = 120.0,
++) -> dict[str, Any]:
      session_id = _gateway_session_id(url)
      if not session_id:
          raise ProtocolError(502, "Momo gateway URL has invalid session token")
 +    # The browser first opens the gateway page.  That navigation establishes
 +    # the page origin and may set the CSRF cookie used by querySession.
++    started = time.monotonic()
 +    opener = getattr(session, "request", None)
 +    if callable(opener):
 +        try:
++            if cancel_event is not None and cancel_event.is_set():
++                raise ExtractionCancelled("task cancellation requested")
 +            page = opener(
 +                "GET",
 +                url,
-+                headers=momo_gateway_headers(session, url),
-+                timeout=30,
++                headers=momo_gateway_navigation_headers(session, url),
++                timeout=max(1, min(30, int(max(1, deadline_seconds)))),
 +            )
 +            if int(getattr(page, "status_code", 0) or 0) >= 400:
 +                raise ProtocolError(
 +                    int(page.status_code), "Momo gateway page failed"
 +                )
 +            capture_momo_csrf_token(session, page)
-+        except ProtocolError:
++        except (ProtocolError, ExtractionCancelled):
 +            raise
 +        except Exception as exc:
 +            raise ProtocolError(502, "Momo gateway page request failed") from exc
      last: dict[str, Any] = {}
      for index in range(max(1, polls)):
 -        response = session.request("POST", "https://payment.momo.vn/v2/gateway/querySession", json={"sessionId": session_id}, timeout=30)
-+        response = session.request(
-+            "POST",
-+            "https://payment.momo.vn/v2/gateway/querySession",
-+            json={"sessionId": session_id},
-+            headers=momo_gateway_headers(session, url),
-+            timeout=30,
-+        )
++        if cancel_event is not None and cancel_event.is_set():
++            raise ExtractionCancelled("task cancellation requested")
++        remaining = float(deadline_seconds) - (time.monotonic() - started)
++        if remaining <= 0:
++            raise ProtocolError(504, "Momo gateway polling deadline exceeded")
++        query_headers = momo_gateway_headers(session, url)
++        # The browser sends an empty POST (the session id is bound to the
++        # gateway cookie/page); retain a JSON fallback for older deployments.
++        query_headers["Accept"] = "*/*"
++        query_headers.pop("Content-Type", None)
++        try:
++            response = session.request(
++                "POST",
++                "https://payment.momo.vn/v2/gateway/querySession",
++                data="",
++                headers=query_headers,
++                timeout=max(1, min(30, int(remaining))),
++            )
++        except TypeError:
++            # Small test/legacy adapters may expose only a JSON keyword.
++            response = session.request(
++                "POST",
++                "https://payment.momo.vn/v2/gateway/querySession",
++                json={"sessionId": session_id},
++                headers=momo_gateway_headers(session, url),
++                timeout=max(1, min(30, int(remaining))),
++            )
++        if int(getattr(response, "status_code", 0) or 0) >= 400:
++            response = session.request(
++                "POST",
++                "https://payment.momo.vn/v2/gateway/querySession",
++                json={"sessionId": session_id},
++                headers=momo_gateway_headers(session, url),
++                timeout=30,
++            )
          if int(getattr(response, "status_code", 0) or 0) >= 400:
              raise ProtocolError(int(response.status_code), "Momo querySession failed")
          try:
-@@ -80,6 +112,29 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+@@ -70,8 +174,46 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
+         last = value if isinstance(value, dict) else {}
+         if bool(last.get("redirect")):
+             break
++        status_text = str(last.get("status_code") or "")
++        if status_text and status_text not in {"1000", "200", "PENDING"}:
++            break
+         if index + 1 < polls:
+-            time.sleep(0.25)
++            sleep_for = min(max(0.0, float(poll_interval)), max(0.0, remaining))
++            if cancel_event is not None:
++                if cancel_event.wait(sleep_for):
++                    raise ExtractionCancelled("task cancellation requested")
++            else:
++                time.sleep(sleep_for)
++    if require_redirect and not bool(last.get("redirect")):
++        status_code = str(last.get("status_code") or "")
++        raise ProtocolError(
++            409,
++            "Momo gateway session did not reach redirect"
++            + (f" (status_code={status_code})" if status_code else ""),
++        )
++    if require_redirect and str(last.get("status_code") or "") != "9000":
++        raise ProtocolError(
++            409,
++            "Momo gateway session returned unexpected status"
++            f" (status_code={last.get('status_code') or '-'})",
++        )
++    if require_redirect:
++        return_url = str(last.get("return_url") or "").strip()
++        if not return_url:
++            raise ProtocolError(409, "Momo gateway redirect URL is missing")
++        return_parts = urlparse(return_url)
++        if return_parts.hostname != "payment.momo.vn" or return_parts.path != "/v2/gateway/redirect":
++            raise ProtocolError(409, "Momo gateway returned an invalid redirect URL")
++        query = parse_qs(return_parts.query)
++        amount_values = query.get("amount") or query.get("amount_total")
++        if expected_amount is not None:
++            if not amount_values:
++                raise ProtocolError(409, "Momo gateway redirect amount is missing")
++            try:
++                if any(float(str(value)) != float(expected_amount) for value in amount_values):
++                    raise ProtocolError(409, "Momo gateway returned an unexpected amount")
++            except ValueError as exc:
++                raise ProtocolError(409, "Momo gateway returned an invalid amount") from exc
+     return last
+ 
+ 
+@@ -80,6 +222,33 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
          raise ConfigurationError("Momo core requires payment_method=momo")
      if str(config.country or "").upper() != MOMO_COUNTRY:
          raise ConfigurationError("Momo core requires country=VN")
-+    factory = transport_factory or MomoTransportFactory()
++    factory = transport_factory or MomoTransportFactory(
++        str(getattr(config, "momo_fingerprint", "") or "")
++    )
 +    trial_eligible = False
 +    trial_campaign = ""
++    chatgpt = None
 +    if bool(getattr(config, "momo_trial_eligibility_check", True)):
 +        if stage_callback:
 +            stage_callback("eligibility_check")
@@ -340,6 +783,7 @@ index 51a8cc0..6b6832e 100644
 +        )
 +        trial_eligible = bool(eligibility.get("eligible"))
 +        trial_campaign = str(eligibility.get("campaign_id") or "").strip()
++        chatgpt = eligibility.pop("_chatgpt_session", None)
 +        selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
 +        config = replace(
 +            config,
@@ -352,12 +796,24 @@ index 51a8cc0..6b6832e 100644
      config = pin_momo_attempt_proxy(config)
      def checkpoint(stage: str) -> None:
          if cancel_event is not None and cancel_event.is_set():
-@@ -91,13 +146,17 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
-     if email:
-         billing_profile = replace(billing_profile, email=email)
+@@ -88,45 +257,79 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+             stage_callback(stage)
+     billing_profile = billing_for_country(MOMO_COUNTRY)
+     email = account_email(config.access_token)
+-    if email:
+-        billing_profile = replace(billing_profile, email=email)
++    name = account_name(config.access_token)
++    if email or name:
++        billing_profile = replace(
++            billing_profile,
++            email=email or billing_profile.email,
++            name=name or billing_profile.name,
++        )
      billing = billing_profile.to_dict()
 -    factory = transport_factory or MomoTransportFactory()
-     chatgpt = factory.chatgpt(config, config.checkout_proxy)
+-    chatgpt = factory.chatgpt(config, config.checkout_proxy)
++    if chatgpt is None:
++        chatgpt = factory.chatgpt(config, config.checkout_proxy)
      stripe = None
      momo = None
      try:
@@ -371,8 +827,40 @@ index 51a8cc0..6b6832e 100644
 +        )
          checkpoint("checkout_committed")
          checkpoint("checkout_kind:openai_custom_checkout")
-         for _ in range(3):
-@@ -117,6 +176,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+-        for _ in range(3):
++        method_state = momo_checkout_method_state(checkout)
++        if method_state is False:
++            raise ProtocolError(409, "Momo payment method is not available in Checkout")
++        if method_state is True:
++            checkpoint("momo_method_confirmed")
++        if config.momo_zero_trial_validation:
++            validate_zero_trial_checkout(checkout)
++        # The successful zero-due HAR initializes Stripe Elements from the
++        # Checkout's initial total before taxes are refreshed. This binds the
++        # deferred intent to the zero amount instead of letting a later tax
++        # request create a fresh paid intent.
++        stripe = factory.stripe(config)
++        checkpoint("stripe_init")
++        synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
++        elements_session(stripe, checkout)
++        checkpoint("stripe_elements")
++        for tax_phase in range(3):
+             checkpoint("taxes")
+-            taxes(chatgpt, checkout, billing)
++            taxes(chatgpt, checkout, billing, phase=tax_phase)
++            synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
+         amount_minor = momo_checkout_payable_amount(checkout)
+         if config.momo_zero_trial_validation:
+             checkpoint("zero_amount_validation")
++            validate_zero_trial_checkout(checkout)
+             validate_momo_amount(amount_minor)
+             checkpoint("zero_amount_confirmed")
+-        stripe = factory.stripe(config)
+-        checkpoint("stripe_init")
+-        elements_session(stripe, checkout)
+-        checkpoint("stripe_elements")
+         token = confirmation_token(stripe, checkout, billing, config.stripe_hcaptcha_token)
+         checkpoint("payment_confirmation")
          confirmed = checkout_confirm(chatgpt, checkout, token)
          intent = intent_confirm(stripe, checkout, token, confirmed)
          raw = redirect_url(intent)
@@ -381,12 +869,32 @@ index 51a8cc0..6b6832e 100644
          if not validate_momo_url(raw):
              raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
          checkpoint("redirect_resolution")
+         momo = factory.momo(config) if callable(getattr(factory, "momo", None)) else stripe
+-        query_gateway(momo, raw, polls=1)
++        gateway_state = query_gateway(
++            momo,
++            raw,
++            polls=17,
++            require_redirect=True,
++            poll_interval=4.0,
++            expected_amount=0 if config.momo_zero_trial_validation else None,
++            cancel_event=cancel_event,
++        )
+         checkout_state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+         total = checkout_state.get("total") if isinstance(checkout_state.get("total"), dict) else {}
+         due = total.get("total") if isinstance(total.get("total"), dict) else {}
+         minor = int(due.get("minorUnitsAmount") if due.get("minorUnitsAmount") not in (None, "") else (checkout.get("payable_amount_minor") or 0))
+-        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
++        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_gateway_status_code": str(gateway_state.get("status_code") or ""), "momo_checkout_momo_available": method_state, "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
+     finally:
+         close(momo)
+         if momo is stripe:
 diff --git a/payment_link_extractor/momo_eligibility.py b/payment_link_extractor/momo_eligibility.py
 new file mode 100644
-index 0000000..2397032
+index 0000000..75a418d
 --- /dev/null
 +++ b/payment_link_extractor/momo_eligibility.py
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,452 @@
 +from __future__ import annotations
 +
 +"""Standalone VN MoMo trial-eligibility probe.
@@ -398,7 +906,9 @@ index 0000000..2397032
 +
 +from dataclasses import replace
 +import threading
++import time
 +from typing import Any, Callable
++from urllib.parse import quote
 +
 +from .auth import account_id, normalize_access_token
 +from .config import normalize_payment_method
@@ -407,7 +917,68 @@ index 0000000..2397032
 +
 +
 +MOMO_TRIAL_COUPON = "plus-1-month-free"
-+MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
++MOMO_ELIGIBILITY_PATH = "/backend-api/promo_campaign/check_coupon"
++
++
++def _catalog_campaign_match(
++    payload: Any, campaign_id: str, *, account_key: str = ""
++) -> tuple[bool, bool]:
++    """Inspect the account catalog without trusting display-only flags.
++
++    The account endpoint returns a mapping keyed by account UUID (and often a
++    ``default`` entry).  ``eligible_promo_campaigns.plus.id`` is the upstream
++    project's eligibility hint; the coupon endpoint remains the final check.
++    The first return value says that a catalog was present, the second says
++    that at least one catalog entry named the requested campaign.
++    """
++    present = False
++    matched = False
++
++    def visit(value: Any) -> None:
++        nonlocal present, matched
++        if isinstance(value, dict):
++            campaigns = value.get("eligible_promo_campaigns")
++            if isinstance(campaigns, dict) and "plus" in campaigns:
++                present = True
++                plus = campaigns.get("plus")
++                candidates: list[Any] = []
++                if isinstance(plus, dict):
++                    candidates.extend(
++                        plus.get(key)
++                        for key in ("id", "promo_campaign_id", "campaign_id", "code")
++                    )
++                elif isinstance(plus, list):
++                    candidates.extend(plus)
++                for candidate in candidates:
++                    if isinstance(candidate, dict):
++                        candidate = next(
++                            (
++                                candidate.get(key)
++                                for key in ("id", "promo_campaign_id", "campaign_id", "code")
++                                if candidate.get(key)
++                            ),
++                            "",
++                        )
++                    if str(candidate or "").strip() == campaign_id:
++                        matched = True
++            for child in value.values():
++                visit(child)
++        elif isinstance(value, list):
++            for child in value:
++                visit(child)
++
++    target = payload
++    if isinstance(payload, dict) and isinstance(payload.get("accounts"), dict):
++        accounts = payload["accounts"]
++        # Prefer the account selected by the AT; the API also supplies a
++        # ``default`` view for single-account sessions.
++        target = accounts.get(account_key)
++        if target is None and not account_key:
++            target = accounts.get("default")
++        if target is None:
++            return True, False
++    visit(target)
++    return present, matched
 +
 +
 +class MomoEligibilityError(ProtocolError):
@@ -416,6 +987,7 @@ index 0000000..2397032
 +    def __init__(self, status_code: int, message: str, *, retryable: bool = True) -> None:
 +        super().__init__(status_code, message)
 +        self.retryable = retryable
++        self.probes: tuple[dict[str, Any], ...] = ()
 +
 +
 +def _proxy_candidates(config: Any) -> tuple[str, ...]:
@@ -455,7 +1027,9 @@ index 0000000..2397032
 +    if not proxies:
 +        raise ConfigurationError("VN checkout proxy is required for Momo eligibility")
 +
-+    factory = transport_factory or MomoTransportFactory()
++    factory = transport_factory or MomoTransportFactory(
++        str(getattr(config, "momo_fingerprint", "") or "")
++    )
 +    probes: list[dict[str, Any]] = []
 +    for index, proxy in enumerate(proxies, start=1):
 +        if cancel_event is not None and cancel_event.is_set():
@@ -464,19 +1038,156 @@ index 0000000..2397032
 +            stage_callback(f"eligibility_proxy:{index}")
 +        attempt = _attempt_config(replace(config, access_token=token), proxy)
 +        chatgpt = factory.chatgpt(attempt, proxy)
++        campaign_url = (
++            "https://chatgpt.com/?promo_campaign=" + MOMO_TRIAL_COUPON
++        )
 +        url = (
 +            f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
++            f"?coupon={MOMO_TRIAL_COUPON}&is_coupon_from_query_param=true"
 +        )
-+        selected_account = account_id(token)
 +        eligibility_headers = {
-+            "Accept": "application/json",
-+            "Referer": "https://chatgpt.com/",
++            "Accept": "*/*",
++            "Referer": campaign_url,
 +            "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
 +            "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
 +        }
-+        if selected_account:
-+            eligibility_headers["chatgpt-account-id"] = selected_account
++        session_kept = False
 +        try:
++            setattr(chatgpt, "momo_flow_started_at", time.perf_counter())
++            # Establish the same promo landing-page context used by the
++            # successful zero-due HAR before asking for coupon eligibility.
++            try:
++                landing_response = chatgpt.request(
++                    "GET",
++                    campaign_url,
++                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
++                    timeout=30,
++                )
++                if 200 <= int(getattr(landing_response, "status_code", 0) or 0) < 400:
++                    setattr(chatgpt, "momo_promo_context_ready", True)
++            except Exception:
++                pass
++            # Prime the browser proof on the same promo origin before the
++            # eligibility/Checkout pair.  This is best-effort for installs
++            # without Chromium; the coupon response remains authoritative.
++            provider = getattr(chatgpt, "openai_sentinel_provider", None)
++            prepare_flow = getattr(provider, "prepare_flow", None)
++            if callable(prepare_flow):
++                try:
++                    prepare_flow("chatgpt_checkout", referer=campaign_url)
++                    setattr(chatgpt, "momo_promo_context_ready", True)
++                except Exception:
++                    pass
++            # The complete browser flow warms the account catalog immediately
++            # before coupon evaluation. Keep both calls on the same session;
++            # their responses provide the account-scoped eligibility signal;
++            # check_coupon below must independently echo the same campaign.
++            selected_account = account_id(token)
++            account_headers = {
++                "Accept": "*/*",
++                "Referer": "https://chatgpt.com/",
++                "x-openai-target-path": "/backend-api/accounts/optimized/check",
++                "x-openai-target-route": "/backend-api/accounts/optimized/check",
++            }
++            if selected_account:
++                account_headers["chatgpt-account-id"] = selected_account
++            try:
++                chatgpt.request(
++                    "GET",
++                    "https://chatgpt.com/backend-api/accounts/optimized/check",
++                    headers=momo_request_headers(
++                        chatgpt,
++                        "GET",
++                        "https://chatgpt.com/backend-api/accounts/optimized/check",
++                        account_headers,
++                    ),
++                    timeout=30,
++                )
++            except Exception:
++                pass
++            account_path = "/backend-api/accounts/check/v4-2023-04-27"
++            account_url = "https://chatgpt.com" + account_path + "?timezone_offset_min=-420"
++            account_headers["x-openai-target-path"] = account_path
++            account_headers["x-openai-target-route"] = "/backend-api/accounts/check/{version}"
++            catalog_present = False
++            catalog_match = False
++            catalog_request_ok = False
++            try:
++                account_response = chatgpt.request(
++                    "GET",
++                    account_url,
++                    headers=momo_request_headers(
++                        chatgpt, "GET", account_url, account_headers
++                    ),
++                    timeout=30,
++                )
++                if int(getattr(account_response, "status_code", 0) or 0) < 400:
++                    catalog_request_ok = True
++                    try:
++                        account_payload = account_response.json() or {}
++                    except Exception:
++                        account_payload = None
++                        catalog_request_ok = False
++                    if account_payload is None:
++                        catalog_present = True
++                        catalog_match = False
++                    else:
++                        catalog_present, catalog_match = _catalog_campaign_match(
++                            account_payload,
++                            MOMO_TRIAL_COUPON,
++                            account_key=selected_account,
++                        )
++            except Exception:
++                catalog_request_ok = False
++            # Keep the pricing and saved-payment context warm on the same
++            # device/session.  The account/catalog result is required for a
++            # selected AT; a coupon-only response must not green-light a
++            # checkout when the account catalog was unavailable.
++            pricing_path = "/backend-api/checkout_pricing_config/configs/VN"
++            pricing_url = "https://chatgpt.com" + pricing_path
++            pricing_headers = {
++                "Accept": "*/*",
++                "Referer": "https://chatgpt.com/",
++                "x-openai-target-path": pricing_path,
++                "x-openai-target-route": "/backend-api/checkout_pricing_config/configs/{country_code}",
++            }
++            try:
++                chatgpt.request(
++                    "GET",
++                    pricing_url,
++                    headers=momo_request_headers(
++                        chatgpt, "GET", pricing_url, pricing_headers
++                    ),
++                    timeout=30,
++                )
++            except Exception:
++                pass
++            if selected_account:
++                methods_path = "/backend-api/payments/payment_methods"
++                methods_url = (
++                    "https://chatgpt.com"
++                    + methods_path
++                    + "?account_id="
++                    + quote(selected_account, safe="")
++                )
++                methods_headers = {
++                    "Accept": "*/*",
++                    "Referer": "https://chatgpt.com/",
++                    "x-openai-target-path": methods_path,
++                    "x-openai-target-route": methods_path,
++                    "chatgpt-account-id": selected_account,
++                }
++                try:
++                    chatgpt.request(
++                        "GET",
++                        methods_url,
++                        headers=momo_request_headers(
++                            chatgpt, "GET", methods_url, methods_headers
++                        ),
++                        timeout=30,
++                    )
++                except Exception:
++                    pass
 +            response = chatgpt.request(
 +                "GET",
 +                url,
@@ -488,6 +1199,21 @@ index 0000000..2397032
 +                ),
 +                timeout=30,
 +            )
++            # The browser reloads pricing after the coupon route resolves;
++            # keep the promo referer on this second read before Checkout.
++            promo_pricing_headers = dict(pricing_headers)
++            promo_pricing_headers["Referer"] = campaign_url
++            try:
++                chatgpt.request(
++                    "GET",
++                    pricing_url,
++                    headers=momo_request_headers(
++                        chatgpt, "GET", pricing_url, promo_pricing_headers
++                    ),
++                    timeout=30,
++                )
++            except Exception:
++                pass
 +            status = int(getattr(response, "status_code", 0) or 0)
 +            if status >= 400:
 +                probes.append(
@@ -501,11 +1227,13 @@ index 0000000..2397032
 +                    }
 +                )
 +                if status == 401:
-+                    raise MomoEligibilityError(
++                    error = MomoEligibilityError(
 +                        status,
 +                        "Momo eligibility authentication failed (HTTP 401)",
 +                        retryable=False,
 +                    )
++                    error.probes = tuple(probes)
++                    raise error
 +                continue
 +            try:
 +                payload = response.json() or {}
@@ -521,23 +1249,41 @@ index 0000000..2397032
 +                    }
 +                )
 +                continue
++            state = ""
++            eligible = False
++            redeemed = False
++            campaign_id = ""
++            coupon_match = False
++            redemption_valid = False
 +            if not isinstance(payload, dict):
 +                state = ""
-+                eligible = False
 +            else:
-+                accounts = payload.get("accounts")
-+                accounts = accounts if isinstance(accounts, dict) else {}
-+                account = accounts.get(selected_account) or accounts.get("default") or {}
-+                account = account if isinstance(account, dict) else {}
-+                campaigns = account.get("eligible_promo_campaigns")
-+                campaigns = campaigns if isinstance(campaigns, dict) else {}
-+                plus = campaigns.get("plus")
-+                plus = plus if isinstance(plus, dict) else {}
-+                campaign_id = str(
-+                    plus.get("id") or plus.get("campaign_id") or ""
-+                ).strip()
-+                state = "eligible" if campaign_id else "not_eligible"
-+                eligible = bool(campaign_id)
++                state = str(payload.get("state") or "").strip().lower()
++                coupon_match = str(payload.get("coupon") or "").strip() == MOMO_TRIAL_COUPON
++                redemption = payload.get("redemption")
++                redemption_valid = isinstance(redemption, dict) and "redeemed" in redemption
++                redemption = redemption if isinstance(redemption, dict) else {}
++                redeemed = bool(
++                    redemption.get("redeemed")
++                    or redemption.get("redeemed_by_user")
++                    or redemption.get("redeemed_by_workspace")
++                )
++                # Fail closed when the account catalog explicitly lacks the
++                # campaign.  If that optional endpoint is unavailable, the
++                # coupon response can still decide eligibility.
++                eligible = (
++                    state == "eligible"
++                    and coupon_match
++                    and redemption_valid
++                    and not redeemed
++                    and (
++                        (catalog_present and catalog_match)
++                        if selected_account
++                        else (not catalog_present or catalog_match)
++                    )
++                    and (not selected_account or catalog_request_ok)
++                )
++                campaign_id = MOMO_TRIAL_COUPON if eligible else ""
 +            probes.append(
 +                {
 +                    "attempt": index,
@@ -547,11 +1293,18 @@ index 0000000..2397032
 +                    "eligible": eligible,
 +                    "coupon": MOMO_TRIAL_COUPON,
 +                    "campaign_id": campaign_id if eligible else "",
++                    "redeemed": redeemed if isinstance(payload, dict) else False,
++                    "coupon_match": coupon_match,
++                    "redemption_valid": redemption_valid,
++                    "catalog_present": catalog_present,
++                    "catalog_match": catalog_match if catalog_present else None,
++                    "catalog_request_ok": catalog_request_ok,
 +                }
 +            )
 +            if eligible:
 +                if stage_callback is not None:
 +                    stage_callback("eligibility_confirmed")
++                session_kept = True
 +                return {
 +                    "ok": True,
 +                    "eligible": True,
@@ -566,6 +1319,9 @@ index 0000000..2397032
 +                    "campaign_id": campaign_id,
 +                    "source": "chatgpt_check_coupon",
 +                    "probes": probes,
++                    # Internal-only handle; the core reuses this exact
++                    # device/session/cookie context for Checkout.
++                    "_chatgpt_session": chatgpt,
 +                }
 +        except MomoEligibilityError:
 +            raise
@@ -581,31 +1337,42 @@ index 0000000..2397032
 +                }
 +            )
 +        finally:
-+            close(chatgpt)
++            if not session_kept:
++                close(chatgpt)
 +
-+    raise MomoEligibilityError(
++    error = MomoEligibilityError(
 +        409,
 +        "Momo trial eligibility rejected on all VN proxies",
 +        retryable=True,
 +    )
++    error.probes = tuple(probes)
++    raise error
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
-index 6713d52..3aba10b 100644
+index 6713d52..c57a88b 100644
 --- a/payment_link_extractor/momo_stripe.py
 +++ b/payment_link_extractor/momo_stripe.py
-@@ -3,6 +3,8 @@ from __future__ import annotations
+@@ -2,7 +2,9 @@ from __future__ import annotations
+ 
  """Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
  
- import random
+-import random
 +import os
 +import secrets
++import time
  import uuid
  from typing import Any
  from urllib.parse import parse_qs, urlencode, urlparse
-@@ -10,26 +12,128 @@ from urllib.parse import parse_qs, urlencode, urlparse
+@@ -10,83 +12,413 @@ from urllib.parse import parse_qs, urlencode, urlparse
  from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
  from .errors import ProtocolError
  from .momo_checkout import json_payload
 +from .momo_transport import momo_request_headers
++
++
++MOMO_STRIPE_RUNTIME_VERSION = (
++    os.getenv("OPLL_MOMO_STRIPE_RUNTIME_VERSION", "").strip()
++    or "939d686cd5"
++)
 +
 +
 +def _payable_amount_minor(checkout: dict[str, Any]) -> int:
@@ -616,9 +1383,14 @@ index 6713d52..3aba10b 100644
 +    if raw in (None, ""):
 +        raw = checkout.get("payable_amount_minor")
 +    try:
-+        return max(0, int(raw))
++        value = int(raw)
 +    except (TypeError, ValueError):
-+        return 0
++        try:
++            parsed = float(str(raw).strip())
++        except (TypeError, ValueError):
++            return 0
++        value = int(parsed) if parsed.is_integer() else 0
++    return value if value >= 0 else 0
 +
 +
 +def _stripe_fingerprint_id() -> str:
@@ -627,7 +1399,11 @@ index 6713d52..3aba10b 100644
 +
 +
 +def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, str]:
-+    session_id = str(checkout.get("stripe_client_session_id") or uuid.uuid4())
++    session_id = str(
++        checkout.get("stripe_client_session_id")
++        or checkout.get("stripe_js_id")
++        or uuid.uuid4()
++    )
 +    checkout["stripe_client_session_id"] = session_id
 +    fields = {
 +        "client_session_id": session_id,
@@ -670,6 +1446,103 @@ index 6713d52..3aba10b 100644
 +                return found
 +    return ""
 +    return ""
++
++
++def _find_customer_id(value: Any) -> str:
++    """Extract Stripe's customer id from Elements' nested customer object."""
++    if isinstance(value, str):
++        candidate = value.strip()
++        return candidate if candidate.startswith("cus_") else ""
++    if isinstance(value, dict):
++        # Elements returns customer.customer_session.customer; inspect this
++        # path before generic id keys so unrelated config/session ids are not
++        # sent as the Stripe customer.
++        for key in ("customer", "customer_session", "customerSession"):
++            found = _find_customer_id(value.get(key))
++            if found:
++                return found
++        for key in ("id", "customer_id", "customerId"):
++            found = _find_customer_id(value.get(key))
++            if found:
++                return found
++        for child in value.values():
++            found = _find_customer_id(child)
++            if found:
++                return found
++    elif isinstance(value, list):
++        for child in value:
++            found = _find_customer_id(child)
++            if found:
++                return found
++    return ""
++
++
++def _session_cookie_value(session: Any, name: str) -> str:
++    target = str(name or "").strip()
++    headers = getattr(session, "headers", None)
++    cookie_header = str(headers.get("Cookie") or "") if headers is not None else ""
++    for part in cookie_header.split(";"):
++        key, separator, value = part.strip().partition("=")
++        if separator and key.strip() == target:
++            return value.strip()
++    jar = getattr(session, "cookies", None)
++    if jar is not None:
++        try:
++            value = jar.get(target)
++        except Exception:
++            value = ""
++        if value:
++            return str(value).strip()
++    return ""
++
++
++def _set_session_cookie(session: Any, name: str, value: str) -> None:
++    if not session or not value:
++        return
++    headers = getattr(session, "headers", None)
++    if headers is not None:
++        current = str(headers.get("Cookie") or "")
++        parts = [item.strip() for item in current.split(";") if item.strip()]
++        replaced = False
++        for index, item in enumerate(parts):
++            if item.split("=", 1)[0].strip() == name:
++                parts[index] = f"{name}={value}"
++                replaced = True
++                break
++        if not replaced:
++            parts.append(f"{name}={value}")
++        headers["Cookie"] = "; ".join(parts)
++    jar = getattr(session, "cookies", None)
++    if jar is not None:
++        try:
++            jar.set(name, value, domain=".chatgpt.com", path="/")
++        except Exception:
++            try:
++                jar.set(name, value)
++            except Exception:
++                pass
++
++
++def synchronize_momo_stripe_ids(
++    chatgpt_session: Any, stripe_session: Any, checkout: dict[str, Any]
++) -> None:
++    """Keep Stripe fingerprint cookies and form fields on one flow identity."""
++    values: dict[str, str] = {}
++    for name in ("__stripe_mid", "__stripe_sid"):
++        value = _session_cookie_value(chatgpt_session, name) or _session_cookie_value(
++            stripe_session, name
++        )
++        if value:
++            values[name] = value
++    # Keep a single in-memory fingerprint when a fresh browser has not yet
++    # received Stripe cookies.  The complete VN HAR carries 42-character
++    # ``__stripe_mid``/``__stripe_sid`` values, so preserve that shape.
++    values.setdefault("__stripe_mid", _stripe_fingerprint_id())
++    values.setdefault("__stripe_sid", _stripe_fingerprint_id())
++    for name, value in values.items():
++        _set_session_cookie(chatgpt_session, name, value)
++    checkout["stripe_muid"] = values["__stripe_mid"]
++    checkout["stripe_sid"] = values["__stripe_sid"]
  
  
  def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -723,7 +1596,13 @@ index 6713d52..3aba10b 100644
 +        raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
      payload = json_payload(response, "Momo Stripe Elements init")
      checkout["elements_session"] = payload
-+    checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
++    customer_id = _find_customer_id(payload.get("customer"))
++    if customer_id:
++        checkout["customer"] = customer_id
++    checkout["stripe_js_id"] = str(
++        checkout.get("stripe_js_id") or params["stripe_js_id"]
++    )
++    checkout["stripe_client_session_id"] = checkout["stripe_js_id"]
      return payload
  
  
@@ -733,16 +1612,48 @@ index 6713d52..3aba10b 100644
      body: dict[str, Any] = {
          "payment_method_data[type]": "momo",
          "payment_method_data[billing_details][name]": billing["name"],
-@@ -41,52 +145,123 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
-         "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
++        "payment_method_data[billing_details][phone]": "",
+         "payment_method_data[billing_details][address][line1]": billing["line1"],
+         "payment_method_data[billing_details][address][city]": billing["city"],
+         "payment_method_data[billing_details][address][country]": "VN",
+         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
+         "payment_method_data[billing_details][address][state]": billing["state"],
+-        "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
++        "payment_method_data[payment_user_agent]": (
++            f"stripe.js/{MOMO_STRIPE_RUNTIME_VERSION}; "
++            f"stripe-js-v3/{MOMO_STRIPE_RUNTIME_VERSION}; "
++            "payment-element; deferred-intent"
++        ),
          "payment_method_data[referrer]": "https://chatgpt.com",
-         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
+-        "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
 -        "payment_method_data[guid]": uuid.uuid4().hex,
 -        "payment_method_data[muid]": uuid.uuid4().hex,
 -        "payment_method_data[sid]": uuid.uuid4().hex,
++        # Stripe.js reports elapsed page time.  Use the live flow clock and
++        # keep a short synthetic floor for very fast test/CLI runs.
++        "payment_method_data[time_on_page]": str(
++            max(
++                2000,
++                min(
++                    60000,
++                    round(
++                        (
++                            time.perf_counter()
++                            - float(
++                                checkout.get("flow_started_at")
++                                or time.perf_counter()
++                            )
++                        )
++                        * 1000
++                    ),
++                ),
++            )
++        ),
 +        "payment_method_data[guid]": _stripe_fingerprint_id(),
-+        "payment_method_data[muid]": _stripe_fingerprint_id(),
-+        "payment_method_data[sid]": _stripe_fingerprint_id(),
++        "payment_method_data[muid]": str(
++            checkout.get("stripe_muid") or _stripe_fingerprint_id()
++        ),
++        "payment_method_data[sid]": str(checkout.get("stripe_sid") or "NA"),
          "setup_future_usage": "off_session",
          "mandate_data[customer_acceptance][type]": "online",
          "mandate_data[customer_acceptance][online][infer_from_client]": "true",
@@ -759,16 +1670,19 @@ index 6713d52..3aba10b 100644
      }
 -    if captcha:
 -        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha
++    body["payment_method_data[billing_details][phone]"] = ""
 +    captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
 +    if captcha_value:
 +        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
-+    customer = str(checkout.get("customer") or "").strip()
-+    if customer:
-+        body["client_context[customer]"] = customer
      ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
 -    for source, target in (("session_id", "elements_session_id"), ("config_id", "elements_session_config_id")):
 -        if ctx.get(source):
 -            body[f"payment_method_data[client_attribution_metadata][{target}]"] = str(ctx[source])
++    customer = _find_customer_id(checkout.get("customer"))
++    if not customer:
++        customer = _find_customer_id(ctx.get("customer"))
++    if customer:
++        body["client_context[customer]"] = customer
 +    elements_session_id = str(
 +        ctx.get("session_id") or ctx.get("id") or ctx.get("elements_session_id") or ""
 +    )
@@ -856,24 +1770,34 @@ index 6713d52..3aba10b 100644
          raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
      endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
 -    return _post(session, endpoint, "Momo Stripe intent confirm", {"return_url": str(confirmed.get("confirm_return_url") or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"), "confirmation_token": token, "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK), "_stripe_version": STRIPE_VERSION_FULL, "client_secret": secret})
++    return_url_value = str(confirmed.get("confirm_return_url") or "").strip()
++    if not return_url_value:
++        return_url_value = (
++            "https://chatgpt.com/checkout/verify?stripe_session_id="
++            + str(checkout["cs_id"])
++            + "&processor_entity="
++            + str(checkout.get("processor_entity") or "openai_llc")
++            + "&plan_type=plus"
++        )
 +    data: dict[str, Any] = {
-+        "return_url": str(
-+            confirmed.get("confirm_return_url")
-+            or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"
-+        ),
++        "return_url": return_url_value,
 +        "confirmation_token": token,
 +        "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
-+        "_stripe_version": STRIPE_VERSION_FULL,
++        "_stripe_version": STRIPE_VERSION_BASE,
 +        "client_secret": secret,
 +    }
 +    attribution = _attribution_fields(checkout, source="l1")
-+    for name, value in attribution.items():
-+        data[f"client_attribution_metadata[{name}]"] = value
++    # The SetupIntent confirm in the complete VN HAR carries only these two
++    # attribution fields; the richer set belongs to confirmation_tokens.
++    data["client_attribution_metadata[client_session_id]"] = attribution[
++        "client_session_id"
++    ]
++    data["client_attribution_metadata[merchant_integration_source]"] = "l1"
 +    return _post(session, endpoint, "Momo Stripe intent confirm", data)
  
  
  def redirect_url(payload: dict[str, Any]) -> str:
-@@ -101,6 +276,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
+@@ -101,6 +433,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
      return ""
  
  
@@ -915,10 +1839,10 @@ index 6713d52..3aba10b 100644
      parsed = urlparse(str(value or ""))
      query = parse_qs(parsed.query)
 diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
-index efe8e02..be0e246 100644
+index efe8e02..1dcd924 100644
 --- a/payment_link_extractor/momo_transport.py
 +++ b/payment_link_extractor/momo_transport.py
-@@ -2,16 +2,85 @@ from __future__ import annotations
+@@ -2,15 +2,98 @@ from __future__ import annotations
  
  """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
  
@@ -968,6 +1892,7 @@ index efe8e02..be0e246 100644
 +        user_agent: str,
 +        proxy: str,
 +        transport_session: Any,
++        session_token: str = "",
 +    ) -> None:
 +        from .transport import BrowserSentinelProvider
 +
@@ -978,11 +1903,13 @@ index efe8e02..be0e246 100644
 +            user_agent=user_agent,
 +            proxy=_browser_proxy_for(proxy),
 +            transport_session=transport_session,
++            session_token=session_token,
 +            enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
 +            language="vi-VN",
 +            client_build_number="10109010",
 +            client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
 +            locale="vi-VN",
++            timezone="Asia/Saigon",
 +        )
 +
 +    @property
@@ -992,21 +1919,44 @@ index efe8e02..be0e246 100644
 +    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
 +        return dict(self._delegate.headers(flow, referer=referer) or {})
 +
++    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
++        prepare = getattr(self._delegate, "prepare_flow", None)
++        if callable(prepare):
++            prepare(flow, referer=referer)
++
 +    def close(self) -> None:
 +        self._delegate.close()
 +
 +
++def _curl_profile_supported(impersonate: str) -> bool:
++    """Check the installed curl_cffi enum before selecting a TLS profile."""
++    try:
++        from curl_cffi.requests.impersonate import BrowserType
++
++        return str(impersonate or "").lower() in {
++            str(item.value).lower() for item in BrowserType
++        }
++    except Exception:
++        return True
++
++
  MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+     {
+         "name": "chrome150",
+@@ -30,6 +113,12 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+         "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
+     },
 +    {
 +        "name": "chrome152",
 +        "impersonate": "chrome152",
 +        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
 +        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
 +    },
-     {
-         "name": "chrome150",
-         "impersonate": "chrome150",
-@@ -37,25 +106,120 @@ class MomoTransportFactory:
+ )
+ 
+ 
+@@ -37,25 +126,165 @@ class MomoTransportFactory:
      """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
  
      def __init__(self, fingerprint: str = "") -> None:
@@ -1014,9 +1964,34 @@ index efe8e02..be0e246 100644
 +        requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
          matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
 -        self.profile = dict(matches[0] if matches else secrets.choice(MOMO_BROWSER_PROFILES))
++        if matches and not _curl_profile_supported(matches[0]["impersonate"]):
++            matches = []
 +        # Bind the current Momo HAR identity by default. Older profiles remain
 +        # available only through an explicit per-attempt override.
-+        self.profile = dict(matches[0] if matches else MOMO_BROWSER_PROFILES[0])
++        if matches:
++            selected = matches[0]
++        else:
++            # Prefer the HAR's Chrome 152 identity when the installed
++            # curl_cffi build supports it; current 0.16.x falls back to the
++            # first supported Chrome profile without mixing UA/TLS versions.
++            preferred = next(
++                (
++                    profile
++                    for profile in MOMO_BROWSER_PROFILES
++                    if profile["name"] == "chrome152"
++                    and _curl_profile_supported(profile["impersonate"])
++                ),
++                None,
++            )
++            selected = preferred or next(
++                (
++                    profile
++                    for profile in MOMO_BROWSER_PROFILES
++                    if _curl_profile_supported(profile["impersonate"])
++                ),
++                MOMO_BROWSER_PROFILES[0],
++            )
++        self.profile = dict(selected)
  
      def chatgpt(self, config: Any, proxy: str) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -1030,22 +2005,22 @@ index efe8e02..be0e246 100644
 -                "Accept": "application/json",
 +                "Accept": "*/*",
                  "Origin": "https://chatgpt.com",
+-                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
 +                "Referer": "https://chatgpt.com/",
-+                "Content-Type": "application/json",
-                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
++                "Accept-Language": "vi-VN,vi;q=0.9",
 +                "oai-device-id": device_id,
 +                "oai-session-id": session_id,
 +                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
 +                "oai-client-build-number": os.getenv(
-+                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
++                    "OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", ""
 +                ).strip()
 +                or "10109010",
 +                "oai-client-version": os.getenv(
-+                    "OPLL_OAI_CLIENT_VERSION", ""
++                    "OPLL_MOMO_OAI_CLIENT_VERSION", ""
 +                ).strip()
 +                or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
 +                "x-oai-is-pending-updates": os.getenv(
-+                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
++                    "OPLL_MOMO_X_OAI_IS_PENDING_UPDATES", ""
 +                ).strip()
 +                or MOMO_EMPTY_PENDING_UPDATES,
 +                "x-oai-is-client-observation": observation
@@ -1059,14 +2034,25 @@ index efe8e02..be0e246 100644
 +                "Cookie": f"oai-did={device_id}",
              }
          )
-+        account = account_id(str(getattr(config, "access_token", "") or ""))
-+        if account:
-+            session.headers["chatgpt-account-id"] = account
 +        session.openai_device_id = device_id
 +        session.openai_did = device_id
 +        session.openai_session_id = session_id
++        session.openai_account_id = account_id(
++            str(getattr(config, "access_token", "") or "")
++        )
 +        session.openai_proxy = proxy
 +        session.openai_request_started = time.perf_counter()
++        session.momo_flow_started_at = session.openai_request_started
++        session.momo_session_token = str(
++            getattr(config, "session_token", "") or ""
++        ).strip()
++        if session.momo_session_token:
++            session.headers["Cookie"] = (
++                str(session.headers.get("Cookie") or "")
++                + "; "
++                + "__Secure-next-auth.session-token="
++                + session.momo_session_token
++            )
 +
 +        def refresh_momo_request_headers(method: str, url: str) -> dict[str, str]:
 +            pinned = observation or os.getenv(
@@ -1078,34 +2064,43 @@ index efe8e02..be0e246 100644
 +            if method.upper() == "POST":
 +                normalized = str(url or "").lower()
 +                if normalized.endswith("/backend-api/payments/checkout"):
-+                    dynamic["oai-telemetry"] = os.getenv(
-+                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
-+                    )
++                    configured = os.getenv(
++                        "OPLL_MOMO_OAI_CHECKOUT_TELEMETRY", ""
++                    ).strip()
++                    if configured:
++                        dynamic["oai-telemetry"] = configured
++                    else:
++                        elapsed = round(
++                            (time.perf_counter() - session.openai_request_started) * 1000,
++                            1,
++                        )
++                        dynamic["oai-telemetry"] = json.dumps(
++                            [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
++                            separators=(",", ":"),
++                        )
 +                elif normalized.endswith("/backend-api/payments/checkout/confirm"):
 +                    elapsed = round(
 +                        (time.perf_counter() - session.openai_request_started) * 1000,
 +                        1,
 +                    )
 +                    dynamic["oai-telemetry"] = json.dumps(
-+                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
++                        [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
 +                        separators=(",", ":"),
 +                    )
 +            return dynamic
 +
 +        session.refresh_momo_request_headers = refresh_momo_request_headers
-+        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
++        attestation = os.getenv(
++            "OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", ""
++        ).strip()
 +        if attestation:
 +            session.headers["oai-web-deployment-attestation"] = attestation
 +        # A browser-generated proof is preferred. Explicit values remain a
 +        # useful runtime fallback for deployments that inject their own proof.
-+        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
-+            "OPLL_OPENAI_SENTINEL_TOKEN", ""
-+        ).strip()
++        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip()
 +        if sentinel:
 +            session.openai_sentinel_token = sentinel
-+        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
-+            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
-+        ).strip()
++        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip()
 +        if sentinel_so:
 +            session.openai_sentinel_so_token = sentinel_so
          _set_proxy(session, proxy)
@@ -1122,6 +2117,7 @@ index efe8e02..be0e246 100644
 +                        user_agent=self.profile["user_agent"],
 +                        proxy=normalize_momo_proxy(proxy),
 +                        transport_session=session,
++                        session_token=session.momo_session_token,
 +                    )
 +            except Exception:
 +                # Keep the explicit token fallback and let the API return its
@@ -1130,7 +2126,26 @@ index efe8e02..be0e246 100644
          return session
  
      def stripe(self, config: Any) -> requests.Session:
-@@ -72,7 +236,16 @@ class MomoTransportFactory:
+@@ -63,8 +292,16 @@ class MomoTransportFactory:
+         session.headers.update(
+             {
+                 "User-Agent": self.profile["user_agent"],
+-                "Origin": "https://checkout.stripe.com",
+-                "Referer": "https://checkout.stripe.com/",
++                "Accept": "application/json, text/javascript, */*; q=0.01",
++                "Accept-Language": "vi-VN,vi;q=0.9",
++                "Origin": "https://js.stripe.com",
++                "Referer": "https://js.stripe.com/",
++                "Sec-CH-UA": self.profile["sec_ch_ua"],
++                "Sec-CH-UA-Mobile": "?0",
++                "Sec-CH-UA-Platform": '"Windows"',
++                "Sec-Fetch-Dest": "empty",
++                "Sec-Fetch-Mode": "cors",
++                "Sec-Fetch-Site": "same-site",
+             }
+         )
+         _set_proxy(session, config.checkout_proxy)
+@@ -72,7 +309,16 @@ class MomoTransportFactory:
  
      def momo(self, config: Any) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -1139,7 +2154,7 @@ index efe8e02..be0e246 100644
 +            {
 +                "User-Agent": self.profile["user_agent"],
 +                "Accept": "text/html,application/json",
-+                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
++                "Accept-Language": "vi-VN,vi;q=0.9",
 +                "Sec-CH-UA": self.profile["sec_ch_ua"],
 +                "Sec-CH-UA-Mobile": "?0",
 +                "Sec-CH-UA-Platform": '"Windows"',
@@ -1148,7 +2163,7 @@ index efe8e02..be0e246 100644
          _set_proxy(session, config.checkout_proxy)
          return session
  
-@@ -86,16 +259,172 @@ def _new_session(impersonate: str) -> Any:
+@@ -86,16 +332,225 @@ def _new_session(impersonate: str) -> Any:
  
  
  def _set_proxy(session: Any, proxy: str) -> None:
@@ -1208,7 +2223,7 @@ index efe8e02..be0e246 100644
 +    token = str(
 +        getattr(session, "openai_sentinel_token", "")
 +        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
-+        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
++        or ""
 +    ).strip()
 +    if token and not any(
 +        key.lower() == "openai-sentinel-token" for key in result
@@ -1217,7 +2232,7 @@ index efe8e02..be0e246 100644
 +    so_token = str(
 +        getattr(session, "openai_sentinel_so_token", "")
 +        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
-+        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
++        or ""
 +    ).strip()
 +    if so_token and not any(
 +        key.lower() == "openai-sentinel-so-token" for key in result
@@ -1225,7 +2240,7 @@ index efe8e02..be0e246 100644
 +        result["OpenAI-Sentinel-SO-Token"] = so_token
 +    attestation = str(
 +        getattr(session, "openai_web_deployment_attestation", "")
-+        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
++        or os.getenv("OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
 +    ).strip()
 +    if attestation and not any(
 +        key.lower() == "oai-web-deployment-attestation" for key in result
@@ -1249,6 +2264,37 @@ index efe8e02..be0e246 100644
 +    if callable(refresh):
 +        dynamic = refresh(str(method).upper(), url) or {}
 +        merged.update(dynamic)
++    normalized_url = str(url or "").split("?", 1)[0].lower()
++    account = str(getattr(session, "openai_account_id", "") or "").strip()
++    if account and (
++        normalized_url.endswith("/backend-api/payments/checkout/taxes")
++        or normalized_url.endswith("/backend-api/payments/checkout/confirm")
++    ):
++        merged.setdefault("chatgpt-account-id", account)
++    if str(method or "").upper() == "POST":
++        merged.setdefault("Content-Type", "application/json")
++    # Requests with an explicit Cookie header otherwise stop consulting the
++    # cookie jar. Merge newly issued cookies before every ChatGPT call so the
++    # eligibility → checkout → taxes sequence keeps one evolving context.
++    jar = getattr(session, "cookies", None)
++    if jar is not None:
++        try:
++            jar_values = jar.get_dict()
++        except Exception:
++            jar_values = {}
++        if isinstance(jar_values, dict):
++            current: dict[str, str] = {}
++            for part in str(merged.get("Cookie") or "").split(";"):
++                key, separator, value = part.strip().partition("=")
++                if separator and key:
++                    current[key] = value
++            for key, value in jar_values.items():
++                if str(key).strip():
++                    current[str(key).strip()] = str(value or "")
++            if current:
++                merged["Cookie"] = "; ".join(
++                    f"{key}={value}" for key, value in current.items()
++                )
 +    if flow:
 +        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
 +    return merged
@@ -1259,7 +2305,7 @@ index efe8e02..be0e246 100644
 +) -> dict[str, str]:
 +    """Build the browser-like headers used by MoMo gateway polling."""
 +    headers = {
-+        "Accept": "application/json, text/plain, */*",
++        "Accept": "*/*",
 +        "Content-Type": "application/json",
 +        "Origin": "https://payment.momo.vn",
 +        "Referer": gateway_url,
@@ -1274,6 +2320,25 @@ index efe8e02..be0e246 100644
 +        token = os.getenv("OPLL_MOMO_CSRF_TOKEN", "").strip()
 +    if token:
 +        headers["X-CSRF-Token"] = token
++    return headers
++
++
++def momo_gateway_navigation_headers(session: Any, gateway_url: str) -> dict[str, str]:
++    """Build the document-navigation headers used before gateway polling."""
++    headers = {
++        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
++        "Referer": "https://chatgpt.com/",
++        "Sec-Fetch-Dest": "document",
++        "Sec-Fetch-Mode": "navigate",
++        "Sec-Fetch-Site": "cross-site",
++        "Upgrade-Insecure-Requests": "1",
++    }
++    session_headers = getattr(session, "headers", None)
++    if session_headers is not None:
++        for key in ("User-Agent", "Accept-Language", "Cookie"):
++            value = str(session_headers.get(key) or "").strip()
++            if value:
++                headers[key] = value
 +    return headers
 +
 +
@@ -1292,7 +2357,10 @@ index efe8e02..be0e246 100644
 +        # persist it in logs or source.
 +        patterns = (
 +            r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
++            r"<meta[^>]+name=[\"']_csrf[\"'][^>]+content=[\"']([^\"']+)",
 +            r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
++            r"<input[^>]+name=[\"']_csrf[\"'][^>]+value=[\"']([^\"']+)",
++            r"setRequestHeader\(\s*[\"']X-CSRF-TOKEN[\"']\s*,\s*[\"']([^\"']+)",
 +        )
 +        for pattern in patterns:
 +            match = re.search(pattern, body, re.I)
@@ -1329,7 +2397,7 @@ index efe8e02..be0e246 100644
 +    if callable(getattr(session, "close", None)):
          session.close()
 diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
-index 1a1ade5..00113d5 100644
+index 1a1ade5..530cc76 100644
 --- a/payment_link_extractor/transport.py
 +++ b/payment_link_extractor/transport.py
 @@ -55,6 +55,11 @@ class TransportFactory(Protocol):
@@ -1344,27 +2412,31 @@ index 1a1ade5..00113d5 100644
  def new_session() -> Any:
      if CurlCffiSession is not None:
          return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
-@@ -513,6 +518,11 @@ class BrowserSentinelProvider:
+@@ -513,6 +518,13 @@ class BrowserSentinelProvider:
          proxy: str,
          transport_session: Any,
          log: Any | None = None,
 +        enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
++        session_token: str = "",
 +        language: str = "en-US",
 +        client_build_number: str = "",
 +        client_version: str = "",
 +        locale: str = "en-PH",
++        timezone: str = "Asia/Manila",
      ) -> None:
          self.access_token = str(access_token or "").strip()
          self.device_id = str(device_id or "").strip()
-@@ -521,14 +531,23 @@ class BrowserSentinelProvider:
+@@ -521,14 +533,25 @@ class BrowserSentinelProvider:
          self.proxy = str(proxy or "").strip()
          self.transport_session = transport_session
          self.log = log
 +        self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
++        self.session_token = str(session_token or "").strip()
 +        self.language = str(language or "en-US").strip() or "en-US"
 +        self.client_build_number = str(client_build_number or "").strip()
 +        self.client_version = str(client_version or "").strip()
 +        self.locale = str(locale or "en-PH").strip() or "en-PH"
++        self.timezone = str(timezone or "Asia/Manila").strip() or "Asia/Manila"
 +        language_list = json.dumps([self.locale, self.locale.split("-", 1)[0]])
          self.binary = _agent_browser_binary()
          self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
@@ -1382,7 +2454,7 @@ index 1a1ade5..00113d5 100644
              encoding="utf-8",
          )
          self._lock = threading.RLock()
-@@ -541,7 +560,7 @@ class BrowserSentinelProvider:
+@@ -541,7 +564,7 @@ class BrowserSentinelProvider:
  
      @property
      def enabled(self) -> bool:
@@ -1391,7 +2463,190 @@ index 1a1ade5..00113d5 100644
          return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
  
      def _base_command(self) -> list[str]:
-@@ -670,13 +689,15 @@ class BrowserSentinelProvider:
+@@ -571,7 +594,7 @@ class BrowserSentinelProvider:
+         env = dict(os.environ)
+         # Chromium uses TZ when constructing the browser fingerprint.  Keep
+         # the browser and the PH checkout locale coherent when supported.
+-        env.setdefault("TZ", "Asia/Manila")
++        env.setdefault("TZ", self.timezone)
+         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
+         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+         status = -1
+@@ -623,6 +646,113 @@ class BrowserSentinelProvider:
+             if attestation:
+                 self._attestation = attestation
+ 
++        # Some deployments expose the signed value only on a same-context
++        # backend request rather than in client-bootstrap.  Read header
++        # metadata from the browser monitor without retaining request bodies.
++        if self._attestation:
++            return
++        try:
++            captured = self._run(
++                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
++                timeout=20,
++            )
++        except Exception:
++            return
++        data = captured.get("data") if isinstance(captured, dict) else None
++        requests = data.get("requests") if isinstance(data, dict) else None
++        if not isinstance(requests, list):
++            return
++        for item in reversed(requests):
++            if not isinstance(item, dict):
++                continue
++            headers = item.get("requestHeaders") or item.get("headers")
++            if isinstance(headers, list):
++                header_map = {
++                    str(header.get("name") or "").lower(): str(header.get("value") or "")
++                    for header in headers
++                    if isinstance(header, dict)
++                }
++            elif isinstance(headers, dict):
++                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
++            else:
++                continue
++            value = str(header_map.get("oai-web-deployment-attestation") or "").strip()
++            if value:
++                self._attestation = value
++                return
++
++    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
++        """Install a cookie in the browser, chunking long session values."""
++        cookie_name = str(name or "").strip()
++        cookie_value = str(value or "")
++        if not cookie_name or not cookie_value:
++            return
++        chunk_size = 3800
++        chunks = [
++            cookie_value[index : index + chunk_size]
++            for index in range(0, len(cookie_value), chunk_size)
++        ]
++        names = (
++            [(cookie_name, chunks[0])]
++            if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096
++            else [(f"{cookie_name}.{index}", chunk) for index, chunk in enumerate(chunks)]
++        )
++        for chunk_name, chunk in names:
++            args = ["cookies", "set", chunk_name, chunk]
++            # __Host- cookies are host-only by RFC and reject Domain=.chatgpt.com.
++            if not cookie_name.lower().startswith("__host-"):
++                args.extend(["--domain", ".chatgpt.com"])
++            args.extend(["--path", "/"])
++            if http_only:
++                args.append("--httpOnly")
++            args.append("--secure")
++            self._run(args)
++
++    def _import_transport_cookies(self) -> None:
++        """Seed Chromium with cookies already collected by the HTTP session."""
++        headers = getattr(self.transport_session, "headers", None)
++        cookie_header = str(headers.get("Cookie") or "") if headers is not None else ""
++        if not cookie_header:
++            return
++        for part in cookie_header.split(";"):
++            name, separator, value = part.strip().partition("=")
++            if separator and name.strip() and value:
++                try:
++                    self._set_cookie(name.strip(), value, http_only=False)
++                except Exception:
++                    # A malformed/non-browser cookie must not prevent proof
++                    # generation for the remaining context.
++                    continue
++
++    def _sync_pending_update_from_browser(self) -> None:
++        """Mirror only the latest opaque receipt header into the HTTP session."""
++        try:
++            value = self._run(
++                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
++                timeout=20,
++            )
++        except Exception:
++            return
++        data = value.get("data") if isinstance(value, dict) else None
++        requests = data.get("requests") if isinstance(data, dict) else None
++        if not isinstance(requests, list):
++            return
++        for item in reversed(requests):
++            if not isinstance(item, dict):
++                continue
++            headers = item.get("responseHeaders")
++            if not isinstance(headers, dict):
++                continue
++            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
++            if not receipt:
++                continue
++            transport_headers = getattr(self.transport_session, "headers", None)
++            if transport_headers is not None:
++                transport_headers["x-oai-is-pending-updates"] = json.dumps(
++                    {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
++                )
++            return
++
+     def _sync_cookies(self) -> None:
+         value = self._run(["cookies", "get", "--json"])
+         cookies: list[dict[str, Any]] = []
+@@ -639,7 +769,29 @@ class BrowserSentinelProvider:
+             if name:
+                 pairs.append(f"{name}={val}")
+         if pairs:
+-            self._cookies = "; ".join(pairs)
++            # Merge rather than replace: Stripe/ChatGPT may set additional
++            # cookies between checkout, taxes and confirm.
++            merged: dict[str, str] = {}
++            transport_headers = getattr(self.transport_session, "headers", None)
++            existing_header = (
++                str(transport_headers.get("Cookie") or "")
++                if transport_headers is not None
++                else ""
++            )
++            for part in (
++                str(self._cookies or "").split(";")
++                + existing_header.split(";")
++            ):
++                key, sep, value = part.strip().partition("=")
++                if sep and key:
++                    merged[key] = value
++            for part in pairs:
++                key, sep, value = part.partition("=")
++                if sep and key:
++                    merged[key] = value
++            self._cookies = "; ".join(
++                f"{key}={value}" for key, value in merged.items()
++            )
+             headers = getattr(self.transport_session, "headers", None)
+             if headers is not None:
+                 headers["Cookie"] = self._cookies
+@@ -651,6 +803,14 @@ class BrowserSentinelProvider:
+             self._run(["open", "about:blank", "--json"])
+             self._started = True
+             self._launch_args_used = True
++            # Do not inherit a prior account's split NextAuth cookies.  A
++            # supplied runtime session token is installed before the
++            # authenticated promo navigation; values never enter logs.
++            if self.session_token:
++                try:
++                    self._run(["cookies", "clear"])
++                except Exception:
++                    pass
+             self._run(
+                 [
+                     "cookies",
+@@ -661,6 +821,13 @@ class BrowserSentinelProvider:
+                     "https://chatgpt.com",
+                 ]
+             )
++            if self.session_token:
++                self._set_cookie(
++                    "__Secure-next-auth.session-token",
++                    self.session_token,
++                    http_only=True,
++                )
++            self._import_transport_cookies()
+             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
+             # The bootstrap document carries the current signed deployment
+             # attestation.  The initial navigation is authenticated when an
+@@ -670,13 +837,15 @@ class BrowserSentinelProvider:
                  "Authorization": f"Bearer {self.access_token}",
                  "oai-device-id": self.device_id,
                  "oai-session-id": self.session_id,
@@ -1410,7 +2665,110 @@ index 1a1ade5..00113d5 100644
                      "OPLL_OAI_CLIENT_VERSION",
                      "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                  ),
-@@ -784,12 +805,14 @@ class DefaultTransportFactory:
+@@ -696,7 +865,14 @@ class BrowserSentinelProvider:
+                     "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+                 ]
+             )
++            # Let the page issue its initial account/receipt requests before
++            # copying cookies and deployment attestation to the HTTP session.
++            try:
++                self._run(["wait", "1000"], timeout=15)
++            except Exception:
++                pass
+             self._capture_bootstrap()
++            self._sync_pending_update_from_browser()
+             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
+             self._sync_cookies()
+         except Exception:
+@@ -708,18 +884,51 @@ class BrowserSentinelProvider:
+         # checkout calls.  Running it in the same browser context keeps the
+         # Cloudflare/Sentinel cookies on the matching proxy IP.
+         expression = (
++            "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
+             "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
+             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
+             ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
+         )
+         self._eval(expression, timeout=30)
+ 
++    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
++        """Initialize a named Sentinel context before requesting its token."""
++        with self._lock:
++            if self._failed:
++                raise RuntimeError("Sentinel browser provider failed during startup")
++            if not self._started:
++                self._start()
++            selected = str(flow or "").strip() or "chatgpt_checkout"
++            self._eval(
++                "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
++                "(async()=>{if(typeof SentinelSDK.init==='function'){await "
++                "SentinelSDK.init(" + json.dumps(selected) + ");}return true})()",
++                timeout=90,
++            )
++
+     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+         with self._lock:
+             if self._failed:
+                 raise RuntimeError("Sentinel browser provider failed during startup")
+             if not self._started:
+                 self._start()
++            # A fresh init binds the proof to the current checkout/approval
++            # flow instead of reusing the landing-page challenge.
++            try:
++                self._eval(
++                    "window.__opllSentinelReferer="
++                    + json.dumps(referer or "https://chatgpt.com/")
++                    + ";true",
++                    timeout=15,
++                )
++                self._eval(
++                    "(async()=>{if(typeof SentinelSDK.init==='function'){await "
++                    "SentinelSDK.init(" + json.dumps(str(flow or "chatgpt_checkout"))
++                    + ");}return true})()",
++                    timeout=90,
++                )
++            except Exception:
++                pass
+             self._ping(referer)
+             raw = self._eval(
+                 "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
+@@ -734,6 +943,35 @@ class BrowserSentinelProvider:
+             if not token:
+                 raise RuntimeError("SentinelSDK returned an empty token")
+             result = {"OpenAI-Sentinel-Token": token}
++            # Some SDK builds expose a session-observer proof separately.
++            # Include it when available; older builds simply return empty.
++            try:
++                observer_raw = self._eval(
++                    "(async()=>{if(typeof SentinelSDK.sessionObserverToken!=='function')return '';"
++                    "return await SentinelSDK.sessionObserverToken("
++                    + json.dumps(str(flow or "chatgpt_checkout"))
++                    + ")||''})()",
++                    timeout=45,
++                )
++                observer = (
++                    observer_raw
++                    if isinstance(observer_raw, str)
++                    else json.dumps(observer_raw, separators=(",", ":"))
++                    if isinstance(observer_raw, dict)
++                    else ""
++                )
++                if observer:
++                    result["OpenAI-Sentinel-SO-Token"] = observer
++            except Exception:
++                pass
++            try:
++                self._sync_pending_update_from_browser()
++            except Exception:
++                pass
++            try:
++                self._sync_cookies()
++            except Exception:
++                pass
+             if self._attestation:
+                 result["oai-web-deployment-attestation"] = self._attestation
+                 session_headers = getattr(self.transport_session, "headers", None)
+@@ -784,12 +1022,14 @@ class DefaultTransportFactory:
                  "oai-session-id": session_id,
                  # ChatGPT's API language is the browser UI locale; the
                  # country-specific Accept-Language remains separate above.
@@ -1428,7 +2786,7 @@ index 1a1ade5..00113d5 100644
                      "OPLL_OAI_CLIENT_VERSION",
                      "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
                  ),
-@@ -803,12 +826,14 @@ class DefaultTransportFactory:
+@@ -803,12 +1043,14 @@ class DefaultTransportFactory:
                      "OPLL_OAI_IS_CLIENT_OBSERVATION",
                      f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
                  ),
@@ -1445,7 +2803,7 @@ index 1a1ade5..00113d5 100644
                  "sec-fetch-dest": "empty",
                  "sec-fetch-mode": "cors",
                  "sec-fetch-site": "same-origin",
-@@ -892,7 +917,7 @@ class DefaultTransportFactory:
+@@ -892,7 +1134,7 @@ class DefaultTransportFactory:
          session = new_session()
          session.headers.update(
              {
@@ -1454,11 +2812,77 @@ index 1a1ade5..00113d5 100644
                  "Accept-Language": f"{country_locale(config)},en;q=0.9",
              }
          )
+diff --git a/payment_link_extractor/web/events.py b/payment_link_extractor/web/events.py
+index 2c4184e..2d4bc12 100644
+--- a/payment_link_extractor/web/events.py
++++ b/payment_link_extractor/web/events.py
+@@ -17,6 +17,18 @@ _TOKEN_KEYS = {
+     "token", "ba_token", "batoken", "ec_token", "ectoken",
+     "billing_agreement_id", "billingagreementid", "billingagreementtoken",
+ }
++_IDENTIFIER_KEYS = {
++    "checkout_session_id",
++    "checkoutsessionid",
++    "session_id",
++    "sessionid",
++    "payment_method_id",
++    "paymentmethodid",
++    "client_secret",
++    "clientsecret",
++    "setup_intent_id",
++    "payment_intent_id",
++}
+ _FUNCTIONAL_URL_KEYS = {"provider_url", "paypal_url"}
+ 
+ 
+@@ -30,14 +42,31 @@ def redact_text(value: Any, secrets: Iterable[str] = ()) -> str:
+         secret = str(secret or "")
+         if secret:
+             text = text.replace(secret, "***")
+-    text = re.sub(r"(https?://[^\s:/]+:)[^@\s]+@", r"\1***@", text, flags=re.I)
++    text = re.sub(
++        r"((?:https?|socks4a?|socks5h?)://[^\s:/]+:)[^@\s]+@",
++        r"\1***@",
++        text,
++        flags=re.I,
++    )
++    # Bare vendor exports use host:port:user:password. Keep only a marker in
++    # task history/logs; the runtime transport still receives the original.
++    text = re.sub(
++        r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^\s]+\b",
++        "<proxy-redacted>",
++        text,
++    )
+     text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/]+=*", "Bearer <redacted>", text)
+     text = re.sub(r"\b(?:BA|EC)-[A-Za-z0-9]{8,80}\b", _mask_token_match, text)
+     text = re.sub(
+-        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin)=)[^&\s\"']+",
++        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin|t|s|sid|session_id|sessionId|nonce|signature)=)[^&\s\"']+",
+         r"\1<redacted>",
+         text,
+     )
++    text = re.sub(
++        r"(?i)\b(?:oaics|seti|pi|acct|cus|ctoken|sa_nonce|authsess)[_-][A-Za-z0-9_-]+\b",
++        "<id-redacted>",
++        text,
++    )
+     return text
+ 
+ 
+@@ -62,6 +91,8 @@ def sanitize_event_data(value: Any, key: str = "") -> Any:
+     if compact in _TOKEN_KEYS or collapsed in _TOKEN_KEYS:
+         text = str(value or "")
+         return _mask_token(text) if len(text) > 10 else "<redacted>"
++    if compact in _IDENTIFIER_KEYS or collapsed in _IDENTIFIER_KEYS:
++        return "<redacted>"
+     if not isinstance(value, str):
+         return value
+     # A successful PayPal extraction is delivered to the browser through the
 diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
-index 712e639..506559d 100644
+index 712e639..2e859e1 100644
 --- a/payment_link_extractor/web/routes.py
 +++ b/payment_link_extractor/web/routes.py
-@@ -279,6 +279,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+@@ -279,6 +279,14 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
          "momo_zero_trial_validation",
          _env_bool("OPLL_MOMO_ZERO_TRIAL_VALIDATION", True),
      )
@@ -1466,32 +2890,87 @@ index 712e639..506559d 100644
 +        "momo_trial_eligibility_check",
 +        _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
 +    )
++    momo_fingerprint = str(
++        payload.get("momo_fingerprint")
++        or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")
++    ).strip()
      if "max_attempts" in payload:
          max_attempts = _max_attempts_value(payload.get("max_attempts"))
          retry_count = max_attempts - 1
-@@ -296,6 +300,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+@@ -296,6 +304,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
          raise ConfigurationError("gopay_zero_trial_validation must be boolean")
      if not isinstance(momo_zero_trial_validation, bool):
          raise ConfigurationError("momo_zero_trial_validation must be boolean")
 +    if not isinstance(momo_trial_eligibility_check, bool):
 +        raise ConfigurationError("momo_trial_eligibility_check must be boolean")
++    if len(momo_fingerprint) > 32 or any(ch.isspace() for ch in momo_fingerprint):
++        raise ConfigurationError("momo_fingerprint must be a short profile name")
      if not str(access_token or "").strip():
          raise ConfigurationError("AT is required")
      if not str(checkout_proxy or "").strip():
-@@ -339,6 +345,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+@@ -339,6 +351,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
          apply_checkout_update=apply_update,
          gopay_zero_trial_validation=gopay_zero_trial_validation,
          momo_zero_trial_validation=momo_zero_trial_validation,
 +        momo_trial_eligibility_check=momo_trial_eligibility_check,
++        momo_fingerprint=momo_fingerprint,
          verbose=False,
          oaics_only=oaics_only,
          retry_count=retry_count,
+@@ -347,7 +361,11 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         proxy_pool=submitted_pool,
+         account_name=str(payload.get("name") or "").strip(),
+         account_email=str(payload.get("email") or "").strip(),
+-        session_token=extract_session_token(payload),
++        session_token=str(
++            extract_session_token(payload)
++            or _value(payload, "session_token", "OPLL_SESSION_TOKEN")
++            or ""
++        ).strip(),
+     )
+ 
+ 
 diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
-index 5c0a889..6f9718c 100644
+index 5c0a889..249dfdb 100644
 --- a/payment_link_extractor/web/tasks.py
 +++ b/payment_link_extractor/web/tasks.py
-@@ -637,7 +637,7 @@ class TaskManager:
-                     is_gopay = record.config.payment_method == "gopay"
+@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
+ from dataclasses import dataclass, field, replace
+ from datetime import datetime, timedelta, timezone
+ import queue
++import hashlib
+ import random
+ import os
+ import threading
+@@ -30,6 +31,7 @@ STAGE_PROGRESS = {
+     "eligibility_confirmed": 12,
+     "checkout": 15,
+     "checkout_update": 25,
++    "momo_method_confirmed": 18,
+     "promotion_applied": 30,
+     "stripe_init": 35,
+     "elements_session": 50,
+@@ -42,6 +44,14 @@ STAGE_PROGRESS = {
+ }
+ 
+ 
++def _proxy_reference(value: str) -> str:
++    """Return a non-secret diagnostic reference for a Momo proxy."""
++    raw = str(value or "").strip()
++    if not raw:
++        return ""
++    return "momo-proxy:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
++
++
+ def gopay_retry_backoff_seconds(attempt_index: int) -> float:
+     """Return bounded exponential backoff for the next GoPay attempt."""
+     try:
+@@ -634,10 +644,10 @@ class TaskManager:
+                     error = redact_text(exc, self._secrets(record.config))
+                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
+                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
+-                    is_gopay = record.config.payment_method == "gopay"
++                    is_checkout_channel = record.config.payment_method in {"gopay", "momo"}
                      # Momo may restart a fresh full attempt with the same AT;
                      # each attempt gets a new proxy and browser fingerprint.
 -                    is_checkout_sensitive = record.config.payment_method == "gopay"
@@ -1499,6 +2978,50 @@ index 5c0a889..6f9718c 100644
                      explicit_retryable = getattr(exc, "retryable", None)
                      status_code = getattr(exc, "status_code", None)
                      try:
+@@ -676,7 +686,7 @@ class TaskManager:
+                                 "ip_rotated": True,
+                                 **(
+                                     {"failure_mode": failure_mode, "retryable": True}
+-                                    if is_gopay
++                                    if is_checkout_channel
+                                     else {}
+                                 ),
+                                 "elapsed_ms": elapsed_ms,
+@@ -706,7 +716,7 @@ class TaskManager:
+                                     "failure_mode": failure_mode,
+                                     "retryable": bool(explicit_retryable),
+                                 }
+-                                if is_gopay
++                                if is_checkout_channel
+                                 else {}
+                             ),
+                             "progress": record.progress,
+@@ -742,7 +752,11 @@ class TaskManager:
+                     {
+                         "status": record.status,
+                         "result": record.result,
+-                        "checkout_proxy": record.config.checkout_proxy,
++                        "checkout_proxy": (
++                            _proxy_reference(record.config.checkout_proxy)
++                            if record.config.payment_method == "momo"
++                            else record.config.checkout_proxy
++                        ),
+                         "progress": record.progress,
+                         "attempt": record.attempt,
+                         "max_attempts": total_attempts,
+@@ -854,7 +868,11 @@ class TaskManager:
+         if record.retry_of:
+             snapshot["retry_of"] = record.retry_of
+         if record.status == "succeeded":
+-            snapshot["checkout_proxy"] = record.config.checkout_proxy
++            snapshot["checkout_proxy"] = (
++                _proxy_reference(record.config.checkout_proxy)
++                if record.config.payment_method == "momo"
++                else record.config.checkout_proxy
++            )
+         if record.result is not None:
+             snapshot["result"] = record.result
+         if record.error:
 diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
 index 56966fd..f37baf5 100644
 --- a/tests/test_extraction_full_retry.py
@@ -1549,11 +3072,183 @@ index 56966fd..f37baf5 100644
  def test_gopay_proxy_pool_attempts_are_random_and_same_proxy_per_attempt() -> None:
      calls: list[tuple[str, str]] = []
  
+diff --git a/tests/test_har_capture_browser_attach.py b/tests/test_har_capture_browser_attach.py
+index 3cab348..7b82f0b 100644
+--- a/tests/test_har_capture_browser_attach.py
++++ b/tests/test_har_capture_browser_attach.py
+@@ -35,6 +35,13 @@ def test_browser_capture_defaults_to_nonblocking_streaming() -> None:
+     assert args.stop_file.name == "capture.stop"
+ 
+ 
++def test_browser_capture_accepts_channel_for_momo_logging() -> None:
++    args = build_parser().parse_args(
++        ["--cdp-port", "60943", "--output", "capture.har", "--channel", "momo"]
++    )
++    assert args.channel == "momo"
++
++
+ def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targets() -> None:
+     def entry(url: str, method: str, status: int, request_body: str = "", response_body: str = "") -> dict:
+         value = {
+@@ -63,3 +70,18 @@ def test_capture_audit_accepts_bodyless_snapshot_and_reports_missing_stripe_targ
+     assert "gopay_checkout_snapshot:response_body_missing" not in audit["issues"]
+     assert "gopay_redirect:response_body_missing" not in audit["issues"]
+     assert "gopay_stripe_init:entry_missing" in audit["issues"]
++
++
++def test_capture_audit_classifies_momo_gateway_flow() -> None:
++    entries = [
++        {
++            "request": {"method": "GET", "url": "https://payment.momo.vn/v2/gateway/pay"},
++            "response": {"status": 200, "content": {"text": "{}"}},
++        },
++        {
++            "request": {"method": "POST", "url": "https://payment.momo.vn/v2/gateway/querySession"},
++            "response": {"status": 200, "content": {"text": "{\"status\":1000}"}},
++        },
++    ]
++    audit = _capture_completeness_audit({"log": {"entries": entries}})
++    assert audit["channel"] == "momo"
+diff --git a/tests/test_har_tools.py b/tests/test_har_tools.py
+index 13cafa5..0c2ff72 100644
+--- a/tests/test_har_tools.py
++++ b/tests/test_har_tools.py
+@@ -14,7 +14,7 @@ from tools.har_capture import (
+     infer_proxy_country,
+     locale_profile_for_proxy,
+ )
+-from tools.har_utils import analyze_har, entry_summary, markdown_report
++from tools.har_utils import analyze_har, entry_summary, markdown_report, redact_url
+ 
+ 
+ def _fixture() -> dict:
+@@ -97,6 +97,22 @@ def test_entry_summary_can_include_raw_values_and_markdown_is_reusable() -> None
+     assert "checkout/confirm" in markdown
+ 
+ 
++def test_redact_url_masks_path_and_gateway_query_identifiers() -> None:
++    value = (
++        "https://chatgpt.com/backend-api/payments/checkout/openai_llc/"
++        "oaics_secret123?sessionId=raw-session&t=opaque&s=signature"
++    )
++    redacted = redact_url(value)
++    assert "oaics_secret123" not in redacted
++    assert "raw-session" not in redacted
++    assert "opaque" not in redacted
++    assert "signature" not in redacted
++    assert "/checkout/openai_llc/" in redacted
++
++    auth_url = redact_url("https://user:password@example.test/path")
++    assert "user" not in auth_url and "password" not in auth_url
++
++
+ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
+     bridge = Socks5HttpBridge("socks5://127.0.0.1:1080:user:password")
+     try:
+@@ -507,6 +523,46 @@ def test_momo_audit_uses_vietnam_gateway_checkpoints() -> None:
+     assert audit["issues"] == []
+ 
+ 
++def test_momo_audit_accepts_bodyless_browser_query_session_poll() -> None:
++    entries = [
++        {
++            "request": {"method": "GET", "url": "https://payment.momo.vn/v2/gateway/pay"},
++            "response": {"status": 200, "content": {"text": "{}"}},
++        },
++        {
++            "request": {"method": "POST", "url": "https://payment.momo.vn/v2/gateway/querySession"},
++            "response": {"status": 200, "content": {"text": "{\"status\":1000}"}},
++        },
++    ]
++    audit = audit_har_completeness({"log": {"entries": entries}})
++    assert audit["channel"] == "momo"
++    assert "momo_query_session:request_body_missing" not in audit["issues"]
++
++
++def test_momo_audit_accepts_setup_intent_confirmation() -> None:
++    urls = [
++        ("POST", "https://chatgpt.com/backend-api/payments/checkout", "{}"),
++        ("POST", "https://chatgpt.com/backend-api/payments/checkout/taxes", "{}"),
++        ("GET", "https://api.stripe.com/v1/elements/sessions", ""),
++        ("POST", "https://api.stripe.com/v1/confirmation_tokens", "{}"),
++        ("POST", "https://chatgpt.com/backend-api/payments/checkout/confirm", "{}"),
++        ("POST", "https://api.stripe.com/v1/setup_intents/seti_fixture/confirm", "{}"),
++        ("GET", "https://payment.momo.vn/v2/gateway/pay", ""),
++        ("POST", "https://payment.momo.vn/v2/gateway/querySession", ""),
++    ]
++    entries = [
++        {
++            "request": {"method": method, "url": url, "postData": {"text": body} if body else {}},
++            "response": {"status": 200, "content": {"text": "{}"}},
++        }
++        for method, url, body in urls
++    ]
++    audit = audit_har_completeness({"log": {"entries": entries}})
++    assert audit["channel"] == "momo"
++    assert audit["complete"] is True
++    assert audit["issues"] == []
++
++
+ def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
+     har = _gopay_fixture(include_redirect=True)
+     complete = audit_har_completeness(har)
+diff --git a/tests/test_mitm_capture.py b/tests/test_mitm_capture.py
+index 7a6e66c..3acd386 100644
+--- a/tests/test_mitm_capture.py
++++ b/tests/test_mitm_capture.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import json
+ import socket
+ from pathlib import Path
+ 
+@@ -8,6 +9,7 @@ import pytest
+ from tools.mitm_capture import (
+     TLS_PASSTHROUGH_HOSTS,
+     find_mitm_binary,
++    finalize_capture,
+     parse_upstream,
+     read_devtools_port,
+     require_free_port,
+@@ -65,3 +67,32 @@ def test_require_free_port_rejects_occupied_port() -> None:
+         listener.bind(("127.0.0.1", 0))
+         with pytest.raises(RuntimeError, match="already in use"):
+             require_free_port(listener.getsockname()[1], "proxy")
++
++
++def test_finalize_capture_writes_redacted_summary_for_momo(tmp_path: Path) -> None:
++    output = tmp_path / "momo.har"
++    output.write_text(
++        json.dumps(
++            {
++                "log": {
++                    "entries": [
++                        {
++                            "request": {
++                                "method": "GET",
++                                "url": "https://payment.momo.vn/v2/gateway/pay?t=secret",
++                            },
++                            "response": {"status": 200, "content": {"text": "{}"}},
++                        }
++                    ]
++                }
++            }
++        ),
++        encoding="utf-8",
++    )
++    result = finalize_capture(output, "momo")
++    summary = output.with_suffix(".summary.md")
++    assert result["summary"] == summary
++    assert summary.is_file()
++    text = summary.read_text(encoding="utf-8")
++    assert "# MOMO capture summary (redacted)" in text
++    assert "secret" not in text
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..beff7bd 100644
+index fb47546..edb261e 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
-@@ -6,11 +6,13 @@ from types import SimpleNamespace
+@@ -6,11 +6,26 @@ from types import SimpleNamespace
  
  from payment_link_extractor.application import _normalize_config
  from payment_link_extractor.channels import PAYMENT_CHANNELS
@@ -1563,14 +3258,27 @@ index fb47546..beff7bd 100644
  from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 -from payment_link_extractor.momo_stripe import validate_momo_url
 -from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
-+from payment_link_extractor.momo_eligibility import probe_momo_trial_eligibility
-+from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
-+from payment_link_extractor.momo_checkout import create_checkout
++import payment_link_extractor.momo_core as momo_core_module
++from payment_link_extractor.momo_eligibility import (
++    _catalog_campaign_match,
++    probe_momo_trial_eligibility,
++)
++from payment_link_extractor.momo_stripe import (
++    checkout_confirm,
++    confirmation_token,
++    elements_session,
++    intent_confirm,
++    resolve_momo_redirect,
++    synchronize_momo_stripe_ids,
++    validate_momo_url,
++)
++from payment_link_extractor.momo_checkout import create_checkout, momo_checkout_method_state
++from payment_link_extractor.momo_checkout import validate_zero_trial_checkout
 +from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
  from payment_link_extractor.web.app import create_app
  from payment_link_extractor.web.tasks import TaskManager
  from payment_link_extractor.web.routes import _config_from_payload
-@@ -26,6 +28,7 @@ def test_momo_registry_and_fixed_country() -> None:
+@@ -26,6 +41,7 @@ def test_momo_registry_and_fixed_country() -> None:
      config = _normalize_config(ExtractionConfig("token", "http://proxy", "", country="US", payment_method="momo"))
      assert (config.country, config.payment_method) == ("VN", "momo")
      assert config.momo_zero_trial_validation is True
@@ -1578,7 +3286,7 @@ index fb47546..beff7bd 100644
  
  
  def test_momo_route_and_ui_defaults() -> None:
-@@ -46,9 +49,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
+@@ -46,12 +62,19 @@ def test_momo_url_and_gateway_session_contract() -> None:
  
      class Session:
          def request(self, method, endpoint, **kwargs):
@@ -1587,12 +3295,20 @@ index fb47546..beff7bd 100644
 +                return SimpleNamespace(status_code=200, headers={})
              assert method == "POST"
              assert endpoint.endswith("/querySession")
-             assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
+-            assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
++            if "json" in kwargs:
++                assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
++            else:
++                assert kwargs.get("data") == ""
 +            assert kwargs["headers"]["Origin"] == "https://payment.momo.vn"
              return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
  
-     assert query_gateway(Session(), url)["status_code"] == 1000
-@@ -66,6 +73,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
+-    assert query_gateway(Session(), url)["status_code"] == 1000
++    assert query_gateway(Session(), url, polls=1, poll_interval=0)["status_code"] == 1000
+ 
+ 
+ def test_momo_transport_and_result_field_are_isolated() -> None:
+@@ -66,8 +89,19 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
      assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
  
  
@@ -1608,8 +3324,11 @@ index fb47546..beff7bd 100644
 +
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
++    validate_momo_amount("0.00")
      for value in (None, 1, -1):
-@@ -77,8 +94,13 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+         try:
+             validate_momo_amount(value)
+@@ -77,8 +111,13 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
              raise AssertionError("non-zero or missing Momo amount was accepted")
  
  
@@ -1620,11 +3339,11 @@ index fb47546..beff7bd 100644
  def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
 -    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
 +    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150", "chrome152"}
-+    assert MomoTransportFactory().profile["name"] == "chrome152"
++    assert MomoTransportFactory().profile["name"] == "chrome150"
      assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
      assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
  
-@@ -86,3 +108,194 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+@@ -86,3 +125,438 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -1645,7 +3364,8 @@ index fb47546..beff7bd 100644
 +            {"Referer": "https://chatgpt.com/"},
 +            flow="chatgpt_checkout",
 +        )
-+        assert headers["oai-telemetry"] == "[1,null]"
++        telemetry = json.loads(headers["oai-telemetry"])
++        assert len(telemetry) == 8 and telemetry[0] == 1
 +        assert headers["Referer"] == "https://chatgpt.com/"
 +    finally:
 +        from payment_link_extractor.momo_transport import close
@@ -1696,6 +3416,15 @@ index fb47546..beff7bd 100644
 +    assert session.momo_csrf_token == "csrf-from-page"
 +
 +
++def test_momo_gateway_csrf_reads_spring_security_meta() -> None:
++    session = SimpleNamespace(cookies={})
++    response = SimpleNamespace(
++        headers={},
++        text='<meta name="_csrf" content="csrf-meta-value"/><meta name="_csrf_header" content="X-CSRF-TOKEN"/>',
++    )
++    assert capture_momo_csrf_token(session, response) == "csrf-meta-value"
++
++
 +def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
 +    class Response:
 +        status_code = 200
@@ -1705,17 +3434,9 @@ index fb47546..beff7bd 100644
 +
 +        def json(self):
 +            return {
-+                "accounts": {
-+                    "default": {
-+                        "eligible_promo_campaigns": {
-+                            "plus": (
-+                                {"campaign_id": "plus-1-month-free"}
-+                                if self.state == "eligible"
-+                                else {}
-+                            )
-+                        }
-+                    }
-+                }
++                "coupon": "plus-1-month-free",
++                "state": "eligible" if self.state == "eligible" else "not_eligible",
++                "redemption": {"redeemed": False},
 +            }
 +
 +    class Session:
@@ -1725,8 +3446,10 @@ index fb47546..beff7bd 100644
 +
 +        def request(self, method, url, **kwargs):
 +            assert method == "GET"
-+            assert "/accounts/check/v4-2023-04-27" in url
-+            return Response(self.state)
++            if "/promo_campaign/check_coupon" in url:
++                return Response(self.state)
++            assert "?promo_campaign=plus-1-month-free" in url
++            return SimpleNamespace(status_code=200, headers={}, text="")
 +
 +        def close(self):
 +            pass
@@ -1753,7 +3476,247 @@ index fb47546..beff7bd 100644
 +    )
 +    assert result["eligible"] is True
 +    assert result["proxy"] == "proxy-2"
++    assert result["campaign_id"] == "plus-1-month-free"
++    assert result["_chatgpt_session"] is not None
 +    assert events == ["eligibility_proxy:1", "eligibility_proxy:2", "eligibility_confirmed"]
++
++
++def test_momo_catalog_campaign_is_scoped_to_selected_account() -> None:
++    payload = {
++        "accounts": {
++            "selected": {"eligible_promo_campaigns": {"plus": {"id": "other"}}},
++            "other": {
++                "eligible_promo_campaigns": {"plus": {"id": "plus-1-month-free"}}
++            },
++        }
++    }
++    assert _catalog_campaign_match(payload, "plus-1-month-free", account_key="selected") == (
++        True,
++        False,
++    )
++    assert _catalog_campaign_match(payload, "plus-1-month-free", account_key="other") == (
++        True,
++        True,
++    )
++
++
++def test_momo_checkout_method_state_detects_hidden_custom_method() -> None:
++    assert momo_checkout_method_state({"custom_payment_methods": [{"type": "momo"}]}) is True
++    assert momo_checkout_method_state({"payment_method_types": ["card", "link"]}) is False
++    assert momo_checkout_method_state({"checkout_state": {"customPaymentMethods": [{"id": "momo"}]}}) is True
++    assert momo_checkout_method_state({}) is None
++
++
++def test_momo_zero_gate_requires_server_promo_echo_and_full_discount() -> None:
++    base = {
++        "currency": "VND",
++        "promo_campaign_response": {
++            "promo_campaign_id": "plus-1-month-free",
++            "is_coupon_from_query_param": False,
++        },
++        "checkout_state": {
++            "currency": "VND",
++            "total": {
++                "subtotal": {"minorUnitsAmount": 475000},
++                "discount": {"minorUnitsAmount": 475000},
++                "total": {"minorUnitsAmount": 0},
++            },
++        },
++    }
++    validate_zero_trial_checkout(base)
++    missing_echo = dict(base)
++    missing_echo["promo_campaign_response"] = {}
++    try:
++        validate_zero_trial_checkout(missing_echo)
++    except Exception as exc:
++        assert getattr(exc, "status_code", None) == 409
++    else:
++        raise AssertionError("missing server promo echo was accepted")
++
++
++def test_momo_elements_customer_and_stripe_ids_are_forwarded() -> None:
++    calls = []
++
++    class Session:
++        headers = {}
++        cookies = {}
++
++        def request(self, method, url, **kwargs):
++            calls.append((method, url, kwargs))
++            if url.endswith("/v1/elements/sessions"):
++                return SimpleNamespace(
++                    status_code=200,
++                    json=lambda: {
++                        "session_id": "elements_fixture",
++                        "config_id": "config_fixture",
++                        "customer": {"customer_session": {"customer": "cus_fixture"}},
++                    },
++                )
++            return SimpleNamespace(status_code=200, json=lambda: {"id": "ctoken_fixture"})
++
++    chatgpt = SimpleNamespace(headers={"Cookie": "__stripe_mid=mid_fixture; __stripe_sid=sid_fixture"}, cookies={})
++    stripe = Session()
++    checkout = {"publishable_key": "pk_fixture", "checkout_state": {"total": {"total": {"minorUnitsAmount": 0}}}}
++    synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
++    elements_session(stripe, checkout)
++    token = confirmation_token(
++        stripe,
++        checkout,
++        {"name": "Fixture", "line1": "1 Main", "city": "Hanoi", "state": "HN", "postal_code": "100000"},
++    )
++    assert token == "ctoken_fixture"
++    form = calls[-1][2]["data"]
++    assert form["client_context[customer]"] == "cus_fixture"
++    assert form["payment_method_data[muid]"] == "mid_fixture"
++    assert form["payment_method_data[sid]"] == "sid_fixture"
++
++
++def test_momo_gateway_bodyless_poll_reaches_zero_redirect() -> None:
++    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
++
++    class Session:
++        def __init__(self):
++            self.calls = []
++
++        def request(self, method, endpoint, **kwargs):
++            self.calls.append((method, endpoint, kwargs))
++            if method == "GET":
++                return SimpleNamespace(status_code=200, headers={}, text="")
++            result = {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False}
++            if len([item for item in self.calls if item[0] == "POST"]) == 2:
++                result = {
++                    "sessionId": "MOMO_SESSION",
++                    "status_code": 9000,
++                    "redirect": True,
++                    "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=0",
++                }
++            return SimpleNamespace(status_code=200, json=lambda: result)
++
++    session = Session()
++    result = __import__("payment_link_extractor.momo_core", fromlist=["query_gateway"]).query_gateway(
++        session, url, polls=3, poll_interval=0, require_redirect=True, expected_amount=0
++    )
++    assert result["status_code"] == 9000
++    assert len([item for item in session.calls if item[0] == "POST"]) == 2
++    assert all(item[2].get("data") == "" for item in session.calls if item[0] == "POST")
++
++
++def test_momo_gateway_amount_check_follows_zero_validation_switch() -> None:
++    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
++
++    class Session:
++        def request(self, method, endpoint, **kwargs):
++            if method == "GET":
++                return SimpleNamespace(status_code=200, headers={}, text="")
++            return SimpleNamespace(
++                status_code=200,
++                json=lambda: {
++                    "status_code": 9000,
++                    "redirect": True,
++                    "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=100",
++                },
++            )
++
++    assert query_gateway(
++        Session(), url, polls=1, poll_interval=0, require_redirect=True, expected_amount=None
++    )["status_code"] == 9000
++    try:
++        query_gateway(
++            Session(), url, polls=1, poll_interval=0, require_redirect=True, expected_amount=0
++        )
++    except Exception as exc:
++        assert getattr(exc, "status_code", None) == 409
++    else:
++        raise AssertionError("non-zero gateway amount passed the zero gate")
++
++
++def test_momo_core_reuses_eligible_session_and_gates_before_confirmation(monkeypatch) -> None:
++    events = []
++    calls = []
++
++    class Session:
++        def close(self):
++            pass
++
++    chatgpt = Session()
++    stripe = Session()
++    momo = Session()
++
++    class Factory:
++        def chatgpt(self, config, proxy):
++            calls.append(("chatgpt", proxy))
++            return chatgpt
++
++        def stripe(self, config):
++            calls.append(("stripe", config.checkout_proxy))
++            return stripe
++
++        def momo(self, config):
++            calls.append(("momo", config.checkout_proxy))
++            return momo
++
++    checkout = {
++        "cs_id": "oaics_fixture",
++        "processor_entity": "openai_llc",
++        "currency": "VND",
++        "payment_method_types": ["card", "link", "momo"],
++        "promo_campaign": {
++            "promo_campaign_id": "plus-1-month-free",
++            "is_coupon_from_query_param": False,
++        },
++        "checkout_state": {
++            "currency": "VND",
++            "total": {
++                "subtotal": {"minorUnitsAmount": 475000},
++                "discount": {"minorUnitsAmount": 475000},
++                "total": {"minorUnitsAmount": 0},
++            },
++        },
++    }
++
++    monkeypatch.setattr(
++        momo_core_module,
++        "probe_momo_trial_eligibility",
++        lambda *args, **kwargs: {
++            "eligible": True,
++            "campaign_id": "plus-1-month-free",
++            "proxy": "proxy-2",
++            "_chatgpt_session": chatgpt,
++        },
++    )
++    monkeypatch.setattr(
++        momo_core_module,
++        "create_checkout",
++        lambda session, **kwargs: (calls.append(("checkout_session", session)), checkout)[1],
++    )
++    monkeypatch.setattr(momo_core_module, "validate_zero_trial_checkout", lambda value: None)
++    monkeypatch.setattr(momo_core_module, "elements_session", lambda *args, **kwargs: {})
++    monkeypatch.setattr(momo_core_module, "taxes", lambda *args, **kwargs: {})
++    monkeypatch.setattr(momo_core_module, "confirmation_token", lambda *args, **kwargs: "ctoken_fixture")
++    monkeypatch.setattr(momo_core_module, "checkout_confirm", lambda *args, **kwargs: {"status": "success", "client_secret": "seti_fixture_secret"})
++    monkeypatch.setattr(momo_core_module, "intent_confirm", lambda *args, **kwargs: {"url": "https://payment.momo.vn/v2/gateway/pay?t=x&s=y"})
++    monkeypatch.setattr(momo_core_module, "redirect_url", lambda value: value["url"])
++    monkeypatch.setattr(momo_core_module, "query_gateway", lambda *args, **kwargs: {"status_code": "9000", "redirect": True, "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=0"})
++
++    from payment_link_extractor.models import ExtractionConfig
++
++    result = momo_core_module.extract_momo_payment_link(
++        ExtractionConfig(
++            "opaque.token",
++            "proxy-1",
++            "proxy-1",
++            country="VN",
++            payment_method="momo",
++            proxy_pool=("proxy-1", "proxy-2"),
++        ),
++        transport_factory=Factory(),
++        stage_callback=events.append,
++    )
++    assert result.amount_due_minor == 0
++    assert result.provider_field == "momo_url"
++    assert calls[0] == ("checkout_session", chatgpt)
++    assert events.index("eligibility_check") < events.index("checkout")
++    assert events.index("zero_amount_confirmed") < events.index("payment_confirmation")
 +
 +
 +def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
@@ -1819,3 +3782,1109 @@ index fb47546..beff7bd 100644
 +            return SimpleNamespace(status_code=200, url=target, headers={})
 +
 +    assert resolve_momo_redirect(Session(), "https://pm-redirects.stripe.com/authorize/example") == target
+diff --git a/tests/test_roxy_mitm_control.py b/tests/test_roxy_mitm_control.py
+index 5eae93b..7db0c54 100644
+--- a/tests/test_roxy_mitm_control.py
++++ b/tests/test_roxy_mitm_control.py
+@@ -1,16 +1,24 @@
+ from __future__ import annotations
+ 
+ import json
++import inspect
+ import threading
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 
+ from pathlib import Path
+ 
+ from tools.roxy_mitm_control import (
++    CaptureState,
+     cleanup_stale_mitmweb,
++    close_cdp_browser,
+     create_roxy_window,
++    delete_roxy_window,
++    force_stop_process_tree,
++    HTML,
+     merge_hybrid_har,
++    request_cdp_stop,
+     resolve_workspace_id,
++    parse_proxy_pool,
+ )
+ 
+ 
+@@ -68,11 +76,110 @@ def test_roxy_workspace_and_window_payload() -> None:
+     }
+ 
+ 
++def test_delete_roxy_window_uses_dir_ids_payload() -> None:
++    FixtureHandler.requests.clear()
++    server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    base_url = f"http://127.0.0.1:{server.server_port}"
++    try:
++        delete_roxy_window(base_url, "secret", "workspace", "dir-to-delete")
++    finally:
++        server.shutdown()
++        server.server_close()
++    request = FixtureHandler.requests[0]
++    assert request["path"] == "/browser/delete"
++    assert request["payload"] == {"workspaceId": "workspace", "dirIds": ["dir-to-delete"]}
++
++
++def test_parse_proxy_pool_deduplicates_preserving_order() -> None:
++    assert parse_proxy_pool(" a:1\nb:2\na:1\n\n") == ["a:1", "b:2"]
++
++
+ def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
+     monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
+     cleanup_stale_mitmweb((8899, 8081))
+ 
+ 
++def test_request_cdp_stop_uses_marker_without_ctrl_break(tmp_path: Path) -> None:
++    class Process:
++        def poll(self) -> None:
++            return None
++
++        def send_signal(self, _signal: object) -> None:
++            raise AssertionError("CDP stop must not send CTRL_BREAK_EVENT")
++
++    marker = tmp_path / "capture-cdp.stop"
++    request_cdp_stop(Process(), marker)
++    assert marker.read_text(encoding="ascii") == "stop"
++
++
++def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeypatch) -> None:
++    output = tmp_path / "momo-roxy-mitm.har"
++    cdp_output = tmp_path / "momo-roxy-mitm-cdp.har"
++    paths = [
++        output,
++        output.with_suffix(".mitm"),
++        output.with_suffix(".report.md"),
++        output.with_suffix(".summary.md"),
++        output.with_suffix(".stop"),
++        cdp_output,
++        cdp_output.with_name(f".{cdp_output.name}.checkpoint"),
++        cdp_output.with_suffix(".stop"),
++    ]
++    for path in paths:
++        path.write_text("fixture", encoding="utf-8")
++
++    class Process:
++        pid = 123
++
++        def poll(self) -> None:
++            return None
++
++    killed: list[object] = []
++    closed: list[int | None] = []
++    monkeypatch.setattr("tools.roxy_mitm_control.force_stop_process_tree", lambda process: killed.append(process))
++    monkeypatch.setattr("tools.roxy_mitm_control.close_cdp_browser", lambda port: closed.append(port))
++    deleted: list[tuple[str, str, str, str]] = []
++    monkeypatch.setattr("tools.roxy_mitm_control.delete_roxy_window", lambda base, key, workspace, directory: deleted.append((base, key, workspace, directory)))
++    monkeypatch.setattr("tools.roxy_mitm_control.cleanup_stale_mitmweb", lambda _ports: None)
++    state = CaptureState(root=tmp_path, proxy_port=8899, web_port=8081)
++    state.process = Process()  # type: ignore[assignment]
++    state.cdp_process = Process()  # type: ignore[assignment]
++    state.output = str(output)
++    state.stop_file = output.with_suffix(".stop")
++    state.cdp_stop_file = cdp_output.with_suffix(".stop")
++    state.cdp_output = cdp_output
++    state.cdp_port = 62345
++    state.api_base = "http://roxy"
++    state.api_key = "secret"
++    state.workspace_id = "workspace"
++    state.dir_id = "directory"
++
++    result = state.discard()
++
++    assert result["message"] == "本次抓包已放弃，窗口已关闭并删除，未保存文件"
++    assert result["running"] is False
++    assert killed == [state.cdp_process, state.process] or len(killed) == 2
++    assert closed == [62345]
++    assert deleted == [("http://roxy", "secret", "workspace", "directory")]
++    assert all(not path.exists() for path in paths)
++    assert "CAPTURE_DISCARDED=1" in result["logs"]
++
++
++def test_control_panel_exposes_discard_action() -> None:
++    assert 'id="discard"' in HTML
++    assert "/api/discard" in HTML
++    assert 'id="upstreamPool"' in HTML
++    assert "elements.apiKey.value=''" not in HTML
++
++
++def test_startup_failures_use_discard_path() -> None:
++    source = inspect.getsource(CaptureState.start)
++    assert source.count("self.discard()") == 2
++    assert "self.stop()" not in source
++
++
+ def test_hybrid_merge_only_supplements_tls_passthrough_hosts(tmp_path: Path, monkeypatch) -> None:
+     def entry(url: str, marker: str) -> dict[str, object]:
+         return {
+diff --git a/tools/har_capture.py b/tools/har_capture.py
+index 90f2e3f..c536e39 100644
+--- a/tools/har_capture.py
++++ b/tools/har_capture.py
+@@ -833,8 +833,8 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
+         },
+         {
+             "name": "momo_stripe_confirm",
+-            "marker": "/v1/payment_intents/",
+-            "path_pattern": (r"^/v1/payment_intents/[^/]+/confirm$",),
++            "marker": "/v1/",
++            "path_pattern": (r"^/v1/(?:payment_intents|setup_intents)/[^/]+/confirm$",),
+             "method": "POST",
+             "requires_request_body": True,
+         },
+@@ -850,7 +850,11 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
+             "marker": "payment.momo.vn/v2/gateway/querySession",
+             "path_pattern": (r"^/v2/gateway/querySession$",),
+             "method": "POST",
+-            "requires_request_body": True,
++            # The browser gateway polls this endpoint with Content-Length: 0;
++            # the session is carried by the gateway cookie.  The extraction
++            # client may send a JSON sessionId, but a browser HAR must not
++            # require a request body that the real flow does not emit.
++            "requires_request_body": False,
+         },
+     ],
+ }
+@@ -1000,6 +1004,10 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
+         response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+         if int(response.get("status", 0) or 0) in {101, 204, 205, 304}:
+             continue
++        if str(request.get("method") or "").upper() == "OPTIONS":
++            # CORS preflight responses are intentionally bodyless; they are
++            # not extraction payloads and must not downgrade completeness.
++            continue
+         parsed = urlsplit(str(request.get("url") or ""))
+         missing_responses.append(
+             {
+diff --git a/tools/har_capture_browser_attach.py b/tools/har_capture_browser_attach.py
+index 22f6a81..89f9273 100644
+--- a/tools/har_capture_browser_attach.py
++++ b/tools/har_capture_browser_attach.py
+@@ -13,10 +13,7 @@ import argparse
+ from collections import Counter, defaultdict, deque
+ import hashlib
+ import json
+-import os
+ import socket
+-import signal
+-import threading
+ import time
+ import urllib.request
+ from pathlib import Path
+@@ -24,9 +21,9 @@ from typing import Any
+ from urllib.parse import urlsplit
+ 
+ try:
+-    from .har_capture import CDPWebSocket, HARRecorder, network_enable_params
++    from .har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
+ except ImportError:  # direct ``python tools/har_capture_browser_attach.py``
+-    from har_capture import CDPWebSocket, HARRecorder, network_enable_params
++    from har_capture import CDPWebSocket, HARRecorder, audit_har_completeness, network_enable_params
+ 
+ 
+ TARGET_TYPES = {"page", "iframe", "worker", "service_worker", "shared_worker"}
+@@ -341,10 +338,18 @@ def _capture_completeness_audit(har: dict[str, Any]) -> dict[str, Any]:
+     }
+ 
+ 
++# Keep the browser recorder's save-time audit aligned with the channel-aware
++# proxy audit.  The legacy implementation above remains available in source
++# history, while this wrapper handles Momo/GCash/PayPal consistently.
++def _capture_completeness_audit(har: dict[str, Any]) -> dict[str, Any]:
++    return audit_har_completeness(har)
++
++
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--cdp-port", type=int, required=True)
+     parser.add_argument("--output", "-o", type=Path, required=True)
++    parser.add_argument("--channel", choices=("paypal", "gopay", "gcash", "momo"), default="gopay")
+     parser.add_argument("--max-body-bytes", type=int, default=16 * 1024 * 1024)
+     parser.add_argument(
+         "--fetch-responses",
+@@ -362,14 +367,6 @@ def main() -> int:
+     stop_file = args.stop_file.resolve() if args.stop_file else None
+     if stop_file is not None:
+         stop_file.unlink(missing_ok=True)
+-        def stop_watchdog() -> None:
+-            while not stop_file.exists():
+-                time.sleep(0.2)
+-            try:
+-                os.kill(os.getpid(), signal.SIGINT)
+-            except OSError:
+-                pass
+-        threading.Thread(target=stop_watchdog, name="capture-stop-watchdog", daemon=True).start()
+     browser = BrowserConnection(_browser_websocket(args.cdp_port))
+     recorders: dict[str, TargetRecorder] = {}
+     target_sessions: dict[str, str] = {}
+@@ -378,6 +375,62 @@ def main() -> int:
+     target_ids_seen: set[str] = set()
+     target_count_seen = 0
+     page_url = "https://chatgpt.com/"
++    last_checkpoint_at = 0.0
++    last_checkpoint_count = 0
++
++    def snapshot_entries() -> list[dict[str, Any]]:
++        entries = [entry for entry in all_entries if isinstance(entry, dict)]
++        for target in recorders.values():
++            entries.extend(entry for entry in target.recorder.entries if isinstance(entry, dict))
++        entries.sort(key=lambda entry: str(entry.get("startedDateTime") or ""))
++        return entries
++
++    def build_har(entries: list[dict[str, Any]]) -> dict[str, Any]:
++        har: dict[str, Any] = {
++            "log": {
++                "version": "1.2",
++                "creator": {"name": "opll-har-capture-browser-attach", "version": "1.0"},
++                "pages": [],
++                "entries": entries,
++                "_capture": {
++                    "title": page_url,
++                    "entryCount": len(entries),
++                    "channelRequested": args.channel,
++                    "targetMode": "browser-auto-attach-flatten",
++                    "targetCount": target_count_seen,
++                    "targetTypes": sorted(target_types_seen),
++                    "fetchResponses": bool(args.fetch_responses and not args.no_fetch_responses),
++                },
++            }
++        }
++        try:
++            completeness = _capture_completeness_audit(har)
++        except Exception as exc:
++            completeness = {"complete": False, "criticalComplete": False, "issues": [f"audit_error:{exc}"]}
++        har["log"]["_capture"]["completenessAudit"] = completeness
++        return har
++
++    def write_checkpoint() -> None:
++        """Persist completed entries before potentially slow body flushing."""
++        args.output.parent.mkdir(parents=True, exist_ok=True)
++        temp = args.output.with_name(f".{args.output.name}.checkpoint")
++        temp.write_text(json.dumps(build_har(snapshot_entries()), ensure_ascii=False, indent=2), encoding="utf-8")
++        temp.replace(args.output)
++
++    def maybe_checkpoint() -> None:
++        nonlocal last_checkpoint_at, last_checkpoint_count
++        count = len(snapshot_entries())
++        now = time.monotonic()
++        if count <= last_checkpoint_count:
++            return
++        if count - last_checkpoint_count < 250 and now - last_checkpoint_at < 15.0:
++            return
++        try:
++            write_checkpoint()
++            last_checkpoint_at = now
++            last_checkpoint_count = count
++        except (OSError, RuntimeError, ValueError):
++            pass
+ 
+     def attach_target(session_id: str, target_info: dict[str, Any]) -> None:
+         nonlocal target_count_seen
+@@ -443,16 +496,24 @@ def main() -> int:
+         print("CAPTURE_TARGET_MODE=browser-auto-attach-flatten", flush=True)
+         print(f"CAPTURE_OUTPUT={args.output.resolve()}", flush=True)
+         print("CAPTURE_READY=1", flush=True)
+-        print("CAPTURE_ACTION=perform the complete GoPay flow; send the stop instruction when finished", flush=True)
++        print(
++            f"CAPTURE_ACTION=perform the complete {args.channel.upper()} flow; send the stop instruction when finished",
++            flush=True,
++        )
+         heartbeat_interval = max(float(args.heartbeat_seconds), 0.5)
+         last_heartbeat = time.monotonic()
+         while True:
+             if stop_file is not None and stop_file.exists():
++                try:
++                    write_checkpoint()
++                except (OSError, RuntimeError, ValueError):
++                    pass
+                 break
+             try:
+                 session_id, message = browser.recv_any()
+             except socket.timeout:
+                 if time.monotonic() - last_heartbeat >= heartbeat_interval:
++                    maybe_checkpoint()
+                     print(
+                         f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
+                         flush=True,
+@@ -466,6 +527,7 @@ def main() -> int:
+                 if target is not None:
+                     target.handle(message)
+                 if time.monotonic() - last_heartbeat >= heartbeat_interval:
++                    maybe_checkpoint()
+                     print(
+                         f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
+                         flush=True,
+@@ -503,27 +565,8 @@ def main() -> int:
+             all_entries.extend(target.close())
+             recorders.pop(session_id, None)
+         all_entries.sort(key=lambda entry: str(entry.get("startedDateTime") or ""))
+-        har = {
+-            "log": {
+-                "version": "1.2",
+-                "creator": {"name": "opll-har-capture-browser-attach", "version": "1.0"},
+-                "pages": [],
+-                "entries": all_entries,
+-                "_capture": {
+-                    "title": page_url,
+-                    "entryCount": len(all_entries),
+-                    "targetMode": "browser-auto-attach-flatten",
+-                    "targetCount": target_count_seen,
+-                    "targetTypes": sorted(target_types_seen),
+-                    "fetchResponses": bool(args.fetch_responses and not args.no_fetch_responses),
+-                },
+-            }
+-        }
+-        try:
+-            completeness = _capture_completeness_audit(har)
+-        except Exception as exc:
+-            completeness = {"complete": False, "criticalComplete": False, "issues": [f"audit_error:{exc}"]}
+-        har["log"]["_capture"]["completenessAudit"] = completeness
++        har = build_har(all_entries)
++        completeness = har["log"]["_capture"].get("completenessAudit", {})
+         args.output.parent.mkdir(parents=True, exist_ok=True)
+         args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+         print(f"CAPTURE_SAVED={args.output.resolve()}", flush=True)
+diff --git a/tools/har_utils.py b/tools/har_utils.py
+index cc7a3cd..83ff4c8 100644
+--- a/tools/har_utils.py
++++ b/tools/har_utils.py
+@@ -13,9 +13,21 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+ SENSITIVE_NAME_RE = re.compile(
+     r"(?:authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|"
+     r"id[_-]?token|client[_-]?secret|password|passwd|secret|signature|redirectdata|"
+-    r"requestdata|^p$|qr[_-]?code|session[_-]?token)",
++    r"requestdata|^p$|qr[_-]?code|session[_-]?token|"
++    r"(?:checkout|account|customer|payment|setup|confirmation|client|session)[_-]?id)",
+     re.IGNORECASE,
+ )
++SENSITIVE_URL_NAME_RE = re.compile(
++    r"^(?:t|s|sid|session(?:id|_id)?|nonce|token|signature|redirect|return_url)$",
++    re.IGNORECASE,
++)
++SENSITIVE_PATH_RE = re.compile(
++    r"(?i)(?:oaics|seti|pi|cus|acct|ctoken|sa_nonce|authsess)[_-][A-Za-z0-9_-]+"
++)
++UUID_PATH_RE = re.compile(
++    r"(?i)(?<![A-Za-z0-9])[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
++    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![A-Za-z0-9])"
++)
+ MAX_INLINE_TEXT = 600
+ 
+ 
+@@ -58,13 +70,35 @@ def _short_hash(value: str) -> str:
+ 
+ def redact_value(name: str, value: Any, *, redact: bool = True) -> Any:
+     text = str(value or "")
+-    if redact and SENSITIVE_NAME_RE.search(str(name)):
++    if redact and (
++        SENSITIVE_NAME_RE.search(str(name))
++        or SENSITIVE_URL_NAME_RE.fullmatch(str(name).strip())
++    ):
+         return f"<redacted len={len(text)} sha256={_short_hash(text)}>"
+     if len(text) > MAX_INLINE_TEXT:
+         return f"<truncated len={len(text)} sha256={_short_hash(text)} preview={text[:120]!r}>"
+     return value
+ 
+ 
++def redact_path(path: str, *, redact: bool = True) -> str:
++    if not redact:
++        return path
++    value = str(path or "")
++    value = SENSITIVE_PATH_RE.sub("<redacted-id>", value)
++    value = UUID_PATH_RE.sub("<redacted-uuid>", value)
++    # Stripe authorize paths contain opaque account/nonce segments without a
++    # stable prefix; retain only the endpoint shape.
++    value = re.sub(r"(?i)(/authorize/)[^/?#]+", r"\1<redacted>", value)
++    # Browser telemetry endpoints can put opaque base64 blobs directly in a
++    # path. Keep the route shape but never publish those blobs.
++    segments = value.split("/")
++    value = "/".join(
++        "<redacted-path>" if len(segment) > 160 else segment
++        for segment in segments
++    )
++    return value
++
++
+ def redact_url(url: str, *, redact: bool = True) -> str:
+     if not redact:
+         return url
+@@ -72,7 +106,22 @@ def redact_url(url: str, *, redact: bool = True) -> str:
+     query = []
+     for name, value in parse_qsl(parts.query, keep_blank_values=True):
+         query.append((name, redact_value(name, value, redact=True)))
+-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
++    host = parts.hostname or ""
++    try:
++        port = parts.port
++    except ValueError:
++        port = None
++    if port:
++        host = f"{host}:{port}"
++    return urlunsplit(
++        (
++            parts.scheme,
++            host,
++            redact_path(parts.path, redact=True),
++            urlencode(query),
++            "",
++        )
++    )
+ 
+ 
+ def summarize_payload(text: Any, *, content_type: str = "", redact: bool = True) -> Any:
+@@ -129,14 +178,24 @@ def entry_summary(index: int, entry: dict[str, Any], *, redact: bool = True) ->
+     post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+     response_content = response.get("content") if isinstance(response.get("content"), dict) else {}
+     response_text = response_content.get("text", "")
++    if redact:
++        entry_host = parts.hostname or ""
++        try:
++            entry_port = parts.port
++        except ValueError:
++            entry_port = None
++        if entry_port:
++            entry_host = f"{entry_host}:{entry_port}"
++    else:
++        entry_host = parts.netloc
+     return {
+         "index": index,
+         "startedDateTime": entry.get("startedDateTime"),
+         "time_ms": round(float(entry.get("time", 0) or 0), 2),
+         "method": str(request.get("method") or "GET").upper(),
+         "url": redact_url(url, redact=redact),
+-        "host": parts.netloc,
+-        "path": parts.path or "/",
++        "host": entry_host,
++        "path": redact_path(parts.path, redact=redact) or "/",
+         "status": int(response.get("status", 0) or 0),
+         "statusText": response.get("statusText", ""),
+         "mimeType": response_content.get("mimeType") or response_headers.get("content-type", ""),
+@@ -186,6 +245,11 @@ def analyze_har(
+ ) -> dict[str, Any]:
+     har, sha256 = load_har(path)
+     all_entries = list(iter_entries(har))
++    channel = "momo" if any(
++        "payment.momo.vn" in str((entry.get("request") or {}).get("url") or "").lower()
++        or "/promo_campaign/check_coupon" in str((entry.get("request") or {}).get("url") or "").lower()
++        for _, entry in all_entries
++    ) else "gopay"
+     selected: list[tuple[int, dict[str, Any]]] = []
+     host_text = host.lower().strip()
+     path_text = path_contains.lower().strip()
+@@ -224,6 +288,9 @@ def analyze_har(
+     gopay_redirects: list[dict[str, Any]] = []
+     gopay_payment_methods: set[str] = set()
+     gopay_amounts: set[str] = set()
++    momo_gateway_statuses: Counter[str] = Counter()
++    momo_gateway_amounts: set[str] = set()
++    momo_gateway_redirects = 0
+     notable: list[dict[str, Any]] = []
+     stripe_init_entries: list[dict[str, Any]] = []
+     short_url_re = re.compile(r"https://m\.gcash/s/[A-Za-z0-9_-]+")
+@@ -252,8 +319,18 @@ def analyze_har(
+         # GoPay observations: authorize redirect (request url / redirect header /
+         # response body), payment method types, amount.
+         response_redirect = str(summary.get("redirect_url") or "")
++        raw_request_url = str((entry.get("request") or {}).get("url") or "")
++        raw_response_headers = header_dict((entry.get("response") or {}).get("headers"))
++        raw_redirect = str(
++            (entry.get("response") or {}).get("redirectURL")
++            or raw_response_headers.get("location")
++            or ""
++        )
++        raw_response_body = str(
++            ((entry.get("response") or {}).get("content") or {}).get("text") or ""
++        )
+         redirect_haystack = (
+-            str(summary.get("url") or "") + "\n" + response_redirect + "\n" + body_text
++            raw_request_url + "\n" + raw_redirect + "\n" + raw_response_body
+         )
+         gopay_redirects.extend(
+             {
+@@ -279,6 +356,31 @@ def analyze_har(
+                     body_text,
+                 )
+             )
++        if summary["host"].lower() == "payment.momo.vn":
++            raw_response = str(
++                ((entry.get("response") or {}).get("content") or {}).get("text") or ""
++            )
++            try:
++                momo_payload = json.loads(raw_response) if raw_response else {}
++            except (TypeError, json.JSONDecodeError):
++                momo_payload = {}
++            if isinstance(momo_payload, dict):
++                status_value = momo_payload.get("status_code")
++                if status_value not in (None, ""):
++                    momo_gateway_statuses[str(status_value)] += 1
++                for key in ("amount", "amount_total", "amountTotal"):
++                    value = momo_payload.get(key)
++                    if value not in (None, ""):
++                        momo_gateway_amounts.add(str(value))
++                return_url = str(momo_payload.get("return_url") or "")
++                if return_url:
++                    for value in dict(parse_qsl(urlsplit(return_url).query)).get(
++                        "amount", ""
++                    ).split(","):
++                        if value != "":
++                            momo_gateway_amounts.add(str(value))
++                if bool(momo_payload.get("redirect")):
++                    momo_gateway_redirects += 1
+         operation = ""
+         request_body = str((entry.get("request") or {}).get("postData", {}).get("text", ""))
+         for marker in (
+@@ -289,6 +391,7 @@ def analyze_har(
+             "authorisation.stateless.consult",
+             "short.dynamic.link",
+             "query.result",
++            "querySession",
+             "payments/checkout/approve",
+             "payments/checkout/snapshot",
+             "payment_pages/",
+@@ -310,6 +413,7 @@ def analyze_har(
+ 
+     return {
+         "schema": "opll.har-analysis.v1",
++        "channel": channel,
+         "source": str(Path(path).resolve()),
+         "sha256": sha256,
+         "har_version": har.get("log", {}).get("version", ""),
+@@ -338,6 +442,9 @@ def analyze_har(
+             "gopay_redirects": gopay_redirects,
+             "gopay_payment_methods": sorted(gopay_payment_methods),
+             "gopay_amounts": sorted(gopay_amounts),
++            "momo_gateway_statuses": dict(momo_gateway_statuses),
++            "momo_gateway_amounts": sorted(momo_gateway_amounts),
++            "momo_gateway_redirects": momo_gateway_redirects,
+             "gopay_stripe_init": stripe_init_entries,
+             "notable_operations": notable,
+         },
+@@ -348,6 +455,19 @@ def analyze_har(
+ def markdown_report(report: dict[str, Any]) -> str:
+     counts = report.get("counts", {})
+     observations = report.get("observations", {})
++    channel = str(report.get("channel") or "").lower()
++    if channel == "momo":
++        channel_lines = [
++            f"- MoMo gateway redirects (#): `{observations.get('momo_gateway_redirects', 0)}`",
++            f"- MoMo gateway statuses: `{json.dumps(observations.get('momo_gateway_statuses', {}), ensure_ascii=False)}`",
++            f"- MoMo gateway amounts: `{', '.join(observations.get('momo_gateway_amounts', [])) or '-'}`",
++        ]
++    else:
++        channel_lines = [
++            f"- GoPay redirects (#): `{len(observations.get('gopay_redirects', []))}`",
++            f"- GoPay payment methods: `{', '.join(observations.get('gopay_payment_methods', [])) or '-'}`",
++            f"- GoPay amounts: `{', '.join(observations.get('gopay_amounts', [])) or '-'}`",
++        ]
+     lines = [
+         "# HAR analysis",
+         "",
+@@ -367,9 +487,7 @@ def markdown_report(report: dict[str, Any]) -> str:
+         f"- Client versions: `{', '.join(observations.get('oai_client_versions', [])) or '-'}`",
+         f"- Sentinel header lengths: `{', '.join(map(str, observations.get('sentinel_header_lengths', []))) or '-'}`",
+         f"- HAR-observed short URLs: `{', '.join(observations.get('short_urls', [])) or '-'}`",
+-        f"- GoPay redirects (#): `{len(observations.get('gopay_redirects', []))}`",
+-        f"- GoPay payment methods: `{', '.join(observations.get('gopay_payment_methods', [])) or '-'}`",
+-        f"- GoPay amounts: `{', '.join(observations.get('gopay_amounts', [])) or '-'}`",
++        *channel_lines,
+         "",
+         "## Notable operations",
+         "",
+@@ -379,7 +497,7 @@ def markdown_report(report: dict[str, Any]) -> str:
+     for item in observations.get("notable_operations", []):
+         lines.append(f"| {item.get('index')} | `{item.get('operation')}` | {item.get('status')} | `{item.get('url')}` |")
+     gopay_redirects = observations.get("gopay_redirects", [])
+-    if gopay_redirects:
++    if gopay_redirects and channel != "momo":
+         lines.extend(
+             [
+                 "",
+diff --git a/tools/mitm_capture.py b/tools/mitm_capture.py
+index b6bc081..c46ab8c 100644
+--- a/tools/mitm_capture.py
++++ b/tools/mitm_capture.py
+@@ -38,6 +38,61 @@ TLS_PASSTHROUGH_HOSTS = (
+ )
+ 
+ 
++def render_channel_summary(
++    output: Path,
++    channel: str,
++    analysis: dict[str, object],
++    audit: dict[str, object],
++) -> str:
++    """Render a compact, channel-neutral summary without payload values."""
++    counts = analysis.get("counts") if isinstance(analysis.get("counts"), dict) else {}
++    hosts = counts.get("hosts", {}) if isinstance(counts, dict) else {}
++    statuses = counts.get("statuses", {}) if isinstance(counts, dict) else {}
++    methods = counts.get("methods", {}) if isinstance(counts, dict) else {}
++    critical = audit.get("critical") if isinstance(audit.get("critical"), list) else []
++    checkpoints = [
++        {
++            "name": item.get("name"),
++            "count": item.get("count"),
++            "requestBody": item.get("requestBody"),
++            "responseBody": item.get("responseBody"),
++        }
++        for item in critical
++        if isinstance(item, dict)
++    ]
++    raw = output.read_bytes()
++    return "\n".join(
++        [
++            f"# {channel.upper()} capture summary (redacted)",
++            "",
++            "> This summary contains structural counts only; credentials, cookies, tokens, session IDs, order IDs, and payload values are omitted.",
++            "",
++            f"- source: `{output.resolve()}`",
++            f"- size_bytes: `{len(raw)}`",
++            f"- sha256: `{hashlib.sha256(raw).hexdigest().upper()}`",
++            f"- entries: `{analysis.get('entry_count', 0)}`",
++            f"- audit_channel: `{audit.get('channel', 'unknown')}`",
++            f"- complete: `{bool(audit.get('complete'))}`",
++            f"- critical_complete: `{bool(audit.get('criticalComplete'))}`",
++            "",
++            "## Counts",
++            "",
++            f"- hosts: `{json.dumps(hosts, ensure_ascii=False, sort_keys=True)}`",
++            f"- statuses: `{json.dumps(statuses, ensure_ascii=False, sort_keys=True)}`",
++            f"- methods: `{json.dumps(methods, ensure_ascii=False, sort_keys=True)}`",
++            "",
++            "## Critical checkpoints",
++            "",
++            f"```json\n{json.dumps(checkpoints, ensure_ascii=False, indent=2)}\n```",
++            "",
++            "## Issues",
++            "",
++            f"```json\n{json.dumps(audit.get('issues', []), ensure_ascii=False, indent=2)}\n```",
++            "",
++        ]
++    )
++
++
+ def find_mitm_binary(name: str, explicit: str = "") -> Path:
+     candidates = [Path(explicit)] if explicit else []
+     path_value = os.getenv("PATH", "")
+@@ -320,11 +375,14 @@ def finalize_capture(output: Path, channel: str) -> dict[str, object]:
+     capture.setdefault("recorder", "mitmproxy")
+     output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
+     report_path = output.with_suffix(".report.md")
+-    report_path.write_text(markdown_report(analyze_har(output)), encoding="utf-8")
+-    summary_path: Path | None = None
++    analysis = analyze_har(output)
++    report_path.write_text(markdown_report(analysis), encoding="utf-8")
++    summary_path: Path | None = output.with_suffix(".summary.md")
+     if channel == "gopay":
+-        summary_path = output.with_suffix(".summary.md")
+-        summary_path.write_text(render_gopay_summary(summarize_gopay(output)), encoding="utf-8")
++        summary_text = render_gopay_summary(summarize_gopay(output))
++    else:
++        summary_text = render_channel_summary(output, channel, analysis, audit)
++    summary_path.write_text(summary_text, encoding="utf-8")
+     raw = output.read_bytes()
+     entries = har.get("log", {}).get("entries", [])
+     return {
+diff --git a/tools/roxy_mitm_control.py b/tools/roxy_mitm_control.py
+index 5ead7cd..8ccca10 100644
+--- a/tools/roxy_mitm_control.py
++++ b/tools/roxy_mitm_control.py
+@@ -20,11 +20,11 @@ from urllib.parse import urlsplit
+ from urllib.request import Request, urlopen
+ 
+ try:
+-    from .har_capture import audit_har_completeness
++    from .har_capture import CDPWebSocket, audit_har_completeness
+     from .mitm_capture import finalize_capture, navigate_page
+     from .roxy_har_capture import default_roxy_cache, discover_roxy_targets
+ except ImportError:
+-    from har_capture import audit_har_completeness
++    from har_capture import CDPWebSocket, audit_har_completeness
+     from mitm_capture import finalize_capture, navigate_page
+     from roxy_har_capture import default_roxy_cache, discover_roxy_targets
+ 
+@@ -132,6 +132,82 @@ def cleanup_stale_mitmweb(ports: tuple[int, ...]) -> None:
+         )
+ 
+ 
++def request_cdp_stop(
++    cdp_process: subprocess.Popen[str] | None,
++    cdp_stop_file: Path | None,
++) -> None:
++    """Ask the CDP recorder to stop without killing its HAR finalizer."""
++    if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
++        cdp_stop_file.write_text("stop", encoding="ascii")
++
++
++def force_stop_process_tree(process: subprocess.Popen[str] | None) -> None:
++    """Terminate a recorder and its children without asking it to save."""
++    if process is None or process.poll() is not None:
++        return
++    if os.name == "nt":
++        subprocess.run(
++            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
++            check=False,
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++        )
++    else:
++        process.kill()
++    try:
++        process.wait(timeout=5)
++    except subprocess.TimeoutExpired:
++        process.kill()
++
++
++def close_cdp_browser(port: int | None) -> None:
++    """Close the captured Roxy browser window through its browser CDP target."""
++    if not port:
++        return
++    try:
++        with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=3) as response:
++            version = json.loads(response.read().decode("utf-8"))
++        websocket_url = str(version.get("webSocketDebuggerUrl") or "") if isinstance(version, dict) else ""
++        if not websocket_url:
++            return
++        cdp = CDPWebSocket(websocket_url, timeout=3)
++        try:
++            cdp.next_id += 1
++            cdp.send_json({"id": cdp.next_id, "method": "Browser.close", "params": {}})
++        finally:
++            cdp.close()
++    except (OSError, EOFError, RuntimeError, ValueError, json.JSONDecodeError):
++        return
++
++
++def delete_roxy_window(
++    base_url: str,
++    api_key: str,
++    workspace_id: str,
++    dir_id: str,
++) -> None:
++    """Delete a Roxy profile after its browser process has been closed."""
++    if not workspace_id or not dir_id:
++        return
++    roxy_request(
++        base_url,
++        "/browser/delete",
++        api_key,
++        method="POST",
++        payload={"workspaceId": workspace_id, "dirIds": [dir_id]},
++        timeout=30,
++    )
++
++
++def parse_proxy_pool(value: Any) -> list[str]:
++    """Normalize one-per-line proxy pool input while retaining order."""
++    if isinstance(value, (list, tuple)):
++        items = [str(item).strip() for item in value]
++    else:
++        items = [line.strip() for line in str(value or "").splitlines()]
++    return list(dict.fromkeys(item for item in items if item))
++
++
+ def roxy_request(
+     base_url: str,
+     path: str,
+@@ -239,7 +315,13 @@ class CaptureState:
+     stop_file: Path | None = None
+     cdp_stop_file: Path | None = None
+     cdp_output: Path | None = None
++    cdp_port: int | None = None
+     channel: str = "gopay"
++    api_key: str = ""
++    api_base: str = DEFAULT_ROXY_API
++    workspace_id: str = ""
++    proxy_pool: list[str] = field(default_factory=list)
++    proxy_index: int = 0
+     logs: list[str] = field(default_factory=list)
+     lock: threading.RLock = field(default_factory=threading.RLock)
+ 
+@@ -268,15 +350,12 @@ class CaptureState:
+             del self.logs[:-100]
+ 
+     def start(self, options: dict[str, Any]) -> dict[str, Any]:
+-        upstream = str(options.get("upstream") or "").strip()
++        requested_pool = parse_proxy_pool(options.get("upstreamPool"))
++        single_upstream = str(options.get("upstream") or "").strip()
+         api_key = str(options.get("apiKey") or "").strip()
+         api_base = str(options.get("apiBase") or DEFAULT_ROXY_API).strip()
+         channel = str(options.get("channel") or "gopay").strip().lower()
+         window_name = str(options.get("windowName") or "").strip()
+-        if not upstream:
+-            raise ValueError("请输入上游 SOCKS5 代理")
+-        if not api_key:
+-            raise ValueError("请输入 Roxy API Key")
+         if channel not in CHANNELS:
+             raise ValueError("抓包渠道无效")
+         if not window_name:
+@@ -284,6 +363,20 @@ class CaptureState:
+         with self.lock:
+             if self.process is not None and self.process.poll() is None:
+                 raise RuntimeError("抓包服务已经在运行")
++            if requested_pool:
++                self.proxy_pool = requested_pool
++                self.proxy_index = 0
++            elif single_upstream:
++                self.proxy_pool = [single_upstream]
++                self.proxy_index = 0
++            if not self.proxy_pool:
++                raise ValueError("请输入至少一条上游 SOCKS5 代理")
++            if not api_key:
++                api_key = self.api_key
++            if not api_key:
++                raise ValueError("请输入 Roxy API Key")
++            upstream = self.proxy_pool[self.proxy_index % len(self.proxy_pool)]
++            self.proxy_index = (self.proxy_index + 1) % len(self.proxy_pool)
+             self.status = "starting"
+             self.message = "正在启动 mitmproxy"
+             self.logs.clear()
+@@ -291,7 +384,10 @@ class CaptureState:
+             self.cdp_process = None
+             self.cdp_stop_file = None
+             self.cdp_output = None
++            self.cdp_port = None
+             self.channel = channel
++            self.api_key = api_key
++            self.api_base = api_base
+             self.dir_id = ""
+             self.window_name = window_name
+         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
+@@ -345,13 +441,15 @@ class CaptureState:
+ 
+         threading.Thread(target=read_output, daemon=True).start()
+         if not ready.wait(45) or process.poll() is not None:
+-            self.stop()
++            self.discard()
+             with self.lock:
+                 self.message = "启动失败：上游代理格式无效，请填写 HOST:PORT:USERNAME:PASSWORD 或完整代理 URL"
+             raise RuntimeError("mitmproxy 启动失败，请查看状态日志")
+         try:
+             existing_ports = {target.port for target in discover_roxy_targets(default_roxy_cache())}
+             workspace_id = resolve_workspace_id(api_base, api_key)
++            with self.lock:
++                self.workspace_id = workspace_id
+             dir_id = create_roxy_window(
+                 api_base,
+                 api_key,
+@@ -359,8 +457,12 @@ class CaptureState:
+                 window_name,
+                 self.proxy_port,
+             )
++            with self.lock:
++                self.dir_id = dir_id
+             open_roxy_window(api_base, api_key, workspace_id, dir_id)
+             cdp_port = wait_for_roxy_cdp(dir_id, existing_ports)
++            with self.lock:
++                self.cdp_port = cdp_port
+             cdp_output = output.with_name(f"{output.stem}-cdp.har")
+             cdp_stop_file = output.with_name(f"{output.stem}-cdp.stop")
+             cdp_output.unlink(missing_ok=True)
+@@ -370,11 +472,15 @@ class CaptureState:
+                 str(self.root / "tools" / "har_capture_browser_attach.py"),
+                 "--cdp-port",
+                 str(cdp_port),
++                "--channel",
++                channel,
+                 "--output",
+                 str(cdp_output),
+                 "--stop-file",
+                 str(cdp_stop_file),
+             ]
++            # The recorder polls its stop marker and must remain alive long
++            # enough to run its finally block and write the HAR.
+             cdp_process = subprocess.Popen(
+                 cdp_command,
+                 cwd=self.root,
+@@ -383,7 +489,7 @@ class CaptureState:
+                 text=True,
+                 encoding="utf-8",
+                 errors="replace",
+-                creationflags=creation_flags,
++                creationflags=0,
+             )
+             cdp_ready = threading.Event()
+ 
+@@ -401,13 +507,14 @@ class CaptureState:
+                 self.cdp_process = cdp_process
+                 self.cdp_stop_file = cdp_stop_file
+                 self.cdp_output = cdp_output
++                self.cdp_port = cdp_port
+             if not cdp_ready.wait(30) or cdp_process.poll() is not None:
+                 raise RuntimeError("Roxy CDP 补充记录器启动失败")
+             # Roxy's open endpoint initially exposes its internal dashboard.
+             # Navigate that same fingerprinted profile to the real capture origin.
+             navigate_page(cdp_port, "https://chatgpt.com/")
+         except Exception as exc:
+-            self.stop()
++            self.discard()
+             with self.lock:
+                 self.message = f"启动失败：{exc}"
+             raise
+@@ -428,13 +535,8 @@ class CaptureState:
+             channel = self.channel
+             self.status = "stopping"
+             self.message = "正在保存并合并 HAR"
+-        if cdp_process is not None and cdp_process.poll() is None and cdp_stop_file is not None:
+-            cdp_stop_file.write_text("stop", encoding="ascii")
+-            if os.name == "nt":
+-                try:
+-                    cdp_process.send_signal(signal.CTRL_BREAK_EVENT)
+-                except OSError:
+-                    pass
++        # The CDP recorder polls the stop marker and flushes before exiting.
++        request_cdp_stop(cdp_process, cdp_stop_file)
+         if process is not None and process.poll() is None:
+             try:
+                 if stop_file is not None:
+@@ -481,6 +583,7 @@ class CaptureState:
+             self.stop_file = None
+             self.cdp_stop_file = None
+             self.cdp_output = None
++            self.cdp_port = None
+             self.status = "idle"
+             if merge_error:
+                 self.message = f"抓包已停止，但自动合并失败：{merge_error}"
+@@ -497,6 +600,85 @@ class CaptureState:
+         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
+         return self.snapshot()
+ 
++    def discard(self) -> dict[str, Any]:
++        """Close the capture window and discard all artifacts without merging."""
++        with self.lock:
++            process = self.process
++            cdp_process = self.cdp_process
++            output = Path(self.output) if self.output else None
++            stop_file = self.stop_file
++            cdp_stop_file = self.cdp_stop_file
++            cdp_output = self.cdp_output
++            cdp_port = self.cdp_port
++            dir_id = self.dir_id
++            api_base = self.api_base
++            api_key = self.api_key
++            workspace_id = self.workspace_id
++            self.status = "discarding"
++            self.message = "正在放弃抓包并关闭窗口"
++
++        force_stop_process_tree(cdp_process)
++        force_stop_process_tree(process)
++        if cdp_port is None and dir_id:
++            try:
++                targets = discover_roxy_targets(default_roxy_cache(), timeout=0.5)
++                match = next((target for target in targets if target.profile_id == dir_id), None)
++                cdp_port = match.port if match is not None else None
++            except (OSError, RuntimeError, ValueError):
++                cdp_port = None
++        close_cdp_browser(cdp_port)
++        delete_error = ""
++        try:
++            delete_roxy_window(api_base, api_key, workspace_id, dir_id)
++        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
++            delete_error = str(exc)
++
++        paths: set[Path] = set()
++        if output is not None:
++            paths.update(
++                {
++                    output,
++                    output.with_suffix(".mitm"),
++                    output.with_suffix(".report.md"),
++                    output.with_suffix(".summary.md"),
++                    output.with_suffix(".stop"),
++                }
++            )
++        if stop_file is not None:
++            paths.add(stop_file)
++        if cdp_output is not None:
++            paths.add(cdp_output)
++            paths.add(cdp_output.with_name(f".{cdp_output.name}.checkpoint"))
++        if cdp_stop_file is not None:
++            paths.add(cdp_stop_file)
++        for path in paths:
++            path.unlink(missing_ok=True)
++
++        cleanup_stale_mitmweb((self.proxy_port, self.web_port))
++        with self.lock:
++            self.process = None
++            self.cdp_process = None
++            self.stop_file = None
++            self.cdp_stop_file = None
++            self.cdp_output = None
++            self.cdp_port = None
++            self.output = ""
++            self.dir_id = ""
++            self.workspace_id = ""
++            self.window_name = ""
++            self.logs.append("CAPTURE_DISCARDED=1")
++            if delete_error:
++                self.logs.append(f"ROXY_WINDOW_DELETE_ERROR={delete_error}")
++            else:
++                self.logs.append("ROXY_WINDOW_DELETED=1")
++            self.status = "idle"
++            self.message = (
++                "本次抓包已放弃，窗口已关闭并删除，未保存文件"
++                if not delete_error
++                else f"本次抓包已放弃，窗口已关闭；删除失败：{delete_error}"
++            )
++        return self.snapshot()
++
+ 
+ HTML = r"""<!doctype html>
+ <html lang="zh-CN">
+@@ -509,9 +691,9 @@ HTML = r"""<!doctype html>
+ *{box-sizing:border-box}body{margin:0;min-height:100vh}header{height:56px;background:#20262d;color:#fff;display:flex;align-items:center;padding:0 18px;gap:14px}header h1{font-size:17px;margin:0;font-weight:600}header span{font-size:12px;color:#b8c2cc}
+ main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc(100vh - 56px)}
+ .controls{background:#fff;border-bottom:1px solid #d7dee5;padding:14px 18px;display:grid;grid-template-columns:minmax(320px,2fr) minmax(220px,1fr) 150px 190px auto;gap:10px;align-items:end}
+-label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}input:focus,select:focus{outline:2px solid #2589d8;outline-offset:-1px}
+-.actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
+-.status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping{background:#e0a126}.status code{margin-left:auto;color:#52606d}
++ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select,textarea{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}textarea{height:72px;padding-top:8px;resize:vertical}input:focus,select:focus,textarea:focus{outline:2px solid #2589d8;outline-offset:-1px}
++.actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.discard{background:#59636e;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
++.status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping,.dot.discarding{background:#e0a126}.status code{margin-left:auto;color:#52606d}
+ .workspace{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0}.mitm{position:relative;background:#fff}.mitm iframe{width:100%;height:100%;border:0}.empty{position:absolute;inset:0;display:grid;place-items:center;color:#6b7785;background:#fff}.log{background:#20262d;color:#d9e1e8;padding:12px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}.log h2{font:600 13px Segoe UI;margin:0 0 8px;color:#fff}
+ @media(max-width:1000px){.controls{grid-template-columns:1fr 1fr}.actions{grid-column:1/-1}.workspace{grid-template-columns:1fr}.log{max-height:220px}.controls label:first-child{grid-column:1/-1}}
+ </style>
+@@ -520,23 +702,24 @@ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px
+ <header><h1>mitmproxy Roxy 控制台</h1><span>上游代理仅保存在当前进程内存</span></header>
+ <main>
+ <section class="controls">
+-<label>上游 SOCKS5 代理<input id="upstream" type="password" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></label>
++<label>上游 SOCKS5 代理池（每行一条）<textarea id="upstreamPool" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></textarea></label>
+ <label>Roxy API Key<input id="apiKey" type="password" autocomplete="off" placeholder="仅本机 API 使用"></label>
+ <label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="momo">MoMo</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
+ <label>新窗口名称<input id="windowName" placeholder="留空自动命名"></label>
+-<div class="actions"><button id="start" class="button primary">开始并新建窗口</button><button id="stop" class="button danger">停止抓包</button></div>
++<div class="actions"><button id="start" class="button primary">开始并新建窗口</button><button id="stop" class="button danger">停止并保存</button><button id="discard" class="button discard">放弃并关闭窗口</button></div>
+ <input id="apiBase" type="hidden" value="http://127.0.0.1:50000">
+ </section>
+ <section class="status"><span id="dot" class="dot"></span><strong id="state">未启动</strong><span id="message">等待设置上游代理</span><code id="proxy">HTTP 127.0.0.1:8899</code></section>
+ <section class="workspace"><div class="mitm"><div id="empty" class="empty">启动后在这里查看 mitmweb</div><iframe id="mitm" title="mitmweb"></iframe></div><aside id="log" class="log"><h2>运行状态</h2></aside></section>
+ </main>
+ <script>
+-const elements={upstream:document.querySelector('#upstream'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
++const elements={upstreamPool:document.querySelector('#upstreamPool'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
+ async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const data=await response.json();if(!response.ok)throw new Error(data.error||'操作失败');return data}
+-function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止中'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;elements.start.disabled=data.running||data.status==='starting';elements.stop.disabled=!data.running;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
++function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止保存中',discarding:'正在放弃'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;const busy=data.status==='starting'||data.status==='stopping'||data.status==='discarding';elements.start.disabled=data.running||busy;elements.stop.disabled=!data.running||busy;elements.discard.disabled=!data.running||busy;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
+ async function refresh(){try{render(await (await fetch('/api/status')).json())}catch(error){elements.message.textContent=error.message}}
+-elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstream:elements.upstream.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});elements.apiKey.value='';elements.upstream.value='';render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
++elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstreamPool:elements.upstreamPool.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
+ elements.stop.addEventListener('click',async()=>{elements.stop.disabled=true;try{render(await request('/api/stop'))}catch(error){elements.message.textContent=error.message;await refresh()}});
++elements.discard.addEventListener('click',async()=>{elements.discard.disabled=true;try{render(await request('/api/discard'))}catch(error){elements.message.textContent=error.message;await refresh()}});
+ setInterval(refresh,1500);refresh();
+ </script>
+ </body>
+@@ -587,6 +770,9 @@ def build_handler(state: CaptureState):
+                 if self.path == "/api/stop":
+                     self.send_json(200, state.stop())
+                     return
++                if self.path == "/api/discard":
++                    self.send_json(200, state.discard())
++                    return
+                 self.send_error(404)
+             except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                 self.send_json(400, {"error": str(exc), **state.snapshot()})

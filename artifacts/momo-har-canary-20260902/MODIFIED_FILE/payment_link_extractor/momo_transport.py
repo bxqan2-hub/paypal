@@ -46,6 +46,7 @@ class MomoSentinelProvider:
         user_agent: str,
         proxy: str,
         transport_session: Any,
+        session_token: str = "",
     ) -> None:
         from .transport import BrowserSentinelProvider
 
@@ -56,11 +57,13 @@ class MomoSentinelProvider:
             user_agent=user_agent,
             proxy=_browser_proxy_for(proxy),
             transport_session=transport_session,
+            session_token=session_token,
             enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
             language="vi-VN",
             client_build_number="10109010",
             client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
             locale="vi-VN",
+            timezone="Asia/Saigon",
         )
 
     @property
@@ -70,17 +73,28 @@ class MomoSentinelProvider:
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         return dict(self._delegate.headers(flow, referer=referer) or {})
 
+    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
+        prepare = getattr(self._delegate, "prepare_flow", None)
+        if callable(prepare):
+            prepare(flow, referer=referer)
+
     def close(self) -> None:
         self._delegate.close()
 
 
+def _curl_profile_supported(impersonate: str) -> bool:
+    """Check the installed curl_cffi enum before selecting a TLS profile."""
+    try:
+        from curl_cffi.requests.impersonate import BrowserType
+
+        return str(impersonate or "").lower() in {
+            str(item.value).lower() for item in BrowserType
+        }
+    except Exception:
+        return True
+
+
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
-    {
-        "name": "chrome152",
-        "impersonate": "chrome152",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
-    },
     {
         "name": "chrome150",
         "impersonate": "chrome150",
@@ -99,6 +113,12 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
     },
+    {
+        "name": "chrome152",
+        "impersonate": "chrome152",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+    },
 )
 
 
@@ -108,9 +128,34 @@ class MomoTransportFactory:
     def __init__(self, fingerprint: str = "") -> None:
         requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
         matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
+        if matches and not _curl_profile_supported(matches[0]["impersonate"]):
+            matches = []
         # Bind the current Momo HAR identity by default. Older profiles remain
         # available only through an explicit per-attempt override.
-        self.profile = dict(matches[0] if matches else MOMO_BROWSER_PROFILES[0])
+        if matches:
+            selected = matches[0]
+        else:
+            # Prefer the HAR's Chrome 152 identity when the installed
+            # curl_cffi build supports it; current 0.16.x falls back to the
+            # first supported Chrome profile without mixing UA/TLS versions.
+            preferred = next(
+                (
+                    profile
+                    for profile in MOMO_BROWSER_PROFILES
+                    if profile["name"] == "chrome152"
+                    and _curl_profile_supported(profile["impersonate"])
+                ),
+                None,
+            )
+            selected = preferred or next(
+                (
+                    profile
+                    for profile in MOMO_BROWSER_PROFILES
+                    if _curl_profile_supported(profile["impersonate"])
+                ),
+                MOMO_BROWSER_PROFILES[0],
+            )
+        self.profile = dict(selected)
 
     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
         session = _new_session(self.profile["impersonate"])
@@ -124,21 +169,20 @@ class MomoTransportFactory:
                 "Accept": "*/*",
                 "Origin": "https://chatgpt.com",
                 "Referer": "https://chatgpt.com/",
-                "Content-Type": "application/json",
-                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Language": "vi-VN,vi;q=0.9",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
                 "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
                 "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
+                    "OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", ""
                 ).strip()
                 or "10109010",
                 "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION", ""
+                    "OPLL_MOMO_OAI_CLIENT_VERSION", ""
                 ).strip()
                 or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
                 "x-oai-is-pending-updates": os.getenv(
-                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
+                    "OPLL_MOMO_X_OAI_IS_PENDING_UPDATES", ""
                 ).strip()
                 or MOMO_EMPTY_PENDING_UPDATES,
                 "x-oai-is-client-observation": observation
@@ -152,14 +196,25 @@ class MomoTransportFactory:
                 "Cookie": f"oai-did={device_id}",
             }
         )
-        account = account_id(str(getattr(config, "access_token", "") or ""))
-        if account:
-            session.headers["chatgpt-account-id"] = account
         session.openai_device_id = device_id
         session.openai_did = device_id
         session.openai_session_id = session_id
+        session.openai_account_id = account_id(
+            str(getattr(config, "access_token", "") or "")
+        )
         session.openai_proxy = proxy
         session.openai_request_started = time.perf_counter()
+        session.momo_flow_started_at = session.openai_request_started
+        session.momo_session_token = str(
+            getattr(config, "session_token", "") or ""
+        ).strip()
+        if session.momo_session_token:
+            session.headers["Cookie"] = (
+                str(session.headers.get("Cookie") or "")
+                + "; "
+                + "__Secure-next-auth.session-token="
+                + session.momo_session_token
+            )
 
         def refresh_momo_request_headers(method: str, url: str) -> dict[str, str]:
             pinned = observation or os.getenv(
@@ -171,34 +226,43 @@ class MomoTransportFactory:
             if method.upper() == "POST":
                 normalized = str(url or "").lower()
                 if normalized.endswith("/backend-api/payments/checkout"):
-                    dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
-                    )
+                    configured = os.getenv(
+                        "OPLL_MOMO_OAI_CHECKOUT_TELEMETRY", ""
+                    ).strip()
+                    if configured:
+                        dynamic["oai-telemetry"] = configured
+                    else:
+                        elapsed = round(
+                            (time.perf_counter() - session.openai_request_started) * 1000,
+                            1,
+                        )
+                        dynamic["oai-telemetry"] = json.dumps(
+                            [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
+                            separators=(",", ":"),
+                        )
                 elif normalized.endswith("/backend-api/payments/checkout/confirm"):
                     elapsed = round(
                         (time.perf_counter() - session.openai_request_started) * 1000,
                         1,
                     )
                     dynamic["oai-telemetry"] = json.dumps(
-                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
+                        [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
                         separators=(",", ":"),
                     )
             return dynamic
 
         session.refresh_momo_request_headers = refresh_momo_request_headers
-        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+        attestation = os.getenv(
+            "OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", ""
+        ).strip()
         if attestation:
             session.headers["oai-web-deployment-attestation"] = attestation
         # A browser-generated proof is preferred. Explicit values remain a
         # useful runtime fallback for deployments that inject their own proof.
-        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
-            "OPLL_OPENAI_SENTINEL_TOKEN", ""
-        ).strip()
+        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip()
         if sentinel:
             session.openai_sentinel_token = sentinel
-        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
-            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
-        ).strip()
+        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip()
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         _set_proxy(session, proxy)
@@ -215,6 +279,7 @@ class MomoTransportFactory:
                         user_agent=self.profile["user_agent"],
                         proxy=normalize_momo_proxy(proxy),
                         transport_session=session,
+                        session_token=session.momo_session_token,
                     )
             except Exception:
                 # Keep the explicit token fallback and let the API return its
@@ -227,8 +292,16 @@ class MomoTransportFactory:
         session.headers.update(
             {
                 "User-Agent": self.profile["user_agent"],
-                "Origin": "https://checkout.stripe.com",
-                "Referer": "https://checkout.stripe.com/",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "vi-VN,vi;q=0.9",
+                "Origin": "https://js.stripe.com",
+                "Referer": "https://js.stripe.com/",
+                "Sec-CH-UA": self.profile["sec_ch_ua"],
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
             }
         )
         _set_proxy(session, config.checkout_proxy)
@@ -240,7 +313,7 @@ class MomoTransportFactory:
             {
                 "User-Agent": self.profile["user_agent"],
                 "Accept": "text/html,application/json",
-                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+                "Accept-Language": "vi-VN,vi;q=0.9",
                 "Sec-CH-UA": self.profile["sec_ch_ua"],
                 "Sec-CH-UA-Mobile": "?0",
                 "Sec-CH-UA-Platform": '"Windows"',
@@ -309,7 +382,7 @@ def momo_sentinel_headers(
     token = str(
         getattr(session, "openai_sentinel_token", "")
         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
-        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+        or ""
     ).strip()
     if token and not any(
         key.lower() == "openai-sentinel-token" for key in result
@@ -318,7 +391,7 @@ def momo_sentinel_headers(
     so_token = str(
         getattr(session, "openai_sentinel_so_token", "")
         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
-        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+        or ""
     ).strip()
     if so_token and not any(
         key.lower() == "openai-sentinel-so-token" for key in result
@@ -326,7 +399,7 @@ def momo_sentinel_headers(
         result["OpenAI-Sentinel-SO-Token"] = so_token
     attestation = str(
         getattr(session, "openai_web_deployment_attestation", "")
-        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
+        or os.getenv("OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
     ).strip()
     if attestation and not any(
         key.lower() == "oai-web-deployment-attestation" for key in result
@@ -350,6 +423,37 @@ def momo_request_headers(
     if callable(refresh):
         dynamic = refresh(str(method).upper(), url) or {}
         merged.update(dynamic)
+    normalized_url = str(url or "").split("?", 1)[0].lower()
+    account = str(getattr(session, "openai_account_id", "") or "").strip()
+    if account and (
+        normalized_url.endswith("/backend-api/payments/checkout/taxes")
+        or normalized_url.endswith("/backend-api/payments/checkout/confirm")
+    ):
+        merged.setdefault("chatgpt-account-id", account)
+    if str(method or "").upper() == "POST":
+        merged.setdefault("Content-Type", "application/json")
+    # Requests with an explicit Cookie header otherwise stop consulting the
+    # cookie jar. Merge newly issued cookies before every ChatGPT call so the
+    # eligibility → checkout → taxes sequence keeps one evolving context.
+    jar = getattr(session, "cookies", None)
+    if jar is not None:
+        try:
+            jar_values = jar.get_dict()
+        except Exception:
+            jar_values = {}
+        if isinstance(jar_values, dict):
+            current: dict[str, str] = {}
+            for part in str(merged.get("Cookie") or "").split(";"):
+                key, separator, value = part.strip().partition("=")
+                if separator and key:
+                    current[key] = value
+            for key, value in jar_values.items():
+                if str(key).strip():
+                    current[str(key).strip()] = str(value or "")
+            if current:
+                merged["Cookie"] = "; ".join(
+                    f"{key}={value}" for key, value in current.items()
+                )
     if flow:
         merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
     return merged
@@ -360,7 +464,7 @@ def momo_gateway_headers(
 ) -> dict[str, str]:
     """Build the browser-like headers used by MoMo gateway polling."""
     headers = {
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "*/*",
         "Content-Type": "application/json",
         "Origin": "https://payment.momo.vn",
         "Referer": gateway_url,
@@ -375,6 +479,25 @@ def momo_gateway_headers(
         token = os.getenv("OPLL_MOMO_CSRF_TOKEN", "").strip()
     if token:
         headers["X-CSRF-Token"] = token
+    return headers
+
+
+def momo_gateway_navigation_headers(session: Any, gateway_url: str) -> dict[str, str]:
+    """Build the document-navigation headers used before gateway polling."""
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Referer": "https://chatgpt.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    session_headers = getattr(session, "headers", None)
+    if session_headers is not None:
+        for key in ("User-Agent", "Accept-Language", "Cookie"):
+            value = str(session_headers.get(key) or "").strip()
+            if value:
+                headers[key] = value
     return headers
 
 
@@ -393,7 +516,10 @@ def capture_momo_csrf_token(session: Any, response: Any) -> str:
         # persist it in logs or source.
         patterns = (
             r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
+            r"<meta[^>]+name=[\"']_csrf[\"'][^>]+content=[\"']([^\"']+)",
             r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
+            r"<input[^>]+name=[\"']_csrf[\"'][^>]+value=[\"']([^\"']+)",
+            r"setRequestHeader\(\s*[\"']X-CSRF-TOKEN[\"']\s*,\s*[\"']([^\"']+)",
         )
         for pattern in patterns:
             match = re.search(pattern, body, re.I)

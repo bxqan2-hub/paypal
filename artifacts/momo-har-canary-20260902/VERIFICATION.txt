@@ -1,83 +1,107 @@
-Momo VN/VND eligibility preflight and amount-gate verification
-===============================================================
+Momo VN/VND zero-trial eligibility, hidden Checkout MoMo detection, authoritative amount gate, gateway completion polling, and HAR redaction verification
+=====================================================================================================================
 
 Changed branch/field:
-- Momo channel (VN/VND) remains isolated with result field momo_url.
-- First step now checks the account's eligible_promo_campaigns.plus through the VN proxy pool before creating oaics_* Checkout. A non-eligible result advances to the next VN proxy; no Checkout is created during the probe.
-- momo_zero_trial_validation remains the amount switch: when true, the post-taxes VND payable minor amount must be exactly 0; when false, that amount gate is skipped. Eligibility preflight remains independent and first-step.
-- Amount and eligibility parsing follows the Momo path in pay153-checkout-link; the remaining Momo protocol remains based on the local complete HAR.
+- Channel: Momo (isolated adapter/core), country VN, currency VND.
+- Result field: momo_url.
+- Eligibility: selected VN proxy session checks account-scoped eligible_promo_campaigns.plus.id plus coupon echo/state/redemption before Checkout; ineligible proxies rotate.
+- Checkout: promo campaign is required in the server response; hidden Checkout payment methods are inspected without relying on one_click_trial_eligible.
+- Amount switch: momo_zero_trial_validation=True requires Checkout/taxes/gateway amounts to be exactly zero; False keeps nonzero gateway amounts allowed while still requiring a completed redirect.
+- Gateway: bodyless querySession polling is bounded and requires status_code=9000, redirect=true, valid return_url; final zero amount is checked when the switch is enabled.
 
 Source commits:
 - BASELINE_COMMIT=e21e568
-- SOURCE_CODE_COMMIT=c60b0e1
+- SOURCE_CODE_COMMIT=8c113509e09504617f9c01bb103c323744700e7f
 - REMOTE=origin/main (push completed)
 
-Artifacts (absolute paths):
-- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\MODIFIED_FILE
+Four artifacts (absolute paths):
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\MODIFIED_FILE (directory snapshot of 25 tracked files plus the new eligibility module)
 - C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\DIFF_FILE
 - C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\VERIFICATION.txt
-- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\ROLLBACK.sh
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\ROLLBACK.sh (executable)
 
-Hash evidence:
-- BASELINE payment_link_extractor/momo_transport.py Git-blob SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9
-- MODIFIED payment_link_extractor/momo_transport.py Git-blob SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
-- MODIFIED_FILE SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
-- DIFF_FILE SHA256=1556ae6fd44ac60250fc929193ced8a7216d70d2dce3ba88330d6569204a3b4c
-- HAR input (offline read only) SHA256=b258f1b44b659535278016b0815d9feae575feedcdd15b380f13a8aff437fe01
-- Supplied AT attachment was read in memory only; its path is not copied into Git.
+Changed-file byte SHA-256 (current working tree / MODIFIED_FILE snapshot):
+- .env.example: BASELINE_BYTES_SHA256=AACCFF2FBFF4F4017CD4E6074267A72C0128433F9F3800CC60206107EA6AC711; MODIFIED_BYTES_SHA256=39BE266AD75800AD46783636B5D87459CB2381C0E278FED942BF2DC21F7748CD; SNAPSHOT_BYTES_SHA256=39BE266AD75800AD46783636B5D87459CB2381C0E278FED942BF2DC21F7748CD
+- docs/MOMO_HAR_STATE_MACHINE.md: BASELINE_BYTES_SHA256=715597AF4379C1F53D09EAF687E5F5305E8F95B40850AABA8D689213F0CF97D5; MODIFIED_BYTES_SHA256=D95277BA0E519E46AFC554B6F7259EB29EF84C5FEB03A1C3D8440E942A92D62A; SNAPSHOT_BYTES_SHA256=D95277BA0E519E46AFC554B6F7259EB29EF84C5FEB03A1C3D8440E942A92D62A
+- payment_link_extractor/auth.py: BASELINE_BYTES_SHA256=0FADED7542B6C15029B29AB1EA77B92BF6D549E35369F9D9CE5429AA9F391F15; MODIFIED_BYTES_SHA256=73CEA4A53FE78190205C78ACC20AFC60F452335A1F5ECBF000DEA3D9252FD147; SNAPSHOT_BYTES_SHA256=73CEA4A53FE78190205C78ACC20AFC60F452335A1F5ECBF000DEA3D9252FD147
+- payment_link_extractor/config.py: BASELINE_BYTES_SHA256=19D76072DB601166783189FABFC9B6B03BD79DC5A5E99B17A91AB9F54321771D; MODIFIED_BYTES_SHA256=22E511EA2584EF36277AFB8615E2AE9ED55FC502A81361F4AB46D34702C8A60A; SNAPSHOT_BYTES_SHA256=22E511EA2584EF36277AFB8615E2AE9ED55FC502A81361F4AB46D34702C8A60A
+- payment_link_extractor/gopay_transport.py: BASELINE_BYTES_SHA256=49327F5F295C406B7677CC5CE4CDB069869432866BCAFC5DFFE414EFB390B8D6; MODIFIED_BYTES_SHA256=2FC5E75A3692D5AE2594696A47379C3124B81080B6FA6B63B7A6A076A9D7FAD6; SNAPSHOT_BYTES_SHA256=2FC5E75A3692D5AE2594696A47379C3124B81080B6FA6B63B7A6A076A9D7FAD6
+- payment_link_extractor/models.py: BASELINE_BYTES_SHA256=E1F99DAD4277B11D516B823A342883593E91E7805D7294110630CD8CACC5B527; MODIFIED_BYTES_SHA256=69231176198278AAFA48EAC78CDDF833641A91C135D632DE63FC372252CE0D6E; SNAPSHOT_BYTES_SHA256=69231176198278AAFA48EAC78CDDF833641A91C135D632DE63FC372252CE0D6E
+- payment_link_extractor/momo_checkout.py: BASELINE_BYTES_SHA256=F4A36609E4015A34F7112593B33D8AE22B7BD34105B1900750B1EBDD7D77744C; MODIFIED_BYTES_SHA256=B634A6F3223DB7075F05649CC8ACAEA663F0EADCB0615F1664BD34AF2A1FA320; SNAPSHOT_BYTES_SHA256=B634A6F3223DB7075F05649CC8ACAEA663F0EADCB0615F1664BD34AF2A1FA320
+- payment_link_extractor/momo_core.py: BASELINE_BYTES_SHA256=E87D77E6A25CE48AAB257E670F4CD842CAFB97804CE44C816D8B2D6397D4FF26; MODIFIED_BYTES_SHA256=117E597DF5E666C1649B697DB1E09AB7752F5EF1E87DB5EA9A6A53E0DA3A549D; SNAPSHOT_BYTES_SHA256=117E597DF5E666C1649B697DB1E09AB7752F5EF1E87DB5EA9A6A53E0DA3A549D
+- payment_link_extractor/momo_eligibility.py: BASELINE_BYTES_SHA256=ABSENT; MODIFIED_BYTES_SHA256=EB49AD9682E9B571010F3E9608EEA0955D7D2A75FD98AD5D22C59E13EADD25F6; SNAPSHOT_BYTES_SHA256=EB49AD9682E9B571010F3E9608EEA0955D7D2A75FD98AD5D22C59E13EADD25F6
+- payment_link_extractor/momo_stripe.py: BASELINE_BYTES_SHA256=E80E1499C828D154D9FE829775161B2F41607EAA3C0827F6BA94FEA6C7236F71; MODIFIED_BYTES_SHA256=316E21A39AC6405F0981C506AE457362301C4142CCCD61B8E43853F3B93865B8; SNAPSHOT_BYTES_SHA256=316E21A39AC6405F0981C506AE457362301C4142CCCD61B8E43853F3B93865B8
+- payment_link_extractor/momo_transport.py: BASELINE_BYTES_SHA256=C54D272183C8B65AFB0AD5E07D0318537FEE5F7CE5AA468CC62BA30B8D3428A9; MODIFIED_BYTES_SHA256=DFABDDCFE6F3E792D84548C3BC7E5D497C77806E824D4A1E1F270390B3E71DE0; SNAPSHOT_BYTES_SHA256=DFABDDCFE6F3E792D84548C3BC7E5D497C77806E824D4A1E1F270390B3E71DE0
+- payment_link_extractor/transport.py: BASELINE_BYTES_SHA256=C60EFD8EB1E1A9C782FDFEE7A11B6CFCB83368CB3588C4F88C6A3E76580BC315; MODIFIED_BYTES_SHA256=2C0F1BF02730CE218F7887308FAA27C405352F67C1DD245D6E8B14D37E4EEAAD; SNAPSHOT_BYTES_SHA256=2C0F1BF02730CE218F7887308FAA27C405352F67C1DD245D6E8B14D37E4EEAAD
+- payment_link_extractor/web/events.py: BASELINE_BYTES_SHA256=4FC2C27B8BBB73096C05A4F5E17A9BAC8224191AC44A9B0E25AF4948C33D2332; MODIFIED_BYTES_SHA256=455BAA3376ED51A29C70A156F4B7D33EDA3711761CDCF5B707903D5282454435; SNAPSHOT_BYTES_SHA256=455BAA3376ED51A29C70A156F4B7D33EDA3711761CDCF5B707903D5282454435
+- payment_link_extractor/web/routes.py: BASELINE_BYTES_SHA256=4D051E70B79FC1CCA4F6F53BCF9FC7F6D615F85AE984C5495958C3709D9D16F4; MODIFIED_BYTES_SHA256=8659C2828D1E112D13F066A22101DFD57742319931DE15F141D43F9DD09C8A45; SNAPSHOT_BYTES_SHA256=8659C2828D1E112D13F066A22101DFD57742319931DE15F141D43F9DD09C8A45
+- payment_link_extractor/web/tasks.py: BASELINE_BYTES_SHA256=0C3EAC4259F09FDCE082068A1A317A0B3EA9847534BB1970AF3B0C0ED54AF5B1; MODIFIED_BYTES_SHA256=0B7D52D7D5DAFEC7E106F04F08804F732D32B43B0094B5360CE6FA6FFF084AE3; SNAPSHOT_BYTES_SHA256=0B7D52D7D5DAFEC7E106F04F08804F732D32B43B0094B5360CE6FA6FFF084AE3
+- tests/test_extraction_full_retry.py: BASELINE_BYTES_SHA256=597E158DC22DE0A8C8F077A13164A104B5F2AF7A0199618CAE77F7B80FAAF5CF; MODIFIED_BYTES_SHA256=8E641C3A1DCF915D4F74200A4804D12F0634DDD1714C6321B2822F5B7EAC3DD4; SNAPSHOT_BYTES_SHA256=8E641C3A1DCF915D4F74200A4804D12F0634DDD1714C6321B2822F5B7EAC3DD4
+- tests/test_har_capture_browser_attach.py: BASELINE_BYTES_SHA256=973C2101E3B661E3745E4AC391C7C65442C66C274AD865497D521346A83E324B; MODIFIED_BYTES_SHA256=1B85E703B4E4C0EA41C675DAED9147D04D769B96F4BC766E13DBBFD13BB6D38F; SNAPSHOT_BYTES_SHA256=1B85E703B4E4C0EA41C675DAED9147D04D769B96F4BC766E13DBBFD13BB6D38F
+- tests/test_har_tools.py: BASELINE_BYTES_SHA256=DCD655F71F2B7C8351F5AF66AD2BFA6B986F7F933C76C6DEC1CB4FB61ABAA597; MODIFIED_BYTES_SHA256=FD3F10129601A1C5A3A7B4B8EAF09E1D2B3792DFE90D670496A5D242827F3410; SNAPSHOT_BYTES_SHA256=FD3F10129601A1C5A3A7B4B8EAF09E1D2B3792DFE90D670496A5D242827F3410
+- tests/test_mitm_capture.py: BASELINE_BYTES_SHA256=9791E85D131BE6E40FDD4DA62098213BE1B7FF677074F10A9A1CF8147FD4D01F; MODIFIED_BYTES_SHA256=8F32B80C25E3F209B8EEE8CD7DE7BC2BEC520FC47ED6C044B1B7EAE885A6BBEE; SNAPSHOT_BYTES_SHA256=8F32B80C25E3F209B8EEE8CD7DE7BC2BEC520FC47ED6C044B1B7EAE885A6BBEE
+- tests/test_momo_support.py: BASELINE_BYTES_SHA256=9F085D4A4BAAF8F2E23F40564826E8DBB466DC55E78CC49C13E35D3B9BB8C4BA; MODIFIED_BYTES_SHA256=05DD16F011A7280E61A41F0A7C5DEAB6DC4541A93F4B5CF84CF3D88C8933F450; SNAPSHOT_BYTES_SHA256=05DD16F011A7280E61A41F0A7C5DEAB6DC4541A93F4B5CF84CF3D88C8933F450
+- tests/test_roxy_mitm_control.py: BASELINE_BYTES_SHA256=DBBB8F098B4E40579C68EC693E8F972580514C2724F1B7010CD5BAB1E619B101; MODIFIED_BYTES_SHA256=09181D78C49E51CA5C1FD6EB019A544F7AAC06336A95E5BBBA8AB5DE055C1D56; SNAPSHOT_BYTES_SHA256=09181D78C49E51CA5C1FD6EB019A544F7AAC06336A95E5BBBA8AB5DE055C1D56
+- tools/har_capture.py: BASELINE_BYTES_SHA256=0BB46A89B707EE8D07704CB8D137D8E22AF2C51E5F77B19201E5958C2E48E18B; MODIFIED_BYTES_SHA256=872DCB51A47D08326FFDE8A73C0DD1CBD57313FCCBAA0B5BB53EECE739E402EE; SNAPSHOT_BYTES_SHA256=872DCB51A47D08326FFDE8A73C0DD1CBD57313FCCBAA0B5BB53EECE739E402EE
+- tools/har_capture_browser_attach.py: BASELINE_BYTES_SHA256=A931A4E27331AAAD71854E05C2769C10BC3139F38032EBB27D9336F65CD0FEB0; MODIFIED_BYTES_SHA256=36C4DA39B1B108B25488FDB9276EFB67533E6480167103C25A9F599D947CC661; SNAPSHOT_BYTES_SHA256=36C4DA39B1B108B25488FDB9276EFB67533E6480167103C25A9F599D947CC661
+- tools/har_utils.py: BASELINE_BYTES_SHA256=BCF912444FF75D4D19B7E34A88DB04BD3628BCE2DE45DADA925EFFE3F12D4246; MODIFIED_BYTES_SHA256=DBEABDEA1501619F1A33CE07718035F6C440254D3E0A9D1C89957272DBB73FC9; SNAPSHOT_BYTES_SHA256=DBEABDEA1501619F1A33CE07718035F6C440254D3E0A9D1C89957272DBB73FC9
+- tools/mitm_capture.py: BASELINE_BYTES_SHA256=0F4AAE87D362C4F7FF2941129A8F6D6DECA75A111E2B8A3BE152AE2B25EF2E68; MODIFIED_BYTES_SHA256=E3AE7C712C834616ED6D323668B116EF6711861C548EFF8992C5EC04E307F43D; SNAPSHOT_BYTES_SHA256=E3AE7C712C834616ED6D323668B116EF6711861C548EFF8992C5EC04E307F43D
+- tools/roxy_mitm_control.py: BASELINE_BYTES_SHA256=91FD4AA2B93F15B974934EDC2AF45D2580F661767517F70A474D9AC235D98C7A; MODIFIED_BYTES_SHA256=28414FC8CEA20ED5DA8EB678A600F9670370E4334AEDD2CD324F52037003AEA5; SNAPSHOT_BYTES_SHA256=28414FC8CEA20ED5DA8EB678A600F9670370E4334AEDD2CD324F52037003AEA5
+- DIFF_FILE: SHA256=69824992919DC5FDE40B9365B8D1A6D4E6D227A9D653C59DE7A0B015BFF26B5B
+- ROLLBACK.sh: SHA256=5C2D8064987261CA199B06CDA9F8FFC5BBDC2D2E3A126760114EF4F5217EF593
+- MODIFIED_FILE_MANIFEST_SHA256=69B5B2B7B519896C40E2D50E0601A43A11485FE2DA6B9F20CA94ED4318931843
+
+Canonical HAR input (offline read only; no request replay):
+- C:\Users\Administrator\Desktop\提链\artifacts-local\momo-roxy-mitm-20260902-023932.har: SHA256=FF4DA11170C0F47C33BB19610246E22A6478682A9D059F21F5ED6D31D76B01F6; entries=1217; channel=momo; completeness=complete/critical_complete.
+- Redacted report: C:\Users\Administrator\Desktop\提链\artifacts-local\momo-roxy-mitm-20260902-023932.report.md: SHA256=A2CA42BAA5BA9D64156CBAE6A768004512E0E8B32E07FB7DABD162EB41C8D199; summary: C:\Users\Administrator\Desktop\提链\artifacts-local\momo-roxy-mitm-20260902-023932.summary.md: SHA256=B0300C522311E486B45986C1BADB16501CD8FB79FE56F6B076D48581D2DD72C9.
+- Redaction scan result: JWT=0, UUID=0, prefixed payment/order IDs=0, URL userinfo=0, long opaque path segments=0.
 
 BASELINE command:
-py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
-Input: clean source at BASELINE_COMMIT=e21e568; no AT/proxy values persisted.
-Literal output/result: 26 passed in 0.33s
-Exit status: 0
+- py -3 -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
+- Input: clean Git archive at BASELINE_COMMIT=e21e568.
+- Literal output/result: ..........................                                               [100%] / 26 passed in 0.63s.
+- Exit status: 0.
 
 MODIFIED command:
-py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
-Input: source at SOURCE_CODE_COMMIT=c60b0e1.
-Literal output/result: 37 passed in 0.40s
-Exit status: 0
+- py -3 -m pytest -q
+- Input: source at SOURCE_CODE_COMMIT=8c113509e09504617f9c01bb103c323744700e7f.
+- Literal output/result: 291 passed in 2.86s.
+- Exit status: 0.
 
-MODIFIED_FULL command:
-py -m pytest -q
-Input: source at SOURCE_CODE_COMMIT=c60b0e1.
-Literal output/result: 278 passed in 2.20s.
-Exit status: 0
+TARGETED_MODIFIED command:
+- py -3 -m pytest -q tests/test_momo_support.py tests/test_har_tools.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
+- Literal output/result: 69 passed in 1.17s.
+- Exit status: 0.
 
-ELIGIBILITY_PREFLIGHT command:
-py -c "read four ATs from the supplied attachment; GET /backend-api/accounts/check/v4-2023-04-27 through ten VN SOCKS5H entries; emit slot/state only"
-Input: four supplied ATs and ten supplied VN proxy entries held in process memory only.
-Literal output/result:
-AT_SLOT=2 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
-AT_SLOT=3 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
-AT_SLOT=4 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
-AT_SLOT=1 ELIGIBILITY_ERROR=MomoEligibilityError STATUS=409 PROBES=10
-Exit status: 0 (probe completed; slot 1 had no eligible offer after all ten proxies)
+LIVE_CANARY command/input/result (values held in process memory only; no AT/proxy/order value persisted):
+- Input: latest supplied attachment had 10 structurally valid AT candidates; five VN proxy entries were used for the parallel preflight, then the supplied VN pool was used for individual canaries.
+- PRECHECK_10: token slots 1-10 each returned HTTP 200, state=eligible, coupon_match=true, redemption_valid=true, catalog_present=true, catalog_match=true, catalog_request_ok=true on proxy slot 1; exit status 0.
+- FULL_SLOTS_1-4: each reached zero_amount_validation and zero_amount_confirmed; each stopped at payment confirmation with HTTP 409 status=blocked and no client secret/provider URL; checkout was committed; no link was exposed.
+- ZERO_CANARY_SLOTS_5-9: each reached zero_amount_confirmed and stopped before confirmation; exit status 0; no link was exposed.
+- SLOT_10: proxy slot 1 reached Checkout HTTP 400 without commit; proxy slot 2 committed then returned Momo payment method unavailable in Checkout; no link was exposed.
+- FOLLOWUP_SLOT_7: an authoritative Checkout response observed subtotal=475000, discount=0, total=522500 after prior trial state; the zero gate would stop at zero_amount_validation, preventing a paid link.
+- SENTINEL_DIAGNOSTIC: runtime browser provider enabled; generated proof length=3625, deployment attestation present=false, observer proof length=0, cookie header length=1057, pending-updates header length=20. This explains confirm blocked for AT-only input; it is separate from the zero amount result.
 
-INTEGRATED_PREFLIGHT command:
-py -c "read one supplied AT; run extract_momo_payment_link with eligibility preflight and ten VN proxies; emit stages/status only"
-Input: supplied AT and ten VN proxy entries held in process memory only; momo_trial_eligibility_check=True; no values persisted.
-Literal output/result: RESULT=failed; STAGES=eligibility_check,eligibility_proxy:1,eligibility_proxy:2,eligibility_proxy:3,eligibility_proxy:4,eligibility_proxy:5,eligibility_proxy:6,eligibility_proxy:7,eligibility_proxy:8,eligibility_proxy:9,eligibility_proxy:10; ERROR_TYPE=MomoEligibilityError; STATUS=409; ERROR=Momo trial eligibility rejected on all VN proxies.
-Exit status: 1 (no Checkout was created)
-
-AMOUNT_GATE command:
-py -c "run Momo after taxes and evaluate momo_zero_trial_validation"
-Input: live canary observations with values reduced to currency/status only.
-Literal output/result: eligible accounts previously reached Checkout and taxes; the authoritative VND amount observed was 522500. With momo_zero_trial_validation=True the task stopped at zero_amount_validation with HTTP 409; with the switch False the same paid flow reached redirect_resolution and returned field momo_url.
-Exit status: 0 after switch-specific validation
-
-HAR_INSPECTION command:
-py -c "offline parse C:\\Users\\Administrator\\Downloads\\payment.momo.vn.har; report sequence, status and header presence/lengths only"
-Input: C:\Users\Administrator\Downloads\payment.momo.vn.har (read-only; no request replay).
-Literal output/result: entries=1235; Checkout=200; taxes=3x HTTP 200; Stripe Elements=200; confirmation_tokens=200; checkout confirm=200; setup intent confirm=200; gateway pay=200; querySession=17x HTTP 200; gateway redirect=200. No token or credential value stored.
-Exit status: 0
+HAR_INSPECTION command/input/result:
+- py -3 tools/har_analyze.py "C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\momo-roxy-mitm-20260902-023932.har" --format markdown --output "C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\momo-roxy-mitm-20260902-023932.report.md"
+- Input: canonical HAR above, read-only/offline.
+- Literal output/result: HAR_REPORT=<redacted-path>; channel=momo; entries=1217; MoMo gateway statuses={"1000":12,"9000":1}; MoMo gateway amounts=0; redaction scan all zero.
+- Exit status: 0.
 
 ROLLBACK command:
-C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/Desktop/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/Desktop/提链/artifacts-local/momo-rollback-test-20260902d C:/Users/Administrator/Desktop/提链 e21e568
-Input: independent mutated copy of all changed source/test/doc files, including the new eligibility module.
-Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_transport.py_SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9; payment_link_extractor/momo_eligibility.py_SHA256=ABSENT; HASH_MATCH=True; NEW_MODULE_REMOVED=True; ROLLBACK_TEST_TEMP_REMOVED=True
-Exit status: 0
+- "C:\\Program Files\\Git\\bin\\bash.exe" "C:\\Users\\Administrator\\Desktop\\提链\\artifacts\\momo-har-canary-20260902\\ROLLBACK.sh" "C:\\Users\\Administrator\\Desktop\\提链\\artifacts-local\\momo-rollback-test-20260902\\src" "C:\\Users\\Administrator\\Desktop\\提链" e21e568
+- Input: independent mutated copy of Git archive at SOURCE_CODE_COMMIT; momo_core.py was changed before rollback.
+- Literal output/result: ROLLBACK_TARGET=C:\Users\Administrator\Desktop\提链\artifacts-local\momo-rollback-test-20260902\src; BASELINE_COMMIT=e21e568; RESTORED_TRACKED_FILES=25; REMOVED_NEW_FILES=1; RESTORED_STATUS=PASS; HASH_MATCH=TRUE.
+- Exit status: 0.
+
+ROLLBACK_TEST command:
+- py -3 -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
+- Input: same independent copy after ROLLBACK.sh restored baseline files.
+- Literal output/result: ..........................                                               [100%] / 26 passed in 0.65s.
+- Exit status: 0.
 
 Restored behavior/status:
-- Rollback was applied only to the independent copy; working source and MODIFIED_FILE remain changed on SOURCE_CODE_COMMIT=c60b0e1.
-- Eligibility is now decided before Checkout and rotates through the supplied VN proxy pool. The amount result is accepted only when the momo_zero_trial_validation switch permits it.
+- Rollback was applied only to the independent copy; the working source remains changed at SOURCE_CODE_COMMIT=8c113509e09504617f9c01bb103c323744700e7f.
+- MODIFIED_FILE remains changed and byte-equal to the current source snapshot.
+- Eligibility now precedes Checkout, account/proxy mismatches rotate before commit, server promo/hidden-MoMo/zero amounts are fail-closed, and no nonzero link is returned when the amount switch is enabled.
+- Canonical HAR independently confirms the valid zero flow: one Elements call, taxes×3 amount_total=0, Checkout confirm success, 12 pending gateway polls followed by status_code=9000/redirect=true and callback amount=0.
