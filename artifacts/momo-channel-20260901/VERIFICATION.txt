@@ -24,3 +24,5 @@ ROLLBACK: `bash artifacts/momo-channel-20260901/ROLLBACK.sh <copy>` result: copy
 ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:payment_link_extractor/channels.py > artifacts\\momo-channel-20260901\\ROLLBACK_TEST_COPY"` then `git hash-object ...`; literal output `ROLLBACK_TEST_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c BASELINE_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c ROLLBACK_TEST_MATCH=1`; exit status 0.
 
 Restored behavior/status: rollback test copy restored; working tree remains on modified Momo branch. No AT, Cookie, Sentinel, proxy credential, or order identifier is recorded here.
+
+CANARY: `py -c <stdin-bound Momo extractor>` result `CANARY_INPUT_BOUND=False`, `CANARY_STAGE=checkout`, `CANARY_STATUS=failed`, `CANARY_ERROR_TYPE=ProtocolError`, `CANARY_ERROR_STATUS=401`; exit status 1. The process received closed stdin before runtime binding, so no Checkout was committed and no order was created.
