@@ -106,7 +106,7 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
 
     monkeypatch.setattr(gopay_transport, "new_session", Session)
 
-    def build(token: str) -> str:
+    def build(token: str) -> tuple[str, str, str, str]:
         config = ExtractionConfig(
             access_token=token,
             checkout_proxy="http://proxy.example:8080",
@@ -114,21 +114,49 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
             country="ID",
             payment_method="gopay",
         )
-        return gopay_transport.GoPayTransportFactory().chatgpt(
+        session = gopay_transport.GoPayTransportFactory().chatgpt(
             config, config.checkout_proxy
-        ).headers["oai-device-id"]
+        )
+        return (
+            session.headers["oai-device-id"],
+            session.gopay_browser_profile,
+            session.gopay_tls_impersonate,
+            session.headers["User-Agent"],
+        )
 
     assert build("fixture-token-a") == build("fixture-token-a")
-    assert build("fixture-token-a") != build("fixture-token-b")
+    assert build("fixture-token-a")[0] != build("fixture-token-b")[0]
 
 
 def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> None:
     monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
     profiles = {
-        gopay_transport.select_gopay_browser_profile()["name"] for _ in range(80)
+        gopay_transport.select_gopay_browser_profile(device_id=f"device-{index}")["name"]
+        for index in range(80)
     }
     assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
     assert len(profiles) >= 2
+    assert gopay_transport.select_gopay_browser_profile(device_id="stable-device") == (
+        gopay_transport.select_gopay_browser_profile(device_id="stable-device")
+    )
+    assert gopay_transport.select_gopay_browser_profile(
+        device_id="stable-device",
+        transport_impersonate="chrome131",
+    )["name"] == "chrome131"
+    assert gopay_transport.select_gopay_browser_profile(
+        device_id="stable-device",
+        transport_impersonate="chrome",
+    ) == gopay_transport.select_gopay_browser_profile(device_id="stable-device")
+    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {
+        "chrome124",
+        "chrome131",
+        "chrome136",
+        "chrome150",
+    }
+    for profile in gopay_transport.GOPAY_BROWSER_PROFILES:
+        assert gopay_transport.validate_tls_ua_consistency(
+            str(profile["impersonate"]), str(profile["user_agent"])
+        )
     assert gopay_transport.validate_tls_ua_consistency(
         "chrome131",
         "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
@@ -138,6 +166,48 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
             "chrome131",
             "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
         )
+
+
+def test_gopay_chatgpt_and_stripe_share_one_browser_identity(monkeypatch) -> None:
+    sessions: list[object] = []
+    impersonates: list[str] = []
+
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.proxies: dict[str, str] = {}
+
+    def new_session(impersonate=None):
+        session = Session()
+        sessions.append(session)
+        impersonates.append(str(impersonate or ""))
+        return session
+
+    monkeypatch.setattr(gopay_transport, "new_session", new_session)
+    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome")
+    monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
+    monkeypatch.delenv("OPLL_USER_AGENT", raising=False)
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="http://proxy.example:8080",
+        country="ID",
+        payment_method="gopay",
+    )
+    factory = gopay_transport.GoPayTransportFactory()
+    chatgpt = factory.chatgpt(config, config.checkout_proxy)
+    stripe = factory.stripe(config)
+
+    assert len(sessions) == 2
+    assert chatgpt.gopay_browser_profile == stripe.gopay_browser_profile
+    assert chatgpt.gopay_tls_impersonate == stripe.gopay_tls_impersonate
+    assert impersonates == [
+        chatgpt.gopay_tls_impersonate,
+        chatgpt.gopay_tls_impersonate,
+    ]
+    assert chatgpt.headers["User-Agent"] == stripe.headers["User-Agent"]
+    assert chatgpt.headers["sec-ch-ua"] == stripe.headers["sec-ch-ua"]
+    assert chatgpt.headers["sec-ch-ua-platform"] == stripe.headers["sec-ch-ua-platform"]
 
 
 def test_gopay_fingerprint_validation_rejects_malformed_values() -> None:

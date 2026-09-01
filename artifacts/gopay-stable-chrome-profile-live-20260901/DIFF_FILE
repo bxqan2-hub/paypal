@@ -1,0 +1,424 @@
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index f9d2015..03ad188 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -2,8 +2,8 @@ from __future__ import annotations
+ 
+ import os
+ import base64
++import hashlib
+ import json
+-import random
+ import re
+ import secrets
+ import shutil
+@@ -93,11 +93,11 @@ class TransportFactory(Protocol):
+ 
+ GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
+     {
+-        "name": "chrome152",
+-        "impersonate": "chrome",
+-        "user_agent": DEFAULT_USER_AGENT.replace("Chrome/151.", "Chrome/152."),
+-        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="152", "Chromium";v="152"',
+-        "weight": 70,
++        "name": "chrome150",
++        "impersonate": "chrome150",
++        "user_agent": DEFAULT_USER_AGENT.replace("Chrome/151.", "Chrome/150."),
++        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="150", "Chromium";v="150"',
++        "weight": 55,
+     },
+     {
+         "name": "chrome131",
+@@ -117,21 +117,57 @@ GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
+             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+         ),
+         "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
++        "weight": 15,
++    },
++    {
++        "name": "chrome124",
++        "impersonate": "chrome124",
++        "user_agent": (
++            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
++        ),
++        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+         "weight": 10,
+     },
+ )
+ 
+ 
+-def select_gopay_browser_profile() -> dict[str, Any]:
+-    """Select a weighted browser profile, with an env override for diagnostics."""
++def select_gopay_browser_profile(
++    *,
++    device_id: str = "",
++    transport_impersonate: str = "",
++) -> dict[str, Any]:
++    """Bind one coherent browser profile to an entire account context."""
+     requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
+-    if requested:
++    if requested not in {"", "auto", "chrome"}:
+         for profile in GOPAY_BROWSER_PROFILES:
+             if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
+                 return dict(profile)
+         raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
++
++    selected_transport = str(transport_impersonate or "").strip().lower()
++    if selected_transport and selected_transport != "chrome":
++        for profile in GOPAY_BROWSER_PROFILES:
++            if selected_transport == str(profile["impersonate"]).lower():
++                return dict(profile)
++        raise ConfigurationError(
++            f"GoPay TLS profile has no matching browser identity: {selected_transport}"
++        )
++
+     profiles = list(GOPAY_BROWSER_PROFILES)
+-    return dict(random.choices(profiles, weights=[p["weight"] for p in profiles], k=1)[0])
++    total_weight = sum(max(0, int(profile["weight"])) for profile in profiles)
++    if total_weight <= 0:
++        raise ConfigurationError("GoPay browser profiles have no positive weight")
++    digest = hashlib.sha256(
++        f"gopay-browser-profile:{str(device_id or '')}".encode("utf-8")
++    ).digest()
++    ticket = int.from_bytes(digest[:8], "big") % total_weight
++    for profile in profiles:
++        weight = max(0, int(profile["weight"]))
++        if ticket < weight:
++            return dict(profile)
++        ticket -= weight
++    return dict(profiles[-1])
+ 
+ 
+ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
+@@ -145,6 +181,18 @@ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
+     return True
+ 
+ 
++def gopay_browser_identity(config: ExtractionConfig) -> tuple[str, dict[str, Any]]:
++    """Return the stable device and paired browser profile for one GoPay AT."""
++    device_id = str(
++        uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-device:{config.access_token}")
++    )
++    profile = select_gopay_browser_profile(
++        device_id=device_id,
++        transport_impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "").strip(),
++    )
++    return device_id, profile
++
++
+ def new_session(impersonate: str | None = None) -> Any:
+     if CurlCffiSession is not None:
+         selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
+@@ -1546,15 +1594,14 @@ class PlaywrightSentinelProvider:
+ class DefaultTransportFactory:
+     def chatgpt(self, config: ExtractionConfig, proxy: str) -> Any:
+         payment_method = normalize_payment_method(config.payment_method)
+-        device_id = (
+-            str(uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-device:{config.access_token}"))
+-            if payment_method == "gopay"
+-            else str(uuid.uuid4())
+-        )
+         is_gopay = payment_method == "gopay"
+-        profile = select_gopay_browser_profile() if is_gopay else None
+-        explicit_impersonate = os.getenv("OPLL_HTTP_IMPERSONATE", "").strip()
+-        impersonate = explicit_impersonate or (profile or {}).get("impersonate")
++        if is_gopay:
++            device_id, profile = gopay_browser_identity(config)
++        else:
++            device_id, profile = str(uuid.uuid4()), None
++        impersonate = (profile or {}).get("impersonate") or os.getenv(
++            "OPLL_HTTP_IMPERSONATE", ""
++        ).strip()
+         try:
+             session = new_session(impersonate if is_gopay else None)
+         except TypeError:
+@@ -1568,6 +1615,7 @@ class DefaultTransportFactory:
+         )
+         if is_gopay:
+             validate_tls_ua_consistency(impersonate or "", user_agent)
++            validate_tls_ua_consistency(str((profile or {}).get("name") or ""), user_agent)
+         observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+         session.headers.update(
+             {
+@@ -1739,17 +1787,47 @@ class DefaultTransportFactory:
+         return session
+ 
+     def stripe(self, config: ExtractionConfig) -> Any:
+-        session = new_session()
++        is_gopay = normalize_payment_method(config.payment_method) == "gopay"
++        profile: dict[str, Any] | None = None
++        impersonate = ""
++        if is_gopay:
++            _, profile = gopay_browser_identity(config)
++            impersonate = str(profile.get("impersonate") or "")
++        try:
++            session = new_session(impersonate if is_gopay else None)
++        except TypeError:
++            session = new_session()
++        user_agent = (
++            os.getenv("OPLL_USER_AGENT", "").strip()
++            or str((profile or {}).get("user_agent") or "")
++            or DEFAULT_USER_AGENT
++        )
++        if is_gopay:
++            validate_tls_ua_consistency(impersonate, user_agent)
++            validate_tls_ua_consistency(str((profile or {}).get("name") or ""), user_agent)
+         session.headers.update(
+             {
+-                "User-Agent": os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT),
++                "User-Agent": user_agent,
+                 "Accept-Language": (
+                     country_accept_language(config)
+-                    if normalize_payment_method(config.payment_method) == "gopay"
++                    if is_gopay
+                     else f"{country_locale(config)},en;q=0.9"
+                 ),
+             }
+         )
++        if is_gopay:
++            session.headers.update(
++                {
++                    "sec-ch-ua": os.getenv("OPLL_SEC_CH_UA", "").strip()
++                    or str(profile.get("sec_ch_ua") or ""),
++                    "sec-ch-ua-mobile": "?0",
++                    "sec-ch-ua-platform": os.getenv(
++                        "OPLL_SEC_CH_UA_PLATFORM", '"Windows"'
++                    ),
++                }
++            )
++            session.gopay_browser_profile = str(profile.get("name") or "")
++            session.gopay_tls_impersonate = impersonate
+         set_proxy_url(session, config.checkout_proxy)
+         return session
+ 
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 72a0051..cb9fc05 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -106,7 +106,7 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
+ 
+     monkeypatch.setattr(gopay_transport, "new_session", Session)
+ 
+-    def build(token: str) -> str:
++    def build(token: str) -> tuple[str, str, str, str]:
+         config = ExtractionConfig(
+             access_token=token,
+             checkout_proxy="http://proxy.example:8080",
+@@ -114,21 +114,49 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
+             country="ID",
+             payment_method="gopay",
+         )
+-        return gopay_transport.GoPayTransportFactory().chatgpt(
++        session = gopay_transport.GoPayTransportFactory().chatgpt(
+             config, config.checkout_proxy
+-        ).headers["oai-device-id"]
++        )
++        return (
++            session.headers["oai-device-id"],
++            session.gopay_browser_profile,
++            session.gopay_tls_impersonate,
++            session.headers["User-Agent"],
++        )
+ 
+     assert build("fixture-token-a") == build("fixture-token-a")
+-    assert build("fixture-token-a") != build("fixture-token-b")
++    assert build("fixture-token-a")[0] != build("fixture-token-b")[0]
+ 
+ 
+ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> None:
+     monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
+     profiles = {
+-        gopay_transport.select_gopay_browser_profile()["name"] for _ in range(80)
++        gopay_transport.select_gopay_browser_profile(device_id=f"device-{index}")["name"]
++        for index in range(80)
+     }
+     assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
+     assert len(profiles) >= 2
++    assert gopay_transport.select_gopay_browser_profile(device_id="stable-device") == (
++        gopay_transport.select_gopay_browser_profile(device_id="stable-device")
++    )
++    assert gopay_transport.select_gopay_browser_profile(
++        device_id="stable-device",
++        transport_impersonate="chrome131",
++    )["name"] == "chrome131"
++    assert gopay_transport.select_gopay_browser_profile(
++        device_id="stable-device",
++        transport_impersonate="chrome",
++    ) == gopay_transport.select_gopay_browser_profile(device_id="stable-device")
++    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {
++        "chrome124",
++        "chrome131",
++        "chrome136",
++        "chrome150",
++    }
++    for profile in gopay_transport.GOPAY_BROWSER_PROFILES:
++        assert gopay_transport.validate_tls_ua_consistency(
++            str(profile["impersonate"]), str(profile["user_agent"])
++        )
+     assert gopay_transport.validate_tls_ua_consistency(
+         "chrome131",
+         "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
+@@ -140,6 +168,48 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
+         )
+ 
+ 
++def test_gopay_chatgpt_and_stripe_share_one_browser_identity(monkeypatch) -> None:
++    sessions: list[object] = []
++    impersonates: list[str] = []
++
++    class Session:
++        def __init__(self) -> None:
++            self.headers: dict[str, str] = {}
++            self.proxies: dict[str, str] = {}
++
++    def new_session(impersonate=None):
++        session = Session()
++        sessions.append(session)
++        impersonates.append(str(impersonate or ""))
++        return session
++
++    monkeypatch.setattr(gopay_transport, "new_session", new_session)
++    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome")
++    monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
++    monkeypatch.delenv("OPLL_USER_AGENT", raising=False)
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy="http://proxy.example:8080",
++        update_proxy="http://proxy.example:8080",
++        country="ID",
++        payment_method="gopay",
++    )
++    factory = gopay_transport.GoPayTransportFactory()
++    chatgpt = factory.chatgpt(config, config.checkout_proxy)
++    stripe = factory.stripe(config)
++
++    assert len(sessions) == 2
++    assert chatgpt.gopay_browser_profile == stripe.gopay_browser_profile
++    assert chatgpt.gopay_tls_impersonate == stripe.gopay_tls_impersonate
++    assert impersonates == [
++        chatgpt.gopay_tls_impersonate,
++        chatgpt.gopay_tls_impersonate,
++    ]
++    assert chatgpt.headers["User-Agent"] == stripe.headers["User-Agent"]
++    assert chatgpt.headers["sec-ch-ua"] == stripe.headers["sec-ch-ua"]
++    assert chatgpt.headers["sec-ch-ua-platform"] == stripe.headers["sec-ch-ua-platform"]
++
++
+ def test_gopay_fingerprint_validation_rejects_malformed_values() -> None:
+     context = gopay_stripe_common.stripe_context({}, {"currency": "IDR"})
+     assert gopay_stripe_common.validate_gopay_fingerprint_params(context)
+diff --git a/tests/test_gopay_live_canary.py b/tests/test_gopay_live_canary.py
+index 3ec959d..cba0f43 100644
+--- a/tests/test_gopay_live_canary.py
++++ b/tests/test_gopay_live_canary.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import importlib.util
++import io
+ import json
+ from pathlib import Path
+ 
+@@ -55,3 +56,19 @@ def test_canary_provider_shape_outputs_no_order_identifier() -> None:
+         "path_prefix": "/snap/v4",
+     }
+     assert "private-order-id" not in json.dumps(shape)
++
++
++def test_canary_runtime_input_keeps_secrets_in_memory() -> None:
++    tokens, proxies = MODULE.load_runtime_input(
++        io.StringIO(
++            "eyJfixture.payload.signature\n"
++            "2\n"
++            "id.example.com:8080:user-a:password-a\n"
++            "id.example.com:8080:user-b:password-b\n"
++        )
++    )
++    assert tokens == ["eyJfixture.payload.signature"]
++    assert proxies == [
++        "http://user-a:password-a@id.example.com:8080",
++        "http://user-b:password-b@id.example.com:8080",
++    ]
+diff --git a/tools/gopay_live_canary.py b/tools/gopay_live_canary.py
+index bdaa990..7d25f71 100644
+--- a/tools/gopay_live_canary.py
++++ b/tools/gopay_live_canary.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import argparse
++import getpass
++import io
+ import json
+ import re
+ import sys
+@@ -55,6 +57,26 @@ def load_rollout_proxies(path: Path) -> list[str]:
+     return [normalize_proxy_url(item) for item in raw]
+ 
+ 
++def load_runtime_input(stream: io.TextIOBase) -> tuple[list[str], list[str]]:
++    """Read one token and an explicit proxy count without echoing either value."""
++    def read_value() -> str:
++        if stream.isatty():
++            return getpass.getpass("").strip()
++        return stream.readline().strip()
++
++    token = read_value().replace("\\_", "_")
++    try:
++        proxy_count = int(read_value())
++    except ValueError as exc:
++        raise ValueError("runtime proxy count is invalid") from exc
++    if not token or proxy_count < 1:
++        raise ValueError("runtime token and at least one proxy are required")
++    proxies = [normalize_proxy_url(read_value()) for _ in range(proxy_count)]
++    if any(not proxy for proxy in proxies):
++        raise ValueError("runtime proxy input is incomplete")
++    return [token], proxies
++
++
+ def _safe_error(exc: BaseException) -> dict[str, Any]:
+     status = getattr(exc, "status_code", None)
+     try:
+@@ -99,14 +121,27 @@ def main() -> int:
+     parser = argparse.ArgumentParser(
+         description="Run one GoPay account canary without retrying after Checkout commit"
+     )
+-    parser.add_argument("--tokens-file", type=Path, required=True)
+-    parser.add_argument("--proxy-rollout", type=Path, required=True)
+-    parser.add_argument("--token-index", type=int, required=True, help="one-based token slot")
++    parser.add_argument("--tokens-file", type=Path)
++    parser.add_argument("--proxy-rollout", type=Path)
++    parser.add_argument("--runtime-stdin", action="store_true")
++    parser.add_argument("--disable-zero-validation", action="store_true")
++    parser.add_argument("--token-index", type=int, default=1, help="one-based token slot")
+     parser.add_argument("--start-proxy-slot", type=int, default=1)
+     args = parser.parse_args()
+ 
+-    tokens = load_tokens(args.tokens_file)
+-    proxies = load_rollout_proxies(args.proxy_rollout)
++    if args.runtime_stdin:
++        print("RUNTIME_INPUT_READY=1", flush=True)
++        try:
++            tokens, proxies = load_runtime_input(sys.stdin)
++        except ValueError:
++            print(json.dumps({"status": "input_error", "runtime_input": False}))
++            return 2
++    elif args.tokens_file is not None and args.proxy_rollout is not None:
++        tokens = load_tokens(args.tokens_file)
++        proxies = load_rollout_proxies(args.proxy_rollout)
++    else:
++        print(json.dumps({"status": "input_error", "source": "missing"}))
++        return 2
+     if not 1 <= args.token_index <= len(tokens):
+         print(json.dumps({"status": "input_error", "token_count": len(tokens)}))
+         return 2
+@@ -141,7 +176,7 @@ def main() -> int:
+             country="ID",
+             payment_method="gopay",
+             apply_checkout_update=True,
+-            gopay_zero_trial_validation=True,
++            gopay_zero_trial_validation=not args.disable_zero_validation,
+             verbose=False,
+             retry_count=0,
+             checkout_proxy_attempts=(proxy,),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import io
 import json
 import re
 import sys
@@ -55,6 +57,26 @@ def load_rollout_proxies(path: Path) -> list[str]:
     return [normalize_proxy_url(item) for item in raw]
 
 
+def load_runtime_input(stream: io.TextIOBase) -> tuple[list[str], list[str]]:
+    """Read one token and an explicit proxy count without echoing either value."""
+    def read_value() -> str:
+        if stream.isatty():
+            return getpass.getpass("").strip()
+        return stream.readline().strip()
+
+    token = read_value().replace("\\_", "_")
+    try:
+        proxy_count = int(read_value())
+    except ValueError as exc:
+        raise ValueError("runtime proxy count is invalid") from exc
+    if not token or proxy_count < 1:
+        raise ValueError("runtime token and at least one proxy are required")
+    proxies = [normalize_proxy_url(read_value()) for _ in range(proxy_count)]
+    if any(not proxy for proxy in proxies):
+        raise ValueError("runtime proxy input is incomplete")
+    return [token], proxies
+
+
 def _safe_error(exc: BaseException) -> dict[str, Any]:
     status = getattr(exc, "status_code", None)
     try:
@@ -99,14 +121,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run one GoPay account canary without retrying after Checkout commit"
     )
-    parser.add_argument("--tokens-file", type=Path, required=True)
-    parser.add_argument("--proxy-rollout", type=Path, required=True)
-    parser.add_argument("--token-index", type=int, required=True, help="one-based token slot")
+    parser.add_argument("--tokens-file", type=Path)
+    parser.add_argument("--proxy-rollout", type=Path)
+    parser.add_argument("--runtime-stdin", action="store_true")
+    parser.add_argument("--disable-zero-validation", action="store_true")
+    parser.add_argument("--token-index", type=int, default=1, help="one-based token slot")
     parser.add_argument("--start-proxy-slot", type=int, default=1)
     args = parser.parse_args()
 
-    tokens = load_tokens(args.tokens_file)
-    proxies = load_rollout_proxies(args.proxy_rollout)
+    if args.runtime_stdin:
+        print("RUNTIME_INPUT_READY=1", flush=True)
+        try:
+            tokens, proxies = load_runtime_input(sys.stdin)
+        except ValueError:
+            print(json.dumps({"status": "input_error", "runtime_input": False}))
+            return 2
+    elif args.tokens_file is not None and args.proxy_rollout is not None:
+        tokens = load_tokens(args.tokens_file)
+        proxies = load_rollout_proxies(args.proxy_rollout)
+    else:
+        print(json.dumps({"status": "input_error", "source": "missing"}))
+        return 2
     if not 1 <= args.token_index <= len(tokens):
         print(json.dumps({"status": "input_error", "token_count": len(tokens)}))
         return 2
@@ -141,7 +176,7 @@ def main() -> int:
             country="ID",
             payment_method="gopay",
             apply_checkout_update=True,
-            gopay_zero_trial_validation=True,
+            gopay_zero_trial_validation=not args.disable_zero_validation,
             verbose=False,
             retry_count=0,
             checkout_proxy_attempts=(proxy,),

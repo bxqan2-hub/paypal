@@ -1,0 +1,32 @@
+BRANCH_FIELD_RESULT=main / GoPay Chrome profile selection and runtime-only live canary input / chrome124, chrome131, chrome136, and chrome150 are paired TLS-UA identities; one selection is stable per device/AT and shared by ChatGPT, Sentinel, and Stripe; the live flow completed through Midtrans
+BASE_COMMIT=5face081bdbb9a1b20080c13f50f3f7226402058
+MODIFIED_PATH=C:/Users/Administrator/Desktop/提链/artifacts/gopay-stable-chrome-profile-live-20260901/MODIFIED_FILE
+DIFF_PATH=C:/Users/Administrator/Desktop/提链/artifacts/gopay-stable-chrome-profile-live-20260901/DIFF_FILE
+VERIFICATION_PATH=C:/Users/Administrator/Desktop/提链/artifacts/gopay-stable-chrome-profile-live-20260901/VERIFICATION.txt
+ROLLBACK_PATH=C:/Users/Administrator/Desktop/提链/artifacts/gopay-stable-chrome-profile-live-20260901/ROLLBACK.sh
+
+BASELINE_COMMAND=$env:PYTHONPATH=(Get-Location).Path; pytest -q tests/test_gopay_sentinel_playwright.py tests/test_gopay_isolated_optimization.py tests/test_extraction_full_retry.py tests/test_gopay_live_canary.py
+BASELINE_INPUT=Git commit 5face081bdbb9a1b20080c13f50f3f7226402058; no live credentials
+BASELINE_OUTPUT=65 passed in 0.44s
+BASELINE_EXIT_STATUS=0
+
+MODIFIED_COMMAND=$env:PYTHONPATH=(Get-Location).Path; $env:OPLL_ENV_FILE=(Resolve-Path pytest.ini).Path; pytest -q tests/test_gopay_live_canary.py tests/test_gopay_isolated_optimization.py tests/test_gopay_sentinel_playwright.py tests/test_extraction_full_retry.py
+MODIFIED_INPUT=Working tree source and tests; no live credentials
+MODIFIED_OUTPUT=67 passed in 0.53s
+MODIFIED_EXIT_STATUS=0
+
+FULL_COMMAND=$env:PYTHONPATH=(Get-Location).Path; $env:OPLL_ENV_FILE=(Resolve-Path pytest.ini).Path; pytest -q
+FULL_INPUT=Working tree with an isolated non-secret pytest environment
+FULL_OUTPUT=251 passed in 2.19s
+FULL_EXIT_STATUS=0
+
+LIVE_COMMAND=$env:OPLL_SENTINEL_HEADLESS=true; $env:OPLL_HTTP_IMPERSONATE=chrome; py -3.14 -u tools/gopay_live_canary.py --runtime-stdin --disable-zero-validation --token-index 1 --start-proxy-slot 1
+LIVE_INPUT=Runtime stdin contained one AT and five proxy entries; values were hidden and not persisted
+LIVE_OUTPUT=proxy_slot=1; checkout -> checkout_committed -> checkout_kind:stripe_checkout -> checkout_update -> promotion_applied -> stripe_init -> elements_session -> taxes -> payment_confirmation -> redirect_resolution -> completed; amount_due_minor=34900000; currency=IDR; provider_host=app.midtrans.com; provider_path_prefix=/snap/v4
+LIVE_EXIT_STATUS=0
+
+ROLLBACK_COMMAND=git apply DIFF_FILE; git apply --check --reverse DIFF_FILE; git apply --reverse DIFF_FILE; git diff --exit-code HEAD
+ROLLBACK_INPUT=Detached temporary worktree at BASE_COMMIT plus DIFF_FILE
+ROLLBACK_OUTPUT=Preparing worktree (detached HEAD 5face08); HEAD is now at 5face08 Hide GoPay Sentinel browser by default; ROLLBACK_RESTORED_EXIT=0
+ROLLBACK_EXIT_STATUS=0
+RESTORED_BEHAVIOR=The temporary worktree returned byte-for-byte to BASE_COMMIT with no source or test diff; the main working tree remains modified and the successful live behavior is retained.

@@ -1,0 +1,6 @@
+BASE_COMMIT=5face081bdbb9a1b20080c13f50f3f7226402058
+BRANCH=main
+CHANGED_FIELD=GoPay browser profile selection and live canary runtime input
+RESULT=Four paired Chrome TLS/UA identities are selected stably per device/AT and shared by ChatGPT, Sentinel, and Stripe; one live GoPay Checkout completed through Midtrans.
+SOURCE_PATHS=payment_link_extractor/gopay_transport.py;tools/gopay_live_canary.py
+TEST_PATHS=tests/test_gopay_isolated_optimization.py;tests/test_gopay_live_canary.py

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -55,3 +56,19 @@ def test_canary_provider_shape_outputs_no_order_identifier() -> None:
         "path_prefix": "/snap/v4",
     }
     assert "private-order-id" not in json.dumps(shape)
+
+
+def test_canary_runtime_input_keeps_secrets_in_memory() -> None:
+    tokens, proxies = MODULE.load_runtime_input(
+        io.StringIO(
+            "eyJfixture.payload.signature\n"
+            "2\n"
+            "id.example.com:8080:user-a:password-a\n"
+            "id.example.com:8080:user-b:password-b\n"
+        )
+    )
+    assert tokens == ["eyJfixture.payload.signature"]
+    assert proxies == [
+        "http://user-a:password-a@id.example.com:8080",
+        "http://user-b:password-b@id.example.com:8080",
+    ]
