@@ -21,11 +21,11 @@ from urllib.request import Request, urlopen
 
 try:
     from .har_capture import audit_har_completeness
-    from .mitm_capture import finalize_capture
+    from .mitm_capture import finalize_capture, navigate_page
     from .roxy_har_capture import default_roxy_cache, discover_roxy_targets
 except ImportError:
     from har_capture import audit_har_completeness
-    from mitm_capture import finalize_capture
+    from mitm_capture import finalize_capture, navigate_page
     from roxy_har_capture import default_roxy_cache, discover_roxy_targets
 
 
@@ -403,6 +403,9 @@ class CaptureState:
                 self.cdp_output = cdp_output
             if not cdp_ready.wait(30) or cdp_process.poll() is not None:
                 raise RuntimeError("Roxy CDP 补充记录器启动失败")
+            # Roxy's open endpoint initially exposes its internal dashboard.
+            # Navigate that same fingerprinted profile to the real capture origin.
+            navigate_page(cdp_port, "https://chatgpt.com/")
         except Exception as exc:
             self.stop()
             with self.lock:
