@@ -80,15 +80,11 @@ def wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float = 
 def require_free_port(port: int, label: str) -> None:
     if not 1 <= port <= 65535:
         raise ValueError(f"{label} port must be between 1 and 65535")
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            raise RuntimeError(f"{label} port is already in use: 127.0.0.1:{port}")
-    except ConnectionRefusedError:
-        return
-    except OSError as exc:
-        if getattr(exc, "winerror", None) in {10061, 10049}:
-            return
-        raise
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            raise RuntimeError(f"{label} port is already in use: 127.0.0.1:{port}") from exc
 
 
 def wait_for_cdp(profile: Path, timeout: float = 30) -> int:

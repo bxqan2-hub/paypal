@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import pytest
@@ -37,3 +38,10 @@ def test_upstream_arguments_reject_invalid_scheme() -> None:
 def test_require_free_port_rejects_invalid_port() -> None:
     with pytest.raises(ValueError):
         require_free_port(70000, "proxy")
+
+
+def test_require_free_port_rejects_occupied_port() -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        with pytest.raises(RuntimeError, match="already in use"):
+            require_free_port(listener.getsockname()[1], "proxy")
