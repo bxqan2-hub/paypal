@@ -75,19 +75,27 @@ def request(
     return json_payload(response, stage)
 
 
-def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+def create_checkout(
+    session: Any, *, account_email: str = "", trial_eligible: bool = False
+) -> dict[str, Any]:
     path = "/backend-api/payments/checkout"
+    body: dict[str, Any] = {
+        "entry_point": "all_plans_pricing_modal",
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
+        "checkout_ui_mode": "custom",
+    }
+    if trial_eligible:
+        body["promo_campaign"] = {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": True,
+        }
     payload = request(
         session,
         "POST",
         "https://chatgpt.com" + path,
         "Momo checkout",
-        json={
-            "entry_point": "all_plans_pricing_modal",
-            "plan_name": "chatgptplusplan",
-            "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
-            "checkout_ui_mode": "custom",
-        },
+        json=body,
         sentinel_flow="chatgpt_checkout",
         headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
     )

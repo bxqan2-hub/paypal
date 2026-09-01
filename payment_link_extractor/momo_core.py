@@ -113,6 +113,7 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     if str(config.country or "").upper() != MOMO_COUNTRY:
         raise ConfigurationError("Momo core requires country=VN")
     factory = transport_factory or MomoTransportFactory()
+    trial_eligible = False
     if bool(getattr(config, "momo_trial_eligibility_check", True)):
         if stage_callback:
             stage_callback("eligibility_check")
@@ -122,6 +123,7 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
             cancel_event=cancel_event,
             stage_callback=stage_callback,
         )
+        trial_eligible = bool(eligibility.get("eligible"))
         selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
         config = replace(
             config,
@@ -147,7 +149,9 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     momo = None
     try:
         checkpoint("checkout")
-        checkout = create_checkout(chatgpt, account_email=email)
+        checkout = create_checkout(
+            chatgpt, account_email=email, trial_eligible=trial_eligible
+        )
         checkpoint("checkout_committed")
         checkpoint("checkout_kind:openai_custom_checkout")
         for _ in range(3):
