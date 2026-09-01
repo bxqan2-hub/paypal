@@ -462,12 +462,12 @@ class CaptureState:
                 self.append_log(f"CAPTURE_HYBRID_ENTRIES={merge_result.get('entries', 0)}")
                 self.append_log(f"CAPTURE_HYBRID_COMPLETENESS={'complete' if audit.get('complete') else 'partial'}")
                 self.append_log(f"CAPTURE_HYBRID_MISSING={json.dumps(missing, ensure_ascii=False)}")
-        elif cdp_output is not None and not cdp_output.is_file():
-            merge_error = "CDP HAR 未写出，已保留 mitmproxy 主 HAR"
-            self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 merge_error = str(exc)
                 self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
+        elif cdp_output is not None and not cdp_output.is_file():
+            merge_error = "CDP HAR 未写出，已保留 mitmproxy 主 HAR"
+            self.append_log(f"CAPTURE_HYBRID_ERROR={merge_error}")
         with self.lock:
             self.process = None
             self.cdp_process = None
