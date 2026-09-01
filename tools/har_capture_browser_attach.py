@@ -375,6 +375,62 @@ def main() -> int:
     target_ids_seen: set[str] = set()
     target_count_seen = 0
     page_url = "https://chatgpt.com/"
+    last_checkpoint_at = 0.0
+    last_checkpoint_count = 0
+
+    def snapshot_entries() -> list[dict[str, Any]]:
+        entries = [entry for entry in all_entries if isinstance(entry, dict)]
+        for target in recorders.values():
+            entries.extend(entry for entry in target.recorder.entries if isinstance(entry, dict))
+        entries.sort(key=lambda entry: str(entry.get("startedDateTime") or ""))
+        return entries
+
+    def build_har(entries: list[dict[str, Any]]) -> dict[str, Any]:
+        har: dict[str, Any] = {
+            "log": {
+                "version": "1.2",
+                "creator": {"name": "opll-har-capture-browser-attach", "version": "1.0"},
+                "pages": [],
+                "entries": entries,
+                "_capture": {
+                    "title": page_url,
+                    "entryCount": len(entries),
+                    "channelRequested": args.channel,
+                    "targetMode": "browser-auto-attach-flatten",
+                    "targetCount": target_count_seen,
+                    "targetTypes": sorted(target_types_seen),
+                    "fetchResponses": bool(args.fetch_responses and not args.no_fetch_responses),
+                },
+            }
+        }
+        try:
+            completeness = _capture_completeness_audit(har)
+        except Exception as exc:
+            completeness = {"complete": False, "criticalComplete": False, "issues": [f"audit_error:{exc}"]}
+        har["log"]["_capture"]["completenessAudit"] = completeness
+        return har
+
+    def write_checkpoint() -> None:
+        """Persist completed entries before potentially slow body flushing."""
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        temp = args.output.with_name(f".{args.output.name}.checkpoint")
+        temp.write_text(json.dumps(build_har(snapshot_entries()), ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(args.output)
+
+    def maybe_checkpoint() -> None:
+        nonlocal last_checkpoint_at, last_checkpoint_count
+        count = len(snapshot_entries())
+        now = time.monotonic()
+        if count <= last_checkpoint_count:
+            return
+        if count - last_checkpoint_count < 250 and now - last_checkpoint_at < 15.0:
+            return
+        try:
+            write_checkpoint()
+            last_checkpoint_at = now
+            last_checkpoint_count = count
+        except (OSError, RuntimeError, ValueError):
+            pass
 
     def attach_target(session_id: str, target_info: dict[str, Any]) -> None:
         nonlocal target_count_seen
@@ -448,11 +504,16 @@ def main() -> int:
         last_heartbeat = time.monotonic()
         while True:
             if stop_file is not None and stop_file.exists():
+                try:
+                    write_checkpoint()
+                except (OSError, RuntimeError, ValueError):
+                    pass
                 break
             try:
                 session_id, message = browser.recv_any()
             except socket.timeout:
                 if time.monotonic() - last_heartbeat >= heartbeat_interval:
+                    maybe_checkpoint()
                     print(
                         f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
                         flush=True,
@@ -466,6 +527,7 @@ def main() -> int:
                 if target is not None:
                     target.handle(message)
                 if time.monotonic() - last_heartbeat >= heartbeat_interval:
+                    maybe_checkpoint()
                     print(
                         f"CAPTURE_HEARTBEAT=targets:{len(recorders)} entries:{sum(len(item.recorder.entries) for item in recorders.values()) + len(all_entries)}",
                         flush=True,
@@ -503,28 +565,8 @@ def main() -> int:
             all_entries.extend(target.close())
             recorders.pop(session_id, None)
         all_entries.sort(key=lambda entry: str(entry.get("startedDateTime") or ""))
-        har = {
-            "log": {
-                "version": "1.2",
-                "creator": {"name": "opll-har-capture-browser-attach", "version": "1.0"},
-                "pages": [],
-                "entries": all_entries,
-                "_capture": {
-                    "title": page_url,
-                    "entryCount": len(all_entries),
-                    "channelRequested": args.channel,
-                    "targetMode": "browser-auto-attach-flatten",
-                    "targetCount": target_count_seen,
-                    "targetTypes": sorted(target_types_seen),
-                    "fetchResponses": bool(args.fetch_responses and not args.no_fetch_responses),
-                },
-            }
-        }
-        try:
-            completeness = _capture_completeness_audit(har)
-        except Exception as exc:
-            completeness = {"complete": False, "criticalComplete": False, "issues": [f"audit_error:{exc}"]}
-        har["log"]["_capture"]["completenessAudit"] = completeness
+        har = build_har(all_entries)
+        completeness = har["log"]["_capture"].get("completenessAudit", {})
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(har, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"CAPTURE_SAVED={args.output.resolve()}", flush=True)
