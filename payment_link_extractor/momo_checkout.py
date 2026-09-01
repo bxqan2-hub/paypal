@@ -167,6 +167,11 @@ def create_checkout(
         ),
         "customer": ("customer", "customer_id", "customerId"),
         "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
+        "payment_method_types": ("payment_method_types", "paymentMethodTypes"),
+        "selected_payment_method_type": (
+            "selected_payment_method_type",
+            "selectedPaymentMethodType",
+        ),
     }
     for target, keys in aliases.items():
         value = _walk(payload, keys)
