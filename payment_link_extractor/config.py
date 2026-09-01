@@ -104,7 +104,9 @@ def billing_dict_for_country(country: str) -> dict[str, str]:
 
 def currency_minor_scale(currency: str) -> int:
     """Return the number of decimal places for display conversion."""
-    return 0 if str(currency or "").upper() in {"JPY", "IDR"} else 2
+    # Stripe represents VND in whole đồng (no fractional subunit), alongside
+    # the other zero-decimal currencies supported by this application.
+    return 0 if str(currency or "").upper() in {"JPY", "IDR", "VND"} else 2
 
 
 def normalize_payment_method(value: str) -> str:

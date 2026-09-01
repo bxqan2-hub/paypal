@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from payment_link_extractor.application import _normalize_config
 from payment_link_extractor.channels import PAYMENT_CHANNELS
-from payment_link_extractor.config import billing_for_country
+from payment_link_extractor.config import billing_for_country, currency_minor_scale
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import checkout_confirm, validate_momo_url
@@ -90,6 +90,10 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
             assert getattr(exc, "status_code", None) == 409
         else:
             raise AssertionError("non-zero or missing Momo amount was accepted")
+
+
+def test_vnd_uses_zero_decimal_minor_units() -> None:
+    assert currency_minor_scale("VND") == 0
 
 
 def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
