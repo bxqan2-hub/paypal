@@ -258,11 +258,12 @@ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
         session, trial_eligible=True, campaign_id="plus-1-month-free"
     )
     assert checkout["processor_entity"] == "openai_llc"
-    assert calls[0][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
-    assert calls[0][2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
+    checkout_call = next(item for item in calls if item[0] == "POST")
+    assert checkout_call[2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert checkout_call[2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
     import json
 
-    assert len(json.dumps(calls[0][2]["json"], separators=(",", ":"))) == 245
+    assert len(json.dumps(checkout_call[2]["json"], separators=(",", ":"))) == 245
     checkout_confirm(session, checkout, "ctoken_fixture")
     confirm_headers = calls[-1][2]["headers"]
     assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"

@@ -180,6 +180,34 @@ def close_cdp_browser(port: int | None) -> None:
         return
 
 
+def delete_roxy_window(
+    base_url: str,
+    api_key: str,
+    workspace_id: str,
+    dir_id: str,
+) -> None:
+    """Delete a Roxy profile after its browser process has been closed."""
+    if not workspace_id or not dir_id:
+        return
+    roxy_request(
+        base_url,
+        "/browser/delete",
+        api_key,
+        method="POST",
+        payload={"workspaceId": workspace_id, "dirIds": [dir_id]},
+        timeout=30,
+    )
+
+
+def parse_proxy_pool(value: Any) -> list[str]:
+    """Normalize one-per-line proxy pool input while retaining order."""
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value]
+    else:
+        items = [line.strip() for line in str(value or "").splitlines()]
+    return list(dict.fromkeys(item for item in items if item))
+
+
 def roxy_request(
     base_url: str,
     path: str,
@@ -289,6 +317,11 @@ class CaptureState:
     cdp_output: Path | None = None
     cdp_port: int | None = None
     channel: str = "gopay"
+    api_key: str = ""
+    api_base: str = DEFAULT_ROXY_API
+    workspace_id: str = ""
+    proxy_pool: list[str] = field(default_factory=list)
+    proxy_index: int = 0
     logs: list[str] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -317,15 +350,12 @@ class CaptureState:
             del self.logs[:-100]
 
     def start(self, options: dict[str, Any]) -> dict[str, Any]:
-        upstream = str(options.get("upstream") or "").strip()
+        requested_pool = parse_proxy_pool(options.get("upstreamPool"))
+        single_upstream = str(options.get("upstream") or "").strip()
         api_key = str(options.get("apiKey") or "").strip()
         api_base = str(options.get("apiBase") or DEFAULT_ROXY_API).strip()
         channel = str(options.get("channel") or "gopay").strip().lower()
         window_name = str(options.get("windowName") or "").strip()
-        if not upstream:
-            raise ValueError("请输入上游 SOCKS5 代理")
-        if not api_key:
-            raise ValueError("请输入 Roxy API Key")
         if channel not in CHANNELS:
             raise ValueError("抓包渠道无效")
         if not window_name:
@@ -333,6 +363,20 @@ class CaptureState:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("抓包服务已经在运行")
+            if requested_pool:
+                self.proxy_pool = requested_pool
+                self.proxy_index = 0
+            elif single_upstream:
+                self.proxy_pool = [single_upstream]
+                self.proxy_index = 0
+            if not self.proxy_pool:
+                raise ValueError("请输入至少一条上游 SOCKS5 代理")
+            if not api_key:
+                api_key = self.api_key
+            if not api_key:
+                raise ValueError("请输入 Roxy API Key")
+            upstream = self.proxy_pool[self.proxy_index % len(self.proxy_pool)]
+            self.proxy_index = (self.proxy_index + 1) % len(self.proxy_pool)
             self.status = "starting"
             self.message = "正在启动 mitmproxy"
             self.logs.clear()
@@ -342,6 +386,8 @@ class CaptureState:
             self.cdp_output = None
             self.cdp_port = None
             self.channel = channel
+            self.api_key = api_key
+            self.api_base = api_base
             self.dir_id = ""
             self.window_name = window_name
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
@@ -402,6 +448,8 @@ class CaptureState:
         try:
             existing_ports = {target.port for target in discover_roxy_targets(default_roxy_cache())}
             workspace_id = resolve_workspace_id(api_base, api_key)
+            with self.lock:
+                self.workspace_id = workspace_id
             dir_id = create_roxy_window(
                 api_base,
                 api_key,
@@ -563,6 +611,9 @@ class CaptureState:
             cdp_output = self.cdp_output
             cdp_port = self.cdp_port
             dir_id = self.dir_id
+            api_base = self.api_base
+            api_key = self.api_key
+            workspace_id = self.workspace_id
             self.status = "discarding"
             self.message = "正在放弃抓包并关闭窗口"
 
@@ -576,6 +627,11 @@ class CaptureState:
             except (OSError, RuntimeError, ValueError):
                 cdp_port = None
         close_cdp_browser(cdp_port)
+        delete_error = ""
+        try:
+            delete_roxy_window(api_base, api_key, workspace_id, dir_id)
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            delete_error = str(exc)
 
         paths: set[Path] = set()
         if output is not None:
@@ -608,10 +664,19 @@ class CaptureState:
             self.cdp_port = None
             self.output = ""
             self.dir_id = ""
+            self.workspace_id = ""
             self.window_name = ""
             self.logs.append("CAPTURE_DISCARDED=1")
+            if delete_error:
+                self.logs.append(f"ROXY_WINDOW_DELETE_ERROR={delete_error}")
+            else:
+                self.logs.append("ROXY_WINDOW_DELETED=1")
             self.status = "idle"
-            self.message = "本次抓包已放弃，窗口已关闭，未保存文件"
+            self.message = (
+                "本次抓包已放弃，窗口已关闭并删除，未保存文件"
+                if not delete_error
+                else f"本次抓包已放弃，窗口已关闭；删除失败：{delete_error}"
+            )
         return self.snapshot()
 
 
@@ -626,7 +691,7 @@ HTML = r"""<!doctype html>
 *{box-sizing:border-box}body{margin:0;min-height:100vh}header{height:56px;background:#20262d;color:#fff;display:flex;align-items:center;padding:0 18px;gap:14px}header h1{font-size:17px;margin:0;font-weight:600}header span{font-size:12px;color:#b8c2cc}
 main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc(100vh - 56px)}
 .controls{background:#fff;border-bottom:1px solid #d7dee5;padding:14px 18px;display:grid;grid-template-columns:minmax(320px,2fr) minmax(220px,1fr) 150px 190px auto;gap:10px;align-items:end}
-label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}input:focus,select:focus{outline:2px solid #2589d8;outline-offset:-1px}
+ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select,textarea{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}textarea{height:72px;padding-top:8px;resize:vertical}input:focus,select:focus,textarea:focus{outline:2px solid #2589d8;outline-offset:-1px}
 .actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.discard{background:#59636e;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
 .status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping,.dot.discarding{background:#e0a126}.status code{margin-left:auto;color:#52606d}
 .workspace{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0}.mitm{position:relative;background:#fff}.mitm iframe{width:100%;height:100%;border:0}.empty{position:absolute;inset:0;display:grid;place-items:center;color:#6b7785;background:#fff}.log{background:#20262d;color:#d9e1e8;padding:12px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}.log h2{font:600 13px Segoe UI;margin:0 0 8px;color:#fff}
@@ -637,7 +702,7 @@ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px
 <header><h1>mitmproxy Roxy 控制台</h1><span>上游代理仅保存在当前进程内存</span></header>
 <main>
 <section class="controls">
-<label>上游 SOCKS5 代理<input id="upstream" type="password" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></label>
+<label>上游 SOCKS5 代理池（每行一条）<textarea id="upstreamPool" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></textarea></label>
 <label>Roxy API Key<input id="apiKey" type="password" autocomplete="off" placeholder="仅本机 API 使用"></label>
 <label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="momo">MoMo</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
 <label>新窗口名称<input id="windowName" placeholder="留空自动命名"></label>
@@ -648,11 +713,11 @@ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px
 <section class="workspace"><div class="mitm"><div id="empty" class="empty">启动后在这里查看 mitmweb</div><iframe id="mitm" title="mitmweb"></iframe></div><aside id="log" class="log"><h2>运行状态</h2></aside></section>
 </main>
 <script>
-const elements={upstream:document.querySelector('#upstream'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
+const elements={upstreamPool:document.querySelector('#upstreamPool'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
 async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const data=await response.json();if(!response.ok)throw new Error(data.error||'操作失败');return data}
 function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止保存中',discarding:'正在放弃'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;const busy=data.status==='starting'||data.status==='stopping'||data.status==='discarding';elements.start.disabled=data.running||busy;elements.stop.disabled=!data.running||busy;elements.discard.disabled=!data.running||busy;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
 async function refresh(){try{render(await (await fetch('/api/status')).json())}catch(error){elements.message.textContent=error.message}}
-elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstream:elements.upstream.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});elements.apiKey.value='';elements.upstream.value='';render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
+elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstreamPool:elements.upstreamPool.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
 elements.stop.addEventListener('click',async()=>{elements.stop.disabled=true;try{render(await request('/api/stop'))}catch(error){elements.message.textContent=error.message;await refresh()}});
 elements.discard.addEventListener('click',async()=>{elements.discard.disabled=true;try{render(await request('/api/discard'))}catch(error){elements.message.textContent=error.message;await refresh()}});
 setInterval(refresh,1500);refresh();

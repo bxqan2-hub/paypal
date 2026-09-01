@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import quote
 
 from .config import billing_for_country, processor_entity_for_country
 from .errors import ProtocolError
@@ -89,13 +90,30 @@ def create_checkout(
         "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
         "checkout_ui_mode": "custom",
     }
+    referer = "https://chatgpt.com/"
     # The complete zero-due MoMo HAR has this campaign object on the initial
     # Checkout request (body length 245).  It does not use checkout/update.
     if trial_eligible:
+        campaign = str(campaign_id or "plus-1-month-free").strip()
         body["promo_campaign"] = {
-            "promo_campaign_id": str(campaign_id or "plus-1-month-free"),
+            "promo_campaign_id": campaign,
             "is_coupon_from_query_param": False,
         }
+        referer = (
+            "https://chatgpt.com/?promo_campaign=" + quote(campaign, safe="")
+        )
+        # The browser establishes the promo landing-page context before the
+        # POST. Keep this warm-up best-effort so a slow proxy does not hide the
+        # Checkout response that remains the source of truth.
+        try:
+            session.request(
+                "GET",
+                referer,
+                headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
+                timeout=30,
+            )
+        except Exception:
+            pass
     payload = request(
         session,
         "POST",
@@ -103,7 +121,11 @@ def create_checkout(
         "Momo checkout",
         json=body,
         sentinel_flow="chatgpt_checkout",
-        headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
+        headers={
+            "Referer": referer,
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
     )
     sid = session_id(payload)
     if not sid.startswith("oaics_"):
