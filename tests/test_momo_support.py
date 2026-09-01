@@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import validate_momo_url
-from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
+from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
 from payment_link_extractor.web.routes import _config_from_payload
@@ -64,6 +64,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
     session = SimpleNamespace(proxies={})
     _set_proxy(session, "proxy.example:3000:user:p@ss")
     assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
+
+
+def test_momo_transport_uses_socks5h_for_1024proxy_vn_exports() -> None:
+    raw = "hk.1024proxy.io:3000:user:p@ss"
+    expected = "socks5h://user:p%40ss@hk.1024proxy.io:3000"
+    assert normalize_momo_proxy(raw) == expected
+    session = SimpleNamespace(proxies={})
+    _set_proxy(session, raw)
+    assert session.proxies["http"] == expected
+    assert session.proxies["https"] == expected
 
 
 def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:

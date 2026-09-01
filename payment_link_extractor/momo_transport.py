@@ -86,14 +86,38 @@ def _new_session(impersonate: str) -> Any:
 
 
 def _set_proxy(session: Any, proxy: str) -> None:
-    value = str(proxy or "").strip()
-    if value and "://" not in value:
-        parts = value.split(":")
-        if len(parts) == 4 and all(parts):
-            host, port, user, password = parts
-            value = f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
+    value = normalize_momo_proxy(proxy)
     if value:
         session.proxies.update({"http": value, "https": value})
+
+
+def normalize_momo_proxy(proxy: str) -> str:
+    """Normalize Momo's documented proxy forms without crossing channels.
+
+    The VN 1024proxy export uses ``host:port:user:password`` and exposes a
+    SOCKS5 endpoint on port 3000.  Treating that export as an HTTP proxy makes
+    the TCP socket open but every HTTPS request hang during proxy negotiation.
+    Other bare proxy exports retain the historical HTTP scheme, while explicit
+    schemes are passed through unchanged.
+    """
+    value = str(proxy or "").strip()
+    if not value or "://" in value:
+        return value
+    parts = value.split(":", 3)
+    if len(parts) != 4 or not all(parts):
+        return value
+    host, port, user, password = parts
+    try:
+        parsed_port = int(port)
+    except (TypeError, ValueError):
+        parsed_port = 0
+    lowered_host = host.lower().rstrip(".")
+    is_1024proxy_socks = (
+        parsed_port == 3000
+        and (lowered_host == "1024proxy.io" or lowered_host.endswith(".1024proxy.io"))
+    )
+    scheme = "socks5h" if is_1024proxy_socks else "http"
+    return f"{scheme}://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
 
 def close(session: Any) -> None:
