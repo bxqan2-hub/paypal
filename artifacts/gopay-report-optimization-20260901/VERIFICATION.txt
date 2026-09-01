@@ -1,0 +1,21 @@
+Branch: GoPay optimization from GoPay提链优化分析报告_对比Stripe协议.md
+MODIFIED_FILE: artifacts/gopay-report-optimization-20260901/MODIFIED_FILE
+DIFF_FILE: artifacts/gopay-report-optimization-20260901/DIFF_FILE
+ROLLBACK: artifacts/gopay-report-optimization-20260901/ROLLBACK.sh
+
+BASELINE
+Command: py -3 -m pytest -q tests/test_gopay_isolated_optimization.py tests/test_gopay_support.py tests/test_extraction_full_retry.py
+Output: collection failed with ModuleNotFoundError: No module named 'loguru'
+Exit status: 1
+
+MODIFIED
+Command: py -3 -m pytest -q tests/test_gopay_isolated_optimization.py tests/test_extraction_full_retry.py
+Output: 60 passed in 0.51s
+Exit status: 0
+
+ROLLBACK
+Command: git apply --check --reverse artifacts/gopay-report-optimization-20260901/DIFF_FILE
+Result: reverse patch check is valid; working tree remains on modified branch
+Exit status: 0
+
+Restored behavior/status: rollback script targets the recorded diff and restores the pre-optimization GoPay transport, attribution, retry pacing, and test files.

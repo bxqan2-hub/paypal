@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import base64
 import json
+import random
+import re
 import secrets
 import shutil
 import subprocess
@@ -89,9 +91,64 @@ class TransportFactory(Protocol):
     def stripe(self, config: ExtractionConfig) -> Any: ...
 
 
-def new_session() -> Any:
+GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "chrome151",
+        "impersonate": "chrome",
+        "user_agent": DEFAULT_USER_AGENT,
+        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "weight": 70,
+    },
+    {
+        "name": "chrome131",
+        "impersonate": "chrome131",
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "weight": 20,
+    },
+    {
+        "name": "chrome136",
+        "impersonate": "chrome136",
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        ),
+        "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
+        "weight": 10,
+    },
+)
+
+
+def select_gopay_browser_profile() -> dict[str, Any]:
+    """Select a weighted browser profile, with an env override for diagnostics."""
+    requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
+    if requested:
+        for profile in GOPAY_BROWSER_PROFILES:
+            if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
+                return dict(profile)
+        raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
+    profiles = list(GOPAY_BROWSER_PROFILES)
+    return dict(random.choices(profiles, weights=[p["weight"] for p in profiles], k=1)[0])
+
+
+def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
+    """Reject explicit Chrome TLS/UA version mismatches before a request."""
+    tls_match = re.search(r"chrome(\d+)$", str(impersonate or "").lower())
+    ua_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", str(user_agent or ""), re.I)
+    if tls_match and ua_match and tls_match.group(1) != ua_match.group(1):
+        raise ConfigurationError(
+            f"TLS/UA version mismatch: impersonate={impersonate}, ua={ua_match.group(1)}"
+        )
+    return True
+
+
+def new_session(impersonate: str | None = None) -> Any:
     if CurlCffiSession is not None:
-        return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
+        selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
+        return CurlCffiSession(impersonate=selected)
     if requests is None:
         raise ConfigurationError("requests is required; install requirements.txt")
     return requests.Session()
@@ -1494,10 +1551,23 @@ class DefaultTransportFactory:
             if payment_method == "gopay"
             else str(uuid.uuid4())
         )
-        session_id = str(uuid.uuid4())
-        session = new_session()
         is_gopay = payment_method == "gopay"
-        user_agent = os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
+        profile = select_gopay_browser_profile() if is_gopay else None
+        explicit_impersonate = os.getenv("OPLL_HTTP_IMPERSONATE", "").strip()
+        impersonate = explicit_impersonate or (profile or {}).get("impersonate")
+        try:
+            session = new_session(impersonate if is_gopay else None)
+        except TypeError:
+            # Keep compatibility with lightweight test/fallback session factories.
+            session = new_session()
+        session_id = str(uuid.uuid4())
+        user_agent = (
+            os.getenv("OPLL_USER_AGENT", "").strip()
+            or (profile or {}).get("user_agent", "")
+            or DEFAULT_USER_AGENT
+        )
+        if is_gopay:
+            validate_tls_ua_consistency(impersonate or "", user_agent)
         observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
         session.headers.update(
             {
@@ -1523,17 +1593,17 @@ class DefaultTransportFactory:
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
-                "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER",
-                    "10012890" if is_gopay else "9748354",
+                "oai-client-build-number": (
+                    os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "").strip()
+                    or ("10012890" if is_gopay else "9748354")
                 ),
-                "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION",
-                    (
+                "oai-client-version": (
+                    os.getenv("OPLL_OAI_CLIENT_VERSION", "").strip()
+                    or (
                         "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
                         if is_gopay
                         else "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
-                    ),
+                    )
                 ),
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", '{"v":3,"updates":[]}'
@@ -1547,7 +1617,10 @@ class DefaultTransportFactory:
                 ),
                 "sec-ch-ua": os.getenv(
                     "OPLL_SEC_CH_UA",
-                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+                    (profile or {}).get(
+                        "sec_ch_ua",
+                        '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+                    ),
                 ),
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
@@ -1563,6 +1636,8 @@ class DefaultTransportFactory:
         # Keep these values on the session for the browser Sentinel adapter
         # and diagnostics without putting identifiers into request URLs/logs.
         session.openai_device_id = device_id
+        session.gopay_browser_profile = (profile or {}).get("name", "")
+        session.gopay_tls_impersonate = impersonate or ""
         session.openai_did = device_id
         session.openai_proxy = proxy
         session.openai_client_observation = session.headers.get(

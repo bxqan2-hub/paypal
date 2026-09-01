@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import queue
 import random
+import os
 import threading
 import time
 import uuid
@@ -39,6 +40,19 @@ STAGE_PROGRESS = {
     "zero_amount_confirmed": 99,
     "completed": 100,
 }
+
+
+def gopay_retry_backoff_seconds(attempt_index: int) -> float:
+    """Return bounded exponential backoff for the next GoPay attempt."""
+    try:
+        # Keep the default responsive for the web queue; operators can raise
+        # this through OPLL_GOPAY_RETRY_BACKOFF_BASE for production pacing.
+        base = max(0.0, float(os.getenv("OPLL_GOPAY_RETRY_BACKOFF_BASE", "0")))
+        cap = max(base, float(os.getenv("OPLL_GOPAY_RETRY_BACKOFF_CAP", "30")))
+    except (TypeError, ValueError):
+        base, cap = 0.0, 30.0
+    exponent = max(0, int(attempt_index) - 1)
+    return min(cap, base * (2**exponent))
 
 
 class TaskNotFoundError(KeyError):
@@ -544,6 +558,20 @@ class TaskManager:
             )
 
         for attempt_index in range(total_attempts):
+            if attempt_index and retry_plan.payment_method == "gopay":
+                delay = gopay_retry_backoff_seconds(attempt_index)
+                if delay > 0:
+                    task_log.info(
+                        "GoPay retry backoff {:.1f}s before attempt {}/{}",
+                        delay,
+                        attempt_index + 1,
+                        total_attempts,
+                    )
+                    with self._lock:
+                        current = self._tasks.get(task_id)
+                        cancel_event = current.cancel_event if current is not None else None
+                    if cancel_event is None or cancel_event.wait(delay):
+                        return
             with self._lock:
                 record = self._tasks.get(task_id)
                 if record is None or record.status == "cancelled":

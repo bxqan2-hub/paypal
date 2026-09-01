@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import re
 import time
 import uuid
 from typing import Any
@@ -163,7 +164,7 @@ def stripe_context(
     payment_page_id = str(init_payload.get("id") or init_payload.get("payment_page_id") or "").strip()
     init_checkout_config_id = str(init_payload.get("config_id") or "")
     browser_locale = str(checkout.get("payment_locale") or "en-GB")
-    return {
+    context = {
         "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
@@ -188,6 +189,29 @@ def stripe_context(
         "muid": f"{uuid.uuid4()}" + secrets.token_hex(3),
         "sid": f"{uuid.uuid4()}" + secrets.token_hex(3),
     }
+    validate_gopay_fingerprint_params(context)
+    return context
+
+
+def validate_gopay_fingerprint_params(ctx: StripeContext) -> bool:
+    """Validate stable Stripe/OpenAI attribution identifiers used by GoPay."""
+    for key in ("guid", "muid", "sid"):
+        value = str(ctx.get(key) or "")
+        if value and not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[0-9a-f]{6}",
+            value,
+            re.I,
+        ):
+            raise ValueError(f"invalid GoPay fingerprint {key}")
+    for key in ("oai-device-id", "oai-session-id"):
+        value = str(ctx.get(key) or "")
+        if value and not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            value,
+            re.I,
+        ):
+            raise ValueError(f"invalid GoPay fingerprint {key}")
+    return True
 
 
 def cs_stripe_headers() -> dict[str, str]:

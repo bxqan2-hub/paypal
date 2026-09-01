@@ -1,0 +1,269 @@
+diff --git a/payment_link_extractor/gopay_stripe_common.py b/payment_link_extractor/gopay_stripe_common.py
+index 7cbf27c..be84bb5 100644
+--- a/payment_link_extractor/gopay_stripe_common.py
++++ b/payment_link_extractor/gopay_stripe_common.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import base64
+ import json
+ import secrets
++import re
+ import time
+ import uuid
+ from typing import Any
+@@ -163,7 +164,7 @@ def stripe_context(
+     payment_page_id = str(init_payload.get("id") or init_payload.get("payment_page_id") or "").strip()
+     init_checkout_config_id = str(init_payload.get("config_id") or "")
+     browser_locale = str(checkout.get("payment_locale") or "en-GB")
+-    return {
++    context = {
+         "stripe_js_id": str(stripe_js_id or uuid.uuid4()),
+         "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
+         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
+@@ -188,6 +189,29 @@ def stripe_context(
+         "muid": f"{uuid.uuid4()}" + secrets.token_hex(3),
+         "sid": f"{uuid.uuid4()}" + secrets.token_hex(3),
+     }
++    validate_gopay_fingerprint_params(context)
++    return context
++
++
++def validate_gopay_fingerprint_params(ctx: StripeContext) -> bool:
++    """Validate stable Stripe/OpenAI attribution identifiers used by GoPay."""
++    for key in ("guid", "muid", "sid"):
++        value = str(ctx.get(key) or "")
++        if value and not re.fullmatch(
++            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[0-9a-f]{6}",
++            value,
++            re.I,
++        ):
++            raise ValueError(f"invalid GoPay fingerprint {key}")
++    for key in ("oai-device-id", "oai-session-id"):
++        value = str(ctx.get(key) or "")
++        if value and not re.fullmatch(
++            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
++            value,
++            re.I,
++        ):
++            raise ValueError(f"invalid GoPay fingerprint {key}")
++    return True
+ 
+ 
+ def cs_stripe_headers() -> dict[str, str]:
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index d96bfb8..641df51 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ import os
+ import base64
+ import json
++import random
++import re
+ import secrets
+ import shutil
+ import subprocess
+@@ -89,9 +91,64 @@ class TransportFactory(Protocol):
+     def stripe(self, config: ExtractionConfig) -> Any: ...
+ 
+ 
+-def new_session() -> Any:
++GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
++    {
++        "name": "chrome151",
++        "impersonate": "chrome",
++        "user_agent": DEFAULT_USER_AGENT,
++        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
++        "weight": 70,
++    },
++    {
++        "name": "chrome131",
++        "impersonate": "chrome131",
++        "user_agent": (
++            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
++        ),
++        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
++        "weight": 20,
++    },
++    {
++        "name": "chrome136",
++        "impersonate": "chrome136",
++        "user_agent": (
++            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
++        ),
++        "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
++        "weight": 10,
++    },
++)
++
++
++def select_gopay_browser_profile() -> dict[str, Any]:
++    """Select a weighted browser profile, with an env override for diagnostics."""
++    requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
++    if requested:
++        for profile in GOPAY_BROWSER_PROFILES:
++            if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
++                return dict(profile)
++        raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
++    profiles = list(GOPAY_BROWSER_PROFILES)
++    return dict(random.choices(profiles, weights=[p["weight"] for p in profiles], k=1)[0])
++
++
++def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
++    """Reject explicit Chrome TLS/UA version mismatches before a request."""
++    tls_match = re.search(r"chrome(\d+)$", str(impersonate or "").lower())
++    ua_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", str(user_agent or ""), re.I)
++    if tls_match and ua_match and tls_match.group(1) != ua_match.group(1):
++        raise ConfigurationError(
++            f"TLS/UA version mismatch: impersonate={impersonate}, ua={ua_match.group(1)}"
++        )
++    return True
++
++
++def new_session(impersonate: str | None = None) -> Any:
+     if CurlCffiSession is not None:
+-        return CurlCffiSession(impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "chrome"))
++        selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
++        return CurlCffiSession(impersonate=selected)
+     if requests is None:
+         raise ConfigurationError("requests is required; install requirements.txt")
+     return requests.Session()
+@@ -1494,10 +1551,23 @@ class DefaultTransportFactory:
+             if payment_method == "gopay"
+             else str(uuid.uuid4())
+         )
+-        session_id = str(uuid.uuid4())
+-        session = new_session()
+         is_gopay = payment_method == "gopay"
+-        user_agent = os.getenv("OPLL_USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT
++        profile = select_gopay_browser_profile() if is_gopay else None
++        explicit_impersonate = os.getenv("OPLL_HTTP_IMPERSONATE", "").strip()
++        impersonate = explicit_impersonate or (profile or {}).get("impersonate")
++        try:
++            session = new_session(impersonate if is_gopay else None)
++        except TypeError:
++            # Keep compatibility with lightweight test/fallback session factories.
++            session = new_session()
++        session_id = str(uuid.uuid4())
++        user_agent = (
++            os.getenv("OPLL_USER_AGENT", "").strip()
++            or (profile or {}).get("user_agent", "")
++            or DEFAULT_USER_AGENT
++        )
++        if is_gopay:
++            validate_tls_ua_consistency(impersonate or "", user_agent)
+         observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+         session.headers.update(
+             {
+@@ -1547,7 +1617,10 @@ class DefaultTransportFactory:
+                 ),
+                 "sec-ch-ua": os.getenv(
+                     "OPLL_SEC_CH_UA",
+-                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
++                    (profile or {}).get(
++                        "sec_ch_ua",
++                        '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
++                    ),
+                 ),
+                 "sec-ch-ua-mobile": "?0",
+                 "sec-ch-ua-platform": os.getenv("OPLL_SEC_CH_UA_PLATFORM", '"Windows"'),
+@@ -1563,6 +1636,8 @@ class DefaultTransportFactory:
+         # Keep these values on the session for the browser Sentinel adapter
+         # and diagnostics without putting identifiers into request URLs/logs.
+         session.openai_device_id = device_id
++        session.gopay_browser_profile = (profile or {}).get("name", "")
++        session.gopay_tls_impersonate = impersonate or ""
+         session.openai_did = device_id
+         session.openai_proxy = proxy
+         session.openai_client_observation = session.headers.get(
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index c515b44..5ba55f5 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
+ from datetime import datetime, timedelta, timezone
+ import queue
+ import random
++import os
+ import threading
+ import time
+ import uuid
+@@ -41,6 +42,19 @@ STAGE_PROGRESS = {
+ }
+ 
+ 
++def gopay_retry_backoff_seconds(attempt_index: int) -> float:
++    """Return bounded exponential backoff for the next GoPay attempt."""
++    try:
++        # Keep the default responsive for the web queue; operators can raise
++        # this through OPLL_GOPAY_RETRY_BACKOFF_BASE for production pacing.
++        base = max(0.0, float(os.getenv("OPLL_GOPAY_RETRY_BACKOFF_BASE", "0")))
++        cap = max(base, float(os.getenv("OPLL_GOPAY_RETRY_BACKOFF_CAP", "30")))
++    except (TypeError, ValueError):
++        base, cap = 0.0, 30.0
++    exponent = max(0, int(attempt_index) - 1)
++    return min(cap, base * (2**exponent))
++
++
+ class TaskNotFoundError(KeyError):
+     pass
+ 
+@@ -544,6 +558,20 @@ class TaskManager:
+             )
+ 
+         for attempt_index in range(total_attempts):
++            if attempt_index and retry_plan.payment_method == "gopay":
++                delay = gopay_retry_backoff_seconds(attempt_index)
++                if delay > 0:
++                    task_log.info(
++                        "GoPay retry backoff {:.1f}s before attempt {}/{}",
++                        delay,
++                        attempt_index + 1,
++                        total_attempts,
++                    )
++                    with self._lock:
++                        current = self._tasks.get(task_id)
++                        cancel_event = current.cancel_event if current is not None else None
++                    if cancel_event is None or cancel_event.wait(delay):
++                        return
+             with self._lock:
+                 record = self._tasks.get(task_id)
+                 if record is None or record.status == "cancelled":
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 3b589bb..9087d21 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -122,6 +122,32 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
+     assert build("fixture-token-a") != build("fixture-token-b")
+ 
+ 
++def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> None:
++    monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
++    profiles = {
++        gopay_transport.select_gopay_browser_profile()["name"] for _ in range(80)
++    }
++    assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
++    assert len(profiles) >= 2
++    assert gopay_transport.validate_tls_ua_consistency(
++        "chrome131",
++        "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
++    )
++    with pytest.raises(Exception, match="TLS/UA version mismatch"):
++        gopay_transport.validate_tls_ua_consistency(
++            "chrome131",
++            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
++        )
++
++
++def test_gopay_fingerprint_validation_rejects_malformed_values() -> None:
++    context = gopay_stripe_common.stripe_context({}, {"currency": "IDR"})
++    assert gopay_stripe_common.validate_gopay_fingerprint_params(context)
++    context["guid"] = "invalid"
++    with pytest.raises(ValueError, match="fingerprint guid"):
++        gopay_stripe_common.validate_gopay_fingerprint_params(context)
++
++
+ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypatch) -> None:
+     calls: list[tuple[str, object]] = []
+ 

@@ -122,6 +122,32 @@ def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
     assert build("fixture-token-a") != build("fixture-token-b")
 
 
+def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> None:
+    monkeypatch.delenv("OPLL_GOPAY_BROWSER_PROFILE", raising=False)
+    profiles = {
+        gopay_transport.select_gopay_browser_profile()["name"] for _ in range(80)
+    }
+    assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
+    assert len(profiles) >= 2
+    assert gopay_transport.validate_tls_ua_consistency(
+        "chrome131",
+        "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
+    )
+    with pytest.raises(Exception, match="TLS/UA version mismatch"):
+        gopay_transport.validate_tls_ua_consistency(
+            "chrome131",
+            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+        )
+
+
+def test_gopay_fingerprint_validation_rejects_malformed_values() -> None:
+    context = gopay_stripe_common.stripe_context({}, {"currency": "IDR"})
+    assert gopay_stripe_common.validate_gopay_fingerprint_params(context)
+    context["guid"] = "invalid"
+    with pytest.raises(ValueError, match="fingerprint guid"):
+        gopay_stripe_common.validate_gopay_fingerprint_params(context)
+
+
 def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 

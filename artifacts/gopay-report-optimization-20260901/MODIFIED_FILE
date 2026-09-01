@@ -1,0 +1,6 @@
+Branch: GoPay transport, attribution validation, and task retry pacing
+Changed files:
+- payment_link_extractor/gopay_transport.py
+- payment_link_extractor/gopay_stripe_common.py
+- payment_link_extractor/web/tasks.py
+- tests/test_gopay_isolated_optimization.py
