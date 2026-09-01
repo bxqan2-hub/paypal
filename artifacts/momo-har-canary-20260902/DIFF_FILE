@@ -1,8 +1,8 @@
 diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
-index 04d1be3..d9c9ab4 100644
+index 04d1be3..c860b2f 100644
 --- a/docs/MOMO_HAR_STATE_MACHINE.md
 +++ b/docs/MOMO_HAR_STATE_MACHINE.md
-@@ -18,3 +18,10 @@
+@@ -18,3 +18,11 @@
  - Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
  - 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
  - AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
@@ -12,6 +12,7 @@ index 04d1be3..d9c9ab4 100644
 +- ChatGPT 请求保持与 HAR 一致的设备/会话 UUID、账号标识、客户端构建号与版本、pending-updates、observation、浏览器指纹及 `oai-did` Cookie；observation 和 telemetry 在每次请求前刷新。
 +- Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
 +- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
++- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
 index 98a8ec6..9d9a376 100644
@@ -58,6 +59,61 @@ index 98a8ec6..9d9a376 100644
          headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
      )
      sid = session_id(payload)
+diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
+index 51a8cc0..fa5cd73 100644
+--- a/payment_link_extractor/momo_core.py
++++ b/payment_link_extractor/momo_core.py
+@@ -15,7 +15,12 @@ from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
+ from .models import ExtractionConfig, PaymentLinkResult
+ from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
+ from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
+-from .momo_transport import MomoTransportFactory, close
++from .momo_transport import (
++    MomoTransportFactory,
++    capture_momo_csrf_token,
++    close,
++    momo_gateway_headers,
++)
+ 
+ MOMO_RESULT_FIELD = "momo_url"
+ 
+@@ -58,9 +63,35 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
+     session_id = _gateway_session_id(url)
+     if not session_id:
+         raise ProtocolError(502, "Momo gateway URL has invalid session token")
++    # The browser first opens the gateway page.  That navigation establishes
++    # the page origin and may set the CSRF cookie used by querySession.
++    opener = getattr(session, "request", None)
++    if callable(opener):
++        try:
++            page = opener(
++                "GET",
++                url,
++                headers=momo_gateway_headers(session, url),
++                timeout=30,
++            )
++            if int(getattr(page, "status_code", 0) or 0) >= 400:
++                raise ProtocolError(
++                    int(page.status_code), "Momo gateway page failed"
++                )
++            capture_momo_csrf_token(session, page)
++        except ProtocolError:
++            raise
++        except Exception as exc:
++            raise ProtocolError(502, "Momo gateway page request failed") from exc
+     last: dict[str, Any] = {}
+     for index in range(max(1, polls)):
+-        response = session.request("POST", "https://payment.momo.vn/v2/gateway/querySession", json={"sessionId": session_id}, timeout=30)
++        response = session.request(
++            "POST",
++            "https://payment.momo.vn/v2/gateway/querySession",
++            json={"sessionId": session_id},
++            headers=momo_gateway_headers(session, url),
++            timeout=30,
++        )
+         if int(getattr(response, "status_code", 0) or 0) >= 400:
+             raise ProtocolError(int(response.status_code), "Momo querySession failed")
+         try:
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
 index 6713d52..6a22527 100644
 --- a/payment_link_extractor/momo_stripe.py
@@ -98,21 +154,23 @@ index 6713d52..6a22527 100644
          raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
      payload = json_payload(response, "Momo checkout confirm")
 diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
-index efe8e02..7ee3e08 100644
+index efe8e02..1a7d545 100644
 --- a/payment_link_extractor/momo_transport.py
 +++ b/payment_link_extractor/momo_transport.py
-@@ -2,15 +2,73 @@ from __future__ import annotations
+@@ -2,15 +2,74 @@ from __future__ import annotations
  
  """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
  
 -from typing import Any
 +import json
 +import os
++import re
 +import time
 +import uuid
 +from typing import Any, Mapping
  import secrets
- from urllib.parse import quote
+-from urllib.parse import quote
++from urllib.parse import quote, unquote
  
  import requests
  
@@ -176,7 +234,7 @@ index efe8e02..7ee3e08 100644
  MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
      {
          "name": "chrome150",
-@@ -43,19 +101,110 @@ class MomoTransportFactory:
+@@ -43,19 +102,110 @@ class MomoTransportFactory:
  
      def chatgpt(self, config: Any, proxy: str) -> requests.Session:
          session = _new_session(self.profile["impersonate"])
@@ -288,7 +346,25 @@ index efe8e02..7ee3e08 100644
          return session
  
      def stripe(self, config: Any) -> requests.Session:
-@@ -86,16 +235,111 @@ def _new_session(impersonate: str) -> Any:
+@@ -72,7 +222,16 @@ class MomoTransportFactory:
+ 
+     def momo(self, config: Any) -> requests.Session:
+         session = _new_session(self.profile["impersonate"])
+-        session.headers.update({"User-Agent": self.profile["user_agent"], "Accept": "text/html,application/json", "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8"})
++        session.headers.update(
++            {
++                "User-Agent": self.profile["user_agent"],
++                "Accept": "text/html,application/json",
++                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
++                "Sec-CH-UA": self.profile["sec_ch_ua"],
++                "Sec-CH-UA-Mobile": "?0",
++                "Sec-CH-UA-Platform": '"Windows"',
++            }
++        )
+         _set_proxy(session, config.checkout_proxy)
+         return session
+ 
+@@ -86,16 +245,172 @@ def _new_session(impersonate: str) -> Any:
  
  
  def _set_proxy(session: Any, proxy: str) -> None:
@@ -392,6 +468,67 @@ index efe8e02..7ee3e08 100644
 +    if flow:
 +        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
 +    return merged
++
++
++def momo_gateway_headers(
++    session: Any, gateway_url: str, *, csrf_token: str = ""
++) -> dict[str, str]:
++    """Build the browser-like headers used by MoMo gateway polling."""
++    headers = {
++        "Accept": "application/json, text/plain, */*",
++        "Content-Type": "application/json",
++        "Origin": "https://payment.momo.vn",
++        "Referer": gateway_url,
++        "Sec-Fetch-Dest": "empty",
++        "Sec-Fetch-Mode": "cors",
++        "Sec-Fetch-Site": "same-origin",
++    }
++    token = str(csrf_token or "").strip()
++    if not token:
++        token = str(getattr(session, "momo_csrf_token", "") or "").strip()
++    if not token:
++        token = os.getenv("OPLL_MOMO_CSRF_TOKEN", "").strip()
++    if token:
++        headers["X-CSRF-Token"] = token
++    return headers
++
++
++def capture_momo_csrf_token(session: Any, response: Any) -> str:
++    """Capture a runtime CSRF value from the gateway response or cookie jar."""
++    candidates: list[str] = []
++    response_headers = getattr(response, "headers", {}) or {}
++    if hasattr(response_headers, "items"):
++        for key, value in response_headers.items():
++            if str(key).lower() in {"x-csrf-token", "x-xsrf-token"}:
++                candidates.append(str(value or ""))
++    body = str(getattr(response, "text", "") or "")
++    if body:
++        # MoMo has used both a meta tag and a bootstrap object across gateway
++        # deployments.  Read only the value from the live response; never
++        # persist it in logs or source.
++        patterns = (
++            r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
++            r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
++        )
++        for pattern in patterns:
++            match = re.search(pattern, body, re.I)
++            if match:
++                candidates.append(match.group(1))
++    cookies = getattr(session, "cookies", None)
++    if cookies is not None:
++        for name in ("XSRF-TOKEN", "xsrf-token", "csrf-token", "CSRF-TOKEN"):
++            try:
++                value = cookies.get(name)
++            except Exception:
++                value = ""
++            if value:
++                candidates.append(unquote(str(value)))
++    for value in candidates:
++        selected = str(value or "").strip()
++        if selected:
++            session.momo_csrf_token = selected
++            return selected
++    return str(getattr(session, "momo_csrf_token", "") or "").strip()
 +
 +
  def close(session: Any) -> None:
@@ -500,7 +637,7 @@ index 56966fd..f37baf5 100644
      calls: list[tuple[str, str]] = []
  
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..0e07349 100644
+index fb47546..917fb67 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
 @@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
@@ -508,11 +645,25 @@ index fb47546..0e07349 100644
  from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
  from payment_link_extractor.momo_stripe import validate_momo_url
 -from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
-+from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, momo_request_headers, normalize_momo_proxy
++from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
  from payment_link_extractor.web.app import create_app
  from payment_link_extractor.web.tasks import TaskManager
  from payment_link_extractor.web.routes import _config_from_payload
-@@ -66,6 +66,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
+@@ -46,9 +46,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
+ 
+     class Session:
+         def request(self, method, endpoint, **kwargs):
++            if method == "GET":
++                assert endpoint.startswith("https://payment.momo.vn/v2/gateway/pay")
++                return SimpleNamespace(status_code=200, headers={})
+             assert method == "POST"
+             assert endpoint.endswith("/querySession")
+             assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
++            assert kwargs["headers"]["Origin"] == "https://payment.momo.vn"
+             return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
+ 
+     assert query_gateway(Session(), url)["status_code"] == 1000
+@@ -66,6 +70,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
      assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
  
  
@@ -529,7 +680,7 @@ index fb47546..0e07349 100644
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
      for value in (None, 1, -1):
-@@ -86,3 +96,49 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+@@ -86,3 +100,69 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -579,3 +730,23 @@ index fb47546..0e07349 100644
 +    )
 +    assert headers["OpenAI-Sentinel-Token"] == "runtime-proof"
 +    assert calls == [("chatgpt_checkout", "https://chatgpt.com/")]
++
++
++def test_momo_gateway_headers_use_runtime_csrf_only(monkeypatch) -> None:
++    monkeypatch.delenv("OPLL_MOMO_CSRF_TOKEN", raising=False)
++    session = SimpleNamespace(momo_csrf_token="csrf-runtime")
++    headers = momo_gateway_headers(
++        session, "https://payment.momo.vn/v2/gateway/pay?t=opaque&s=sig"
++    )
++    assert headers["X-CSRF-Token"] == "csrf-runtime"
++    assert headers["Origin"] == "https://payment.momo.vn"
++
++
++def test_momo_gateway_csrf_can_be_captured_from_live_page() -> None:
++    session = SimpleNamespace(cookies={})
++    response = SimpleNamespace(
++        headers={},
++        text='<meta name="csrf-token" content="csrf-from-page">',
++    )
++    assert capture_momo_csrf_token(session, response) == "csrf-from-page"
++    assert session.momo_csrf_token == "csrf-from-page"

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from typing import Any, Mapping
 import secrets
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import requests
 
@@ -221,7 +222,16 @@ class MomoTransportFactory:
 
     def momo(self, config: Any) -> requests.Session:
         session = _new_session(self.profile["impersonate"])
-        session.headers.update({"User-Agent": self.profile["user_agent"], "Accept": "text/html,application/json", "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8"})
+        session.headers.update(
+            {
+                "User-Agent": self.profile["user_agent"],
+                "Accept": "text/html,application/json",
+                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+                "Sec-CH-UA": self.profile["sec_ch_ua"],
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
+            }
+        )
         _set_proxy(session, config.checkout_proxy)
         return session
 
@@ -329,6 +339,67 @@ def momo_request_headers(
     if flow:
         merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
     return merged
+
+
+def momo_gateway_headers(
+    session: Any, gateway_url: str, *, csrf_token: str = ""
+) -> dict[str, str]:
+    """Build the browser-like headers used by MoMo gateway polling."""
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://payment.momo.vn",
+        "Referer": gateway_url,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    token = str(csrf_token or "").strip()
+    if not token:
+        token = str(getattr(session, "momo_csrf_token", "") or "").strip()
+    if not token:
+        token = os.getenv("OPLL_MOMO_CSRF_TOKEN", "").strip()
+    if token:
+        headers["X-CSRF-Token"] = token
+    return headers
+
+
+def capture_momo_csrf_token(session: Any, response: Any) -> str:
+    """Capture a runtime CSRF value from the gateway response or cookie jar."""
+    candidates: list[str] = []
+    response_headers = getattr(response, "headers", {}) or {}
+    if hasattr(response_headers, "items"):
+        for key, value in response_headers.items():
+            if str(key).lower() in {"x-csrf-token", "x-xsrf-token"}:
+                candidates.append(str(value or ""))
+    body = str(getattr(response, "text", "") or "")
+    if body:
+        # MoMo has used both a meta tag and a bootstrap object across gateway
+        # deployments.  Read only the value from the live response; never
+        # persist it in logs or source.
+        patterns = (
+            r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
+            r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, body, re.I)
+            if match:
+                candidates.append(match.group(1))
+    cookies = getattr(session, "cookies", None)
+    if cookies is not None:
+        for name in ("XSRF-TOKEN", "xsrf-token", "csrf-token", "CSRF-TOKEN"):
+            try:
+                value = cookies.get(name)
+            except Exception:
+                value = ""
+            if value:
+                candidates.append(unquote(str(value)))
+    for value in candidates:
+        selected = str(value or "").strip()
+        if selected:
+            session.momo_csrf_token = selected
+            return selected
+    return str(getattr(session, "momo_csrf_token", "") or "").strip()
 
 
 def close(session: Any) -> None:
