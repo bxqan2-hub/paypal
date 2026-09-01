@@ -1,8 +1,8 @@
 diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
-index 04d1be3..c860b2f 100644
+index 04d1be3..2b9a7e7 100644
 --- a/docs/MOMO_HAR_STATE_MACHINE.md
 +++ b/docs/MOMO_HAR_STATE_MACHINE.md
-@@ -18,3 +18,11 @@
+@@ -18,3 +18,13 @@
  - Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
  - 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
  - AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
@@ -13,6 +13,8 @@ index 04d1be3..c860b2f 100644
 +- Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
 +- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
 +- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
++- 提链第一步先用当前 VN 代理请求 `/backend-api/accounts/check/v4-2023-04-27`，读取账号 `eligible_promo_campaigns.plus`；未返回活动标识时切换代理继续检查，确认资格后才创建 Checkout。
++- `momo_zero_trial_validation` 只控制金额闸门：开启时 taxes 后要求 VND payable minor units 为 0，关闭时跳过该金额判断；资格预检仍保持在 Checkout 之前。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
 diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
 index 720a5a9..240b32a 100644
@@ -100,8 +102,21 @@ index 03ad188..5697603 100644
                  }
              )
              session.gopay_browser_profile = str(profile.get("name") or "")
+diff --git a/payment_link_extractor/models.py b/payment_link_extractor/models.py
+index df4b3ba..7e3aa9c 100644
+--- a/payment_link_extractor/models.py
++++ b/payment_link_extractor/models.py
+@@ -19,6 +19,8 @@ class ExtractionConfig:
+     gopay_zero_trial_validation: bool = True
+     # Momo-only zero-amount gate, kept separate from GoPay state.
+     momo_zero_trial_validation: bool = True
++    # Momo eligibility is checked before Checkout and may rotate the VN proxy pool.
++    momo_trial_eligibility_check: bool = True
+     # Runtime browser identity selected independently for each Momo attempt.
+     momo_fingerprint: str = ""
+     verbose: bool = True
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
-index 98a8ec6..7a6efaa 100644
+index 98a8ec6..25e9770 100644
 --- a/payment_link_extractor/momo_checkout.py
 +++ b/payment_link_extractor/momo_checkout.py
 @@ -8,6 +8,7 @@ from typing import Any
@@ -112,7 +127,7 @@ index 98a8ec6..7a6efaa 100644
  
  MOMO_COUNTRY = "VN"
  MOMO_CURRENCY = "VND"
-@@ -50,10 +51,27 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
+@@ -50,26 +51,45 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
      return value
  
  
@@ -142,15 +157,31 @@ index 98a8ec6..7a6efaa 100644
      return json_payload(response, stage)
  
  
-@@ -70,6 +88,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
-             "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
-             "checkout_ui_mode": "custom",
-         },
+ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+     path = "/backend-api/payments/checkout"
++    body: dict[str, Any] = {
++        "entry_point": "all_plans_pricing_modal",
++        "plan_name": "chatgptplusplan",
++        "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
++        "checkout_ui_mode": "custom",
++    }
+     payload = request(
+         session,
+         "POST",
+         "https://chatgpt.com" + path,
+         "Momo checkout",
+-        json={
+-            "entry_point": "all_plans_pricing_modal",
+-            "plan_name": "chatgptplusplan",
+-            "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
+-            "checkout_ui_mode": "custom",
+-        },
++        json=body,
 +        sentinel_flow="chatgpt_checkout",
          headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
      )
      sid = session_id(payload)
-@@ -78,15 +97,35 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+@@ -78,18 +98,37 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
      checkout = {
          "cs_id": sid,
          "session_kind": "openai_custom_checkout",
@@ -189,17 +220,21 @@ index 98a8ec6..7a6efaa 100644
 +            checkout[target] = value
      return checkout
  
- 
+-
+ def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
+     path = "/backend-api/payments/checkout/taxes"
+     processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
 diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
-index 51a8cc0..2718f2f 100644
+index 51a8cc0..78e3da3 100644
 --- a/payment_link_extractor/momo_core.py
 +++ b/payment_link_extractor/momo_core.py
-@@ -14,8 +14,13 @@ from .config import billing_for_country, currency_minor_scale
+@@ -14,8 +14,14 @@ from .config import billing_for_country, currency_minor_scale
  from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
  from .models import ExtractionConfig, PaymentLinkResult
  from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
 -from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
 -from .momo_transport import MomoTransportFactory, close
++from .momo_eligibility import probe_momo_trial_eligibility
 +from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 +from .momo_transport import (
 +    MomoTransportFactory,
@@ -210,7 +245,7 @@ index 51a8cc0..2718f2f 100644
  
  MOMO_RESULT_FIELD = "momo_url"
  
-@@ -58,9 +63,35 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
+@@ -58,9 +64,35 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
      session_id = _gateway_session_id(url)
      if not session_id:
          raise ProtocolError(502, "Momo gateway URL has invalid session token")
@@ -247,7 +282,51 @@ index 51a8cc0..2718f2f 100644
          if int(getattr(response, "status_code", 0) or 0) >= 400:
              raise ProtocolError(int(response.status_code), "Momo querySession failed")
          try:
-@@ -117,6 +148,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+@@ -80,6 +112,25 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+         raise ConfigurationError("Momo core requires payment_method=momo")
+     if str(config.country or "").upper() != MOMO_COUNTRY:
+         raise ConfigurationError("Momo core requires country=VN")
++    factory = transport_factory or MomoTransportFactory()
++    if bool(getattr(config, "momo_trial_eligibility_check", True)):
++        if stage_callback:
++            stage_callback("eligibility_check")
++        eligibility = probe_momo_trial_eligibility(
++            config,
++            transport_factory=factory,
++            cancel_event=cancel_event,
++            stage_callback=stage_callback,
++        )
++        selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
++        config = replace(
++            config,
++            checkout_proxy=selected_proxy,
++            update_proxy=selected_proxy,
++            checkout_proxy_attempts=(selected_proxy,),
++            update_proxy_attempts=(selected_proxy,),
++            proxy_pool=(selected_proxy,),
++        )
+     config = pin_momo_attempt_proxy(config)
+     def checkpoint(stage: str) -> None:
+         if cancel_event is not None and cancel_event.is_set():
+@@ -91,13 +142,15 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+     if email:
+         billing_profile = replace(billing_profile, email=email)
+     billing = billing_profile.to_dict()
+-    factory = transport_factory or MomoTransportFactory()
+     chatgpt = factory.chatgpt(config, config.checkout_proxy)
+     stripe = None
+     momo = None
+     try:
+         checkpoint("checkout")
+-        checkout = create_checkout(chatgpt, account_email=email)
++        checkout = create_checkout(
++            chatgpt,
++            account_email=email,
++        )
+         checkpoint("checkout_committed")
+         checkpoint("checkout_kind:openai_custom_checkout")
+         for _ in range(3):
+@@ -117,6 +170,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
          confirmed = checkout_confirm(chatgpt, checkout, token)
          intent = intent_confirm(stripe, checkout, token, confirmed)
          raw = redirect_url(intent)
@@ -256,8 +335,215 @@ index 51a8cc0..2718f2f 100644
          if not validate_momo_url(raw):
              raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
          checkpoint("redirect_resolution")
+diff --git a/payment_link_extractor/momo_eligibility.py b/payment_link_extractor/momo_eligibility.py
+new file mode 100644
+index 0000000..2397032
+--- /dev/null
++++ b/payment_link_extractor/momo_eligibility.py
+@@ -0,0 +1,201 @@
++from __future__ import annotations
++
++"""Standalone VN MoMo trial-eligibility probe.
++
++The probe is deliberately separate from Checkout: it can rotate a VN proxy
++pool and only the first eligible proxy is allowed to create an ``oaics_*``
++session.
++"""
++
++from dataclasses import replace
++import threading
++from typing import Any, Callable
++
++from .auth import account_id, normalize_access_token
++from .config import normalize_payment_method
++from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
++from .momo_transport import MomoTransportFactory, close, momo_request_headers
++
++
++MOMO_TRIAL_COUPON = "plus-1-month-free"
++MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
++
++
++class MomoEligibilityError(ProtocolError):
++    """Eligibility failure that occurred before Checkout creation."""
++
++    def __init__(self, status_code: int, message: str, *, retryable: bool = True) -> None:
++        super().__init__(status_code, message)
++        self.retryable = retryable
++
++
++def _proxy_candidates(config: Any) -> tuple[str, ...]:
++    values = getattr(config, "proxy_pool", ()) or getattr(
++        config, "checkout_proxy_attempts", ()
++    ) or (getattr(config, "checkout_proxy", ""),)
++    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
++
++
++def _attempt_config(config: Any, proxy: str) -> Any:
++    return replace(
++        config,
++        checkout_proxy=proxy,
++        update_proxy=proxy,
++        checkout_proxy_attempts=(proxy,),
++        update_proxy_attempts=(proxy,),
++        proxy_pool=(proxy,),
++    )
++
++
++def probe_momo_trial_eligibility(
++    config: Any,
++    *,
++    transport_factory: Any = None,
++    cancel_event: threading.Event | None = None,
++    stage_callback: Callable[[str], None] | None = None,
++) -> dict[str, Any]:
++    """Check the VN trial coupon before creating a Checkout session."""
++    if normalize_payment_method(str(getattr(config, "payment_method", ""))) != "momo":
++        raise ConfigurationError("Momo eligibility probe requires payment_method=momo")
++    if str(getattr(config, "country", "")).strip().upper() != "VN":
++        raise ConfigurationError("Momo eligibility probe requires country=VN")
++    token = normalize_access_token(str(getattr(config, "access_token", "") or ""))
++    if not token:
++        raise ConfigurationError("AT is required")
++    proxies = _proxy_candidates(config)
++    if not proxies:
++        raise ConfigurationError("VN checkout proxy is required for Momo eligibility")
++
++    factory = transport_factory or MomoTransportFactory()
++    probes: list[dict[str, Any]] = []
++    for index, proxy in enumerate(proxies, start=1):
++        if cancel_event is not None and cancel_event.is_set():
++            raise ExtractionCancelled("task cancellation requested")
++        if stage_callback is not None:
++            stage_callback(f"eligibility_proxy:{index}")
++        attempt = _attempt_config(replace(config, access_token=token), proxy)
++        chatgpt = factory.chatgpt(attempt, proxy)
++        url = (
++            f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
++        )
++        selected_account = account_id(token)
++        eligibility_headers = {
++            "Accept": "application/json",
++            "Referer": "https://chatgpt.com/",
++            "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
++            "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
++        }
++        if selected_account:
++            eligibility_headers["chatgpt-account-id"] = selected_account
++        try:
++            response = chatgpt.request(
++                "GET",
++                url,
++                headers=momo_request_headers(
++                    chatgpt,
++                    "GET",
++                    url,
++                    eligibility_headers,
++                ),
++                timeout=30,
++            )
++            status = int(getattr(response, "status_code", 0) or 0)
++            if status >= 400:
++                probes.append(
++                    {
++                        "attempt": index,
++                        "proxy_slot": index,
++                        "http_status": status,
++                        "state": "",
++                        "eligible": False,
++                        "failure_mode": "access_token_invalid" if status == 401 else "eligibility_http_error",
++                    }
++                )
++                if status == 401:
++                    raise MomoEligibilityError(
++                        status,
++                        "Momo eligibility authentication failed (HTTP 401)",
++                        retryable=False,
++                    )
++                continue
++            try:
++                payload = response.json() or {}
++            except Exception as exc:
++                probes.append(
++                    {
++                        "attempt": index,
++                        "proxy_slot": index,
++                        "http_status": status,
++                        "state": "",
++                        "eligible": False,
++                        "failure_mode": "invalid_json",
++                    }
++                )
++                continue
++            if not isinstance(payload, dict):
++                state = ""
++                eligible = False
++            else:
++                accounts = payload.get("accounts")
++                accounts = accounts if isinstance(accounts, dict) else {}
++                account = accounts.get(selected_account) or accounts.get("default") or {}
++                account = account if isinstance(account, dict) else {}
++                campaigns = account.get("eligible_promo_campaigns")
++                campaigns = campaigns if isinstance(campaigns, dict) else {}
++                plus = campaigns.get("plus")
++                plus = plus if isinstance(plus, dict) else {}
++                campaign_id = str(
++                    plus.get("id") or plus.get("campaign_id") or ""
++                ).strip()
++                state = "eligible" if campaign_id else "not_eligible"
++                eligible = bool(campaign_id)
++            probes.append(
++                {
++                    "attempt": index,
++                    "proxy_slot": index,
++                    "http_status": status,
++                    "state": state,
++                    "eligible": eligible,
++                    "coupon": MOMO_TRIAL_COUPON,
++                    "campaign_id": campaign_id if eligible else "",
++                }
++            )
++            if eligible:
++                if stage_callback is not None:
++                    stage_callback("eligibility_confirmed")
++                return {
++                    "ok": True,
++                    "eligible": True,
++                    "state": state,
++                    "coupon": MOMO_TRIAL_COUPON,
++                    "country": "VN",
++                    "currency": "VND",
++                    "attempt": index,
++                    "max_attempts": len(proxies),
++                    "proxy_slot": index,
++                    "proxy": proxy,
++                    "campaign_id": campaign_id,
++                    "source": "chatgpt_check_coupon",
++                    "probes": probes,
++                }
++        except MomoEligibilityError:
++            raise
++        except Exception as exc:
++            probes.append(
++                {
++                    "attempt": index,
++                    "proxy_slot": index,
++                    "http_status": 0,
++                    "state": "",
++                    "eligible": False,
++                    "failure_mode": type(exc).__name__,
++                }
++            )
++        finally:
++            close(chatgpt)
++
++    raise MomoEligibilityError(
++        409,
++        "Momo trial eligibility rejected on all VN proxies",
++        retryable=True,
++    )
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
-index 6713d52..a6a4d0b 100644
+index 6713d52..d8630b5 100644
 --- a/payment_link_extractor/momo_stripe.py
 +++ b/payment_link_extractor/momo_stripe.py
 @@ -3,6 +3,8 @@ from __future__ import annotations
@@ -269,7 +555,7 @@ index 6713d52..a6a4d0b 100644
  import uuid
  from typing import Any
  from urllib.parse import parse_qs, urlencode, urlparse
-@@ -10,26 +12,111 @@ from urllib.parse import parse_qs, urlencode, urlparse
+@@ -10,26 +12,128 @@ from urllib.parse import parse_qs, urlencode, urlparse
  from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
  from .errors import ProtocolError
  from .momo_checkout import json_payload
@@ -319,7 +605,24 @@ index 6713d52..a6a4d0b 100644
 +        param = str(error.get("param") or "").strip()
 +        if code and param:
 +            return f"{code};param={param}"
-+        return code
++    return code
++
++
++def _find_client_secret(value: Any) -> str:
++    if isinstance(value, dict):
++        direct = str(value.get("client_secret") or "").strip()
++        if direct:
++            return direct
++        for child in value.values():
++            found = _find_client_secret(child)
++            if found:
++                return found
++    elif isinstance(value, list):
++        for child in value:
++            found = _find_client_secret(child)
++            if found:
++                return found
++    return ""
 +    return ""
  
  
@@ -384,7 +687,7 @@ index 6713d52..a6a4d0b 100644
      body: dict[str, Any] = {
          "payment_method_data[type]": "momo",
          "payment_method_data[billing_details][name]": billing["name"],
-@@ -41,37 +128,85 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+@@ -41,52 +145,116 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
          "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
          "payment_method_data[referrer]": "https://chatgpt.com",
          "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
@@ -482,7 +785,19 @@ index 6713d52..a6a4d0b 100644
      if int(getattr(response, "status_code", 0) or 0) >= 400:
          raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
      payload = json_payload(response, "Momo checkout confirm")
-@@ -86,7 +221,20 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
+-    if str(payload.get("status") or "").lower() != "success" or "client_secret" not in payload:
++    client_secret = _find_client_secret(payload)
++    if client_secret:
++        payload.setdefault("client_secret", client_secret)
++    if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
+         raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
+     return payload
+ 
+ 
+ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed: dict[str, Any]) -> dict[str, Any]:
+-    secret = str(confirmed.get("client_secret") or "")
++    secret = _find_client_secret(confirmed)
+     intent_id = secret.split("_secret_", 1)[0]
      if not intent_id.startswith(("pi_", "seti_")):
          raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
      endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
@@ -504,7 +819,7 @@ index 6713d52..a6a4d0b 100644
  
  
  def redirect_url(payload: dict[str, Any]) -> str:
-@@ -101,6 +249,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
+@@ -101,6 +269,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
      return ""
  
  
@@ -1036,6 +1351,38 @@ index 1a1ade5..c0222cf 100644
                  "Accept-Language": f"{country_locale(config)},en;q=0.9",
              }
          )
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 712e639..506559d 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -279,6 +279,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         "momo_zero_trial_validation",
+         _env_bool("OPLL_MOMO_ZERO_TRIAL_VALIDATION", True),
+     )
++    momo_trial_eligibility_check = payload.get(
++        "momo_trial_eligibility_check",
++        _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
++    )
+     if "max_attempts" in payload:
+         max_attempts = _max_attempts_value(payload.get("max_attempts"))
+         retry_count = max_attempts - 1
+@@ -296,6 +300,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         raise ConfigurationError("gopay_zero_trial_validation must be boolean")
+     if not isinstance(momo_zero_trial_validation, bool):
+         raise ConfigurationError("momo_zero_trial_validation must be boolean")
++    if not isinstance(momo_trial_eligibility_check, bool):
++        raise ConfigurationError("momo_trial_eligibility_check must be boolean")
+     if not str(access_token or "").strip():
+         raise ConfigurationError("AT is required")
+     if not str(checkout_proxy or "").strip():
+@@ -339,6 +345,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         apply_checkout_update=apply_update,
+         gopay_zero_trial_validation=gopay_zero_trial_validation,
+         momo_zero_trial_validation=momo_zero_trial_validation,
++        momo_trial_eligibility_check=momo_trial_eligibility_check,
+         verbose=False,
+         oaics_only=oaics_only,
+         retry_count=retry_count,
 diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
 index 5c0a889..6f9718c 100644
 --- a/payment_link_extractor/web/tasks.py
@@ -1100,10 +1447,10 @@ index 56966fd..f37baf5 100644
      calls: list[tuple[str, str]] = []
  
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..f10990a 100644
+index fb47546..52e5708 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
-@@ -6,11 +6,12 @@ from types import SimpleNamespace
+@@ -6,11 +6,13 @@ from types import SimpleNamespace
  
  from payment_link_extractor.application import _normalize_config
  from payment_link_extractor.channels import PAYMENT_CHANNELS
@@ -1113,13 +1460,22 @@ index fb47546..f10990a 100644
  from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 -from payment_link_extractor.momo_stripe import validate_momo_url
 -from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
++from payment_link_extractor.momo_eligibility import probe_momo_trial_eligibility
 +from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
 +from payment_link_extractor.momo_checkout import create_checkout
 +from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
  from payment_link_extractor.web.app import create_app
  from payment_link_extractor.web.tasks import TaskManager
  from payment_link_extractor.web.routes import _config_from_payload
-@@ -46,9 +47,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
+@@ -26,6 +28,7 @@ def test_momo_registry_and_fixed_country() -> None:
+     config = _normalize_config(ExtractionConfig("token", "http://proxy", "", country="US", payment_method="momo"))
+     assert (config.country, config.payment_method) == ("VN", "momo")
+     assert config.momo_zero_trial_validation is True
++    assert config.momo_trial_eligibility_check is True
+ 
+ 
+ def test_momo_route_and_ui_defaults() -> None:
+@@ -46,9 +49,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
  
      class Session:
          def request(self, method, endpoint, **kwargs):
@@ -1133,7 +1489,7 @@ index fb47546..f10990a 100644
              return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
  
      assert query_gateway(Session(), url)["status_code"] == 1000
-@@ -66,6 +71,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
+@@ -66,6 +73,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
      assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
  
  
@@ -1150,7 +1506,7 @@ index fb47546..f10990a 100644
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
      for value in (None, 1, -1):
-@@ -77,6 +92,10 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+@@ -77,6 +94,10 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
              raise AssertionError("non-zero or missing Momo amount was accepted")
  
  
@@ -1161,7 +1517,7 @@ index fb47546..f10990a 100644
  def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
      assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
      assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
-@@ -86,3 +105,108 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+@@ -86,3 +107,186 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -1233,6 +1589,66 @@ index fb47546..f10990a 100644
 +    assert session.momo_csrf_token == "csrf-from-page"
 +
 +
++def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
++    class Response:
++        status_code = 200
++
++        def __init__(self, state: str):
++            self.state = state
++
++        def json(self):
++            return {
++                "accounts": {
++                    "default": {
++                        "eligible_promo_campaigns": {
++                            "plus": (
++                                {"campaign_id": "plus-1-month-free"}
++                                if self.state == "eligible"
++                                else {}
++                            )
++                        }
++                    }
++                }
++            }
++
++    class Session:
++        def __init__(self, state: str):
++            self.state = state
++            self.headers = {}
++
++        def request(self, method, url, **kwargs):
++            assert method == "GET"
++            assert "/accounts/check/v4-2023-04-27" in url
++            return Response(self.state)
++
++        def close(self):
++            pass
++
++    class Factory:
++        def __init__(self):
++            self.proxies = []
++
++        def chatgpt(self, config, proxy):
++            self.proxies.append(proxy)
++            return Session("not_eligible" if len(self.proxies) == 1 else "eligible")
++
++    config = ExtractionConfig(
++        "token",
++        "proxy-1",
++        "proxy-1",
++        country="VN",
++        payment_method="momo",
++        proxy_pool=("proxy-1", "proxy-2"),
++    )
++    events = []
++    result = probe_momo_trial_eligibility(
++        config, transport_factory=Factory(), stage_callback=events.append
++    )
++    assert result["eligible"] is True
++    assert result["proxy"] == "proxy-2"
++    assert events == ["eligibility_proxy:1", "eligibility_proxy:2", "eligibility_confirmed"]
++
++
 +def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
 +    calls = []
 +
@@ -1258,6 +1674,24 @@ index fb47546..f10990a 100644
 +    confirm_headers = calls[-1][2]["headers"]
 +    assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
 +    assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]
++
++
++def test_momo_confirm_accepts_nested_setup_intent_secret() -> None:
++    class Session:
++        headers = {}
++
++        def request(self, method, url, **kwargs):
++            return SimpleNamespace(
++                status_code=200,
++                json=lambda: {
++                    "status": "open",
++                    "setup_intent": {"client_secret": "seti_fixture_secret"},
++                },
++            )
++
++    checkout = {"cs_id": "oaics_fixture", "processor_entity": "openai_llc"}
++    result = checkout_confirm(Session(), checkout, "ctoken_fixture")
++    assert result["client_secret"] == "seti_fixture_secret"
 +
 +
 +def test_momo_redirect_follows_stripe_authorize_hop() -> None:

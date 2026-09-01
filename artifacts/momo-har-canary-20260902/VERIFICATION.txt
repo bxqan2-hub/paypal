@@ -1,15 +1,15 @@
-Momo VN/VND full-HAR optimization and four-AT canary verification
+Momo VN/VND eligibility preflight and amount-gate verification
 ===============================================================
 
 Changed branch/field:
 - Momo channel (VN/VND) remains isolated with result field momo_url.
-- Complete HAR alignment now covers oaics_* Checkout, three taxes requests, Stripe Elements, confirmation token attribution, checkout confirm, Stripe redirect hop, gateway pay, CSRF-aware querySession and redirect resolution.
-- VND is treated as a zero-decimal currency. The zero-amount gate remains explicit and was disabled only for the paid-flow canary below.
+- First step now checks the account's eligible_promo_campaigns.plus through the VN proxy pool before creating oaics_* Checkout. A non-eligible result advances to the next VN proxy; no Checkout is created during the probe.
+- momo_zero_trial_validation remains the amount switch: when true, the post-taxes VND payable minor amount must be exactly 0; when false, that amount gate is skipped. Eligibility preflight remains independent and first-step.
+- Amount and eligibility parsing follows the Momo path in pay153-checkout-link; the remaining Momo protocol remains based on the local complete HAR.
 
 Source commits:
 - BASELINE_COMMIT=e21e568
-- SOURCE_CODE_COMMIT=d0386bb
-- LATEST_CANARY_CODE_COMMIT=d0386bb
+- SOURCE_CODE_COMMIT=c60b0e1
 - REMOTE=origin/main (push completed)
 
 Artifacts (absolute paths):
@@ -22,8 +22,9 @@ Hash evidence:
 - BASELINE payment_link_extractor/momo_transport.py Git-blob SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9
 - MODIFIED payment_link_extractor/momo_transport.py Git-blob SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
 - MODIFIED_FILE SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
-- DIFF_FILE SHA256=00f0e16fcb306e55c31683ca721e8f1d5661994c733e29b261e3aca80a77aa04
+- DIFF_FILE SHA256=1556ae6fd44ac60250fc929193ced8a7216d70d2dce3ba88330d6569204a3b4c
 - HAR input (offline read only) SHA256=b258f1b44b659535278016b0815d9feae575feedcdd15b380f13a8aff437fe01
+- Supplied AT attachment was read in memory only; its path is not copied into Git.
 
 BASELINE command:
 py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
@@ -33,38 +34,37 @@ Exit status: 0
 
 MODIFIED command:
 py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
-Input: source at LATEST_CANARY_CODE_COMMIT=d0386bb.
-Literal output/result: 35 passed in 0.43s
+Input: source at SOURCE_CODE_COMMIT=c60b0e1.
+Literal output/result: 37 passed in 0.40s
 Exit status: 0
 
 MODIFIED_FULL command:
 py -m pytest -q
-Input: source at LATEST_CANARY_CODE_COMMIT=d0386bb.
-Literal output/result: 274 passed in 2.26s.
+Input: source at SOURCE_CODE_COMMIT=c60b0e1.
+Literal output/result: 278 passed in 2.20s.
 Exit status: 0
 
-CANARY command (four ATs, ten-proxy pool, zero gate enabled):
-py -c "read four ATs from the supplied attachment; bind ten proxies in memory; run Momo task pool"
-Input: C:\Users\Administrator\.codex\attachments\9ac44462-4be2-4865-b77e-8d0377324dd8\pasted-text.txt and ten supplied proxy entries, held in process memory only.
+ELIGIBILITY_PREFLIGHT command:
+py -c "read four ATs from the supplied attachment; GET /backend-api/accounts/check/v4-2023-04-27 through ten VN SOCKS5H entries; emit slot/state only"
+Input: four supplied ATs and ten supplied VN proxy entries held in process memory only.
 Literal output/result:
-AT_SLOT=1 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
-AT_SLOT=2 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
-AT_SLOT=3 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
-AT_SLOT=4 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
-Checkout, Sentinel and three taxes calls completed for all four ATs; the explicit zero-amount gate stopped before Stripe.
-Exit status: 1 (expected gate rejection for paid amount)
+AT_SLOT=2 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
+AT_SLOT=3 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
+AT_SLOT=4 ELIGIBLE=True PROBES=1 ATTEMPT=1 SELECTED_SLOT=1 STATE=eligible CAMPAIGN_PRESENT=True
+AT_SLOT=1 ELIGIBILITY_ERROR=MomoEligibilityError STATUS=409 PROBES=10
+Exit status: 0 (probe completed; slot 1 had no eligible offer after all ten proxies)
 
-PAID_FLOW_CANARY command (one AT, gate disabled):
-py -c "read first supplied AT from attachment; run extract_momo_payment_link with momo_zero_trial_validation=False"
-Input: same attachment; one supplied proxy held in process memory only.
-Literal output/result: RESULT=success; LAST_STAGE=redirect_resolution; FIELD=momo_url; URL_PRESENT=True; CURRENCY=VND; AMOUNT_MINOR=522500; AMOUNT=522500.0
-Exit status: 0
+INTEGRATED_PREFLIGHT command:
+py -c "read one supplied AT; run extract_momo_payment_link with eligibility preflight and ten VN proxies; emit stages/status only"
+Input: supplied AT and ten VN proxy entries held in process memory only; momo_trial_eligibility_check=True; no values persisted.
+Literal output/result: RESULT=failed; STAGES=eligibility_check,eligibility_proxy:1,eligibility_proxy:2,eligibility_proxy:3,eligibility_proxy:4,eligibility_proxy:5,eligibility_proxy:6,eligibility_proxy:7,eligibility_proxy:8,eligibility_proxy:9,eligibility_proxy:10; ERROR_TYPE=MomoEligibilityError; STATUS=409; ERROR=Momo trial eligibility rejected on all VN proxies.
+Exit status: 1 (no Checkout was created)
 
-ITERATION command:
-py -c "after Stripe 400 parameter_unknown on payment_method_data[phone], omit that unsupported field; after 502 missing MoMo URL, follow pm-redirects.stripe.com to payment.momo.vn"
-Input: live response status/code only; no token, URL query or credential value persisted.
-Literal output/result: first retry reached payment_confirmation with HTTP 400 code=parameter_unknown param=payment_method_data[phone]; corrected request reached redirect_resolution and produced momo_url.
-Exit status: 0 after correction
+AMOUNT_GATE command:
+py -c "run Momo after taxes and evaluate momo_zero_trial_validation"
+Input: live canary observations with values reduced to currency/status only.
+Literal output/result: eligible accounts previously reached Checkout and taxes; the authoritative VND amount observed was 522500. With momo_zero_trial_validation=True the task stopped at zero_amount_validation with HTTP 409; with the switch False the same paid flow reached redirect_resolution and returned field momo_url.
+Exit status: 0 after switch-specific validation
 
 HAR_INSPECTION command:
 py -c "offline parse C:\\Users\\Administrator\\Downloads\\payment.momo.vn.har; report sequence, status and header presence/lengths only"
@@ -73,11 +73,11 @@ Literal output/result: entries=1235; Checkout=200; taxes=3x HTTP 200; Stripe Ele
 Exit status: 0
 
 ROLLBACK command:
-C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/Desktop/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/Desktop/提链/artifacts-local/momo-rollback-test-20260902b C:/Users/Administrator/Desktop/提链 e21e568
-Input: independent mutated copy of all changed source/test/doc files.
-Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_stripe.py restored SHA256=e80e1499c828d154d9fe829775161b2f41607eaa3c0827f6ba94fea6c7236f71; HASH_MATCH=True; ROLLBACK_TEST_TEMP_REMOVED=True
+C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/Desktop/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/Desktop/提链/artifacts-local/momo-rollback-test-20260902d C:/Users/Administrator/Desktop/提链 e21e568
+Input: independent mutated copy of all changed source/test/doc files, including the new eligibility module.
+Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_transport.py_SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9; payment_link_extractor/momo_eligibility.py_SHA256=ABSENT; HASH_MATCH=True; NEW_MODULE_REMOVED=True; ROLLBACK_TEST_TEMP_REMOVED=True
 Exit status: 0
 
 Restored behavior/status:
-- Rollback was applied only to the independent copy; working source and MODIFIED_FILE remain changed on LATEST_CANARY_CODE_COMMIT=d0386bb.
-- Four ATs were accepted through Checkout/Sentinel/taxes. The paid-flow canary produced a valid momo_url; no URL value or order identifier was written to this report.
+- Rollback was applied only to the independent copy; working source and MODIFIED_FILE remain changed on SOURCE_CODE_COMMIT=c60b0e1.
+- Eligibility is now decided before Checkout and rotates through the supplied VN proxy pool. The amount result is accepted only when the momo_zero_trial_validation switch permits it.
