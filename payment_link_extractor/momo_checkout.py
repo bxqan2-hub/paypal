@@ -107,10 +107,24 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
         "currency": MOMO_CURRENCY,
         "account_email": account_email,
     }
-    for key in ("checkout_session", "checkout_state", "publishable_key", "customer_session_client_secret", "confirm_return_url"):
-        value = _walk(payload, (key,))
+    aliases = {
+        "checkout_session": ("checkout_session", "checkoutSession"),
+        "checkout_state": ("checkout_state", "checkoutState"),
+        "publishable_key": (
+            "publishable_key",
+            "stripe_publishable_key",
+            "stripePublishableKey",
+        ),
+        "customer_session_client_secret": (
+            "customer_session_client_secret",
+            "customerSessionClientSecret",
+        ),
+        "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
+    }
+    for target, keys in aliases.items():
+        value = _walk(payload, keys)
         if value not in (None, "", [], {}):
-            checkout[key] = value
+            checkout[target] = value
     return checkout
 
 

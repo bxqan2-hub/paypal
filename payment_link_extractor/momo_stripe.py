@@ -3,6 +3,7 @@ from __future__ import annotations
 """Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
 
 import random
+import os
 import uuid
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -13,6 +14,19 @@ from .momo_checkout import json_payload
 from .momo_transport import momo_request_headers
 
 
+def _payable_amount_minor(checkout: dict[str, Any]) -> int:
+    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+    total = state.get("total") if isinstance(state.get("total"), dict) else {}
+    due = total.get("total") if isinstance(total.get("total"), dict) else {}
+    raw = due.get("minorUnitsAmount")
+    if raw in (None, ""):
+        raw = checkout.get("payable_amount_minor")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
     response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
     if int(getattr(response, "status_code", 0) or 0) >= 400:
@@ -21,7 +35,36 @@ def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str,
 
 
 def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
-    response = session.request("GET", "https://api.stripe.com/v1/elements/sessions", params={"locale": "vi-VN", "currency": "vnd", "mode": "subscription", "key": checkout.get("publishable_key") or DEFAULT_STRIPE_PK}, timeout=30)
+    amount = _payable_amount_minor(checkout)
+    key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
+    params: dict[str, Any] = {
+        "deferred_intent[mode]": "subscription",
+        "deferred_intent[amount]": str(amount),
+        "deferred_intent[currency]": "vnd",
+        "deferred_intent[setup_future_usage]": "off_session",
+        "deferred_intent[payment_method_types][0]": "card",
+        "deferred_intent[payment_method_types][1]": "link",
+        "deferred_intent[payment_method_types][2]": "momo",
+        "currency": "vnd",
+        "key": key,
+        "_stripe_version": STRIPE_VERSION_BASE,
+        "elements_init_source": "stripe.elements",
+        "referrer_host": "chatgpt.com",
+        "stripe_js_id": str(checkout.get("stripe_js_id") or uuid.uuid4()),
+        "locale": "vi-VN",
+        "browser_timezone": os.getenv("OPLL_MOMO_BROWSER_TIMEZONE", "").strip()
+        or "Asia/Saigon",
+        "type": "deferred_intent",
+    }
+    secret = str(checkout.get("customer_session_client_secret") or "").strip()
+    if secret:
+        params["customer_session_client_secret"] = secret
+    response = session.request(
+        "GET",
+        "https://api.stripe.com/v1/elements/sessions",
+        params=params,
+        timeout=30,
+    )
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         raise ProtocolError(int(response.status_code), "Momo Stripe Elements init failed")
     payload = json_payload(response, "Momo Stripe Elements init")
