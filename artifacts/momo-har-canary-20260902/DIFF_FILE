@@ -14,6 +14,21 @@ index 04d1be3..c860b2f 100644
 +- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
 +- 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
 +- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
+diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
+index 720a5a9..240b32a 100644
+--- a/payment_link_extractor/config.py
++++ b/payment_link_extractor/config.py
+@@ -104,7 +104,9 @@ def billing_dict_for_country(country: str) -> dict[str, str]:
+ 
+ def currency_minor_scale(currency: str) -> int:
+     """Return the number of decimal places for display conversion."""
+-    return 0 if str(currency or "").upper() in {"JPY", "IDR"} else 2
++    # Stripe represents VND in whole đồng (no fractional subunit), alongside
++    # the other zero-decimal currencies supported by this application.
++    return 0 if str(currency or "").upper() in {"JPY", "IDR", "VND"} else 2
+ 
+ 
+ def normalize_payment_method(value: str) -> str:
 diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
 index 03ad188..5697603 100644
 --- a/payment_link_extractor/gopay_transport.py
@@ -86,7 +101,7 @@ index 03ad188..5697603 100644
              )
              session.gopay_browser_profile = str(profile.get("name") or "")
 diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
-index 98a8ec6..1a9cba5 100644
+index 98a8ec6..7a6efaa 100644
 --- a/payment_link_extractor/momo_checkout.py
 +++ b/payment_link_extractor/momo_checkout.py
 @@ -8,6 +8,7 @@ from typing import Any
@@ -97,7 +112,7 @@ index 98a8ec6..1a9cba5 100644
  
  MOMO_COUNTRY = "VN"
  MOMO_CURRENCY = "VND"
-@@ -50,7 +51,23 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
+@@ -50,10 +51,27 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
      return value
  
  
@@ -121,8 +136,13 @@ index 98a8ec6..1a9cba5 100644
 +    )
      response = session.request(method, url, timeout=30, **kwargs)
      if int(getattr(response, "status_code", 0) or 0) >= 400:
-         raise ProtocolError(int(response.status_code), f"{stage} failed")
-@@ -70,6 +87,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+-        raise ProtocolError(int(response.status_code), f"{stage} failed")
++        status = int(response.status_code)
++        raise ProtocolError(status, f"{stage} failed (HTTP {status})")
+     return json_payload(response, stage)
+ 
+ 
+@@ -70,6 +88,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
              "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
              "checkout_ui_mode": "custom",
          },
@@ -130,7 +150,7 @@ index 98a8ec6..1a9cba5 100644
          headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
      )
      sid = session_id(payload)
-@@ -78,7 +96,12 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+@@ -78,15 +97,35 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
      checkout = {
          "cs_id": sid,
          "session_kind": "openai_custom_checkout",
@@ -144,15 +164,43 @@ index 98a8ec6..1a9cba5 100644
          "billing_country": MOMO_COUNTRY,
          "currency": MOMO_CURRENCY,
          "account_email": account_email,
+     }
+-    for key in ("checkout_session", "checkout_state", "publishable_key", "customer_session_client_secret", "confirm_return_url"):
+-        value = _walk(payload, (key,))
++    aliases = {
++        "checkout_session": ("checkout_session", "checkoutSession"),
++        "checkout_state": ("checkout_state", "checkoutState"),
++        "publishable_key": (
++            "publishable_key",
++            "stripe_publishable_key",
++            "stripePublishableKey",
++        ),
++        "customer_session_client_secret": (
++            "customer_session_client_secret",
++            "customerSessionClientSecret",
++        ),
++        "customer": ("customer", "customer_id", "customerId"),
++        "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
++    }
++    for target, keys in aliases.items():
++        value = _walk(payload, keys)
+         if value not in (None, "", [], {}):
+-            checkout[key] = value
++            checkout[target] = value
+     return checkout
+ 
+ 
 diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
-index 51a8cc0..fa5cd73 100644
+index 51a8cc0..2718f2f 100644
 --- a/payment_link_extractor/momo_core.py
 +++ b/payment_link_extractor/momo_core.py
-@@ -15,7 +15,12 @@ from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
+@@ -14,8 +14,13 @@ from .config import billing_for_country, currency_minor_scale
+ from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
  from .models import ExtractionConfig, PaymentLinkResult
  from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
- from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
+-from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
 -from .momo_transport import MomoTransportFactory, close
++from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 +from .momo_transport import (
 +    MomoTransportFactory,
 +    capture_momo_csrf_token,
@@ -199,19 +247,209 @@ index 51a8cc0..fa5cd73 100644
          if int(getattr(response, "status_code", 0) or 0) >= 400:
              raise ProtocolError(int(response.status_code), "Momo querySession failed")
          try:
+@@ -117,6 +148,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+         confirmed = checkout_confirm(chatgpt, checkout, token)
+         intent = intent_confirm(stripe, checkout, token, confirmed)
+         raw = redirect_url(intent)
++        if raw and not validate_momo_url(raw):
++            raw = resolve_momo_redirect(stripe, raw)
+         if not validate_momo_url(raw):
+             raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
+         checkpoint("redirect_resolution")
 diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
-index 6713d52..63ac1a9 100644
+index 6713d52..a6a4d0b 100644
 --- a/payment_link_extractor/momo_stripe.py
 +++ b/payment_link_extractor/momo_stripe.py
-@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ """Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
+ 
+ import random
++import os
++import secrets
+ import uuid
+ from typing import Any
+ from urllib.parse import parse_qs, urlencode, urlparse
+@@ -10,26 +12,111 @@ from urllib.parse import parse_qs, urlencode, urlparse
  from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
  from .errors import ProtocolError
  from .momo_checkout import json_payload
 +from .momo_transport import momo_request_headers
++
++
++def _payable_amount_minor(checkout: dict[str, Any]) -> int:
++    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
++    total = state.get("total") if isinstance(state.get("total"), dict) else {}
++    due = total.get("total") if isinstance(total.get("total"), dict) else {}
++    raw = due.get("minorUnitsAmount")
++    if raw in (None, ""):
++        raw = checkout.get("payable_amount_minor")
++    try:
++        return max(0, int(raw))
++    except (TypeError, ValueError):
++        return 0
++
++
++def _stripe_fingerprint_id() -> str:
++    """Match Stripe.js's UUID-plus-hex fingerprint shape observed in HAR."""
++    return f"{uuid.uuid4()}{secrets.token_hex(3)}"
++
++
++def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, str]:
++    session_id = str(checkout.get("stripe_client_session_id") or uuid.uuid4())
++    checkout["stripe_client_session_id"] = session_id
++    fields = {
++        "client_session_id": session_id,
++        "merchant_integration_source": source,
++        "merchant_integration_subtype": "payment-element",
++        "merchant_integration_version": "2021",
++        "payment_intent_creation_flow": "deferred",
++        "payment_method_selection_flow": "merchant_specified",
++    }
++    return fields
++
++
++def _stripe_error_code(response: Any) -> str:
++    try:
++        payload = response.json() or {}
++    except Exception:
++        return ""
++    error = payload.get("error") if isinstance(payload, dict) else None
++    if isinstance(error, dict):
++        code = str(error.get("code") or error.get("type") or "").strip()
++        param = str(error.get("param") or "").strip()
++        if code and param:
++            return f"{code};param={param}"
++        return code
++    return ""
  
  
  def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
-@@ -71,7 +72,31 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+     response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
+     if int(getattr(response, "status_code", 0) or 0) >= 400:
+-        raise ProtocolError(int(response.status_code), f"{stage} failed")
++        status = int(response.status_code)
++        code = _stripe_error_code(response)
++        suffix = f", code={code}" if code else ""
++        raise ProtocolError(status, f"{stage} failed (HTTP {status}{suffix})")
+     return json_payload(response, stage)
+ 
+ 
+ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
+-    response = session.request("GET", "https://api.stripe.com/v1/elements/sessions", params={"locale": "vi-VN", "currency": "vnd", "mode": "subscription", "key": checkout.get("publishable_key") or DEFAULT_STRIPE_PK}, timeout=30)
++    amount = _payable_amount_minor(checkout)
++    key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
++    params: dict[str, Any] = {
++        "deferred_intent[mode]": "subscription",
++        "deferred_intent[amount]": str(amount),
++        "deferred_intent[currency]": "vnd",
++        "deferred_intent[setup_future_usage]": "off_session",
++        "deferred_intent[payment_method_types][0]": "card",
++        "deferred_intent[payment_method_types][1]": "link",
++        "deferred_intent[payment_method_types][2]": "momo",
++        "currency": "vnd",
++        "key": key,
++        "_stripe_version": STRIPE_VERSION_BASE,
++        "elements_init_source": "stripe.elements",
++        "referrer_host": "chatgpt.com",
++        "stripe_js_id": str(checkout.get("stripe_js_id") or uuid.uuid4()),
++        "locale": "vi-VN",
++        "browser_timezone": os.getenv("OPLL_MOMO_BROWSER_TIMEZONE", "").strip()
++        or "Asia/Saigon",
++        "type": "deferred_intent",
++    }
++    secret = str(checkout.get("customer_session_client_secret") or "").strip()
++    if secret:
++        params["customer_session_client_secret"] = secret
++    response = session.request(
++        "GET",
++        "https://api.stripe.com/v1/elements/sessions",
++        params=params,
++        timeout=30,
++    )
+     if int(getattr(response, "status_code", 0) or 0) >= 400:
+-        raise ProtocolError(int(response.status_code), "Momo Stripe Elements init failed")
++        status = int(response.status_code)
++        code = _stripe_error_code(response)
++        suffix = f", code={code}" if code else ""
++        raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
+     payload = json_payload(response, "Momo Stripe Elements init")
+     checkout["elements_session"] = payload
++    checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
+     return payload
+ 
+ 
+ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str, str], captcha: str = "") -> str:
+     key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
++    nested_attribution = _attribution_fields(checkout, source="elements")
+     body: dict[str, Any] = {
+         "payment_method_data[type]": "momo",
+         "payment_method_data[billing_details][name]": billing["name"],
+@@ -41,37 +128,85 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+         "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
+         "payment_method_data[referrer]": "https://chatgpt.com",
+         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
+-        "payment_method_data[guid]": uuid.uuid4().hex,
+-        "payment_method_data[muid]": uuid.uuid4().hex,
+-        "payment_method_data[sid]": uuid.uuid4().hex,
++        "payment_method_data[guid]": _stripe_fingerprint_id(),
++        "payment_method_data[muid]": _stripe_fingerprint_id(),
++        "payment_method_data[sid]": _stripe_fingerprint_id(),
+         "setup_future_usage": "off_session",
+         "mandate_data[customer_acceptance][type]": "online",
+         "mandate_data[customer_acceptance][online][infer_from_client]": "true",
+         "client_context[currency]": "vnd",
+         "client_context[mode]": "subscription",
+-        "client_context[payment_method_types][0]": "momo",
++        "client_context[payment_method_types][0]": "card",
+         "client_context[payment_method_types][1]": "link",
+-        "client_context[payment_method_types][2]": "card",
++        "client_context[payment_method_types][2]": "momo",
+         "set_as_default_payment_method": "false",
+         "key": key,
+         "_stripe_version": STRIPE_VERSION_BASE,
+     }
+-    if captcha:
+-        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha
++    captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
++    if captcha_value:
++        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
++    customer = str(checkout.get("customer") or "").strip()
++    if customer:
++        body["client_context[customer]"] = customer
+     ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
+-    for source, target in (("session_id", "elements_session_id"), ("config_id", "elements_session_config_id")):
+-        if ctx.get(source):
+-            body[f"payment_method_data[client_attribution_metadata][{target}]"] = str(ctx[source])
++    elements_session_id = str(
++        ctx.get("session_id") or ctx.get("id") or ctx.get("elements_session_id") or ""
++    )
++    elements_config_id = str(
++        ctx.get("config_id") or ctx.get("elements_session_config_id") or ""
++    )
++    if elements_session_id:
++        body["payment_method_data[client_attribution_metadata][elements_session_id]"] = elements_session_id
++    if elements_config_id:
++        body["payment_method_data[client_attribution_metadata][elements_session_config_id]"] = elements_config_id
++    for name, value in nested_attribution.items():
++        body[f"payment_method_data[client_attribution_metadata][{name}]"] = value
++    for index, value in enumerate(("expressCheckout", "payment", "address")):
++        body[f"payment_method_data[client_attribution_metadata][merchant_integration_additional_elements][{index}]"] = value
++    for name, value in nested_attribution.items():
++        body[f"client_attribution_metadata[{name}]"] = value
++    for index, value in enumerate(("expressCheckout", "payment", "address")):
++        body[f"client_attribution_metadata[merchant_integration_additional_elements][{index}]"] = value
++    if elements_session_id:
++        body["client_attribution_metadata[elements_session_id]"] = elements_session_id
++    if elements_config_id:
++        body["client_attribution_metadata[elements_session_config_id]"] = elements_config_id
+     payload = _post(session, "https://api.stripe.com/v1/confirmation_tokens", "Momo Stripe confirmation token", body)
+     token = str(payload.get("id") or "")
+     if not token.startswith("ctoken_"):
+-        raise ProtocolError(502, "Momo Stripe confirmation token missing ctoken_ id")
++        keys = ",".join(sorted(str(key) for key in payload.keys()))
++        raise ProtocolError(502, f"Momo Stripe confirmation token missing ctoken_ id (response_keys={keys})")
+     return token
+ 
  
  def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
      path = "/backend-api/payments/checkout/confirm"
@@ -244,6 +482,69 @@ index 6713d52..63ac1a9 100644
      if int(getattr(response, "status_code", 0) or 0) >= 400:
          raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
      payload = json_payload(response, "Momo checkout confirm")
+@@ -86,7 +221,20 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
+     if not intent_id.startswith(("pi_", "seti_")):
+         raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
+     endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
+-    return _post(session, endpoint, "Momo Stripe intent confirm", {"return_url": str(confirmed.get("confirm_return_url") or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"), "confirmation_token": token, "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK), "_stripe_version": STRIPE_VERSION_FULL, "client_secret": secret})
++    data: dict[str, Any] = {
++        "return_url": str(
++            confirmed.get("confirm_return_url")
++            or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"
++        ),
++        "confirmation_token": token,
++        "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
++        "_stripe_version": STRIPE_VERSION_FULL,
++        "client_secret": secret,
++    }
++    attribution = _attribution_fields(checkout, source="l1")
++    for name, value in attribution.items():
++        data[f"client_attribution_metadata[{name}]"] = value
++    return _post(session, endpoint, "Momo Stripe intent confirm", data)
+ 
+ 
+ def redirect_url(payload: dict[str, Any]) -> str:
+@@ -101,6 +249,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
+     return ""
+ 
+ 
++def resolve_momo_redirect(session: Any, value: str) -> str:
++    """Follow Stripe's one-hop redirect to the final MoMo gateway URL."""
++    candidate = str(value or "").strip()
++    if validate_momo_url(candidate):
++        return candidate
++    parsed = urlparse(candidate)
++    if parsed.scheme != "https" or parsed.hostname != "pm-redirects.stripe.com":
++        return ""
++    try:
++        response = session.request(
++            "GET",
++            candidate,
++            allow_redirects=True,
++            timeout=30,
++            headers={
++                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
++                "Referer": "https://checkout.stripe.com/",
++            },
++        )
++    except Exception:
++        return ""
++    final_url = str(getattr(response, "url", "") or "").strip()
++    if validate_momo_url(final_url):
++        return final_url
++    location = ""
++    headers = getattr(response, "headers", {}) or {}
++    if hasattr(headers, "items"):
++        for key, header_value in headers.items():
++            if str(key).lower() == "location":
++                location = str(header_value or "").strip()
++                break
++    return location if validate_momo_url(location) else ""
++
++
+ def validate_momo_url(value: str) -> bool:
+     parsed = urlparse(str(value or ""))
+     query = parse_qs(parsed.query)
 diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
 index efe8e02..ae664fb 100644
 --- a/payment_link_extractor/momo_transport.py
@@ -799,16 +1100,20 @@ index 56966fd..f37baf5 100644
      calls: list[tuple[str, str]] = []
  
 diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
-index fb47546..2a5dc63 100644
+index fb47546..f10990a 100644
 --- a/tests/test_momo_support.py
 +++ b/tests/test_momo_support.py
-@@ -9,8 +9,9 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
- from payment_link_extractor.config import billing_for_country
+@@ -6,11 +6,12 @@ from types import SimpleNamespace
+ 
+ from payment_link_extractor.application import _normalize_config
+ from payment_link_extractor.channels import PAYMENT_CHANNELS
+-from payment_link_extractor.config import billing_for_country
++from payment_link_extractor.config import billing_for_country, currency_minor_scale
  from payment_link_extractor.models import ExtractionConfig
  from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 -from payment_link_extractor.momo_stripe import validate_momo_url
 -from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
-+from payment_link_extractor.momo_stripe import checkout_confirm, validate_momo_url
++from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
 +from payment_link_extractor.momo_checkout import create_checkout
 +from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
  from payment_link_extractor.web.app import create_app
@@ -845,7 +1150,18 @@ index fb47546..2a5dc63 100644
  def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
      validate_momo_amount(0)
      for value in (None, 1, -1):
-@@ -86,3 +101,96 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+@@ -77,6 +92,10 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+             raise AssertionError("non-zero or missing Momo amount was accepted")
+ 
+ 
++def test_vnd_uses_zero_decimal_minor_units() -> None:
++    assert currency_minor_scale("VND") == 0
++
++
+ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+     assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+     assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
+@@ -86,3 +105,108 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
  def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
      config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
      assert TaskManager._total_attempts(config) == 3
@@ -942,3 +1258,15 @@ index fb47546..2a5dc63 100644
 +    confirm_headers = calls[-1][2]["headers"]
 +    assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
 +    assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]
++
++
++def test_momo_redirect_follows_stripe_authorize_hop() -> None:
++    target = "https://payment.momo.vn/v2/gateway/pay?t=opaque&s=signature"
++
++    class Session:
++        def request(self, method, url, **kwargs):
++            assert method == "GET"
++            assert url.startswith("https://pm-redirects.stripe.com/")
++            return SimpleNamespace(status_code=200, url=target, headers={})
++
++    assert resolve_momo_redirect(Session(), "https://pm-redirects.stripe.com/authorize/example") == target

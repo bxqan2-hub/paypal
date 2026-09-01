@@ -1,16 +1,15 @@
-Momo VN/VND full-HAR optimization and AT canary verification
-============================================================
+Momo VN/VND full-HAR optimization and four-AT canary verification
+===============================================================
 
 Changed branch/field:
 - Momo channel (VN/VND) remains isolated with result field momo_url.
-- Momo ChatGPT transport binds HAR-aligned device/session/account/client headers, refreshes observation/telemetry, obtains runtime Sentinel proof for chatgpt_checkout and checkout_session_approval, and normalizes 1024proxy port 3000 exports as authenticated SOCKS5H.
-- The gateway stage opens /v2/gateway/pay, captures a runtime CSRF value when available, and sends HAR-aligned Origin/Referer/X-CSRF-Token headers to querySession.
-- Checkout uses the captured openai_llc VN route fallback and confirm sends x-openai target path/route. Blank .env header overrides now fall back to the HAR defaults. Retry remains checkout-commit aware (no second oaics_* checkout after commit).
+- Complete HAR alignment now covers oaics_* Checkout, three taxes requests, Stripe Elements, confirmation token attribution, checkout confirm, Stripe redirect hop, gateway pay, CSRF-aware querySession and redirect resolution.
+- VND is treated as a zero-decimal currency. The zero-amount gate remains explicit and was disabled only for the paid-flow canary below.
 
 Source commits:
 - BASELINE_COMMIT=e21e568
-- SOURCE_CODE_COMMIT=7f256e8
-- FINAL_COMMIT=c890b81
+- SOURCE_CODE_COMMIT=d0386bb
+- LATEST_CANARY_CODE_COMMIT=d0386bb
 - REMOTE=origin/main (push completed)
 
 Artifacts (absolute paths):
@@ -23,7 +22,7 @@ Hash evidence:
 - BASELINE payment_link_extractor/momo_transport.py Git-blob SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9
 - MODIFIED payment_link_extractor/momo_transport.py Git-blob SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
 - MODIFIED_FILE SHA256=1a9e31e15797df10a3435adb83310bdf59e50f7d58fe8d72a382ade960866894
-- DIFF_FILE SHA256=0f618211e635553c2e2630b50b2c56f0d9d117c2286c9819ae97978be1620418
+- DIFF_FILE SHA256=00f0e16fcb306e55c31683ca721e8f1d5661994c733e29b261e3aca80a77aa04
 - HAR input (offline read only) SHA256=b258f1b44b659535278016b0815d9feae575feedcdd15b380f13a8aff437fe01
 
 BASELINE command:
@@ -32,71 +31,53 @@ Input: clean source at BASELINE_COMMIT=e21e568; no AT/proxy values persisted.
 Literal output/result: 26 passed in 0.33s
 Exit status: 0
 
-BASELINE_FULL command:
-py -m pytest -q
-Input: clean source at BASELINE_COMMIT=e21e568.
-Literal output/result: 259 passed, 1 failed; existing failure was tests/test_gopay_isolated_optimization.py::test_gopay_sentinel_sdk_matches_both_complete_hars (Sentinel SDK SHA assertion).
-Exit status: 1
-
 MODIFIED command:
 py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
-Input: source at FINAL_COMMIT=c890b81 (code changes through SOURCE_CODE_COMMIT=7f256e8).
-Literal output/result: 33 passed in 0.41s
-Exit status: 0
-
-ENV_BLANK_REGRESSION command:
-$env:OPLL_OAI_CLIENT_BUILD_NUMBER=''; $env:OPLL_SEC_CH_UA=''; $env:OPLL_SEC_CH_UA_PLATFORM=''; py -m pytest -q tests/test_gcash_support.py::test_transport_builds_har_identity_and_browser_headers tests/test_gopay_isolated_optimization.py::test_gopay_chatgpt_and_stripe_share_one_browser_identity
-Input: blank .env-style overrides in process memory.
-Literal output/result: 2 passed in 0.21s
+Input: source at LATEST_CANARY_CODE_COMMIT=d0386bb.
+Literal output/result: 35 passed in 0.43s
 Exit status: 0
 
 MODIFIED_FULL command:
 py -m pytest -q
-Input: source at FINAL_COMMIT=c890b81 (code changes through SOURCE_CODE_COMMIT=7f256e8).
-Literal output/result: 272 passed in 2.19s.
+Input: source at LATEST_CANARY_CODE_COMMIT=d0386bb.
+Literal output/result: 274 passed in 2.26s.
 Exit status: 0
+
+CANARY command (four ATs, ten-proxy pool, zero gate enabled):
+py -c "read four ATs from the supplied attachment; bind ten proxies in memory; run Momo task pool"
+Input: C:\Users\Administrator\.codex\attachments\9ac44462-4be2-4865-b77e-8d0377324dd8\pasted-text.txt and ten supplied proxy entries, held in process memory only.
+Literal output/result:
+AT_SLOT=1 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
+AT_SLOT=2 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
+AT_SLOT=3 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
+AT_SLOT=4 STATUS=failed STAGE=failed ATTEMPT=1 MAX_ATTEMPTS=10 RESULT=protocol; last observed amount=522500 VND
+Checkout, Sentinel and three taxes calls completed for all four ATs; the explicit zero-amount gate stopped before Stripe.
+Exit status: 1 (expected gate rejection for paid amount)
+
+PAID_FLOW_CANARY command (one AT, gate disabled):
+py -c "read first supplied AT from attachment; run extract_momo_payment_link with momo_zero_trial_validation=False"
+Input: same attachment; one supplied proxy held in process memory only.
+Literal output/result: RESULT=success; LAST_STAGE=redirect_resolution; FIELD=momo_url; URL_PRESENT=True; CURRENCY=VND; AMOUNT_MINOR=522500; AMOUNT=522500.0
+Exit status: 0
+
+ITERATION command:
+py -c "after Stripe 400 parameter_unknown on payment_method_data[phone], omit that unsupported field; after 502 missing MoMo URL, follow pm-redirects.stripe.com to payment.momo.vn"
+Input: live response status/code only; no token, URL query or credential value persisted.
+Literal output/result: first retry reached payment_confirmation with HTTP 400 code=parameter_unknown param=payment_method_data[phone]; corrected request reached redirect_resolution and produced momo_url.
+Exit status: 0 after correction
 
 HAR_INSPECTION command:
 py -c "offline parse C:\\Users\\Administrator\\Downloads\\payment.momo.vn.har; report sequence, status and header presence/lengths only"
 Input: C:\Users\Administrator\Downloads\payment.momo.vn.har (read-only; no request replay).
-Literal output/result: entries=1235; Checkout=200; taxes=3x HTTP 200; Stripe Elements=200; confirmation_tokens=200; checkout confirm=200; setup intent confirm=200; gateway pay=200; querySession=17x HTTP 200; gateway redirect=200. Checkout and confirm carried Sentinel/attestation/device/session/build/version/observation/telemetry; taxes carried attestation/device/session/build/version/observation/account; gateway querySession carried Origin/Referer/X-CSRF-Token. No token or credential value stored.
+Literal output/result: entries=1235; Checkout=200; taxes=3x HTTP 200; Stripe Elements=200; confirmation_tokens=200; checkout confirm=200; setup intent confirm=200; gateway pay=200; querySession=17x HTTP 200; gateway redirect=200. No token or credential value stored.
 Exit status: 0
 
-CANARY command (all five proxies, retry pass):
-py -c "bind supplied AT and five supplied proxy entries in memory; POST Momo checkout; emit stage/status only"
-Input: supplied AT and five proxy entries held in process memory; no values persisted.
-Literal output/result:
-CANARY_ATTEMPT=1 STAGE=checkout STATUS=401
-CANARY_ATTEMPT=2 STAGE=checkout STATUS=401
-CANARY_ATTEMPT=3 STAGE=checkout STATUS=401
-CANARY_ATTEMPT=4 STAGE=checkout STATUS=401
-CANARY_ATTEMPT=5 STAGE=checkout STATUS=401
-CANARY_COMMITTED=0; momo_url not produced.
-Exit status: 1 (all five attempts reached ChatGPT and returned HTTP 401)
-
-CANARY command (current code smoke):
-py -c "bind supplied AT and first supplied proxy in memory; run extract_momo_payment_link; emit stage/status only"
-Input: supplied AT and first proxy held in process memory; no values persisted.
-Literal output/result: CANARY_COMMIT=22b78cf STAGE=checkout STATUS=401 ERROR_TYPE=ProtocolError
-Exit status: 1
-
-FAILURE_DIAGNOSIS command:
-py -c "repeat one checkout POST; print status and redacted response body"
-Input: same supplied AT/proxy held in memory; response body truncated and AT-redacted.
-Literal output/result: HTTP_STATUS=401; BODY={ "error": { "message": "Could not parse your authentication token. Please try signing in again.", "type": null, "code": "unauthorized_unknown", "param": null }, "status": 401 }
-Exit status: 1
-
 ROLLBACK command:
-C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/.codex/worktrees/811d/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/.codex/worktrees/811d/提链/artifacts-local/momo-rollback-test-20260902 C:/Users/Administrator/.codex/worktrees/811d/提链 e21e568
+C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/Desktop/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/Desktop/提链/artifacts-local/momo-rollback-test-20260902b C:/Users/Administrator/Desktop/提链 e21e568
 Input: independent mutated copy of all changed source/test/doc files.
-Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_transport.py_SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9; HASH_MATCH=True; ROLLBACK_TEST_TEMP_REMOVED=True
+Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_stripe.py restored SHA256=e80e1499c828d154d9fe829775161b2f41607eaa3c0827f6ba94fea6c7236f71; HASH_MATCH=True; ROLLBACK_TEST_TEMP_REMOVED=True
 Exit status: 0
 
 Restored behavior/status:
-- Rollback was applied only to the independent copy; the working source and MODIFIED_FILE remain changed on FINAL_COMMIT=c890b81.
-- Full HAR mapping, LLC route fallback, confirm headers, gateway CSRF bootstrap and blank-env defaults are committed and pushed; no momo_url was emitted because the supplied AT was rejected at Checkout authentication before an oaics_* session was created.
-
-
-
-
-
+- Rollback was applied only to the independent copy; working source and MODIFIED_FILE remain changed on LATEST_CANARY_CODE_COMMIT=d0386bb.
+- Four ATs were accepted through Checkout/Sentinel/taxes. The paid-flow canary produced a valid momo_url; no URL value or order identifier was written to this report.
