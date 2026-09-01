@@ -17,6 +17,8 @@ class ExtractionConfig:
     # reject a generated link unless the authoritative payable amount is zero.
     # Other channels ignore this field.
     gopay_zero_trial_validation: bool = True
+    # Momo-only zero-amount gate, kept separate from GoPay state.
+    momo_zero_trial_validation: bool = True
     verbose: bool = True
     oaics_only: bool = False
     retry_count: int = 0

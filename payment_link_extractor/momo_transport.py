@@ -3,6 +3,7 @@ from __future__ import annotations
 """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
 
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -46,6 +47,11 @@ class MomoTransportFactory:
 
 def _set_proxy(session: Any, proxy: str) -> None:
     value = str(proxy or "").strip()
+    if value and "://" not in value:
+        parts = value.split(":")
+        if len(parts) == 4 and all(parts):
+            host, port, user, password = parts
+            value = f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
     if value:
         session.proxies.update({"http": value, "https": value})
 

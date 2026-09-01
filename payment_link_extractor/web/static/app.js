@@ -420,6 +420,7 @@
     const gopayNote = byId("gopay-country-note");
     const momoNote = byId("momo-country-note");
     const gopayZeroTrialField = byId("gopay-zero-trial-field");
+    const momoZeroTrialField = byId("momo-zero-trial-field");
     if (!isFixedCountry && country.value) {
       paypalCountryPreference = country.value;
     }
@@ -435,6 +436,7 @@
     if (gopayNote) gopayNote.hidden = !isGopay;
     if (momoNote) momoNote.hidden = !isMomo;
     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
+    if (momoZeroTrialField) momoZeroTrialField.hidden = !isMomo;
     renderBillingPreview();
   }
 
@@ -599,6 +601,9 @@
     };
     if (paymentMethod === "gopay") {
       result.gopay_zero_trial_validation = byId("gopay-zero-trial-validation").checked;
+    }
+    if (paymentMethod === "momo") {
+      result.momo_zero_trial_validation = byId("momo-zero-trial-validation").checked;
     }
     const values = [
       ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],

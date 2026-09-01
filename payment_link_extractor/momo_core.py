@@ -20,6 +20,26 @@ from .momo_transport import MomoTransportFactory, close
 MOMO_RESULT_FIELD = "momo_url"
 
 
+def momo_checkout_payable_amount(checkout: dict[str, Any]) -> int | None:
+    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+    total = state.get("total") if isinstance(state.get("total"), dict) else {}
+    due = total.get("total") if isinstance(total.get("total"), dict) else {}
+    raw = due.get("minorUnitsAmount")
+    if raw in (None, ""):
+        raw = checkout.get("payable_amount_minor")
+    try:
+        return None if raw in (None, "") else int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_momo_amount(amount_due_minor: int | None) -> None:
+    if amount_due_minor is None:
+        raise ProtocolError(409, "Momo expected zero amount, got missing")
+    if int(amount_due_minor) != 0:
+        raise ProtocolError(409, f"Momo expected zero amount, got {amount_due_minor}")
+
+
 def pin_momo_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
     proxy = str(config.checkout_proxy or "").strip()
     return replace(config, checkout_proxy=proxy, update_proxy=proxy, checkout_proxy_attempts=(proxy,), update_proxy_attempts=(proxy,), proxy_pool=(proxy,))
@@ -83,6 +103,11 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         for _ in range(3):
             checkpoint("taxes")
             taxes(chatgpt, checkout, billing)
+        amount_minor = momo_checkout_payable_amount(checkout)
+        if config.momo_zero_trial_validation:
+            checkpoint("zero_amount_validation")
+            validate_momo_amount(amount_minor)
+            checkpoint("zero_amount_confirmed")
         stripe = factory.stripe(config)
         checkpoint("stripe_init")
         elements_session(stripe, checkout)
@@ -100,8 +125,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         checkout_state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
         total = checkout_state.get("total") if isinstance(checkout_state.get("total"), dict) else {}
         due = total.get("total") if isinstance(total.get("total"), dict) else {}
-        minor = int(due.get("minorUnitsAmount") or 0)
-        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession"})
+        minor = int(due.get("minorUnitsAmount") if due.get("minorUnitsAmount") not in (None, "") else (checkout.get("payable_amount_minor") or 0))
+        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
     finally:
         close(momo)
         if momo is stripe:

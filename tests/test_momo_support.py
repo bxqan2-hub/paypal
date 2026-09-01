@@ -8,8 +8,9 @@ from payment_link_extractor.application import _normalize_config
 from payment_link_extractor.channels import PAYMENT_CHANNELS
 from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
-from payment_link_extractor.momo_core import _gateway_session_id, query_gateway
+from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import validate_momo_url
+from payment_link_extractor.momo_transport import _set_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.routes import _config_from_payload
 
@@ -23,6 +24,7 @@ def test_momo_registry_and_fixed_country() -> None:
     assert channel.uses_checkout_update is False
     config = _normalize_config(ExtractionConfig("token", "http://proxy", "", country="US", payment_method="momo"))
     assert (config.country, config.payment_method) == ("VN", "momo")
+    assert config.momo_zero_trial_validation is True
 
 
 def test_momo_route_and_ui_defaults() -> None:
@@ -55,3 +57,20 @@ def test_momo_transport_and_result_field_are_isolated() -> None:
     source = (PAYMENT_CHANNELS["momo"].adapter_module, PAYMENT_CHANNELS["momo"].result_field)
     assert source == ("payment_link_extractor.momo_channel", "momo_url")
     assert billing_for_country("VN").country == "VN"
+
+
+def test_momo_transport_normalizes_host_port_user_password() -> None:
+    session = SimpleNamespace(proxies={})
+    _set_proxy(session, "proxy.example:3000:user:p@ss")
+    assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
+
+
+def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+    validate_momo_amount(0)
+    for value in (None, 1, -1):
+        try:
+            validate_momo_amount(value)
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 409
+        else:
+            raise AssertionError("non-zero or missing Momo amount was accepted")
