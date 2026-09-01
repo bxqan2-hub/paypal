@@ -96,7 +96,12 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
     checkout = {
         "cs_id": sid,
         "session_kind": "openai_custom_checkout",
-        "processor_entity": str(_walk(payload, ("processor_entity", "processorEntity")) or "openai_ie"),
+        # The complete VN HAR uses the OpenAI LLC checkout route.  Prefer the
+        # server value, while keeping this captured route as the fallback for
+        # responses that omit the display-only processor field.
+        "processor_entity": str(
+            _walk(payload, ("processor_entity", "processorEntity")) or "openai_llc"
+        ),
         "billing_country": MOMO_COUNTRY,
         "currency": MOMO_CURRENCY,
         "account_email": account_email,

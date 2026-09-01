@@ -9,7 +9,8 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
 from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
-from payment_link_extractor.momo_stripe import validate_momo_url
+from payment_link_extractor.momo_stripe import checkout_confirm, validate_momo_url
+from payment_link_extractor.momo_checkout import create_checkout
 from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
@@ -166,3 +167,30 @@ def test_momo_gateway_csrf_can_be_captured_from_live_page() -> None:
     )
     assert capture_momo_csrf_token(session, response) == "csrf-from-page"
     assert session.momo_csrf_token == "csrf-from-page"
+
+
+def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
+    calls = []
+
+    class Session:
+        headers = {}
+
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if url.endswith("/payments/checkout"):
+                return SimpleNamespace(
+                    status_code=200,
+                    json=lambda: {"checkout_session_id": "oaics_fixture"},
+                )
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"status": "success", "client_secret": "pi_fixture_secret_x"},
+            )
+
+    session = Session()
+    checkout = create_checkout(session)
+    assert checkout["processor_entity"] == "openai_llc"
+    checkout_confirm(session, checkout, "ctoken_fixture")
+    confirm_headers = calls[-1][2]["headers"]
+    assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
+    assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]

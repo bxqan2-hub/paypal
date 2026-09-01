@@ -73,6 +73,8 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
 def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
     path = "/backend-api/payments/checkout/confirm"
     url = "https://chatgpt.com" + path
+    processor = str(checkout.get("processor_entity") or "openai_llc")
+    referer = f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}"
     response = session.request(
         "POST",
         url,
@@ -86,9 +88,13 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
             session,
             "POST",
             url,
-            {"Referer": f"https://chatgpt.com/checkout/{checkout['cs_id']}"},
+            {
+                "Referer": referer,
+                "x-openai-target-path": path,
+                "x-openai-target-route": path,
+            },
             flow="checkout_session_approval",
-            referer=f"https://chatgpt.com/checkout/{checkout['cs_id']}",
+            referer=referer,
         ),
     )
     if int(getattr(response, "status_code", 0) or 0) >= 400:
