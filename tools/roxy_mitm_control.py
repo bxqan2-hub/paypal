@@ -395,7 +395,7 @@ class CaptureState:
 
         threading.Thread(target=read_output, daemon=True).start()
         if not ready.wait(45) or process.poll() is not None:
-            self.stop()
+            self.discard()
             with self.lock:
                 self.message = "启动失败：上游代理格式无效，请填写 HOST:PORT:USERNAME:PASSWORD 或完整代理 URL"
             raise RuntimeError("mitmproxy 启动失败，请查看状态日志")
@@ -409,8 +409,12 @@ class CaptureState:
                 window_name,
                 self.proxy_port,
             )
+            with self.lock:
+                self.dir_id = dir_id
             open_roxy_window(api_base, api_key, workspace_id, dir_id)
             cdp_port = wait_for_roxy_cdp(dir_id, existing_ports)
+            with self.lock:
+                self.cdp_port = cdp_port
             cdp_output = output.with_name(f"{output.stem}-cdp.har")
             cdp_stop_file = output.with_name(f"{output.stem}-cdp.stop")
             cdp_output.unlink(missing_ok=True)
@@ -462,7 +466,7 @@ class CaptureState:
             # Navigate that same fingerprinted profile to the real capture origin.
             navigate_page(cdp_port, "https://chatgpt.com/")
         except Exception as exc:
-            self.stop()
+            self.discard()
             with self.lock:
                 self.message = f"启动失败：{exc}"
             raise
@@ -558,11 +562,19 @@ class CaptureState:
             cdp_stop_file = self.cdp_stop_file
             cdp_output = self.cdp_output
             cdp_port = self.cdp_port
+            dir_id = self.dir_id
             self.status = "discarding"
             self.message = "正在放弃抓包并关闭窗口"
 
         force_stop_process_tree(cdp_process)
         force_stop_process_tree(process)
+        if cdp_port is None and dir_id:
+            try:
+                targets = discover_roxy_targets(default_roxy_cache(), timeout=0.5)
+                match = next((target for target in targets if target.profile_id == dir_id), None)
+                cdp_port = match.port if match is not None else None
+            except (OSError, RuntimeError, ValueError):
+                cdp_port = None
         close_cdp_browser(cdp_port)
 
         paths: set[Path] = set()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -140,6 +141,12 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
 def test_control_panel_exposes_discard_action() -> None:
     assert 'id="discard"' in HTML
     assert "/api/discard" in HTML
+
+
+def test_startup_failures_use_discard_path() -> None:
+    source = inspect.getsource(CaptureState.start)
+    assert source.count("self.discard()") == 2
+    assert "self.stop()" not in source
 
 
 def test_hybrid_merge_only_supplements_tls_passthrough_hosts(tmp_path: Path, monkeypatch) -> None:
