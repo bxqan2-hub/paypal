@@ -166,6 +166,21 @@ def account_email(access_token: str) -> str:
     return ""
 
 
+def account_name(access_token: str) -> str:
+    """Extract the browser account display name for billing snapshots."""
+    payload = decode_jwt_payload(access_token)
+    profile = payload.get("https://api.openai.com/profile")
+    if isinstance(profile, dict):
+        value = str(profile.get("name") or "").strip()
+        if value:
+            return value
+    for key in ("name", "given_name"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def account_id(access_token: str) -> str:
     """Extract the ChatGPT account UUID used by the browser API headers."""
     payload = decode_jwt_payload(access_token)

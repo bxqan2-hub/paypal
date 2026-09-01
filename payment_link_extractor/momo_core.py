@@ -9,11 +9,18 @@ from dataclasses import replace
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from .auth import account_email
+from .auth import account_email, account_name
 from .config import billing_for_country, currency_minor_scale
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .models import ExtractionConfig, PaymentLinkResult
-from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
+from .momo_checkout import (
+    MOMO_COUNTRY,
+    MOMO_CURRENCY,
+    checkout_amount_minor,
+    create_checkout,
+    taxes,
+    validate_zero_trial_checkout,
+)
 from .momo_eligibility import probe_momo_trial_eligibility
 from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 from .momo_transport import (
@@ -27,16 +34,7 @@ MOMO_RESULT_FIELD = "momo_url"
 
 
 def momo_checkout_payable_amount(checkout: dict[str, Any]) -> int | None:
-    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
-    total = state.get("total") if isinstance(state.get("total"), dict) else {}
-    due = total.get("total") if isinstance(total.get("total"), dict) else {}
-    raw = due.get("minorUnitsAmount")
-    if raw in (None, ""):
-        raw = checkout.get("payable_amount_minor")
-    try:
-        return None if raw in (None, "") else int(raw)
-    except (TypeError, ValueError):
-        return None
+    return checkout_amount_minor(checkout)
 
 
 def validate_momo_amount(amount_due_minor: int | None) -> None:
@@ -145,8 +143,13 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
             stage_callback(stage)
     billing_profile = billing_for_country(MOMO_COUNTRY)
     email = account_email(config.access_token)
-    if email:
-        billing_profile = replace(billing_profile, email=email)
+    name = account_name(config.access_token)
+    if email or name:
+        billing_profile = replace(
+            billing_profile,
+            email=email or billing_profile.email,
+            name=name or billing_profile.name,
+        )
     billing = billing_profile.to_dict()
     if chatgpt is None:
         chatgpt = factory.chatgpt(config, config.checkout_proxy)
@@ -162,6 +165,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         )
         checkpoint("checkout_committed")
         checkpoint("checkout_kind:openai_custom_checkout")
+        if config.momo_zero_trial_validation:
+            validate_zero_trial_checkout(checkout)
         # The successful zero-due HAR initializes Stripe Elements from the
         # Checkout's initial total before taxes are refreshed. This binds the
         # deferred intent to the zero amount instead of letting a later tax
@@ -170,9 +175,9 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         checkpoint("stripe_init")
         elements_session(stripe, checkout)
         checkpoint("stripe_elements")
-        for _ in range(3):
+        for tax_phase in range(3):
             checkpoint("taxes")
-            taxes(chatgpt, checkout, billing)
+            taxes(chatgpt, checkout, billing, phase=tax_phase)
         # Refresh the Elements session after the final tax response; the HAR
         # performs this second phase before creating the confirmation token.
         elements_session(stripe, checkout)
@@ -204,5 +209,4 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         if momo is stripe:
             stripe = None
         close(stripe)
-        close(chatgpt)
         close(chatgpt)

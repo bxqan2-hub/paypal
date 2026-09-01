@@ -833,8 +833,8 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "name": "momo_stripe_confirm",
-            "marker": "/v1/payment_intents/",
-            "path_pattern": (r"^/v1/payment_intents/[^/]+/confirm$",),
+            "marker": "/v1/",
+            "path_pattern": (r"^/v1/(?:payment_intents|setup_intents)/[^/]+/confirm$",),
             "method": "POST",
             "requires_request_body": True,
         },
@@ -1003,6 +1003,10 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
         request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
         response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
         if int(response.get("status", 0) or 0) in {101, 204, 205, 304}:
+            continue
+        if str(request.get("method") or "").upper() == "OPTIONS":
+            # CORS preflight responses are intentionally bodyless; they are
+            # not extraction payloads and must not downgrade completeness.
             continue
         parsed = urlsplit(str(request.get("url") or ""))
         missing_responses.append(
