@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import os
+import secrets
 import uuid
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -27,10 +28,30 @@ def _payable_amount_minor(checkout: dict[str, Any]) -> int:
         return 0
 
 
+def _stripe_fingerprint_id() -> str:
+    """Match Stripe.js's UUID-plus-hex fingerprint shape observed in HAR."""
+    return f"{uuid.uuid4()}{secrets.token_hex(3)}"
+
+
+def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, str]:
+    session_id = str(checkout.get("stripe_client_session_id") or uuid.uuid4())
+    checkout["stripe_client_session_id"] = session_id
+    fields = {
+        "client_session_id": session_id,
+        "merchant_integration_source": source,
+        "merchant_integration_subtype": "payment-element",
+        "merchant_integration_version": "2021",
+        "payment_intent_creation_flow": "deferred",
+        "payment_method_selection_flow": "merchant_specified",
+    }
+    return fields
+
+
 def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
     response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
     if int(getattr(response, "status_code", 0) or 0) >= 400:
-        raise ProtocolError(int(response.status_code), f"{stage} failed")
+        status = int(response.status_code)
+        raise ProtocolError(status, f"{stage} failed (HTTP {status})")
     return json_payload(response, stage)
 
 
@@ -66,14 +87,17 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
         timeout=30,
     )
     if int(getattr(response, "status_code", 0) or 0) >= 400:
-        raise ProtocolError(int(response.status_code), "Momo Stripe Elements init failed")
+        status = int(response.status_code)
+        raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status})")
     payload = json_payload(response, "Momo Stripe Elements init")
     checkout["elements_session"] = payload
+    checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
     return payload
 
 
 def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str, str], captcha: str = "") -> str:
     key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
+    nested_attribution = _attribution_fields(checkout, source="elements")
     body: dict[str, Any] = {
         "payment_method_data[type]": "momo",
         "payment_method_data[billing_details][name]": billing["name"],
@@ -82,34 +106,56 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "payment_method_data[billing_details][address][country]": "VN",
         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
         "payment_method_data[billing_details][address][state]": billing["state"],
+        "payment_method_data[phone]": billing.get("phone", ""),
         "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
         "payment_method_data[referrer]": "https://chatgpt.com",
         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
-        "payment_method_data[guid]": uuid.uuid4().hex,
-        "payment_method_data[muid]": uuid.uuid4().hex,
-        "payment_method_data[sid]": uuid.uuid4().hex,
+        "payment_method_data[guid]": _stripe_fingerprint_id(),
+        "payment_method_data[muid]": _stripe_fingerprint_id(),
+        "payment_method_data[sid]": _stripe_fingerprint_id(),
         "setup_future_usage": "off_session",
         "mandate_data[customer_acceptance][type]": "online",
         "mandate_data[customer_acceptance][online][infer_from_client]": "true",
         "client_context[currency]": "vnd",
         "client_context[mode]": "subscription",
-        "client_context[payment_method_types][0]": "momo",
+        "client_context[payment_method_types][0]": "card",
         "client_context[payment_method_types][1]": "link",
-        "client_context[payment_method_types][2]": "card",
+        "client_context[payment_method_types][2]": "momo",
         "set_as_default_payment_method": "false",
         "key": key,
         "_stripe_version": STRIPE_VERSION_BASE,
     }
-    if captcha:
-        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha
+    captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
+    if captcha_value:
+        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
     ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
-    for source, target in (("session_id", "elements_session_id"), ("config_id", "elements_session_config_id")):
-        if ctx.get(source):
-            body[f"payment_method_data[client_attribution_metadata][{target}]"] = str(ctx[source])
+    elements_session_id = str(
+        ctx.get("session_id") or ctx.get("id") or ctx.get("elements_session_id") or ""
+    )
+    elements_config_id = str(
+        ctx.get("config_id") or ctx.get("elements_session_config_id") or ""
+    )
+    if elements_session_id:
+        body["payment_method_data[client_attribution_metadata][elements_session_id]"] = elements_session_id
+    if elements_config_id:
+        body["payment_method_data[client_attribution_metadata][elements_session_config_id]"] = elements_config_id
+    for name, value in nested_attribution.items():
+        body[f"payment_method_data[client_attribution_metadata][{name}]"] = value
+    for index, value in enumerate(("expressCheckout", "payment", "address")):
+        body[f"payment_method_data[client_attribution_metadata][merchant_integration_additional_elements][{index}]"] = value
+    for name, value in nested_attribution.items():
+        body[f"client_attribution_metadata[{name}]"] = value
+    for index, value in enumerate(("expressCheckout", "payment", "address")):
+        body[f"client_attribution_metadata[merchant_integration_additional_elements][{index}]"] = value
+    if elements_session_id:
+        body["client_attribution_metadata[elements_session_id]"] = elements_session_id
+    if elements_config_id:
+        body["client_attribution_metadata[elements_session_config_id]"] = elements_config_id
     payload = _post(session, "https://api.stripe.com/v1/confirmation_tokens", "Momo Stripe confirmation token", body)
     token = str(payload.get("id") or "")
     if not token.startswith("ctoken_"):
-        raise ProtocolError(502, "Momo Stripe confirmation token missing ctoken_ id")
+        keys = ",".join(sorted(str(key) for key in payload.keys()))
+        raise ProtocolError(502, f"Momo Stripe confirmation token missing ctoken_ id (response_keys={keys})")
     return token
 
 
@@ -154,7 +200,20 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
     if not intent_id.startswith(("pi_", "seti_")):
         raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
     endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
-    return _post(session, endpoint, "Momo Stripe intent confirm", {"return_url": str(confirmed.get("confirm_return_url") or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"), "confirmation_token": token, "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK), "_stripe_version": STRIPE_VERSION_FULL, "client_secret": secret})
+    data: dict[str, Any] = {
+        "return_url": str(
+            confirmed.get("confirm_return_url")
+            or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"
+        ),
+        "confirmation_token": token,
+        "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
+        "_stripe_version": STRIPE_VERSION_FULL,
+        "client_secret": secret,
+    }
+    attribution = _attribution_fields(checkout, source="l1")
+    for name, value in attribution.items():
+        data[f"client_attribution_metadata[{name}]"] = value
+    return _post(session, endpoint, "Momo Stripe intent confirm", data)
 
 
 def redirect_url(payload: dict[str, Any]) -> str:
