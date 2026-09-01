@@ -183,7 +183,19 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
             self.state = state
 
         def json(self):
-            return {"state": self.state, "coupon": "plus-1-month-free"}
+            return {
+                "accounts": {
+                    "default": {
+                        "eligible_promo_campaigns": {
+                            "plus": (
+                                {"campaign_id": "plus-1-month-free"}
+                                if self.state == "eligible"
+                                else {}
+                            )
+                        }
+                    }
+                }
+            }
 
     class Session:
         def __init__(self, state: str):
@@ -192,7 +204,7 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
 
         def request(self, method, url, **kwargs):
             assert method == "GET"
-            assert "/promo_campaign/check_coupon" in url
+            assert "/accounts/check/v4-2023-04-27" in url
             return Response(self.state)
 
         def close(self):

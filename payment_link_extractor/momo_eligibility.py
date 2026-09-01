@@ -11,14 +11,14 @@ from dataclasses import replace
 import threading
 from typing import Any, Callable
 
-from .auth import normalize_access_token
+from .auth import account_id, normalize_access_token
 from .config import normalize_payment_method
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .momo_transport import MomoTransportFactory, close, momo_request_headers
 
 
 MOMO_TRIAL_COUPON = "plus-1-month-free"
-MOMO_ELIGIBILITY_PATH = "/backend-api/promo_campaign/check_coupon"
+MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 
 
 class MomoEligibilityError(ProtocolError):
@@ -77,8 +77,16 @@ def probe_momo_trial_eligibility(
         chatgpt = factory.chatgpt(attempt, proxy)
         url = (
             f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
-            f"?coupon={MOMO_TRIAL_COUPON}&is_coupon_from_query_param=true"
         )
+        selected_account = account_id(token)
+        eligibility_headers = {
+            "Accept": "application/json",
+            "Referer": "https://chatgpt.com/",
+            "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
+            "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
+        }
+        if selected_account:
+            eligibility_headers["chatgpt-account-id"] = selected_account
         try:
             response = chatgpt.request(
                 "GET",
@@ -87,12 +95,7 @@ def probe_momo_trial_eligibility(
                     chatgpt,
                     "GET",
                     url,
-                    {
-                        "Accept": "application/json",
-                        "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
-                        "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
-                        "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
-                    },
+                    eligibility_headers,
                 ),
                 timeout=30,
             )
@@ -133,8 +136,19 @@ def probe_momo_trial_eligibility(
                 state = ""
                 eligible = False
             else:
-                state = str(payload.get("state") or "").strip().lower()
-                eligible = state == "eligible" or bool(payload.get("eligible") is True)
+                accounts = payload.get("accounts")
+                accounts = accounts if isinstance(accounts, dict) else {}
+                account = accounts.get(selected_account) or accounts.get("default") or {}
+                account = account if isinstance(account, dict) else {}
+                campaigns = account.get("eligible_promo_campaigns")
+                campaigns = campaigns if isinstance(campaigns, dict) else {}
+                plus = campaigns.get("plus")
+                plus = plus if isinstance(plus, dict) else {}
+                campaign_id = str(
+                    plus.get("id") or plus.get("campaign_id") or ""
+                ).strip()
+                state = "eligible" if campaign_id else "not_eligible"
+                eligible = bool(campaign_id)
             probes.append(
                 {
                     "attempt": index,
@@ -143,6 +157,7 @@ def probe_momo_trial_eligibility(
                     "state": state,
                     "eligible": eligible,
                     "coupon": MOMO_TRIAL_COUPON,
+                    "campaign_id": campaign_id if eligible else "",
                 }
             )
             if eligible:
@@ -159,6 +174,7 @@ def probe_momo_trial_eligibility(
                     "max_attempts": len(proxies),
                     "proxy_slot": index,
                     "proxy": proxy,
+                    "campaign_id": campaign_id,
                     "source": "chatgpt_check_coupon",
                     "probes": probes,
                 }

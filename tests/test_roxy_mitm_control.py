@@ -7,8 +7,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from tools.roxy_mitm_control import (
+    CaptureState,
     cleanup_stale_mitmweb,
+    close_cdp_browser,
     create_roxy_window,
+    force_stop_process_tree,
+    HTML,
     merge_hybrid_har,
     request_cdp_stop,
     resolve_workspace_id,
@@ -85,6 +89,57 @@ def test_request_cdp_stop_uses_marker_without_ctrl_break(tmp_path: Path) -> None
     marker = tmp_path / "capture-cdp.stop"
     request_cdp_stop(Process(), marker)
     assert marker.read_text(encoding="ascii") == "stop"
+
+
+def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "momo-roxy-mitm.har"
+    cdp_output = tmp_path / "momo-roxy-mitm-cdp.har"
+    paths = [
+        output,
+        output.with_suffix(".mitm"),
+        output.with_suffix(".report.md"),
+        output.with_suffix(".summary.md"),
+        output.with_suffix(".stop"),
+        cdp_output,
+        cdp_output.with_name(f".{cdp_output.name}.checkpoint"),
+        cdp_output.with_suffix(".stop"),
+    ]
+    for path in paths:
+        path.write_text("fixture", encoding="utf-8")
+
+    class Process:
+        pid = 123
+
+        def poll(self) -> None:
+            return None
+
+    killed: list[object] = []
+    closed: list[int | None] = []
+    monkeypatch.setattr("tools.roxy_mitm_control.force_stop_process_tree", lambda process: killed.append(process))
+    monkeypatch.setattr("tools.roxy_mitm_control.close_cdp_browser", lambda port: closed.append(port))
+    monkeypatch.setattr("tools.roxy_mitm_control.cleanup_stale_mitmweb", lambda _ports: None)
+    state = CaptureState(root=tmp_path, proxy_port=8899, web_port=8081)
+    state.process = Process()  # type: ignore[assignment]
+    state.cdp_process = Process()  # type: ignore[assignment]
+    state.output = str(output)
+    state.stop_file = output.with_suffix(".stop")
+    state.cdp_stop_file = cdp_output.with_suffix(".stop")
+    state.cdp_output = cdp_output
+    state.cdp_port = 62345
+
+    result = state.discard()
+
+    assert result["message"] == "本次抓包已放弃，窗口已关闭，未保存文件"
+    assert result["running"] is False
+    assert killed == [state.cdp_process, state.process] or len(killed) == 2
+    assert closed == [62345]
+    assert all(not path.exists() for path in paths)
+    assert "CAPTURE_DISCARDED=1" in result["logs"]
+
+
+def test_control_panel_exposes_discard_action() -> None:
+    assert 'id="discard"' in HTML
+    assert "/api/discard" in HTML
 
 
 def test_hybrid_merge_only_supplements_tls_passthrough_hosts(tmp_path: Path, monkeypatch) -> None:

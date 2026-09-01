@@ -20,11 +20,11 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 try:
-    from .har_capture import audit_har_completeness
+    from .har_capture import CDPWebSocket, audit_har_completeness
     from .mitm_capture import finalize_capture, navigate_page
     from .roxy_har_capture import default_roxy_cache, discover_roxy_targets
 except ImportError:
-    from har_capture import audit_har_completeness
+    from har_capture import CDPWebSocket, audit_har_completeness
     from mitm_capture import finalize_capture, navigate_page
     from roxy_har_capture import default_roxy_cache, discover_roxy_targets
 
@@ -141,6 +141,45 @@ def request_cdp_stop(
         cdp_stop_file.write_text("stop", encoding="ascii")
 
 
+def force_stop_process_tree(process: subprocess.Popen[str] | None) -> None:
+    """Terminate a recorder and its children without asking it to save."""
+    if process is None or process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def close_cdp_browser(port: int | None) -> None:
+    """Close the captured Roxy browser window through its browser CDP target."""
+    if not port:
+        return
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=3) as response:
+            version = json.loads(response.read().decode("utf-8"))
+        websocket_url = str(version.get("webSocketDebuggerUrl") or "") if isinstance(version, dict) else ""
+        if not websocket_url:
+            return
+        cdp = CDPWebSocket(websocket_url, timeout=3)
+        try:
+            cdp.next_id += 1
+            cdp.send_json({"id": cdp.next_id, "method": "Browser.close", "params": {}})
+        finally:
+            cdp.close()
+    except (OSError, EOFError, RuntimeError, ValueError, json.JSONDecodeError):
+        return
+
+
 def roxy_request(
     base_url: str,
     path: str,
@@ -248,6 +287,7 @@ class CaptureState:
     stop_file: Path | None = None
     cdp_stop_file: Path | None = None
     cdp_output: Path | None = None
+    cdp_port: int | None = None
     channel: str = "gopay"
     logs: list[str] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
@@ -300,6 +340,7 @@ class CaptureState:
             self.cdp_process = None
             self.cdp_stop_file = None
             self.cdp_output = None
+            self.cdp_port = None
             self.channel = channel
             self.dir_id = ""
             self.window_name = window_name
@@ -414,6 +455,7 @@ class CaptureState:
                 self.cdp_process = cdp_process
                 self.cdp_stop_file = cdp_stop_file
                 self.cdp_output = cdp_output
+                self.cdp_port = cdp_port
             if not cdp_ready.wait(30) or cdp_process.poll() is not None:
                 raise RuntimeError("Roxy CDP 补充记录器启动失败")
             # Roxy's open endpoint initially exposes its internal dashboard.
@@ -441,10 +483,7 @@ class CaptureState:
             channel = self.channel
             self.status = "stopping"
             self.message = "正在保存并合并 HAR"
-        # The CDP recorder watches the stop marker and raises SIGINT in its
-        # own process so that its finally block can flush the HAR.  Sending
-        # CTRL_BREAK_EVENT terminates a Windows child with
-        # STATUS_CONTROL_C_EXIT before that finalization runs.
+        # The CDP recorder polls the stop marker and flushes before exiting.
         request_cdp_stop(cdp_process, cdp_stop_file)
         if process is not None and process.poll() is None:
             try:
@@ -492,6 +531,7 @@ class CaptureState:
             self.stop_file = None
             self.cdp_stop_file = None
             self.cdp_output = None
+            self.cdp_port = None
             self.status = "idle"
             if merge_error:
                 self.message = f"抓包已停止，但自动合并失败：{merge_error}"
@@ -508,6 +548,60 @@ class CaptureState:
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         return self.snapshot()
 
+    def discard(self) -> dict[str, Any]:
+        """Close the capture window and discard all artifacts without merging."""
+        with self.lock:
+            process = self.process
+            cdp_process = self.cdp_process
+            output = Path(self.output) if self.output else None
+            stop_file = self.stop_file
+            cdp_stop_file = self.cdp_stop_file
+            cdp_output = self.cdp_output
+            cdp_port = self.cdp_port
+            self.status = "discarding"
+            self.message = "正在放弃抓包并关闭窗口"
+
+        force_stop_process_tree(cdp_process)
+        force_stop_process_tree(process)
+        close_cdp_browser(cdp_port)
+
+        paths: set[Path] = set()
+        if output is not None:
+            paths.update(
+                {
+                    output,
+                    output.with_suffix(".mitm"),
+                    output.with_suffix(".report.md"),
+                    output.with_suffix(".summary.md"),
+                    output.with_suffix(".stop"),
+                }
+            )
+        if stop_file is not None:
+            paths.add(stop_file)
+        if cdp_output is not None:
+            paths.add(cdp_output)
+            paths.add(cdp_output.with_name(f".{cdp_output.name}.checkpoint"))
+        if cdp_stop_file is not None:
+            paths.add(cdp_stop_file)
+        for path in paths:
+            path.unlink(missing_ok=True)
+
+        cleanup_stale_mitmweb((self.proxy_port, self.web_port))
+        with self.lock:
+            self.process = None
+            self.cdp_process = None
+            self.stop_file = None
+            self.cdp_stop_file = None
+            self.cdp_output = None
+            self.cdp_port = None
+            self.output = ""
+            self.dir_id = ""
+            self.window_name = ""
+            self.logs.append("CAPTURE_DISCARDED=1")
+            self.status = "idle"
+            self.message = "本次抓包已放弃，窗口已关闭，未保存文件"
+        return self.snapshot()
+
 
 HTML = r"""<!doctype html>
 <html lang="zh-CN">
@@ -521,8 +615,8 @@ HTML = r"""<!doctype html>
 main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc(100vh - 56px)}
 .controls{background:#fff;border-bottom:1px solid #d7dee5;padding:14px 18px;display:grid;grid-template-columns:minmax(320px,2fr) minmax(220px,1fr) 150px 190px auto;gap:10px;align-items:end}
 label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}input:focus,select:focus{outline:2px solid #2589d8;outline-offset:-1px}
-.actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
-.status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping{background:#e0a126}.status code{margin-left:auto;color:#52606d}
+.actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.discard{background:#59636e;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
+.status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping,.dot.discarding{background:#e0a126}.status code{margin-left:auto;color:#52606d}
 .workspace{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0}.mitm{position:relative;background:#fff}.mitm iframe{width:100%;height:100%;border:0}.empty{position:absolute;inset:0;display:grid;place-items:center;color:#6b7785;background:#fff}.log{background:#20262d;color:#d9e1e8;padding:12px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}.log h2{font:600 13px Segoe UI;margin:0 0 8px;color:#fff}
 @media(max-width:1000px){.controls{grid-template-columns:1fr 1fr}.actions{grid-column:1/-1}.workspace{grid-template-columns:1fr}.log{max-height:220px}.controls label:first-child{grid-column:1/-1}}
 </style>
@@ -535,19 +629,20 @@ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px
 <label>Roxy API Key<input id="apiKey" type="password" autocomplete="off" placeholder="仅本机 API 使用"></label>
 <label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="momo">MoMo</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
 <label>新窗口名称<input id="windowName" placeholder="留空自动命名"></label>
-<div class="actions"><button id="start" class="button primary">开始并新建窗口</button><button id="stop" class="button danger">停止抓包</button></div>
+<div class="actions"><button id="start" class="button primary">开始并新建窗口</button><button id="stop" class="button danger">停止并保存</button><button id="discard" class="button discard">放弃并关闭窗口</button></div>
 <input id="apiBase" type="hidden" value="http://127.0.0.1:50000">
 </section>
 <section class="status"><span id="dot" class="dot"></span><strong id="state">未启动</strong><span id="message">等待设置上游代理</span><code id="proxy">HTTP 127.0.0.1:8899</code></section>
 <section class="workspace"><div class="mitm"><div id="empty" class="empty">启动后在这里查看 mitmweb</div><iframe id="mitm" title="mitmweb"></iframe></div><aside id="log" class="log"><h2>运行状态</h2></aside></section>
 </main>
 <script>
-const elements={upstream:document.querySelector('#upstream'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
+const elements={upstream:document.querySelector('#upstream'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
 async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const data=await response.json();if(!response.ok)throw new Error(data.error||'操作失败');return data}
-function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止中'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;elements.start.disabled=data.running||data.status==='starting';elements.stop.disabled=!data.running;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
+function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止保存中',discarding:'正在放弃'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;const busy=data.status==='starting'||data.status==='stopping'||data.status==='discarding';elements.start.disabled=data.running||busy;elements.stop.disabled=!data.running||busy;elements.discard.disabled=!data.running||busy;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
 async function refresh(){try{render(await (await fetch('/api/status')).json())}catch(error){elements.message.textContent=error.message}}
 elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstream:elements.upstream.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});elements.apiKey.value='';elements.upstream.value='';render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
 elements.stop.addEventListener('click',async()=>{elements.stop.disabled=true;try{render(await request('/api/stop'))}catch(error){elements.message.textContent=error.message;await refresh()}});
+elements.discard.addEventListener('click',async()=>{elements.discard.disabled=true;try{render(await request('/api/discard'))}catch(error){elements.message.textContent=error.message;await refresh()}});
 setInterval(refresh,1500);refresh();
 </script>
 </body>
@@ -597,6 +692,9 @@ def build_handler(state: CaptureState):
                     return
                 if self.path == "/api/stop":
                     self.send_json(200, state.stop())
+                    return
+                if self.path == "/api/discard":
+                    self.send_json(200, state.discard())
                     return
                 self.send_error(404)
             except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
