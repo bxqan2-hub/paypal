@@ -279,6 +279,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         "momo_zero_trial_validation",
         _env_bool("OPLL_MOMO_ZERO_TRIAL_VALIDATION", True),
     )
+    momo_trial_eligibility_check = payload.get(
+        "momo_trial_eligibility_check",
+        _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
+    )
     if "max_attempts" in payload:
         max_attempts = _max_attempts_value(payload.get("max_attempts"))
         retry_count = max_attempts - 1
@@ -296,6 +300,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("gopay_zero_trial_validation must be boolean")
     if not isinstance(momo_zero_trial_validation, bool):
         raise ConfigurationError("momo_zero_trial_validation must be boolean")
+    if not isinstance(momo_trial_eligibility_check, bool):
+        raise ConfigurationError("momo_trial_eligibility_check must be boolean")
     if not str(access_token or "").strip():
         raise ConfigurationError("AT is required")
     if not str(checkout_proxy or "").strip():
@@ -339,6 +345,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         apply_checkout_update=apply_update,
         gopay_zero_trial_validation=gopay_zero_trial_validation,
         momo_zero_trial_validation=momo_zero_trial_validation,
+        momo_trial_eligibility_check=momo_trial_eligibility_check,
         verbose=False,
         oaics_only=oaics_only,
         retry_count=retry_count,

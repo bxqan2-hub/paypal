@@ -9,6 +9,7 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
 from payment_link_extractor.config import billing_for_country, currency_minor_scale
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
+from payment_link_extractor.momo_eligibility import probe_momo_trial_eligibility
 from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
 from payment_link_extractor.momo_checkout import create_checkout
 from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
@@ -27,6 +28,7 @@ def test_momo_registry_and_fixed_country() -> None:
     config = _normalize_config(ExtractionConfig("token", "http://proxy", "", country="US", payment_method="momo"))
     assert (config.country, config.payment_method) == ("VN", "momo")
     assert config.momo_zero_trial_validation is True
+    assert config.momo_trial_eligibility_check is True
 
 
 def test_momo_route_and_ui_defaults() -> None:
@@ -171,6 +173,54 @@ def test_momo_gateway_csrf_can_be_captured_from_live_page() -> None:
     )
     assert capture_momo_csrf_token(session, response) == "csrf-from-page"
     assert session.momo_csrf_token == "csrf-from-page"
+
+
+def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
+    class Response:
+        status_code = 200
+
+        def __init__(self, state: str):
+            self.state = state
+
+        def json(self):
+            return {"state": self.state, "coupon": "plus-1-month-free"}
+
+    class Session:
+        def __init__(self, state: str):
+            self.state = state
+            self.headers = {}
+
+        def request(self, method, url, **kwargs):
+            assert method == "GET"
+            assert "/promo_campaign/check_coupon" in url
+            return Response(self.state)
+
+        def close(self):
+            pass
+
+    class Factory:
+        def __init__(self):
+            self.proxies = []
+
+        def chatgpt(self, config, proxy):
+            self.proxies.append(proxy)
+            return Session("not_eligible" if len(self.proxies) == 1 else "eligible")
+
+    config = ExtractionConfig(
+        "token",
+        "proxy-1",
+        "proxy-1",
+        country="VN",
+        payment_method="momo",
+        proxy_pool=("proxy-1", "proxy-2"),
+    )
+    events = []
+    result = probe_momo_trial_eligibility(
+        config, transport_factory=Factory(), stage_callback=events.append
+    )
+    assert result["eligible"] is True
+    assert result["proxy"] == "proxy-2"
+    assert events == ["eligibility_proxy:1", "eligibility_proxy:2", "eligibility_confirmed"]
 
 
 def test_momo_checkout_route_fallback_and_confirm_headers() -> None:

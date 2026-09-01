@@ -14,6 +14,7 @@ from .config import billing_for_country, currency_minor_scale
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .models import ExtractionConfig, PaymentLinkResult
 from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
+from .momo_eligibility import probe_momo_trial_eligibility
 from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 from .momo_transport import (
     MomoTransportFactory,
@@ -111,6 +112,25 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         raise ConfigurationError("Momo core requires payment_method=momo")
     if str(config.country or "").upper() != MOMO_COUNTRY:
         raise ConfigurationError("Momo core requires country=VN")
+    factory = transport_factory or MomoTransportFactory()
+    if bool(getattr(config, "momo_trial_eligibility_check", True)):
+        if stage_callback:
+            stage_callback("eligibility_check")
+        eligibility = probe_momo_trial_eligibility(
+            config,
+            transport_factory=factory,
+            cancel_event=cancel_event,
+            stage_callback=stage_callback,
+        )
+        selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
+        config = replace(
+            config,
+            checkout_proxy=selected_proxy,
+            update_proxy=selected_proxy,
+            checkout_proxy_attempts=(selected_proxy,),
+            update_proxy_attempts=(selected_proxy,),
+            proxy_pool=(selected_proxy,),
+        )
     config = pin_momo_attempt_proxy(config)
     def checkpoint(stage: str) -> None:
         if cancel_event is not None and cancel_event.is_set():
@@ -122,7 +142,6 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
     if email:
         billing_profile = replace(billing_profile, email=email)
     billing = billing_profile.to_dict()
-    factory = transport_factory or MomoTransportFactory()
     chatgpt = factory.chatgpt(config, config.checkout_proxy)
     stripe = None
     momo = None
