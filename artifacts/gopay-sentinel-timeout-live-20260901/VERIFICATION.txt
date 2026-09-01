@@ -1,0 +1,27 @@
+Branch: GoPay Playwright Sentinel checkout-navigation fallback
+MODIFIED_FILE: artifacts/gopay-sentinel-timeout-live-20260901/MODIFIED_FILE
+DIFF_FILE: artifacts/gopay-sentinel-timeout-live-20260901/DIFF_FILE
+VERIFICATION: artifacts/gopay-sentinel-timeout-live-20260901/VERIFICATION.txt
+ROLLBACK: artifacts/gopay-sentinel-timeout-live-20260901/ROLLBACK.sh
+
+BASELINE
+Command: live GoPay extraction with gopay_zero_trial_validation=False and one runtime-only AT/proxy input
+Output: TimeoutError after stages checkout, checkout_committed, checkout_kind:stripe_checkout, checkout_update, promotion_applied, stripe_init, elements_session
+Exit status: 20
+
+MODIFIED
+Command: py -3 -m pytest -q tests/test_gopay_sentinel_playwright.py tests/test_gopay_isolated_optimization.py tests/test_gopay_support.py
+Output: 50 passed in 0.38s
+Exit status: 0
+
+LIVE MODIFIED
+Command: live GoPay extraction with gopay_zero_trial_validation=False and the same runtime-only AT/proxy input
+Output: success; amount_due_minor=34900000; currency=IDR; provider_host=app.midtrans.com; provider_path_prefix=/snap/v4; stages=checkout,checkout_committed,checkout_kind:stripe_checkout,checkout_update,promotion_applied,stripe_init,elements_session,taxes,payment_confirmation,redirect_resolution,completed
+Exit status: 0
+
+ROLLBACK
+Command: git apply --check --reverse artifacts/gopay-sentinel-timeout-live-20260901/DIFF_FILE
+Output: reverse patch check valid
+Exit status: 0
+
+Restored behavior/status: rollback restores the pre-fix behavior where a Checkout-page navigation timeout terminates approval-proof prefetch before taxes.

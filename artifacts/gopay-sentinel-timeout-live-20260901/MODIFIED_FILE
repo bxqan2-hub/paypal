@@ -1,0 +1,5 @@
+Branch: GoPay Playwright Sentinel checkout-navigation fallback
+Commit: 0855fa2
+Changed files:
+- payment_link_extractor/gopay_sentinel_playwright.py
+- tests/test_gopay_sentinel_playwright.py

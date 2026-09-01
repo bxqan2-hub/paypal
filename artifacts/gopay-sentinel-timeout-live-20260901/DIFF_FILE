@@ -1,0 +1,94 @@
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index 6ea2335..fccfc5e 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -411,8 +411,24 @@ class PersistentPlaywrightDaemon:
+                 await session.page.goto(
+                     parsed.geturl(),
+                     wait_until="domcontentloaded",
+-                    timeout=90_000,
++                    timeout=max(
++                        5_000,
++                        int(
++                            os.getenv(
++                                "OPLL_GOPAY_SENTINEL_NAVIGATION_TIMEOUT_MS",
++                                "30000",
++                            )
++                        ),
++                    ),
+                 )
++            except Exception:
++                # A slow proxy can time out after the response has already
++                # established a valid chatgpt.com document. Sentinel only
++                # needs that same-origin document plus the exact Checkout
++                # Referer, so retain it and continue with SDK injection.
++                current_after_timeout = urlsplit(session.page.url)
++                if current_after_timeout.netloc != "chatgpt.com":
++                    raise
+             finally:
+                 await session.context.set_extra_http_headers({})
+             await self._install_sdk(session.page)
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 2d711ea..78873b4 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
++import asyncio
+ from pathlib import Path
++from types import SimpleNamespace
+ 
+ from payment_link_extractor import gopay_sentinel_playwright as sentinel
+ 
+@@ -35,3 +37,50 @@ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
+     assert '"headless": headless' in source
+     assert '"chrome"' in source
+     assert "jsdom" not in source.lower()
++
++
++def test_checkout_navigation_timeout_falls_back_to_same_origin(monkeypatch) -> None:
++    events: list[object] = []
++
++    class Context:
++        async def set_extra_http_headers(self, headers):
++            events.append(("headers", headers))
++
++    class Page:
++        url = "https://chatgpt.com/checkout/openai_llc/cs_fixture"
++
++        async def goto(self, *_args, **_kwargs):
++            raise TimeoutError()
++
++        async def evaluate(self, _expression, value):
++            events.append(("history", value))
++
++    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
++
++    async def install(_page):
++        events.append("sdk")
++
++    async def attestation(_session):
++        events.append("attestation")
++
++    monkeypatch.setattr(daemon, "_install_sdk", install)
++    monkeypatch.setattr(daemon, "_capture_page_attestation", attestation)
++    session = SimpleNamespace(
++        context=Context(),
++        page=Page(),
++        active_page_url="https://chatgpt.com/",
++        bootstrap_headers={"Authorization": "Bearer fixture"},
++    )
++    asyncio.run(
++        daemon._set_page_url(
++            session,
++            "https://chatgpt.com/checkout/openai_llc/cs_fixture",
++        )
++    )
++    assert events == [
++        ("headers", {"Authorization": "Bearer fixture"}),
++        ("headers", {}),
++        "sdk",
++        "attestation",
++        ("history", "/checkout/openai_llc/cs_fixture"),
++    ]
