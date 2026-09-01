@@ -1,6 +1,6 @@
 Momo channel verification record
 
-Changed branch/field: momo / momo_url; fixed VN / VND; independent momo_channel, momo_core, momo_checkout, momo_stripe, momo_transport and provider adapter. Added momo_zero_trial_validation (default on) and zero minor-units gate after taxes.
+Changed branch/field: momo / momo_url; fixed VN / VND; independent momo_channel, momo_core, momo_checkout, momo_stripe, momo_transport and provider adapter. Added momo_zero_trial_validation (default on), zero minor-units gate after taxes, same-AT retry budget, rotating VN proxy selection, and per-attempt Chrome fingerprint selection.
 Task-start commit: f203a50cb1640b218cff9f249dcdf4b09dc51c03
 Baseline channels.py blob: 47c79fa6d1f837a17cd59c74000b28da20ec639c
 Modified channels.py working-tree hash: 9fa193fa582554bff1863ac481736d7e8dc2d7b5
@@ -20,6 +20,7 @@ MODIFIED result: 257 passed, 1 failed (same pre-existing Sentinel SDK SHA assert
 重点: `py -m pytest -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_gcash_support.py`
 重点 result: 25 passed. Exit status 0.
 Amount gate: `py -m pytest -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_gcash_support.py` result: 27 passed after adding `momo_zero_trial_validation`. Exit status 0.
+Retry/fingerprint: `py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py` result: 26 passed. Exit status 0.
 Syntax: `node --check payment_link_extractor/web/static/app.js; py -m compileall -q payment_link_extractor tests` result: success. Exit status 0.
 ROLLBACK: `bash artifacts/momo-channel-20260901/ROLLBACK.sh <copy>` result: copy restored to task-start channels.py bytes; exit status 0.
 ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:payment_link_extractor/channels.py > artifacts\\momo-channel-20260901\\ROLLBACK_TEST_COPY"` then `git hash-object ...`; literal output `ROLLBACK_TEST_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c BASELINE_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c ROLLBACK_TEST_MATCH=1`; exit status 0.

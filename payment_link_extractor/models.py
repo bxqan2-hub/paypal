@@ -19,6 +19,8 @@ class ExtractionConfig:
     gopay_zero_trial_validation: bool = True
     # Momo-only zero-amount gate, kept separate from GoPay state.
     momo_zero_trial_validation: bool = True
+    # Runtime browser identity selected independently for each Momo attempt.
+    momo_fingerprint: str = ""
     verbose: bool = True
     oaics_only: bool = False
     retry_count: int = 0

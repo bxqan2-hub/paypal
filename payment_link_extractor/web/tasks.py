@@ -510,7 +510,7 @@ class TaskManager:
         replacement attempt set. Other channels retain the existing bounded
         retry_count contract.
         """
-        if config.payment_method in {"gopay", "momo"} and config.proxy_pool:
+        if config.payment_method == "gopay" and config.proxy_pool:
             unique = {
                 str(item).strip() for item in config.proxy_pool if str(item).strip()
             }
@@ -635,7 +635,9 @@ class TaskManager:
                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
                     is_gopay = record.config.payment_method == "gopay"
-                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
+                    # Momo may restart a fresh full attempt with the same AT;
+                    # each attempt gets a new proxy and browser fingerprint.
+                    is_checkout_sensitive = record.config.payment_method == "gopay"
                     explicit_retryable = getattr(exc, "retryable", None)
                     status_code = getattr(exc, "status_code", None)
                     try:

@@ -10,8 +10,9 @@ from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import validate_momo_url
-from payment_link_extractor.momo_transport import _set_proxy
+from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
 from payment_link_extractor.web.app import create_app
+from payment_link_extractor.web.tasks import TaskManager
 from payment_link_extractor.web.routes import _config_from_payload
 
 
@@ -74,3 +75,14 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
             assert getattr(exc, "status_code", None) == 409
         else:
             raise AssertionError("non-zero or missing Momo amount was accepted")
+
+
+def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome152", "chrome150"}
+    assert MomoTransportFactory("chrome152").profile["user_agent"].find("Chrome/152.") >= 0
+    assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
+
+
+def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
+    config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
+    assert TaskManager._total_attempts(config) == 3
