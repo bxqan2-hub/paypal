@@ -47,11 +47,24 @@ def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, s
     return fields
 
 
+def _stripe_error_code(response: Any) -> str:
+    try:
+        payload = response.json() or {}
+    except Exception:
+        return ""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("code") or error.get("type") or "").strip()
+    return ""
+
+
 def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
     response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         status = int(response.status_code)
-        raise ProtocolError(status, f"{stage} failed (HTTP {status})")
+        code = _stripe_error_code(response)
+        suffix = f", code={code}" if code else ""
+        raise ProtocolError(status, f"{stage} failed (HTTP {status}{suffix})")
     return json_payload(response, stage)
 
 
@@ -88,7 +101,9 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
     )
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         status = int(response.status_code)
-        raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status})")
+        code = _stripe_error_code(response)
+        suffix = f", code={code}" if code else ""
+        raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
     payload = json_payload(response, "Momo Stripe Elements init")
     checkout["elements_session"] = payload
     checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
