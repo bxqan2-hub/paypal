@@ -9,7 +9,7 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
 from payment_link_extractor.config import billing_for_country, currency_minor_scale
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
-from payment_link_extractor.momo_stripe import checkout_confirm, validate_momo_url
+from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
 from payment_link_extractor.momo_checkout import create_checkout
 from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
@@ -198,3 +198,15 @@ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
     confirm_headers = calls[-1][2]["headers"]
     assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
     assert "/checkout/openai_llc/oaics_fixture" in confirm_headers["Referer"]
+
+
+def test_momo_redirect_follows_stripe_authorize_hop() -> None:
+    target = "https://payment.momo.vn/v2/gateway/pay?t=opaque&s=signature"
+
+    class Session:
+        def request(self, method, url, **kwargs):
+            assert method == "GET"
+            assert url.startswith("https://pm-redirects.stripe.com/")
+            return SimpleNamespace(status_code=200, url=target, headers={})
+
+    assert resolve_momo_redirect(Session(), "https://pm-redirects.stripe.com/authorize/example") == target

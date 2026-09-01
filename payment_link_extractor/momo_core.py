@@ -14,7 +14,7 @@ from .config import billing_for_country, currency_minor_scale
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .models import ExtractionConfig, PaymentLinkResult
 from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
-from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
+from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
 from .momo_transport import (
     MomoTransportFactory,
     capture_momo_csrf_token,
@@ -148,6 +148,8 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         confirmed = checkout_confirm(chatgpt, checkout, token)
         intent = intent_confirm(stripe, checkout, token, confirmed)
         raw = redirect_url(intent)
+        if raw and not validate_momo_url(raw):
+            raw = resolve_momo_redirect(stripe, raw)
         if not validate_momo_url(raw):
             raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
         checkpoint("redirect_resolution")

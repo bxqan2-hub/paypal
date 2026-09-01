@@ -249,6 +249,40 @@ def redirect_url(payload: dict[str, Any]) -> str:
     return ""
 
 
+def resolve_momo_redirect(session: Any, value: str) -> str:
+    """Follow Stripe's one-hop redirect to the final MoMo gateway URL."""
+    candidate = str(value or "").strip()
+    if validate_momo_url(candidate):
+        return candidate
+    parsed = urlparse(candidate)
+    if parsed.scheme != "https" or parsed.hostname != "pm-redirects.stripe.com":
+        return ""
+    try:
+        response = session.request(
+            "GET",
+            candidate,
+            allow_redirects=True,
+            timeout=30,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": "https://checkout.stripe.com/",
+            },
+        )
+    except Exception:
+        return ""
+    final_url = str(getattr(response, "url", "") or "").strip()
+    if validate_momo_url(final_url):
+        return final_url
+    location = ""
+    headers = getattr(response, "headers", {}) or {}
+    if hasattr(headers, "items"):
+        for key, header_value in headers.items():
+            if str(key).lower() == "location":
+                location = str(header_value or "").strip()
+                break
+    return location if validate_momo_url(location) else ""
+
+
 def validate_momo_url(value: str) -> bool:
     parsed = urlparse(str(value or ""))
     query = parse_qs(parsed.query)
