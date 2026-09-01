@@ -27,11 +27,13 @@ if defined OPLL_CAPTURE_DURATION set "DURATION_ARGS=--duration %OPLL_CAPTURE_DUR
 echo Starting %CHANNEL% capture through mitmproxy.
 echo Proxy port: %PROXY_PORT%
 echo Web UI: http://127.0.0.1:%WEB_PORT%/
-echo Complete the flow in the managed Chrome window, then press Ctrl+C here.
+echo Roxy proxy: HTTP 127.0.0.1:%PROXY_PORT% with blank credentials.
+echo Enter the upstream proxy when prompted. Input is hidden.
+echo Complete the flow in RoxyBrowser, then press Ctrl+C here.
 if "%OUTPUT%"=="" (
-  py -3 tools\mitm_capture.py --channel "%CHANNEL%" --url "%URL%" --proxy-port %PROXY_PORT% --web-port %WEB_PORT% %DURATION_ARGS%
+  py -3 tools\mitm_capture.py --channel "%CHANNEL%" --url "%URL%" --proxy-port %PROXY_PORT% --web-port %WEB_PORT% --prompt-upstream --no-browser %DURATION_ARGS%
 ) else (
-  py -3 tools\mitm_capture.py --channel "%CHANNEL%" --url "%URL%" --output "%OUTPUT%" --proxy-port %PROXY_PORT% --web-port %WEB_PORT% %DURATION_ARGS%
+  py -3 tools\mitm_capture.py --channel "%CHANNEL%" --url "%URL%" --output "%OUTPUT%" --proxy-port %PROXY_PORT% --web-port %WEB_PORT% --prompt-upstream --no-browser %DURATION_ARGS%
 )
 set "EXIT_CODE=%ERRORLEVEL%"
 echo Capture exit status: %EXIT_CODE%

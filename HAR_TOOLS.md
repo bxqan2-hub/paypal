@@ -4,7 +4,7 @@
 
 ## 0. 一键 BAT
 
-直接双击根目录的 `HAR_CAPTURE.bat` 即可启动 mitmweb 手动抓包。默认渠道为 GoPay，输出保存到 Git 忽略的 `artifacts-local`，并复用 `data\mitmproxy-capture-profile`。启动后自动打开 `http://127.0.0.1:8081/`，可实时筛选和查看请求；浏览器实际使用的代理端口默认为 `127.0.0.1:8899`。也可以传入输出路径和起始 URL：
+直接双击根目录的 `HAR_CAPTURE.bat` 即可启动面向 RoxyBrowser 的 mitmweb 手动抓包。默认渠道为 GoPay，输出保存到 Git 忽略的 `artifacts-local`。启动时会无回显地要求输入上游代理，随后自动打开 `http://127.0.0.1:8081/`；RoxyBrowser 固定填写 HTTP 代理 `127.0.0.1:8899`，用户名和密码留空。也可以传入输出路径和起始 URL：
 
 ```cmd
 set OPLL_CAPTURE_CHANNEL=gcash
@@ -26,7 +26,7 @@ py -3 tools\mitm_capture.py --doctor
 
 首次安装会在 `%USERPROFILE%\.mitmproxy` 生成本机 CA。当前用户必须信任 `mitmproxy-ca-cert.cer`；证书私钥、原始 HAR、Cookie、令牌和代理凭据都不得提交到 Git。抓包进程默认禁用 HTTP/3/QUIC，避免浏览器绕过 HTTPS/TCP 代理。
 
-需要上游代理时只通过本地环境变量传入，不写进脚本或配置：
+需要上游代理时可在 BAT 提示中输入，或只通过本地环境变量传入，不写进脚本或配置。mitmproxy 12 不直接支持 SOCKS5 上游，工具会自动建立仅监听回环地址的临时 HTTP 桥接，退出时一并清理：
 
 ```powershell
 $env:OPLL_CAPTURE_UPSTREAM = 'HOST:PORT:USERNAME:PASSWORD'

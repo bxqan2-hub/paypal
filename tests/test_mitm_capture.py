@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.mitm_capture import find_mitm_binary, read_devtools_port, require_free_port, upstream_arguments
+from tools.mitm_capture import (
+    find_mitm_binary,
+    parse_upstream,
+    read_devtools_port,
+    require_free_port,
+    upstream_arguments,
+)
 
 
 def test_read_devtools_port(tmp_path: Path) -> None:
@@ -20,14 +26,16 @@ def test_find_mitm_binary_accepts_explicit_path(tmp_path: Path) -> None:
 
 
 def test_upstream_arguments_keep_credentials_out_of_mode() -> None:
-    args = upstream_arguments("socks5://user:pass@127.0.0.1:1080")
-    assert args[:2] == ["--mode", "upstream:socks5://127.0.0.1:1080"]
+    args = upstream_arguments("http://user:pass@127.0.0.1:1080")
+    assert args[:2] == ["--mode", "upstream:http://127.0.0.1:1080"]
     assert args[2:] == ["--upstream-auth", "user:pass"]
 
 
 def test_upstream_arguments_accept_four_field_export() -> None:
-    args = upstream_arguments("127.0.0.1:1080:user:pass")
-    assert args[:2] == ["--mode", "upstream:socks5://127.0.0.1:1080"]
+    parsed, host = parse_upstream("127.0.0.1:1080:user:pass")
+    assert parsed.scheme == "socks5"
+    assert parsed.username == "user"
+    assert host == "127.0.0.1"
 
 
 def test_upstream_arguments_reject_invalid_scheme() -> None:

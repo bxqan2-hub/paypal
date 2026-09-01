@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
@@ -8,9 +9,10 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.request import urlopen
 
 try:
@@ -64,17 +66,22 @@ def endpoint_ready(port: int) -> bool:
         return False
 
 
-def wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float = 20) -> None:
+def wait_for_port(
+    port: int,
+    process: subprocess.Popen[bytes],
+    timeout: float = 20,
+    label: str = "mitmproxy",
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError(f"mitmdump exited before becoming ready (status {process.returncode})")
+            raise RuntimeError(f"{label} exited before becoming ready (status {process.returncode})")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
         except OSError:
             time.sleep(0.2)
-    raise TimeoutError(f"mitmdump did not listen on 127.0.0.1:{port}")
+    raise TimeoutError(f"{label} did not listen on 127.0.0.1:{port}")
 
 
 def require_free_port(port: int, label: str) -> None:
@@ -85,6 +92,12 @@ def require_free_port(port: int, label: str) -> None:
             probe.bind(("127.0.0.1", port))
         except OSError as exc:
             raise RuntimeError(f"{label} port is already in use: 127.0.0.1:{port}") from exc
+
+
+def reserve_free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
 
 
 def wait_for_cdp(profile: Path, timeout: float = 30) -> int:
@@ -132,10 +145,10 @@ def navigate_page(port: int, url: str) -> str:
         cdp.close()
 
 
-def upstream_arguments(value: str) -> list[str]:
+def parse_upstream(value: str):
     text = value.strip()
     if not text:
-        return ["--mode", "regular"]
+        return None
     if "://" not in text:
         parts = text.split(":", 3)
         if len(parts) != 4:
@@ -148,11 +161,69 @@ def upstream_arguments(value: str) -> list[str]:
     host = parsed.hostname
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
+    return parsed, host
+
+
+def upstream_arguments(value: str) -> list[str]:
+    parsed_info = parse_upstream(value)
+    if parsed_info is None:
+        return ["--mode", "regular"]
+    parsed, host = parsed_info
     mode = f"upstream:{parsed.scheme}://{host}:{parsed.port}"
     result = ["--mode", mode]
     if parsed.username is not None or parsed.password is not None:
         result.extend(["--upstream-auth", f"{parsed.username or ''}:{parsed.password or ''}"])
     return result
+
+
+def start_socks5_bridge(value: str) -> tuple[list[str], subprocess.Popen[bytes] | None, Path | None]:
+    parsed_info = parse_upstream(value)
+    if parsed_info is None or parsed_info[0].scheme != "socks5":
+        return upstream_arguments(value), None, None
+    parsed, _ = parsed_info
+    uvx = next((Path(folder) / "uvx.exe" for folder in os.getenv("PATH", "").split(os.pathsep) if folder and (Path(folder) / "uvx.exe").is_file()), None)
+    if uvx is None:
+        raise RuntimeError("SOCKS5 upstream requires uvx (install uv or use an HTTP upstream)")
+    bridge_port = reserve_free_port()
+    descriptor, auth_name = tempfile.mkstemp(prefix="mitm-socks-auth-", suffix=".txt")
+    os.close(descriptor)
+    auth_file = Path(auth_name)
+    auth_file.write_text(
+        f"{unquote(parsed.username or '')}:{unquote(parsed.password or '')}",
+        encoding="utf-8",
+    )
+    command = [
+        str(uvx),
+        "--python",
+        "3.11",
+        "--from",
+        "pproxy",
+        "pproxy",
+        "-l",
+        f"http://127.0.0.1:{bridge_port}",
+        "-r",
+        f"socks5://{parsed.hostname}:{parsed.port}##{auth_file}",
+    ]
+    creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    if os.name == "nt":
+        creation_flags |= subprocess.CREATE_NO_WINDOW
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creation_flags,
+        )
+    except Exception:
+        auth_file.unlink(missing_ok=True)
+        raise
+    try:
+        wait_for_port(bridge_port, process, timeout=20, label="SOCKS5 bridge")
+    except Exception:
+        stop_proxy(process)
+        auth_file.unlink(missing_ok=True)
+        raise
+    return ["--mode", f"upstream:http://127.0.0.1:{bridge_port}"], process, auth_file
 
 
 def start_browser(browser: str, profile: Path, proxy_port: int, url: str) -> tuple[int, bool]:
@@ -265,6 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-port", type=int, default=8899)
     parser.add_argument("--web-port", type=int, default=8081)
     parser.add_argument("--duration", type=float, default=0)
+    parser.add_argument("--prompt-upstream", action="store_true")
+    parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--doctor", action="store_true")
     return parser
 
@@ -296,11 +369,16 @@ def main(argv: list[str] | None = None) -> int:
         if flow_file.exists():
             flow_file.unlink()
         upstream = os.getenv("OPLL_CAPTURE_UPSTREAM", "")
+        if args.prompt_upstream and not upstream:
+            upstream = getpass.getpass(
+                "Upstream proxy (SOCKS5 URL or HOST:PORT:USERNAME:PASSWORD; blank for direct): "
+            ).strip()
         require_free_port(args.proxy_port, "proxy")
         require_free_port(args.web_port, "Web UI")
+        upstream_args, bridge_process, bridge_auth_file = start_socks5_bridge(upstream)
         command = [
             str(mitmweb),
-            *upstream_arguments(upstream),
+            *upstream_args,
             "--listen-host",
             "127.0.0.1",
             "--listen-port",
@@ -317,22 +395,33 @@ def main(argv: list[str] | None = None) -> int:
             "--quiet",
         ]
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+        except Exception:
+            if bridge_process is not None:
+                stop_proxy(bridge_process)
+            if bridge_auth_file is not None:
+                bridge_auth_file.unlink(missing_ok=True)
+            raise
         cdp_port: int | None = None
         try:
             wait_for_port(args.proxy_port, process)
-            cdp_port, reused = start_browser(browser, profile, args.proxy_port, args.url)
-            page = first_page(cdp_port)
-            host = urlsplit(str(page.get("url") or "")).hostname or ""
+            if args.no_browser:
+                reused = False
+                host = "roxy-proxy"
+            else:
+                cdp_port, reused = start_browser(browser, profile, args.proxy_port, args.url)
+                page = first_page(cdp_port)
+                host = urlsplit(str(page.get("url") or "")).hostname or ""
             print("CAPTURE_READY=1", flush=True)
             print("CAPTURE_ENGINE=mitmweb", flush=True)
             print(f"CAPTURE_CHANNEL={args.channel}", flush=True)
-            print(f"CAPTURE_CDP=127.0.0.1:{cdp_port}", flush=True)
+            print(f"CAPTURE_CDP={'ROXY_EXTERNAL' if cdp_port is None else f'127.0.0.1:{cdp_port}'}", flush=True)
             print(f"CAPTURE_PROXY=127.0.0.1:{args.proxy_port}", flush=True)
             print(f"CAPTURE_WEB=http://127.0.0.1:{args.web_port}/", flush=True)
             print("CAPTURE_WEB_AUTO_OPEN=1", flush=True)
@@ -348,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         finally:
-            returned_main = 0
+            returned_main = int(args.no_browser)
             if cdp_port is not None:
                 try:
                     navigate_page(cdp_port, "https://chatgpt.com/")
@@ -359,6 +448,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CAPTURE_RETURNED_MAIN={returned_main}", flush=True)
             print(f"CAPTURE_NEXT_CYCLE_READY={returned_main}", flush=True)
             stop_proxy(process)
+            if bridge_process is not None:
+                stop_proxy(bridge_process)
+            if bridge_auth_file is not None:
+                bridge_auth_file.unlink(missing_ok=True)
         convert_flow_file(mitmdump, flow_file, output)
         result = finalize_capture(output, args.channel)
         audit = result["audit"] if isinstance(result["audit"], dict) else {}
