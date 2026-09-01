@@ -13,7 +13,10 @@ import argparse
 from collections import Counter, defaultdict, deque
 import hashlib
 import json
+import os
 import socket
+import signal
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -180,12 +183,12 @@ class TargetRecorder:
     def close(self) -> list[dict[str, Any]]:
         try:
             self.recorder.flush_pending()
-        except Exception:
+        except BaseException:
             pass
         if self.fetch_responses:
             try:
                 self.recorder.command("Fetch.disable")
-            except Exception:
+            except BaseException:
                 pass
         target_type = str(self.target_info.get("type") or "")
         target_url = str(self.target_info.get("url") or "")
@@ -359,6 +362,14 @@ def main() -> int:
     stop_file = args.stop_file.resolve() if args.stop_file else None
     if stop_file is not None:
         stop_file.unlink(missing_ok=True)
+        def stop_watchdog() -> None:
+            while not stop_file.exists():
+                time.sleep(0.2)
+            try:
+                os.kill(os.getpid(), signal.SIGINT)
+            except OSError:
+                pass
+        threading.Thread(target=stop_watchdog, name="capture-stop-watchdog", daemon=True).start()
     browser = BrowserConnection(_browser_websocket(args.cdp_port))
     recorders: dict[str, TargetRecorder] = {}
     target_sessions: dict[str, str] = {}
