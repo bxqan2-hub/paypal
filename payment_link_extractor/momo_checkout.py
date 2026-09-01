@@ -119,6 +119,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
             "customer_session_client_secret",
             "customerSessionClientSecret",
         ),
+        "customer": ("customer", "customer_id", "customerId"),
         "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
     }
     for target, keys in aliases.items():

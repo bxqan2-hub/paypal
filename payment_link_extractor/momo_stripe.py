@@ -54,7 +54,11 @@ def _stripe_error_code(response: Any) -> str:
         return ""
     error = payload.get("error") if isinstance(payload, dict) else None
     if isinstance(error, dict):
-        return str(error.get("code") or error.get("type") or "").strip()
+        code = str(error.get("code") or error.get("type") or "").strip()
+        param = str(error.get("param") or "").strip()
+        if code and param:
+            return f"{code};param={param}"
+        return code
     return ""
 
 
@@ -143,6 +147,9 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
     captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
     if captcha_value:
         body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
+    customer = str(checkout.get("customer") or "").strip()
+    if customer:
+        body["client_context[customer]"] = customer
     ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
     elements_session_id = str(
         ctx.get("session_id") or ctx.get("id") or ctx.get("elements_session_id") or ""
