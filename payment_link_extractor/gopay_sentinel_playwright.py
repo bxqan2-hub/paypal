@@ -254,7 +254,9 @@ class PersistentPlaywrightDaemon:
         runtime_id = uuid.uuid4().hex
         profile_path = _profile_root() / _profile_key(device_id)
         profile_path.mkdir(parents=True, exist_ok=True)
-        headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=False)
+        # Sentinel still runs in the same persistent Playwright context, but
+        # the Chromium window stays hidden unless explicitly disabled.
+        headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=True)
         browser_channel = os.getenv(
             "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
         ).strip()

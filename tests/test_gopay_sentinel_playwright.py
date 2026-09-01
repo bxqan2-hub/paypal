@@ -28,6 +28,11 @@ def test_playwright_cookie_header_contains_no_empty_names() -> None:
     ) == "oai-did=device; __stripe_mid=mid"
 
 
+def test_playwright_headless_defaults_to_enabled(monkeypatch) -> None:
+    monkeypatch.delenv("OPLL_SENTINEL_HEADLESS", raising=False)
+    assert sentinel._enabled("", default=True) is True
+
+
 def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
     source = Path(sentinel.__file__).read_text(encoding="utf-8")
     assert "asyncio.run_coroutine_threadsafe" in source
