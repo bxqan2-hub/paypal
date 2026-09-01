@@ -795,6 +795,64 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
             "requires_request_body": True,
         },
     ],
+    "momo": [
+        {
+            "name": "momo_checkout_create",
+            "marker": "/backend-api/payments/checkout",
+            "path_pattern": (r"^/backend-api/payments/checkout$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "momo_checkout_taxes",
+            "marker": "/backend-api/payments/checkout/taxes",
+            "path_pattern": (r"^/backend-api/payments/checkout/taxes$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "momo_checkout_confirm",
+            "marker": "/backend-api/payments/checkout/confirm",
+            "path_pattern": (r"^/backend-api/payments/checkout/confirm$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "momo_stripe_elements",
+            "marker": "/v1/elements/sessions",
+            "path_pattern": (r"^/v1/elements/sessions$",),
+            "method": "GET",
+            "requires_request_body": False,
+        },
+        {
+            "name": "momo_stripe_confirmation_token",
+            "marker": "/v1/confirmation_tokens",
+            "path_pattern": (r"^/v1/confirmation_tokens$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "momo_stripe_confirm",
+            "marker": "/v1/payment_intents/",
+            "path_pattern": (r"^/v1/payment_intents/[^/]+/confirm$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+        {
+            "name": "momo_gateway_pay",
+            "marker": "payment.momo.vn/v2/gateway/pay",
+            "path_pattern": (r"^/v2/gateway/pay$",),
+            "method": "GET",
+            "requires_request_body": False,
+        },
+        {
+            "name": "momo_query_session",
+            "marker": "payment.momo.vn/v2/gateway/querySession",
+            "path_pattern": (r"^/v2/gateway/querySession$",),
+            "method": "POST",
+            "requires_request_body": True,
+        },
+    ],
 }
 
 GOPAY_REDIRECT_HOST = "pm-redirects.stripe.com"
@@ -809,6 +867,10 @@ GOPAY_CHANNEL_SIGNATURES = (
     "/v1/payment_pages/",
     "pm-redirects.stripe.com",
 )
+MOMO_CHANNEL_SIGNATURES = (
+    "payment.momo.vn/v2/gateway/pay",
+    "payment.momo.vn/v2/gateway/querySession",
+)
 
 
 def classify_har_channel(har: dict[str, Any]) -> str:
@@ -816,11 +878,17 @@ def classify_har_channel(har: dict[str, Any]) -> str:
     log = har.get("log") if isinstance(har.get("log"), dict) else {}
     entries = log.get("entries") if isinstance(log.get("entries"), list) else []
     corpus = "\n".join(_audit_searchable(entry) for entry in entries if isinstance(entry, dict)).lower()
-    gopay = any(marker.lower() in corpus for marker in GOPAY_CHANNEL_SIGNATURES)
+    gopay = any(
+        marker.lower() in corpus
+        for marker in GOPAY_CHANNEL_SIGNATURES
+        if marker.lower() != "pm-redirects.stripe.com"
+    )
     gcash = any(marker.lower() in corpus for marker in GCASH_CHANNEL_SIGNATURES)
-    if gopay and gcash:
+    momo = any(marker.lower() in corpus for marker in MOMO_CHANNEL_SIGNATURES)
+    active = [name for name, found in (("gopay", gopay), ("gcash", gcash), ("momo", momo)) if found]
+    if len(active) > 1:
         return "mixed"
-    return "gopay" if gopay else "gcash" if gcash else "unknown"
+    return active[0] if active else "unknown"
 
 
 def _find_gopay_redirect(har: dict[str, Any]) -> dict[str, Any]:

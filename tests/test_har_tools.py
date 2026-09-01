@@ -483,6 +483,30 @@ def test_gopay_audit_accepts_bodyless_204_snapshot() -> None:
     assert audit["complete"] is True
 
 
+def test_momo_audit_uses_vietnam_gateway_checkpoints() -> None:
+    urls = [
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout", '{"x":1}'),
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout/taxes", '{"x":1}'),
+        ("GET", "https://api.stripe.com/v1/elements/sessions", ""),
+        ("POST", "https://api.stripe.com/v1/confirmation_tokens", '{"x":1}'),
+        ("POST", "https://chatgpt.com/backend-api/payments/checkout/confirm", '{"x":1}'),
+        ("POST", "https://api.stripe.com/v1/payment_intents/pi_fixture/confirm", '{"x":1}'),
+        ("GET", "https://payment.momo.vn/v2/gateway/pay", ""),
+        ("POST", "https://payment.momo.vn/v2/gateway/querySession", "session=fixture"),
+    ]
+    entries = [
+        {
+            "request": {"method": method, "url": url, "postData": {"text": body} if body else {}},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        }
+        for method, url, body in urls
+    ]
+    audit = audit_har_completeness({"log": {"entries": entries}})
+    assert audit["channel"] == "momo"
+    assert audit["complete"] is True
+    assert audit["issues"] == []
+
+
 def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
     har = _gopay_fixture(include_redirect=True)
     complete = audit_har_completeness(har)

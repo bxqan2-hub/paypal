@@ -29,7 +29,7 @@ except ImportError:
     from roxy_har_capture import default_roxy_cache, discover_roxy_targets
 
 
-CHANNELS = {"paypal", "gopay", "gcash"}
+CHANNELS = {"paypal", "gopay", "gcash", "momo"}
 DEFAULT_ROXY_API = "http://127.0.0.1:50000"
 CDP_SUPPLEMENT_HOSTS = {"chatgpt.com", "auth.openai.com", "auth0.openai.com", "login.openai.com"}
 
@@ -507,7 +507,7 @@ label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px
 <section class="controls">
 <label>上游 SOCKS5 代理<input id="upstream" type="password" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></label>
 <label>Roxy API Key<input id="apiKey" type="password" autocomplete="off" placeholder="仅本机 API 使用"></label>
-<label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
+<label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="momo">MoMo</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
 <label>新窗口名称<input id="windowName" placeholder="留空自动命名"></label>
 <div class="actions"><button id="start" class="button primary">开始并新建窗口</button><button id="stop" class="button danger">停止抓包</button></div>
 <input id="apiBase" type="hidden" value="http://127.0.0.1:50000">

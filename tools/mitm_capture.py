@@ -31,7 +31,7 @@ MITMPROXY_BIN_DIRS = (
     Path(r"C:\Program Files\mitmproxy\bin"),
     Path(r"C:\Program Files (x86)\mitmproxy\bin"),
 )
-CHANNELS = ("paypal", "gopay", "gcash")
+CHANNELS = ("paypal", "gopay", "gcash", "momo")
 TLS_PASSTHROUGH_HOSTS = (
     r"^(?:ipcheck\.roxybrowser\.(?:com|co)|chatgpt\.com|"
     r"auth(?:0)?\.openai\.com|login\.openai\.com):443$"
