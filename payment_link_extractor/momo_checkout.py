@@ -70,7 +70,8 @@ def request(
     )
     response = session.request(method, url, timeout=30, **kwargs)
     if int(getattr(response, "status_code", 0) or 0) >= 400:
-        raise ProtocolError(int(response.status_code), f"{stage} failed")
+        status = int(response.status_code)
+        raise ProtocolError(status, f"{stage} failed (HTTP {status})")
     return json_payload(response, stage)
 
 
