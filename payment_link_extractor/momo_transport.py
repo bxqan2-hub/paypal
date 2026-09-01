@@ -13,16 +13,16 @@ from .config import DEFAULT_USER_AGENT
 
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
     {
-        "name": "chrome152",
-        "impersonate": "chrome152",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="152", "Google Chrome";v="152", "Not(A:Brand";v="99"',
-    },
-    {
         "name": "chrome150",
         "impersonate": "chrome150",
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
         "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="150", "Chromium";v="150"',
+    },
+    {
+        "name": "chrome145",
+        "impersonate": "chrome145",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="145", "Google Chrome";v="145", "Not=A?Brand";v="99"',
     },
     {
         "name": "chrome136",

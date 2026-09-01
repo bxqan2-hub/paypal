@@ -78,8 +78,8 @@ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
 
 
 def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
-    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome152", "chrome150"}
-    assert MomoTransportFactory("chrome152").profile["user_agent"].find("Chrome/152.") >= 0
+    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+    assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
     assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
 
 

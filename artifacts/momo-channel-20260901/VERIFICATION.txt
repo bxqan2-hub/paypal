@@ -21,6 +21,7 @@ MODIFIED result: 257 passed, 1 failed (same pre-existing Sentinel SDK SHA assert
 重点 result: 25 passed. Exit status 0.
 Amount gate: `py -m pytest -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_gcash_support.py` result: 27 passed after adding `momo_zero_trial_validation`. Exit status 0.
 Retry/fingerprint: `py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py` result: 26 passed. Exit status 0.
+Fingerprint runtime repair: curl_cffi 0.16.1 supports chrome150/chrome145/chrome136; unsupported chrome152 was removed from runtime selection while the HAR observation remains documented.
 Syntax: `node --check payment_link_extractor/web/static/app.js; py -m compileall -q payment_link_extractor tests` result: success. Exit status 0.
 ROLLBACK: `bash artifacts/momo-channel-20260901/ROLLBACK.sh <copy>` result: copy restored to task-start channels.py bytes; exit status 0.
 ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:payment_link_extractor/channels.py > artifacts\\momo-channel-20260901\\ROLLBACK_TEST_COPY"` then `git hash-object ...`; literal output `ROLLBACK_TEST_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c BASELINE_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c ROLLBACK_TEST_MATCH=1`; exit status 0.
@@ -28,3 +29,5 @@ ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:paymen
 Restored behavior/status: rollback test copy restored; working tree remains on modified Momo branch. No AT, Cookie, Sentinel, proxy credential, or order identifier is recorded here.
 
 CANARY: earlier runtime-bound run reached `CANARY_STAGE=checkout` and returned `ReadTimeout`. Final runtime-bound retry after proxy normalization and fingerprint rotation reached `CANARY_STAGE=checkout` and returned `CANARY_STATUS=failed`, `CANARY_ERROR_TYPE=Timeout`; exit status 1. No `checkout_committed` stage was observed and no order was created.
+HK proxy batch: five same-AT attempts reached `checkout`; results were `Timeout, Timeout, Timeout, Timeout, Timeout`; no `checkout_committed` stage.
+Connectivity probe: five non-payment `https://api.ipify.org` probes through the supplied HK proxies returned `ConnectionError` for all five entries.
