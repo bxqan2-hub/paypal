@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from payment_link_extractor import gopay_sentinel_playwright as sentinel
 
@@ -35,3 +37,50 @@ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
     assert '"headless": headless' in source
     assert '"chrome"' in source
     assert "jsdom" not in source.lower()
+
+
+def test_checkout_navigation_timeout_falls_back_to_same_origin(monkeypatch) -> None:
+    events: list[object] = []
+
+    class Context:
+        async def set_extra_http_headers(self, headers):
+            events.append(("headers", headers))
+
+    class Page:
+        url = "https://chatgpt.com/checkout/openai_llc/cs_fixture"
+
+        async def goto(self, *_args, **_kwargs):
+            raise TimeoutError()
+
+        async def evaluate(self, _expression, value):
+            events.append(("history", value))
+
+    daemon = object.__new__(sentinel.PersistentPlaywrightDaemon)
+
+    async def install(_page):
+        events.append("sdk")
+
+    async def attestation(_session):
+        events.append("attestation")
+
+    monkeypatch.setattr(daemon, "_install_sdk", install)
+    monkeypatch.setattr(daemon, "_capture_page_attestation", attestation)
+    session = SimpleNamespace(
+        context=Context(),
+        page=Page(),
+        active_page_url="https://chatgpt.com/",
+        bootstrap_headers={"Authorization": "Bearer fixture"},
+    )
+    asyncio.run(
+        daemon._set_page_url(
+            session,
+            "https://chatgpt.com/checkout/openai_llc/cs_fixture",
+        )
+    )
+    assert events == [
+        ("headers", {"Authorization": "Bearer fixture"}),
+        ("headers", {}),
+        "sdk",
+        "attestation",
+        ("history", "/checkout/openai_llc/cs_fixture"),
+    ]

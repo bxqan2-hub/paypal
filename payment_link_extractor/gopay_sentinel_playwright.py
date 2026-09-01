@@ -411,8 +411,24 @@ class PersistentPlaywrightDaemon:
                 await session.page.goto(
                     parsed.geturl(),
                     wait_until="domcontentloaded",
-                    timeout=90_000,
+                    timeout=max(
+                        5_000,
+                        int(
+                            os.getenv(
+                                "OPLL_GOPAY_SENTINEL_NAVIGATION_TIMEOUT_MS",
+                                "30000",
+                            )
+                        ),
+                    ),
                 )
+            except Exception:
+                # A slow proxy can time out after the response has already
+                # established a valid chatgpt.com document. Sentinel only
+                # needs that same-origin document plus the exact Checkout
+                # Referer, so retain it and continue with SDK injection.
+                current_after_timeout = urlsplit(session.page.url)
+                if current_after_timeout.netloc != "chatgpt.com":
+                    raise
             finally:
                 await session.context.set_extra_http_headers({})
             await self._install_sdk(session.page)
