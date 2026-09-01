@@ -14,10 +14,10 @@ Source commits:
 - REMOTE=origin/main (push completed)
 
 Artifacts (absolute paths):
-- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\MODIFIED_FILE
-- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\DIFF_FILE
-- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\VERIFICATION.txt
-- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\ROLLBACK.sh
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\MODIFIED_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\DIFF_FILE
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\VERIFICATION.txt
+- C:\Users\Administrator\Desktop\提链\artifacts\momo-har-canary-20260902\ROLLBACK.sh
 
 Hash evidence:
 - BASELINE payment_link_extractor/momo_transport.py Git-blob SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9
