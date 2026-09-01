@@ -346,6 +346,8 @@ class CaptureState:
         threading.Thread(target=read_output, daemon=True).start()
         if not ready.wait(45) or process.poll() is not None:
             self.stop()
+            with self.lock:
+                self.message = "启动失败：上游代理格式无效，请填写 HOST:PORT:USERNAME:PASSWORD 或完整代理 URL"
             raise RuntimeError("mitmproxy 启动失败，请查看状态日志")
         try:
             existing_ports = {target.port for target in discover_roxy_targets(default_roxy_cache())}
@@ -401,8 +403,10 @@ class CaptureState:
                 self.cdp_output = cdp_output
             if not cdp_ready.wait(30) or cdp_process.poll() is not None:
                 raise RuntimeError("Roxy CDP 补充记录器启动失败")
-        except Exception:
+        except Exception as exc:
             self.stop()
+            with self.lock:
+                self.message = f"启动失败：{exc}"
             raise
         with self.lock:
             self.status = "running"
