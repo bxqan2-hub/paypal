@@ -1,0 +1,581 @@
+diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
+index 04d1be3..d9c9ab4 100644
+--- a/docs/MOMO_HAR_STATE_MACHINE.md
++++ b/docs/MOMO_HAR_STATE_MACHINE.md
+@@ -18,3 +18,10 @@
+ - Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
+ - 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
+ - AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
++
++## 运行时适配
++
++- ChatGPT 请求保持与 HAR 一致的设备/会话 UUID、账号标识、客户端构建号与版本、pending-updates、observation、浏览器指纹及 `oai-did` Cookie；observation 和 telemetry 在每次请求前刷新。
++- Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
++- `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
++- 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
+diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
+index 98a8ec6..9d9a376 100644
+--- a/payment_link_extractor/momo_checkout.py
++++ b/payment_link_extractor/momo_checkout.py
+@@ -8,6 +8,7 @@ from typing import Any
+ 
+ from .config import billing_for_country, processor_entity_for_country
+ from .errors import ProtocolError
++from .momo_transport import momo_request_headers
+ 
+ MOMO_COUNTRY = "VN"
+ MOMO_CURRENCY = "VND"
+@@ -50,7 +51,23 @@ def json_payload(response: Any, stage: str) -> dict[str, Any]:
+     return value
+ 
+ 
+-def request(session: Any, method: str, url: str, stage: str, **kwargs: Any) -> dict[str, Any]:
++def request(
++    session: Any,
++    method: str,
++    url: str,
++    stage: str,
++    *,
++    sentinel_flow: str = "",
++    **kwargs: Any,
++) -> dict[str, Any]:
++    kwargs["headers"] = momo_request_headers(
++        session,
++        method,
++        url,
++        kwargs.get("headers"),
++        flow=sentinel_flow,
++        referer=str((kwargs.get("headers") or {}).get("Referer") or ""),
++    )
+     response = session.request(method, url, timeout=30, **kwargs)
+     if int(getattr(response, "status_code", 0) or 0) >= 400:
+         raise ProtocolError(int(response.status_code), f"{stage} failed")
+@@ -70,6 +87,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+             "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
+             "checkout_ui_mode": "custom",
+         },
++        sentinel_flow="chatgpt_checkout",
+         headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
+     )
+     sid = session_id(payload)
+diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
+index 6713d52..6a22527 100644
+--- a/payment_link_extractor/momo_stripe.py
++++ b/payment_link_extractor/momo_stripe.py
+@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
+ from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
+ from .errors import ProtocolError
+ from .momo_checkout import json_payload
++from .momo_transport import momo_request_headers
+ 
+ 
+ def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
+@@ -71,7 +72,25 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+ 
+ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
+     path = "/backend-api/payments/checkout/confirm"
+-    response = session.request("POST", "https://chatgpt.com" + path, json={"checkout_session_id": checkout["cs_id"], "confirm_token": token, "selected_payment_method_type": "momo"}, timeout=30)
++    url = "https://chatgpt.com" + path
++    response = session.request(
++        "POST",
++        url,
++        json={
++            "checkout_session_id": checkout["cs_id"],
++            "confirm_token": token,
++            "selected_payment_method_type": "momo",
++        },
++        timeout=30,
++        headers=momo_request_headers(
++            session,
++            "POST",
++            url,
++            {"Referer": f"https://chatgpt.com/checkout/{checkout['cs_id']}"},
++            flow="checkout_session_approval",
++            referer=f"https://chatgpt.com/checkout/{checkout['cs_id']}",
++        ),
++    )
+     if int(getattr(response, "status_code", 0) or 0) >= 400:
+         raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
+     payload = json_payload(response, "Momo checkout confirm")
+diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
+index efe8e02..7ee3e08 100644
+--- a/payment_link_extractor/momo_transport.py
++++ b/payment_link_extractor/momo_transport.py
+@@ -2,15 +2,73 @@ from __future__ import annotations
+ 
+ """Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
+ 
+-from typing import Any
++import json
++import os
++import time
++import uuid
++from typing import Any, Mapping
+ import secrets
+ from urllib.parse import quote
+ 
+ import requests
+ 
++from .auth import account_id
+ from .config import DEFAULT_USER_AGENT
+ 
+ 
++MOMO_EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
++
++
++def _browser_proxy_for(proxy: str) -> str:
++    """Give a browser a CONNECT-capable proxy without changing Momo's API proxy."""
++    try:
++        from .web.socks5_bridge import http_proxy_for
++
++        return http_proxy_for(proxy)
++    except Exception:
++        return proxy
++
++
++class MomoSentinelProvider:
++    """Momo-owned adapter for the shared Sentinel browser primitive.
++
++    The Momo flow owns the context, proxy and lifecycle; the shared primitive
++    only performs browser proof generation.  No GoPay/PayPal state is imported.
++    """
++
++    def __init__(
++        self,
++        *,
++        access_token: str,
++        device_id: str,
++        session_id: str,
++        user_agent: str,
++        proxy: str,
++        transport_session: Any,
++    ) -> None:
++        from .transport import BrowserSentinelProvider
++
++        self._delegate = BrowserSentinelProvider(
++            access_token=access_token,
++            device_id=device_id,
++            session_id=session_id,
++            user_agent=user_agent,
++            proxy=_browser_proxy_for(proxy),
++            transport_session=transport_session,
++            enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
++        )
++
++    @property
++    def enabled(self) -> bool:
++        return bool(getattr(self._delegate, "enabled", False))
++
++    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
++        return dict(self._delegate.headers(flow, referer=referer) or {})
++
++    def close(self) -> None:
++        self._delegate.close()
++
++
+ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+     {
+         "name": "chrome150",
+@@ -43,19 +101,110 @@ class MomoTransportFactory:
+ 
+     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
+         session = _new_session(self.profile["impersonate"])
++        device_id = str(uuid.uuid4())
++        session_id = str(uuid.uuid4())
++        observation = os.getenv("OPLL_MOMO_OAI_IS_CLIENT_OBSERVATION", "").strip()
+         session.headers.update(
+             {
+                 "Authorization": f"Bearer {config.access_token}",
+                 "User-Agent": self.profile["user_agent"],
+-                "Accept": "application/json",
++                "Accept": "*/*",
+                 "Origin": "https://chatgpt.com",
++                "Referer": "https://chatgpt.com/",
++                "Content-Type": "application/json",
+                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
++                "oai-device-id": device_id,
++                "oai-session-id": session_id,
++                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "en-US"),
++                "oai-client-build-number": os.getenv(
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
++                ),
++                "oai-client-version": os.getenv(
++                    "OPLL_OAI_CLIENT_VERSION",
++                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
++                ),
++                "x-oai-is-pending-updates": os.getenv(
++                    "OPLL_X_OAI_IS_PENDING_UPDATES", MOMO_EMPTY_PENDING_UPDATES
++                ),
++                "x-oai-is-client-observation": observation
++                or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+                 "Sec-CH-UA": self.profile["sec_ch_ua"],
+                 "Sec-CH-UA-Mobile": "?0",
+                 "Sec-CH-UA-Platform": '"Windows"',
++                "sec-fetch-dest": "empty",
++                "sec-fetch-mode": "cors",
++                "sec-fetch-site": "same-origin",
++                "Cookie": f"oai-did={device_id}",
+             }
+         )
++        account = account_id(str(getattr(config, "access_token", "") or ""))
++        if account:
++            session.headers["chatgpt-account-id"] = account
++        session.openai_device_id = device_id
++        session.openai_did = device_id
++        session.openai_session_id = session_id
++        session.openai_proxy = proxy
++        session.openai_request_started = time.perf_counter()
++
++        def refresh_momo_request_headers(method: str, url: str) -> dict[str, str]:
++            pinned = observation or os.getenv(
++                "OPLL_MOMO_OAI_IS_CLIENT_OBSERVATION", ""
++            ).strip()
++            value = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
++            session.headers["x-oai-is-client-observation"] = value
++            dynamic: dict[str, str] = {"x-oai-is-client-observation": value}
++            if method.upper() == "POST":
++                normalized = str(url or "").lower()
++                if normalized.endswith("/backend-api/payments/checkout"):
++                    dynamic["oai-telemetry"] = os.getenv(
++                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
++                    )
++                elif normalized.endswith("/backend-api/payments/checkout/confirm"):
++                    elapsed = round(
++                        (time.perf_counter() - session.openai_request_started) * 1000,
++                        1,
++                    )
++                    dynamic["oai-telemetry"] = json.dumps(
++                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
++                        separators=(",", ":"),
++                    )
++            return dynamic
++
++        session.refresh_momo_request_headers = refresh_momo_request_headers
++        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
++        if attestation:
++            session.headers["oai-web-deployment-attestation"] = attestation
++        # A browser-generated proof is preferred. Explicit values remain a
++        # useful runtime fallback for deployments that inject their own proof.
++        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
++            "OPLL_OPENAI_SENTINEL_TOKEN", ""
++        ).strip()
++        if sentinel:
++            session.openai_sentinel_token = sentinel
++        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
++            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
++        ).strip()
++        if sentinel_so:
++            session.openai_sentinel_so_token = sentinel_so
+         _set_proxy(session, proxy)
++        mode = os.getenv("OPLL_MOMO_SENTINEL_BROWSER", "auto").strip().lower()
++        if mode not in {"0", "false", "off", "disabled", "no"}:
++            try:
++                from .transport import _agent_browser_binary
++
++                if _agent_browser_binary():
++                    session.openai_sentinel_provider = MomoSentinelProvider(
++                        access_token=str(getattr(config, "access_token", "") or ""),
++                        device_id=device_id,
++                        session_id=session_id,
++                        user_agent=self.profile["user_agent"],
++                        proxy=normalize_momo_proxy(proxy),
++                        transport_session=session,
++                    )
++            except Exception:
++                # Keep the explicit token fallback and let the API return its
++                # actual status when a browser helper cannot be started.
++                pass
+         return session
+ 
+     def stripe(self, config: Any) -> requests.Session:
+@@ -86,16 +235,111 @@ def _new_session(impersonate: str) -> Any:
+ 
+ 
+ def _set_proxy(session: Any, proxy: str) -> None:
+-    value = str(proxy or "").strip()
+-    if value and "://" not in value:
+-        parts = value.split(":")
+-        if len(parts) == 4 and all(parts):
+-            host, port, user, password = parts
+-            value = f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
++    value = normalize_momo_proxy(proxy)
+     if value:
+         session.proxies.update({"http": value, "https": value})
+ 
+ 
++def normalize_momo_proxy(proxy: str) -> str:
++    """Normalize Momo's documented proxy forms without crossing channels.
++
++    The VN 1024proxy export uses ``host:port:user:password`` and exposes a
++    SOCKS5 endpoint on port 3000.  Treating that export as an HTTP proxy makes
++    the TCP socket open but every HTTPS request hang during proxy negotiation.
++    Other bare proxy exports retain the historical HTTP scheme, while explicit
++    schemes are passed through unchanged.
++    """
++    value = str(proxy or "").strip()
++    if not value or "://" in value:
++        return value
++    parts = value.split(":", 3)
++    if len(parts) != 4 or not all(parts):
++        return value
++    host, port, user, password = parts
++    try:
++        parsed_port = int(port)
++    except (TypeError, ValueError):
++        parsed_port = 0
++    lowered_host = host.lower().rstrip(".")
++    is_1024proxy_socks = (
++        parsed_port == 3000
++        and (lowered_host == "1024proxy.io" or lowered_host.endswith(".1024proxy.io"))
++    )
++    scheme = "socks5h" if is_1024proxy_socks else "http"
++    return f"{scheme}://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
++
++
++def momo_sentinel_headers(
++    session: Any, *, flow: str = "", referer: str = ""
++) -> dict[str, str]:
++    """Return fresh Momo Sentinel proof plus runtime-injected fallbacks."""
++    result: dict[str, str] = {}
++    provider = getattr(session, "openai_sentinel_provider", None)
++    if flow and provider is not None:
++        try:
++            result.update(provider.headers(flow, referer=referer) or {})
++        except Exception:
++            # The API response remains the source of truth if the optional
++            # browser helper is unavailable; no captured proof is replayed.
++            pass
++    token = str(
++        getattr(session, "openai_sentinel_token", "")
++        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
++        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
++    ).strip()
++    if token and not any(
++        key.lower() == "openai-sentinel-token" for key in result
++    ):
++        result["OpenAI-Sentinel-Token"] = token
++    so_token = str(
++        getattr(session, "openai_sentinel_so_token", "")
++        or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
++        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
++    ).strip()
++    if so_token and not any(
++        key.lower() == "openai-sentinel-so-token" for key in result
++    ):
++        result["OpenAI-Sentinel-SO-Token"] = so_token
++    attestation = str(
++        getattr(session, "openai_web_deployment_attestation", "")
++        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
++    ).strip()
++    if attestation and not any(
++        key.lower() == "oai-web-deployment-attestation" for key in result
++    ):
++        result["oai-web-deployment-attestation"] = attestation
++    return result
++
++
++def momo_request_headers(
++    session: Any,
++    method: str,
++    url: str,
++    headers: Mapping[str, str] | None = None,
++    *,
++    flow: str = "",
++    referer: str = "",
++) -> dict[str, str]:
++    """Merge per-request Momo headers without mutating caller dictionaries."""
++    merged = dict(headers or {})
++    refresh = getattr(session, "refresh_momo_request_headers", None)
++    if callable(refresh):
++        dynamic = refresh(str(method).upper(), url) or {}
++        merged.update(dynamic)
++    if flow:
++        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
++    return merged
++
++
+ def close(session: Any) -> None:
+-    if session is not None and callable(getattr(session, "close", None)):
++    if session is None:
++        return
++    provider = getattr(session, "openai_sentinel_provider", None)
++    shutdown = getattr(provider, "close", None)
++    if callable(shutdown):
++        try:
++            shutdown()
++        except Exception:
++            pass
++    if callable(getattr(session, "close", None)):
+         session.close()
+diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
+index 1a1ade5..78a48b3 100644
+--- a/payment_link_extractor/transport.py
++++ b/payment_link_extractor/transport.py
+@@ -513,6 +513,7 @@ class BrowserSentinelProvider:
+         proxy: str,
+         transport_session: Any,
+         log: Any | None = None,
++        enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
+     ) -> None:
+         self.access_token = str(access_token or "").strip()
+         self.device_id = str(device_id or "").strip()
+@@ -521,6 +522,7 @@ class BrowserSentinelProvider:
+         self.proxy = str(proxy or "").strip()
+         self.transport_session = transport_session
+         self.log = log
++        self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
+         self.binary = _agent_browser_binary()
+         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
+         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
+@@ -541,7 +543,7 @@ class BrowserSentinelProvider:
+ 
+     @property
+     def enabled(self) -> bool:
+-        mode = os.getenv("OPLL_GCASH_SENTINEL_BROWSER", "auto").strip().lower()
++        mode = os.getenv(self.enabled_env, "auto").strip().lower()
+         return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
+ 
+     def _base_command(self) -> list[str]:
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 5c0a889..6f9718c 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -637,7 +637,7 @@ class TaskManager:
+                     is_gopay = record.config.payment_method == "gopay"
+                     # Momo may restart a fresh full attempt with the same AT;
+                     # each attempt gets a new proxy and browser fingerprint.
+-                    is_checkout_sensitive = record.config.payment_method == "gopay"
++                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
+                     explicit_retryable = getattr(exc, "retryable", None)
+                     status_code = getattr(exc, "status_code", None)
+                     try:
+diff --git a/tests/test_extraction_full_retry.py b/tests/test_extraction_full_retry.py
+index 56966fd..f37baf5 100644
+--- a/tests/test_extraction_full_retry.py
++++ b/tests/test_extraction_full_retry.py
+@@ -315,6 +315,45 @@ def test_gopay_checkout_boundary_consumes_account_and_blocks_retry() -> None:
+         manager.close()
+ 
+ 
++def test_momo_checkout_boundary_consumes_account_and_blocks_retry() -> None:
++    calls: list[str] = []
++
++    def extractor(config, *, cancel_event, stage_callback):
++        del cancel_event
++        calls.append(config.checkout_proxy)
++        stage_callback("checkout")
++        stage_callback("checkout_committed")
++        stage_callback("stripe_init")
++        raise ProtocolError(409, "Momo provider confirmation failed")
++
++    proxies = (
++        "http://momo-proxy-1.example:8080",
++        "http://momo-proxy-2.example:8080",
++    )
++    config = ExtractionConfig(
++        access_token="fixture-token",
++        checkout_proxy=proxies[0],
++        update_proxy=proxies[0],
++        payment_method="momo",
++        country="VN",
++        retry_count=1,
++        checkout_proxy_attempts=proxies,
++        update_proxy_attempts=proxies,
++        proxy_pool=proxies,
++    )
++    manager = TaskManager(extractor, max_workers=1)
++    try:
++        task_id = manager.create(config)["task_id"]
++        snapshot = _wait_for_terminal(manager, task_id)
++        assert snapshot["status"] == "failed"
++        assert snapshot["attempt"] == 1
++        assert snapshot["max_attempts"] == 2
++        assert snapshot["checkout_opportunity_consumed"] is True
++        assert len(calls) == 1
++    finally:
++        manager.close()
++
++
+ def test_gopay_proxy_pool_attempts_are_random_and_same_proxy_per_attempt() -> None:
+     calls: list[tuple[str, str]] = []
+ 
+diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
+index fb47546..0e07349 100644
+--- a/tests/test_momo_support.py
++++ b/tests/test_momo_support.py
+@@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
+ from payment_link_extractor.models import ExtractionConfig
+ from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
+ from payment_link_extractor.momo_stripe import validate_momo_url
+-from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy
++from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, momo_request_headers, normalize_momo_proxy
+ from payment_link_extractor.web.app import create_app
+ from payment_link_extractor.web.tasks import TaskManager
+ from payment_link_extractor.web.routes import _config_from_payload
+@@ -66,6 +66,16 @@ def test_momo_transport_normalizes_host_port_user_password() -> None:
+     assert session.proxies["https"] == "http://user:p%40ss@proxy.example:3000"
+ 
+ 
++def test_momo_transport_uses_socks5h_for_1024proxy_vn_exports() -> None:
++    raw = "hk.1024proxy.io:3000:user:p@ss"
++    expected = "socks5h://user:p%40ss@hk.1024proxy.io:3000"
++    assert normalize_momo_proxy(raw) == expected
++    session = SimpleNamespace(proxies={})
++    _set_proxy(session, raw)
++    assert session.proxies["http"] == expected
++    assert session.proxies["https"] == expected
++
++
+ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+     validate_momo_amount(0)
+     for value in (None, 1, -1):
+@@ -86,3 +96,49 @@ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+ def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
+     config = ExtractionConfig("token", "http://proxy", "http://proxy", country="VN", payment_method="momo", retry_count=2, proxy_pool=("http://proxy",))
+     assert TaskManager._total_attempts(config) == 3
++
++
++def test_momo_chatgpt_headers_follow_har_contract(monkeypatch) -> None:
++    monkeypatch.setenv("OPLL_MOMO_SENTINEL_BROWSER", "off")
++    config = ExtractionConfig("opaque.token", "http://proxy", "", country="VN", payment_method="momo")
++    session = MomoTransportFactory("chrome150").chatgpt(config, "http://proxy")
++    try:
++        keys = {str(key).lower() for key in session.headers}
++        assert {"oai-device-id", "oai-session-id", "oai-client-build-number", "oai-client-version"} <= keys
++        assert "chatgpt-account-id" not in keys
++        headers = momo_request_headers(
++            session,
++            "POST",
++            "https://chatgpt.com/backend-api/payments/checkout",
++            {"Referer": "https://chatgpt.com/"},
++            flow="chatgpt_checkout",
++        )
++        assert headers["oai-telemetry"] == "[1,null]"
++        assert headers["Referer"] == "https://chatgpt.com/"
++    finally:
++        from payment_link_extractor.momo_transport import close
++
++        close(session)
++
++
++def test_momo_request_headers_refreshes_sentinel_per_flow() -> None:
++    calls = []
++
++    class Provider:
++        def headers(self, flow, *, referer=""):
++            calls.append((flow, referer))
++            return {"OpenAI-Sentinel-Token": "runtime-proof"}
++
++    session = SimpleNamespace(
++        openai_sentinel_provider=Provider(),
++        refresh_momo_request_headers=lambda method, url: {"x-oai-is-client-observation": "v1.r.p.fixture"},
++    )
++    headers = momo_request_headers(
++        session,
++        "POST",
++        "https://chatgpt.com/backend-api/payments/checkout",
++        flow="chatgpt_checkout",
++        referer="https://chatgpt.com/",
++    )
++    assert headers["OpenAI-Sentinel-Token"] == "runtime-proof"
++    assert calls == [("chatgpt_checkout", "https://chatgpt.com/")]

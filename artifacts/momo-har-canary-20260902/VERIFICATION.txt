@@ -1,0 +1,83 @@
+Momo VN/VND optimization and AT canary verification
+=====================================================
+
+Changed branch/field:
+- Momo channel (VN/VND) remains isolated with result field momo_url.
+- Momo ChatGPT transport now binds HAR-aligned device/session/account/client headers, refreshes observation/telemetry, obtains runtime Sentinel proof for chatgpt_checkout and checkout_session_approval, and normalizes 1024proxy port 3000 exports as authenticated SOCKS5H.
+- The retry boundary remains checkout-commit aware: no second oaics_* checkout is created after commit.
+
+Source commits:
+- BASELINE_COMMIT=e21e568
+- MODIFIED_COMMIT=7cccc7b
+- REMOTE=origin/main (push completed)
+
+Artifacts (absolute paths):
+- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\MODIFIED_FILE
+- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\DIFF_FILE
+- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\VERIFICATION.txt
+- C:\Users\Administrator\.codex\worktrees\811d\提链\artifacts\momo-har-canary-20260902\ROLLBACK.sh
+
+Hash evidence:
+- BASELINE payment_link_extractor/momo_transport.py SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9
+- MODIFIED payment_link_extractor/momo_transport.py SHA256=831a27215ca5d1c78214bf5e86725cfb6bbd2f37943c54704de753e94e9744de
+- MODIFIED_FILE SHA256=831a27215ca5d1c78214bf5e86725cfb6bbd2f37943c54704de753e94e9744de
+- DIFF_FILE SHA256=ef5bd9debc7654987153dba765eca70ed0a45f783e0f1758f895e6adaae7c871
+- HAR input (offline read only) SHA256=729b6d7e89d7e3c8db0cdee7de58c0e4b91615f2a4a7c0c35079a0dc23541988
+
+BASELINE command:
+py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
+Input: clean source at BASELINE_COMMIT=e21e568; no AT/proxy values persisted.
+Literal output/result: 26 passed in 0.33s
+Exit status: 0
+
+BASELINE_FULL command:
+py -m pytest -q
+Input: clean source at BASELINE_COMMIT=e21e568.
+Literal output/result: 259 passed, 1 failed; existing failure was tests/test_gopay_isolated_optimization.py::test_gopay_sentinel_sdk_matches_both_complete_hars (Sentinel SDK SHA assertion).
+Exit status: 1
+
+MODIFIED command:
+py -m pytest -q tests/test_momo_support.py tests/test_extraction_full_retry.py tests/test_channel_isolation.py
+Input: source at MODIFIED_COMMIT=7cccc7b.
+Literal output/result: 30 passed in 0.52s
+Exit status: 0
+
+MODIFIED_FULL command:
+py -m pytest -q
+Input: source at MODIFIED_COMMIT=7cccc7b.
+Literal output/result: 268 passed, 1 failed in 2.30s; the same pre-existing tests/test_gopay_isolated_optimization.py::test_gopay_sentinel_sdk_matches_both_complete_hars Sentinel SDK SHA assertion remained.
+Exit status: 1
+
+HAR_INSPECTION command:
+py -c "offline parse C:\\Users\\Administrator\\Downloads\\payment.momo.vn.har; report header presence/lengths only"
+Input: C:\Users\Administrator\Downloads\payment.momo.vn.har (read-only; no request replay).
+Literal output/result: entries=338; checkout/taxes/confirm HTTP status=200; checkout sentinel/attestation/device/session/build/version/observation/telemetry/pending/account headers present; confirm Sentinel token length=6158; no token or credential value stored.
+Exit status: 0
+
+CANARY command:
+py -c "bind supplied AT and five supplied proxy entries in memory; POST Momo checkout; emit stage/status only"
+Input: supplied AT and five proxy entries held in process memory; OPLL_MOMO_SENTINEL_BROWSER=off for deterministic auth diagnosis; no values persisted.
+Literal output/result:
+CANARY_ATTEMPT=1 STAGE=checkout STATUS=401
+CANARY_ATTEMPT=2 STAGE=checkout STATUS=401
+CANARY_ATTEMPT=3 STAGE=checkout STATUS=401
+CANARY_ATTEMPT=4 STAGE=checkout STATUS=401
+CANARY_ATTEMPT=5 STAGE=checkout STATUS=401
+CANARY_COMMITTED=0; momo_url not produced.
+Exit status: 1 (all five attempts reached ChatGPT and returned HTTP 401)
+
+FAILURE_DIAGNOSIS command:
+py -c "repeat one checkout POST; print status and redacted response body"
+Input: same supplied AT/proxy held in memory; response body truncated and AT-redacted.
+Literal output/result: HTTP_STATUS=401; BODY={ "error": { "message": "Could not parse your authentication token. Please try signing in again.", "type": null, "code": "unauthorized_unknown", "param": null }, "status": 401 }
+Exit status: 1
+
+ROLLBACK command:
+C:/Program Files/Git/bin/bash.exe C:/Users/Administrator/.codex/worktrees/811d/提链/artifacts/momo-har-canary-20260902/ROLLBACK.sh C:/Users/Administrator/.codex/worktrees/811d/提链/artifacts-local/momo-rollback-test-20260902 C:/Users/Administrator/.codex/worktrees/811d/提链 e21e568
+Input: independent mutated copy of all changed source/test/doc files.
+Literal output/result: RESTORED_STATUS=PASS; BASELINE_COMMIT=e21e568; payment_link_extractor/momo_transport.py_SHA256=c54d272183c8b65afb0ad5e07d0318537fee5f7ce5aa468cc62ba30b8d3428a9; HASH_MATCH=True; ROLLBACK_TEST_TEMP_REMOVED=True
+Exit status: 0
+
+Restored behavior/status:
+- Rollback was applied only to the independent copy; the working source and MODIFIED_FILE remain on MODIFIED_COMMIT=7cccc7b.
+- Proxy, header, Sentinel-flow and checkout-boundary changes are committed and pushed; no momo_url was emitted because the supplied AT was rejected at Checkout authentication before an oaics_* session was created.
