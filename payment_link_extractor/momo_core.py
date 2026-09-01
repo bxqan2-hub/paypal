@@ -15,7 +15,12 @@ from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
 from .models import ExtractionConfig, PaymentLinkResult
 from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
 from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
-from .momo_transport import MomoTransportFactory, close
+from .momo_transport import (
+    MomoTransportFactory,
+    capture_momo_csrf_token,
+    close,
+    momo_gateway_headers,
+)
 
 MOMO_RESULT_FIELD = "momo_url"
 
@@ -58,9 +63,35 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
     session_id = _gateway_session_id(url)
     if not session_id:
         raise ProtocolError(502, "Momo gateway URL has invalid session token")
+    # The browser first opens the gateway page.  That navigation establishes
+    # the page origin and may set the CSRF cookie used by querySession.
+    opener = getattr(session, "request", None)
+    if callable(opener):
+        try:
+            page = opener(
+                "GET",
+                url,
+                headers=momo_gateway_headers(session, url),
+                timeout=30,
+            )
+            if int(getattr(page, "status_code", 0) or 0) >= 400:
+                raise ProtocolError(
+                    int(page.status_code), "Momo gateway page failed"
+                )
+            capture_momo_csrf_token(session, page)
+        except ProtocolError:
+            raise
+        except Exception as exc:
+            raise ProtocolError(502, "Momo gateway page request failed") from exc
     last: dict[str, Any] = {}
     for index in range(max(1, polls)):
-        response = session.request("POST", "https://payment.momo.vn/v2/gateway/querySession", json={"sessionId": session_id}, timeout=30)
+        response = session.request(
+            "POST",
+            "https://payment.momo.vn/v2/gateway/querySession",
+            json={"sessionId": session_id},
+            headers=momo_gateway_headers(session, url),
+            timeout=30,
+        )
         if int(getattr(response, "status_code", 0) or 0) >= 400:
             raise ProtocolError(int(response.status_code), "Momo querySession failed")
         try:

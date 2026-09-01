@@ -10,7 +10,7 @@ from payment_link_extractor.config import billing_for_country
 from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_stripe import validate_momo_url
-from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, momo_request_headers, normalize_momo_proxy
+from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
 from payment_link_extractor.web.routes import _config_from_payload
@@ -46,9 +46,13 @@ def test_momo_url_and_gateway_session_contract() -> None:
 
     class Session:
         def request(self, method, endpoint, **kwargs):
+            if method == "GET":
+                assert endpoint.startswith("https://payment.momo.vn/v2/gateway/pay")
+                return SimpleNamespace(status_code=200, headers={})
             assert method == "POST"
             assert endpoint.endswith("/querySession")
             assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
+            assert kwargs["headers"]["Origin"] == "https://payment.momo.vn"
             return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
 
     assert query_gateway(Session(), url)["status_code"] == 1000
@@ -142,3 +146,23 @@ def test_momo_request_headers_refreshes_sentinel_per_flow() -> None:
     )
     assert headers["OpenAI-Sentinel-Token"] == "runtime-proof"
     assert calls == [("chatgpt_checkout", "https://chatgpt.com/")]
+
+
+def test_momo_gateway_headers_use_runtime_csrf_only(monkeypatch) -> None:
+    monkeypatch.delenv("OPLL_MOMO_CSRF_TOKEN", raising=False)
+    session = SimpleNamespace(momo_csrf_token="csrf-runtime")
+    headers = momo_gateway_headers(
+        session, "https://payment.momo.vn/v2/gateway/pay?t=opaque&s=sig"
+    )
+    assert headers["X-CSRF-Token"] == "csrf-runtime"
+    assert headers["Origin"] == "https://payment.momo.vn"
+
+
+def test_momo_gateway_csrf_can_be_captured_from_live_page() -> None:
+    session = SimpleNamespace(cookies={})
+    response = SimpleNamespace(
+        headers={},
+        text='<meta name="csrf-token" content="csrf-from-page">',
+    )
+    assert capture_momo_csrf_token(session, response) == "csrf-from-page"
+    assert session.momo_csrf_token == "csrf-from-page"
