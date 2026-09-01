@@ -14,7 +14,7 @@ from tools.har_capture import (
     infer_proxy_country,
     locale_profile_for_proxy,
 )
-from tools.har_utils import analyze_har, entry_summary, markdown_report
+from tools.har_utils import analyze_har, entry_summary, markdown_report, redact_url
 
 
 def _fixture() -> dict:
@@ -95,6 +95,22 @@ def test_entry_summary_can_include_raw_values_and_markdown_is_reusable() -> None
     markdown = markdown_report(report)
     assert "# HAR analysis" in markdown
     assert "checkout/confirm" in markdown
+
+
+def test_redact_url_masks_path_and_gateway_query_identifiers() -> None:
+    value = (
+        "https://chatgpt.com/backend-api/payments/checkout/openai_llc/"
+        "oaics_secret123?sessionId=raw-session&t=opaque&s=signature"
+    )
+    redacted = redact_url(value)
+    assert "oaics_secret123" not in redacted
+    assert "raw-session" not in redacted
+    assert "opaque" not in redacted
+    assert "signature" not in redacted
+    assert "/checkout/openai_llc/" in redacted
+
+    auth_url = redact_url("https://user:password@example.test/path")
+    assert "user" not in auth_url and "password" not in auth_url
 
 
 def test_socks5_bridge_allocates_local_http_endpoint() -> None:

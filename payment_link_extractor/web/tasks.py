@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import queue
+import hashlib
 import random
 import os
 import threading
@@ -30,6 +31,7 @@ STAGE_PROGRESS = {
     "eligibility_confirmed": 12,
     "checkout": 15,
     "checkout_update": 25,
+    "momo_method_confirmed": 18,
     "promotion_applied": 30,
     "stripe_init": 35,
     "elements_session": 50,
@@ -40,6 +42,14 @@ STAGE_PROGRESS = {
     "zero_amount_confirmed": 99,
     "completed": 100,
 }
+
+
+def _proxy_reference(value: str) -> str:
+    """Return a non-secret diagnostic reference for a Momo proxy."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return "momo-proxy:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def gopay_retry_backoff_seconds(attempt_index: int) -> float:
@@ -634,7 +644,7 @@ class TaskManager:
                     error = redact_text(exc, self._secrets(record.config))
                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
-                    is_gopay = record.config.payment_method == "gopay"
+                    is_checkout_channel = record.config.payment_method in {"gopay", "momo"}
                     # Momo may restart a fresh full attempt with the same AT;
                     # each attempt gets a new proxy and browser fingerprint.
                     is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
@@ -676,7 +686,7 @@ class TaskManager:
                                 "ip_rotated": True,
                                 **(
                                     {"failure_mode": failure_mode, "retryable": True}
-                                    if is_gopay
+                                    if is_checkout_channel
                                     else {}
                                 ),
                                 "elapsed_ms": elapsed_ms,
@@ -706,7 +716,7 @@ class TaskManager:
                                     "failure_mode": failure_mode,
                                     "retryable": bool(explicit_retryable),
                                 }
-                                if is_gopay
+                                if is_checkout_channel
                                 else {}
                             ),
                             "progress": record.progress,
@@ -742,7 +752,11 @@ class TaskManager:
                     {
                         "status": record.status,
                         "result": record.result,
-                        "checkout_proxy": record.config.checkout_proxy,
+                        "checkout_proxy": (
+                            _proxy_reference(record.config.checkout_proxy)
+                            if record.config.payment_method == "momo"
+                            else record.config.checkout_proxy
+                        ),
                         "progress": record.progress,
                         "attempt": record.attempt,
                         "max_attempts": total_attempts,
@@ -854,7 +868,11 @@ class TaskManager:
         if record.retry_of:
             snapshot["retry_of"] = record.retry_of
         if record.status == "succeeded":
-            snapshot["checkout_proxy"] = record.config.checkout_proxy
+            snapshot["checkout_proxy"] = (
+                _proxy_reference(record.config.checkout_proxy)
+                if record.config.payment_method == "momo"
+                else record.config.checkout_proxy
+            )
         if record.result is not None:
             snapshot["result"] = record.result
         if record.error:

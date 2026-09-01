@@ -519,6 +519,7 @@ class BrowserSentinelProvider:
         transport_session: Any,
         log: Any | None = None,
         enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
+        session_token: str = "",
         language: str = "en-US",
         client_build_number: str = "",
         client_version: str = "",
@@ -533,6 +534,7 @@ class BrowserSentinelProvider:
         self.transport_session = transport_session
         self.log = log
         self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
+        self.session_token = str(session_token or "").strip()
         self.language = str(language or "en-US").strip() or "en-US"
         self.client_build_number = str(client_build_number or "").strip()
         self.client_version = str(client_version or "").strip()
@@ -644,6 +646,113 @@ class BrowserSentinelProvider:
             if attestation:
                 self._attestation = attestation
 
+        # Some deployments expose the signed value only on a same-context
+        # backend request rather than in client-bootstrap.  Read header
+        # metadata from the browser monitor without retaining request bodies.
+        if self._attestation:
+            return
+        try:
+            captured = self._run(
+                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+                timeout=20,
+            )
+        except Exception:
+            return
+        data = captured.get("data") if isinstance(captured, dict) else None
+        requests = data.get("requests") if isinstance(data, dict) else None
+        if not isinstance(requests, list):
+            return
+        for item in reversed(requests):
+            if not isinstance(item, dict):
+                continue
+            headers = item.get("requestHeaders") or item.get("headers")
+            if isinstance(headers, list):
+                header_map = {
+                    str(header.get("name") or "").lower(): str(header.get("value") or "")
+                    for header in headers
+                    if isinstance(header, dict)
+                }
+            elif isinstance(headers, dict):
+                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
+            else:
+                continue
+            value = str(header_map.get("oai-web-deployment-attestation") or "").strip()
+            if value:
+                self._attestation = value
+                return
+
+    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
+        """Install a cookie in the browser, chunking long session values."""
+        cookie_name = str(name or "").strip()
+        cookie_value = str(value or "")
+        if not cookie_name or not cookie_value:
+            return
+        chunk_size = 3800
+        chunks = [
+            cookie_value[index : index + chunk_size]
+            for index in range(0, len(cookie_value), chunk_size)
+        ]
+        names = (
+            [(cookie_name, chunks[0])]
+            if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096
+            else [(f"{cookie_name}.{index}", chunk) for index, chunk in enumerate(chunks)]
+        )
+        for chunk_name, chunk in names:
+            args = ["cookies", "set", chunk_name, chunk]
+            # __Host- cookies are host-only by RFC and reject Domain=.chatgpt.com.
+            if not cookie_name.lower().startswith("__host-"):
+                args.extend(["--domain", ".chatgpt.com"])
+            args.extend(["--path", "/"])
+            if http_only:
+                args.append("--httpOnly")
+            args.append("--secure")
+            self._run(args)
+
+    def _import_transport_cookies(self) -> None:
+        """Seed Chromium with cookies already collected by the HTTP session."""
+        headers = getattr(self.transport_session, "headers", None)
+        cookie_header = str(headers.get("Cookie") or "") if headers is not None else ""
+        if not cookie_header:
+            return
+        for part in cookie_header.split(";"):
+            name, separator, value = part.strip().partition("=")
+            if separator and name.strip() and value:
+                try:
+                    self._set_cookie(name.strip(), value, http_only=False)
+                except Exception:
+                    # A malformed/non-browser cookie must not prevent proof
+                    # generation for the remaining context.
+                    continue
+
+    def _sync_pending_update_from_browser(self) -> None:
+        """Mirror only the latest opaque receipt header into the HTTP session."""
+        try:
+            value = self._run(
+                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+                timeout=20,
+            )
+        except Exception:
+            return
+        data = value.get("data") if isinstance(value, dict) else None
+        requests = data.get("requests") if isinstance(data, dict) else None
+        if not isinstance(requests, list):
+            return
+        for item in reversed(requests):
+            if not isinstance(item, dict):
+                continue
+            headers = item.get("responseHeaders")
+            if not isinstance(headers, dict):
+                continue
+            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
+            if not receipt:
+                continue
+            transport_headers = getattr(self.transport_session, "headers", None)
+            if transport_headers is not None:
+                transport_headers["x-oai-is-pending-updates"] = json.dumps(
+                    {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
+                )
+            return
+
     def _sync_cookies(self) -> None:
         value = self._run(["cookies", "get", "--json"])
         cookies: list[dict[str, Any]] = []
@@ -660,7 +769,29 @@ class BrowserSentinelProvider:
             if name:
                 pairs.append(f"{name}={val}")
         if pairs:
-            self._cookies = "; ".join(pairs)
+            # Merge rather than replace: Stripe/ChatGPT may set additional
+            # cookies between checkout, taxes and confirm.
+            merged: dict[str, str] = {}
+            transport_headers = getattr(self.transport_session, "headers", None)
+            existing_header = (
+                str(transport_headers.get("Cookie") or "")
+                if transport_headers is not None
+                else ""
+            )
+            for part in (
+                str(self._cookies or "").split(";")
+                + existing_header.split(";")
+            ):
+                key, sep, value = part.strip().partition("=")
+                if sep and key:
+                    merged[key] = value
+            for part in pairs:
+                key, sep, value = part.partition("=")
+                if sep and key:
+                    merged[key] = value
+            self._cookies = "; ".join(
+                f"{key}={value}" for key, value in merged.items()
+            )
             headers = getattr(self.transport_session, "headers", None)
             if headers is not None:
                 headers["Cookie"] = self._cookies
@@ -672,6 +803,14 @@ class BrowserSentinelProvider:
             self._run(["open", "about:blank", "--json"])
             self._started = True
             self._launch_args_used = True
+            # Do not inherit a prior account's split NextAuth cookies.  A
+            # supplied runtime session token is installed before the
+            # authenticated promo navigation; values never enter logs.
+            if self.session_token:
+                try:
+                    self._run(["cookies", "clear"])
+                except Exception:
+                    pass
             self._run(
                 [
                     "cookies",
@@ -682,6 +821,13 @@ class BrowserSentinelProvider:
                     "https://chatgpt.com",
                 ]
             )
+            if self.session_token:
+                self._set_cookie(
+                    "__Secure-next-auth.session-token",
+                    self.session_token,
+                    http_only=True,
+                )
+            self._import_transport_cookies()
             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
             # The bootstrap document carries the current signed deployment
             # attestation.  The initial navigation is authenticated when an
@@ -719,7 +865,14 @@ class BrowserSentinelProvider:
                     "https://chatgpt.com/?promo_campaign=plus-1-month-free",
                 ]
             )
+            # Let the page issue its initial account/receipt requests before
+            # copying cookies and deployment attestation to the HTTP session.
+            try:
+                self._run(["wait", "1000"], timeout=15)
+            except Exception:
+                pass
             self._capture_bootstrap()
+            self._sync_pending_update_from_browser()
             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
             self._sync_cookies()
         except Exception:
@@ -731,6 +884,7 @@ class BrowserSentinelProvider:
         # checkout calls.  Running it in the same browser context keeps the
         # Cloudflare/Sentinel cookies on the matching proxy IP.
         expression = (
+            "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
             "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
             ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
@@ -746,6 +900,7 @@ class BrowserSentinelProvider:
                 self._start()
             selected = str(flow or "").strip() or "chatgpt_checkout"
             self._eval(
+                "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
                 "(async()=>{if(typeof SentinelSDK.init==='function'){await "
                 "SentinelSDK.init(" + json.dumps(selected) + ");}return true})()",
                 timeout=90,
@@ -760,6 +915,12 @@ class BrowserSentinelProvider:
             # A fresh init binds the proof to the current checkout/approval
             # flow instead of reusing the landing-page challenge.
             try:
+                self._eval(
+                    "window.__opllSentinelReferer="
+                    + json.dumps(referer or "https://chatgpt.com/")
+                    + ";true",
+                    timeout=15,
+                )
                 self._eval(
                     "(async()=>{if(typeof SentinelSDK.init==='function'){await "
                     "SentinelSDK.init(" + json.dumps(str(flow or "chatgpt_checkout"))
@@ -782,6 +943,35 @@ class BrowserSentinelProvider:
             if not token:
                 raise RuntimeError("SentinelSDK returned an empty token")
             result = {"OpenAI-Sentinel-Token": token}
+            # Some SDK builds expose a session-observer proof separately.
+            # Include it when available; older builds simply return empty.
+            try:
+                observer_raw = self._eval(
+                    "(async()=>{if(typeof SentinelSDK.sessionObserverToken!=='function')return '';"
+                    "return await SentinelSDK.sessionObserverToken("
+                    + json.dumps(str(flow or "chatgpt_checkout"))
+                    + ")||''})()",
+                    timeout=45,
+                )
+                observer = (
+                    observer_raw
+                    if isinstance(observer_raw, str)
+                    else json.dumps(observer_raw, separators=(",", ":"))
+                    if isinstance(observer_raw, dict)
+                    else ""
+                )
+                if observer:
+                    result["OpenAI-Sentinel-SO-Token"] = observer
+            except Exception:
+                pass
+            try:
+                self._sync_pending_update_from_browser()
+            except Exception:
+                pass
+            try:
+                self._sync_cookies()
+            except Exception:
+                pass
             if self._attestation:
                 result["oai-web-deployment-attestation"] = self._attestation
                 session_headers = getattr(self.transport_session, "headers", None)

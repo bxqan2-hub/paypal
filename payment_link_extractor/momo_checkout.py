@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -115,6 +116,9 @@ def create_checkout(
             except Exception:
                 pass
     body["checkout_ui_mode"] = "custom"
+    flow_started_at = float(
+        getattr(session, "momo_flow_started_at", 0.0) or time.perf_counter()
+    )
     payload = request(
         session,
         "POST",
@@ -142,8 +146,13 @@ def create_checkout(
         ),
         "billing_country": MOMO_COUNTRY,
         "currency": MOMO_CURRENCY,
+        "requested_currency": MOMO_CURRENCY,
         "account_email": account_email,
+        "flow_started_at": flow_started_at,
     }
+    server_currency = _walk(payload, ("currency",))
+    if isinstance(server_currency, str) and server_currency.strip():
+        checkout["currency"] = server_currency.strip().upper()
     aliases = {
         "checkout_session": ("checkout_session", "checkoutSession"),
         "checkout_state": ("checkout_state", "checkoutState"),
@@ -170,22 +179,72 @@ def create_checkout(
 
 
 def checkout_amount_minor(checkout: dict[str, Any]) -> int | None:
-    raw_total = checkout.get("amount_total")
-    if raw_total not in (None, ""):
+    def coerce(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
         try:
-            return int(raw_total)
+            return int(value)
         except (TypeError, ValueError):
-            pass
+            try:
+                number = float(str(value).strip())
+            except (TypeError, ValueError):
+                return None
+            return int(number) if number.is_integer() else None
+
     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
     total = state.get("total") if isinstance(state.get("total"), dict) else {}
     due = total.get("total") if isinstance(total.get("total"), dict) else {}
-    raw = due.get("minorUnitsAmount")
-    if raw in (None, ""):
-        raw = checkout.get("payable_amount_minor")
-    try:
-        return None if raw in (None, "") else int(raw)
-    except (TypeError, ValueError):
+    nested = coerce(due.get("minorUnitsAmount"))
+    if nested is not None:
+        return nested
+    parsed_total = coerce(checkout.get("amount_total"))
+    if parsed_total is not None:
+        return parsed_total
+    return coerce(checkout.get("payable_amount_minor"))
+
+
+def momo_checkout_method_state(checkout: dict[str, Any]) -> bool | None:
+    """Return whether Checkout advertises MoMo, or ``None`` if absent."""
+    values: list[Any] = []
+    for key in (
+        "custom_payment_methods",
+        "payment_method_types",
+        "selected_payment_method_type",
+    ):
+        if key in checkout:
+            values.append(checkout.get(key))
+    state = checkout.get("checkout_state")
+    if isinstance(state, dict):
+        for key in ("customPaymentMethods", "custom_payment_methods", "paymentMethodTypes"):
+            if key in state:
+                values.append(state.get(key))
+    if not values:
         return None
+
+    found_any = False
+    found_momo = False
+
+    def visit(value: Any) -> None:
+        nonlocal found_any, found_momo
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text:
+                found_any = True
+                if "momo" in text:
+                    found_momo = True
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if "momo" in str(key).lower():
+                    found_any = True
+                    found_momo = True
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for value in values:
+        visit(value)
+    return found_momo if found_any else None
 
 
 def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
@@ -193,6 +252,7 @@ def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
     campaign = checkout.get("promo_campaign")
     campaign_id = campaign.get("promo_campaign_id") if isinstance(campaign, dict) else ""
     amount = checkout_amount_minor(checkout)
+    currency = str(checkout.get("currency") or "").strip().upper()
     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
     total = state.get("total") if isinstance(state.get("total"), dict) else {}
     subtotal = total.get("subtotal") if isinstance(total.get("subtotal"), dict) else {}
@@ -201,8 +261,21 @@ def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
     discount_minor = discount.get("minorUnitsAmount")
     if campaign_id != "plus-1-month-free":
         raise ProtocolError(409, "Momo Checkout promo campaign was not attached")
+    if not isinstance(campaign, dict) or campaign.get("is_coupon_from_query_param") is not False:
+        raise ProtocolError(409, "Momo Checkout promo query flag was not false")
+    if currency != MOMO_CURRENCY:
+        raise ProtocolError(409, f"Momo Checkout currency mismatch: {currency}")
     if amount is None or amount != 0:
         raise ProtocolError(409, f"Momo Checkout zero amount validation failed: {amount}")
+    top_amount = checkout.get("amount_total")
+    if top_amount not in (None, ""):
+        try:
+            if float(str(top_amount)) != 0:
+                raise ProtocolError(
+                    409, f"Momo Checkout top-level amount is non-zero: {top_amount}"
+                )
+        except ValueError as exc:
+            raise ProtocolError(409, "Momo Checkout top-level amount is invalid") from exc
     if subtotal_minor not in (None, "") and discount_minor not in (None, ""):
         try:
             if int(discount_minor) != int(subtotal_minor):
@@ -272,6 +345,7 @@ def taxes(
             "processor_entity",
             "publishable_key",
             "customer_session_client_secret",
+            "customer",
         ):
             if nested.get(key) not in (None, "", [], {}):
                 checkout[key] = nested[key]

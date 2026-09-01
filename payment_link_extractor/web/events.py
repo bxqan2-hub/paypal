@@ -17,6 +17,18 @@ _TOKEN_KEYS = {
     "token", "ba_token", "batoken", "ec_token", "ectoken",
     "billing_agreement_id", "billingagreementid", "billingagreementtoken",
 }
+_IDENTIFIER_KEYS = {
+    "checkout_session_id",
+    "checkoutsessionid",
+    "session_id",
+    "sessionid",
+    "payment_method_id",
+    "paymentmethodid",
+    "client_secret",
+    "clientsecret",
+    "setup_intent_id",
+    "payment_intent_id",
+}
 _FUNCTIONAL_URL_KEYS = {"provider_url", "paypal_url"}
 
 
@@ -30,12 +42,29 @@ def redact_text(value: Any, secrets: Iterable[str] = ()) -> str:
         secret = str(secret or "")
         if secret:
             text = text.replace(secret, "***")
-    text = re.sub(r"(https?://[^\s:/]+:)[^@\s]+@", r"\1***@", text, flags=re.I)
+    text = re.sub(
+        r"((?:https?|socks4a?|socks5h?)://[^\s:/]+:)[^@\s]+@",
+        r"\1***@",
+        text,
+        flags=re.I,
+    )
+    # Bare vendor exports use host:port:user:password. Keep only a marker in
+    # task history/logs; the runtime transport still receives the original.
+    text = re.sub(
+        r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^\s]+\b",
+        "<proxy-redacted>",
+        text,
+    )
     text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/]+=*", "Bearer <redacted>", text)
     text = re.sub(r"\b(?:BA|EC)-[A-Za-z0-9]{8,80}\b", _mask_token_match, text)
     text = re.sub(
-        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin)=)[^&\s\"']+",
+        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin|t|s|sid|session_id|sessionId|nonce|signature)=)[^&\s\"']+",
         r"\1<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(?:oaics|seti|pi|acct|cus|ctoken|sa_nonce|authsess)[_-][A-Za-z0-9_-]+\b",
+        "<id-redacted>",
         text,
     )
     return text
@@ -62,6 +91,8 @@ def sanitize_event_data(value: Any, key: str = "") -> Any:
     if compact in _TOKEN_KEYS or collapsed in _TOKEN_KEYS:
         text = str(value or "")
         return _mask_token(text) if len(text) > 10 else "<redacted>"
+    if compact in _IDENTIFIER_KEYS or collapsed in _IDENTIFIER_KEYS:
+        return "<redacted>"
     if not isinstance(value, str):
         return value
     # A successful PayPal extraction is delivered to the browser through the
