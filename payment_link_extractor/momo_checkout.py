@@ -104,15 +104,16 @@ def create_checkout(
         # The browser establishes the promo landing-page context before the
         # POST. Keep this warm-up best-effort so a slow proxy does not hide the
         # Checkout response that remains the source of truth.
-        try:
-            session.request(
-                "GET",
-                referer,
-                headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
-                timeout=30,
-            )
-        except Exception:
-            pass
+        if not bool(getattr(session, "momo_promo_context_ready", False)):
+            try:
+                session.request(
+                    "GET",
+                    referer,
+                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
+                    timeout=30,
+                )
+            except Exception:
+                pass
     body["checkout_ui_mode"] = "custom"
     payload = request(
         session,

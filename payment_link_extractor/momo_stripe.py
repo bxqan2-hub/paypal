@@ -15,6 +15,12 @@ from .momo_checkout import json_payload
 from .momo_transport import momo_request_headers
 
 
+MOMO_STRIPE_RUNTIME_VERSION = (
+    os.getenv("OPLL_MOMO_STRIPE_RUNTIME_VERSION", "").strip()
+    or "939d686cd5"
+)
+
+
 def _payable_amount_minor(checkout: dict[str, Any]) -> int:
     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
     total = state.get("total") if isinstance(state.get("total"), dict) else {}
@@ -34,7 +40,11 @@ def _stripe_fingerprint_id() -> str:
 
 
 def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, str]:
-    session_id = str(checkout.get("stripe_client_session_id") or uuid.uuid4())
+    session_id = str(
+        checkout.get("stripe_client_session_id")
+        or checkout.get("stripe_js_id")
+        or uuid.uuid4()
+    )
     checkout["stripe_client_session_id"] = session_id
     fields = {
         "client_session_id": session_id,
@@ -127,7 +137,10 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
     payload = json_payload(response, "Momo Stripe Elements init")
     checkout["elements_session"] = payload
-    checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
+    checkout["stripe_js_id"] = str(
+        checkout.get("stripe_js_id") or params["stripe_js_id"]
+    )
+    checkout["stripe_client_session_id"] = checkout["stripe_js_id"]
     return payload
 
 
@@ -142,7 +155,11 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "payment_method_data[billing_details][address][country]": "VN",
         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
         "payment_method_data[billing_details][address][state]": billing["state"],
-        "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
+        "payment_method_data[payment_user_agent]": (
+            f"stripe.js/{MOMO_STRIPE_RUNTIME_VERSION}; "
+            f"stripe-js-v3/{MOMO_STRIPE_RUNTIME_VERSION}; "
+            "payment-element; deferred-intent"
+        ),
         "payment_method_data[referrer]": "https://chatgpt.com",
         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
         "payment_method_data[guid]": _stripe_fingerprint_id(),
@@ -160,10 +177,18 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "key": key,
         "_stripe_version": STRIPE_VERSION_BASE,
     }
+    body["payment_method_data[billing_details][phone]"] = ""
     captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
     if captcha_value:
         body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
-    customer = str(checkout.get("customer") or "").strip()
+    customer_value = checkout.get("customer")
+    if isinstance(customer_value, dict):
+        customer_value = (
+            customer_value.get("id")
+            or customer_value.get("customer_id")
+            or customer_value.get("customerId")
+        )
+    customer = str(customer_value or "").strip()
     if customer:
         body["client_context[customer]"] = customer
     ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
@@ -255,7 +280,7 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
         ),
         "confirmation_token": token,
         "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
-        "_stripe_version": STRIPE_VERSION_FULL,
+        "_stripe_version": STRIPE_VERSION_BASE,
         "client_secret": secret,
     }
     attribution = _attribution_fields(checkout, source="l1")

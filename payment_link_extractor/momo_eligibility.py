@@ -99,6 +99,7 @@ def probe_momo_trial_eligibility(
                     headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
                     timeout=30,
                 )
+                setattr(chatgpt, "momo_promo_context_ready", True)
             except Exception:
                 pass
             response = chatgpt.request(

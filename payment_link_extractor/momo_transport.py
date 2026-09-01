@@ -240,8 +240,16 @@ class MomoTransportFactory:
         session.headers.update(
             {
                 "User-Agent": self.profile["user_agent"],
-                "Origin": "https://checkout.stripe.com",
-                "Referer": "https://checkout.stripe.com/",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://js.stripe.com",
+                "Referer": "https://js.stripe.com/",
+                "Sec-CH-UA": self.profile["sec_ch_ua"],
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
             }
         )
         _set_proxy(session, config.checkout_proxy)
