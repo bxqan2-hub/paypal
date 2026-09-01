@@ -12,11 +12,13 @@ from tools.roxy_mitm_control import (
     cleanup_stale_mitmweb,
     close_cdp_browser,
     create_roxy_window,
+    delete_roxy_window,
     force_stop_process_tree,
     HTML,
     merge_hybrid_har,
     request_cdp_stop,
     resolve_workspace_id,
+    parse_proxy_pool,
 )
 
 
@@ -74,6 +76,26 @@ def test_roxy_workspace_and_window_payload() -> None:
     }
 
 
+def test_delete_roxy_window_uses_dir_ids_payload() -> None:
+    FixtureHandler.requests.clear()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        delete_roxy_window(base_url, "secret", "workspace", "dir-to-delete")
+    finally:
+        server.shutdown()
+        server.server_close()
+    request = FixtureHandler.requests[0]
+    assert request["path"] == "/browser/delete"
+    assert request["payload"] == {"workspaceId": "workspace", "dirIds": ["dir-to-delete"]}
+
+
+def test_parse_proxy_pool_deduplicates_preserving_order() -> None:
+    assert parse_proxy_pool(" a:1\nb:2\na:1\n\n") == ["a:1", "b:2"]
+
+
 def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
     monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
     cleanup_stale_mitmweb((8899, 8081))
@@ -118,6 +140,8 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
     closed: list[int | None] = []
     monkeypatch.setattr("tools.roxy_mitm_control.force_stop_process_tree", lambda process: killed.append(process))
     monkeypatch.setattr("tools.roxy_mitm_control.close_cdp_browser", lambda port: closed.append(port))
+    deleted: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr("tools.roxy_mitm_control.delete_roxy_window", lambda base, key, workspace, directory: deleted.append((base, key, workspace, directory)))
     monkeypatch.setattr("tools.roxy_mitm_control.cleanup_stale_mitmweb", lambda _ports: None)
     state = CaptureState(root=tmp_path, proxy_port=8899, web_port=8081)
     state.process = Process()  # type: ignore[assignment]
@@ -127,13 +151,18 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
     state.cdp_stop_file = cdp_output.with_suffix(".stop")
     state.cdp_output = cdp_output
     state.cdp_port = 62345
+    state.api_base = "http://roxy"
+    state.api_key = "secret"
+    state.workspace_id = "workspace"
+    state.dir_id = "directory"
 
     result = state.discard()
 
-    assert result["message"] == "本次抓包已放弃，窗口已关闭，未保存文件"
+    assert result["message"] == "本次抓包已放弃，窗口已关闭并删除，未保存文件"
     assert result["running"] is False
     assert killed == [state.cdp_process, state.process] or len(killed) == 2
     assert closed == [62345]
+    assert deleted == [("http://roxy", "secret", "workspace", "directory")]
     assert all(not path.exists() for path in paths)
     assert "CAPTURE_DISCARDED=1" in result["logs"]
 
@@ -141,6 +170,8 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
 def test_control_panel_exposes_discard_action() -> None:
     assert 'id="discard"' in HTML
     assert "/api/discard" in HTML
+    assert 'id="upstreamPool"' in HTML
+    assert "elements.apiKey.value=''" not in HTML
 
 
 def test_startup_failures_use_discard_path() -> None:
