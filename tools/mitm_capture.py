@@ -348,6 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy-port", type=int, default=8899)
     parser.add_argument("--web-port", type=int, default=8081)
     parser.add_argument("--duration", type=float, default=0)
+    parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--prompt-upstream", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--doctor", action="store_true")
@@ -378,8 +379,11 @@ def main(argv: list[str] | None = None) -> int:
         profile = args.profile.resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         flow_file = output.with_suffix(".mitm")
+        stop_file = args.stop_file.resolve() if args.stop_file else None
         if flow_file.exists():
             flow_file.unlink()
+        if stop_file is not None:
+            stop_file.unlink(missing_ok=True)
         upstream = os.getenv("OPLL_CAPTURE_UPSTREAM", "")
         if args.prompt_upstream and not upstream:
             upstream = getpass.getpass(
@@ -445,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
             print("CAPTURE_ACTION=complete the flow, then press Ctrl+C", flush=True)
             deadline = time.monotonic() + args.duration if args.duration > 0 else None
             while deadline is None or time.monotonic() < deadline:
+                if stop_file is not None and stop_file.exists():
+                    break
                 if process.poll() is not None:
                     raise RuntimeError(f"mitmdump exited during capture (status {process.returncode})")
                 time.sleep(0.5)
@@ -466,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
                 stop_proxy(bridge_process)
             if bridge_auth_file is not None:
                 bridge_auth_file.unlink(missing_ok=True)
+            if stop_file is not None:
+                stop_file.unlink(missing_ok=True)
         convert_flow_file(mitmdump, flow_file, output)
         result = finalize_capture(output, args.channel)
         audit = result["audit"] if isinstance(result["audit"], dict) else {}

@@ -169,6 +169,7 @@ class CaptureState:
     output: str = ""
     dir_id: str = ""
     window_name: str = ""
+    stop_file: Path | None = None
     logs: list[str] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -221,6 +222,8 @@ class CaptureState:
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         output = (self.root / "artifacts-local" / f"{channel}-roxy-mitm-{timestamp}.har").resolve()
+        stop_file = output.with_suffix(".stop")
+        stop_file.unlink(missing_ok=True)
         command = [
             sys.executable,
             str(self.root / "tools" / "mitm_capture.py"),
@@ -233,6 +236,8 @@ class CaptureState:
             "--web-port",
             str(self.web_port),
             "--no-browser",
+            "--stop-file",
+            str(stop_file),
         ]
         env = os.environ.copy()
         env["OPLL_CAPTURE_UPSTREAM"] = upstream
@@ -251,6 +256,7 @@ class CaptureState:
         with self.lock:
             self.process = process
             self.output = str(output)
+            self.stop_file = stop_file
         ready = threading.Event()
 
         def read_output() -> None:
@@ -288,15 +294,18 @@ class CaptureState:
     def stop(self) -> dict[str, Any]:
         with self.lock:
             process = self.process
+            stop_file = self.stop_file
             self.status = "stopping"
             self.message = "正在保存 HAR"
         if process is not None and process.poll() is None:
             try:
-                if os.name == "nt":
+                if stop_file is not None:
+                    stop_file.write_text("stop", encoding="ascii")
+                elif os.name == "nt":
                     process.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
                     process.send_signal(signal.SIGINT)
-                process.wait(timeout=90)
+                process.wait(timeout=180)
             except (OSError, subprocess.TimeoutExpired):
                 process.terminate()
                 try:
@@ -305,8 +314,11 @@ class CaptureState:
                     process.kill()
         with self.lock:
             self.process = None
+            self.stop_file = None
             self.status = "idle"
             self.message = "抓包已停止；Roxy 窗口保持打开"
+        if stop_file is not None:
+            stop_file.unlink(missing_ok=True)
         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         return self.snapshot()
 
