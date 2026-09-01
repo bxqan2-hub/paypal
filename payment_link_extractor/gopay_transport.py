@@ -1827,8 +1827,9 @@ class DefaultTransportFactory:
                     or str(profile.get("sec_ch_ua") or ""),
                     "sec-ch-ua-mobile": "?0",
                     "sec-ch-ua-platform": os.getenv(
-                        "OPLL_SEC_CH_UA_PLATFORM", '"Windows"'
-                    ),
+                        "OPLL_SEC_CH_UA_PLATFORM", ""
+                    ).strip()
+                    or '"Windows"',
                 }
             )
             session.gopay_browser_profile = str(profile.get("name") or "")
