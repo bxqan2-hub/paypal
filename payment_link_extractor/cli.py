@@ -18,7 +18,7 @@ SUPPORTED_PAYMENT_METHODS = PAYMENT_CHANNEL_NAMES
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract PayPal, GoPay, or GCash links from cs_* and oaics_* checkouts."
+        description="Extract PayPal, GoPay, GCash, or MoMo links from cs_* and oaics_* checkouts."
     )
     parser.add_argument("--env-file", help="path to a .env file")
     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")

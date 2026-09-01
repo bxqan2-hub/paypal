@@ -80,8 +80,9 @@ def test_defaults_expose_all_payment_choices() -> None:
         ("paypal", "PayPal"),
         ("gopay", "GoPay"),
         ("gcash", "GCash"),
+        ("momo", "MoMo"),
     ]
-    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH"}
+    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH", "momo": "VN"}
 
 
 class _Response:

@@ -469,7 +469,7 @@ class TaskManager:
         proxy_plan: tuple[str, ...] | None = None,
     ) -> ExtractionConfig:
         total_attempts = cls._total_attempts(config)
-        if config.payment_method == "gopay":
+        if config.payment_method in {"gopay", "momo"}:
             # GoPay owns one proxy for the entire current attempt. A new
             # proxy is selected only when the attempt fails and the outer
             # retry loop rebuilds the complete flow from the beginning.
@@ -510,7 +510,7 @@ class TaskManager:
         replacement attempt set. Other channels retain the existing bounded
         retry_count contract.
         """
-        if config.payment_method == "gopay" and config.proxy_pool:
+        if config.payment_method in {"gopay", "momo"} and config.proxy_pool:
             unique = {
                 str(item).strip() for item in config.proxy_pool if str(item).strip()
             }
@@ -558,7 +558,7 @@ class TaskManager:
             )
 
         for attempt_index in range(total_attempts):
-            if attempt_index and retry_plan.payment_method == "gopay":
+            if attempt_index and retry_plan.payment_method in {"gopay", "momo"}:
                 delay = gopay_retry_backoff_seconds(attempt_index)
                 if delay > 0:
                     task_log.info(
@@ -635,6 +635,7 @@ class TaskManager:
                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
                     is_gopay = record.config.payment_method == "gopay"
+                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
                     explicit_retryable = getattr(exc, "retryable", None)
                     status_code = getattr(exc, "status_code", None)
                     try:
@@ -646,9 +647,9 @@ class TaskManager:
                     )
                     may_retry = (
                         attempt_index < retry_count
-                        and (not is_gopay or explicit_retryable is not False)
-                        and not (is_gopay and status_code == 401)
-                        and not (is_gopay and record.checkout_opportunity_consumed)
+                        and (not is_checkout_sensitive or explicit_retryable is not False)
+                        and not (is_checkout_sensitive and status_code == 401)
+                        and not (is_checkout_sensitive and record.checkout_opportunity_consumed)
                         and (
                             record.config.payment_method != "gcash"
                             or mk_retryable
@@ -759,7 +760,7 @@ class TaskManager:
             if record is None or record.status in TERMINAL_STATES:
                 return
             if (
-                record.config.payment_method == "gopay"
+                record.config.payment_method in {"gopay", "momo"}
                 and str(stage) == "checkout_committed"
             ):
                 record.checkout_opportunity_consumed = True

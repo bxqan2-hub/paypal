@@ -1,0 +1,1340 @@
+diff --git a/artifacts/momo-channel-20260901/DIFF_FILE b/artifacts/momo-channel-20260901/DIFF_FILE
+new file mode 100644
+index 0000000..4fda64e
+--- /dev/null
++++ b/artifacts/momo-channel-20260901/DIFF_FILE
+@@ -0,0 +1,275 @@
++diff --git a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
++index 9a57742..df54124 100644
++--- a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+++++ b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
++@@ -7,6 +7,7 @@
++ | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
++ | GoPay | `gopay_channel.py` | `gopay_core.py`、`gopay_*` flow/Stripe/Checkout 副本、`providers/gopay.py` | `gopay_transport.py` |
++ | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
+++| MoMo | `momo_channel.py` | `momo_core.py`、`momo_checkout.py`、`momo_stripe.py`、`momo_transport.py` | Momo-only VN gateway transport |
++ | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
++ ## GCash 调用边界
++diff --git a/payment_link_extractor/channels.py b/payment_link_extractor/channels.py
++index 47c79fa..9fa193f 100644
++--- a/payment_link_extractor/channels.py
+++++ b/payment_link_extractor/channels.py
++@@ -54,6 +54,17 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
++         country="PH",
++         currency="PHP",
++     ),
+++    "momo": PaymentChannel(
+++        name="momo",
+++        label="MoMo",
+++        adapter_module="payment_link_extractor.momo_channel",
+++        adapter_callable="extract_momo_payment_link",
+++        result_field="momo_url",
+++        country="VN",
+++        currency="VND",
+++        uses_legacy_transport=False,
+++        uses_checkout_update=False,
+++    ),
++ }
++ PAYMENT_CHANNEL_NAMES = tuple(PAYMENT_CHANNELS)
++@@ -96,6 +107,6 @@ def invoke_payment_channel(
++         "cancel_event": cancel_event,
++         "stage_callback": stage_callback,
++     }
++-    if transport_factory is not None and channel.name in {"paypal", "gopay"}:
+++    if transport_factory is not None and channel.name in {"paypal", "gopay", "momo"}:
++         kwargs["transport_factory"] = transport_factory
++     return extractor(config, **kwargs)
++diff --git a/payment_link_extractor/cli.py b/payment_link_extractor/cli.py
++index db4a9b8..a335a05 100644
++--- a/payment_link_extractor/cli.py
+++++ b/payment_link_extractor/cli.py
++@@ -18,7 +18,7 @@ SUPPORTED_PAYMENT_METHODS = PAYMENT_CHANNEL_NAMES
++ def parse_args() -> argparse.Namespace:
++     parser = argparse.ArgumentParser(
++-        description="Extract PayPal, GoPay, or GCash links from cs_* and oaics_* checkouts."
+++        description="Extract PayPal, GoPay, GCash, or MoMo links from cs_* and oaics_* checkouts."
++     )
++     parser.add_argument("--env-file", help="path to a .env file")
++     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")
++diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
++index e9e9303..720a5a9 100644
++--- a/payment_link_extractor/config.py
+++++ b/payment_link_extractor/config.py
++@@ -38,6 +38,7 @@ COUNTRY_PROFILES = {
++     "ES": {"currency": "EUR", "locale": "es-ES", "timezone": "Europe/Madrid"},
++     "FI": {"currency": "EUR", "locale": "fi-FI", "timezone": "Europe/Helsinki"},
++     "FR": {"currency": "EUR", "locale": "fr-FR", "timezone": "Europe/Paris"},
+++    "VN": {"currency": "VND", "locale": "vi-VN", "timezone": "Asia/Ho_Chi_Minh"},
++ }
++ _BILLING_VALUES = {
++@@ -56,6 +57,7 @@ _BILLING_VALUES = {
++     "ES": ("Carlos García", "carlos.garcia@example.com", "+34911234567", "Calle de Alcalá, 1", "Madrid", "Madrid", "28014"),
++     "FI": ("Matti Meikäläinen", "matti.meikalainen@example.com", "+35891234567", "Mannerheimintie 1", "Helsinki", "Uusimaa", "00100"),
++     "FR": ("Jean Dupont", "jean.dupont@example.com", "+33142345678", "10 Rue de Rivoli", "Paris", "Île-de-France", "75001"),
+++    "VN": ("Nguyen Van An", "nguyen.van.an@example.com", "+84281234567", "12 Nguyen Hue", "Ho Chi Minh City", "Ho Chi Minh", "700000"),
++ }
++ SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
++diff --git a/payment_link_extractor/providers/registry.py b/payment_link_extractor/providers/registry.py
++index ec579b5..b232820 100644
++--- a/payment_link_extractor/providers/registry.py
+++++ b/payment_link_extractor/providers/registry.py
++@@ -4,10 +4,11 @@ from .base import ProviderAdapter
++ from .gcash import GCASH
++ from .gopay import GOPAY
++ from .paypal import PAYPAL
+++from .momo import MOMO
++ PROVIDERS: dict[str, ProviderAdapter] = {
++-    provider.name: provider for provider in (PAYPAL, GOPAY, GCASH)
+++    provider.name: provider for provider in (PAYPAL, GOPAY, GCASH, MOMO)
++ }
++diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
++index 02f40e0..434ce6f 100644
++--- a/payment_link_extractor/web/static/app.js
+++++ b/payment_link_extractor/web/static/app.js
++@@ -337,7 +337,7 @@
++   function saveFormPreferences() {
++     syncSingleProxyPool();
++     const paymentMethod = byId("payment-method").value;
++-    if (!new Set(["gcash", "gopay"]).has(paymentMethod) && byId("country").value) {
+++    if (!new Set(["gcash", "gopay", "momo"]).has(paymentMethod) && byId("country").value) {
++       paypalCountryPreference = byId("country").value;
++     }
++     const preferences = {
++@@ -411,12 +411,14 @@
++     const method = byId("payment-method").value;
++     const isGcash = method === "gcash";
++     const isGopay = method === "gopay";
++-    const isFixedCountry = isGcash || isGopay;
++-    const fixedCountry = isGopay ? "ID" : "PH";
+++    const isMomo = method === "momo";
+++    const isFixedCountry = isGcash || isGopay || isMomo;
+++    const fixedCountry = isGopay ? "ID" : isMomo ? "VN" : "PH";
++     const country = byId("country");
++     const countryField = byId("country-field");
++     const gcashNote = byId("gcash-country-note");
++     const gopayNote = byId("gopay-country-note");
+++    const momoNote = byId("momo-country-note");
++     const gopayZeroTrialField = byId("gopay-zero-trial-field");
++     if (!isFixedCountry && country.value) {
++       paypalCountryPreference = country.value;
++@@ -431,6 +433,7 @@
++     if (countryField) countryField.hidden = isFixedCountry;
++     if (gcashNote) gcashNote.hidden = !isGcash;
++     if (gopayNote) gopayNote.hidden = !isGopay;
+++    if (momoNote) momoNote.hidden = !isMomo;
++     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
++     renderBillingPreview();
++   }
++@@ -598,7 +601,7 @@
++       result.gopay_zero_trial_validation = byId("gopay-zero-trial-validation").checked;
++     }
++     const values = [
++-      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : byId("country").value],
+++      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
++       ["payment_method", paymentMethod],
++     ];
++     values.forEach(([key, value]) => {
++@@ -1318,7 +1321,7 @@
++   }
++   function taskResultUrl(result) {
++-    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || "";
+++    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || result.momo_url || "";
++   }
++   function isPaypalBaLink(url) {
++@@ -1876,7 +1879,7 @@
++       field.addEventListener("input", saveFormPreferences);
++     });
++     byId("country").addEventListener("change", () => {
++-      if (!["gcash", "gopay"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
+++      if (!["gcash", "gopay", "momo"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
++       renderBillingPreview();
++     });
++     byId("payment-method").addEventListener("change", () => {
++diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
++index 5ba55f5..e1413e6 100644
++--- a/payment_link_extractor/web/tasks.py
+++++ b/payment_link_extractor/web/tasks.py
++@@ -469,7 +469,7 @@ class TaskManager:
++         proxy_plan: tuple[str, ...] | None = None,
++     ) -> ExtractionConfig:
++         total_attempts = cls._total_attempts(config)
++-        if config.payment_method == "gopay":
+++        if config.payment_method in {"gopay", "momo"}:
++             # GoPay owns one proxy for the entire current attempt. A new
++             # proxy is selected only when the attempt fails and the outer
++             # retry loop rebuilds the complete flow from the beginning.
++@@ -510,7 +510,7 @@ class TaskManager:
++         replacement attempt set. Other channels retain the existing bounded
++         retry_count contract.
++         """
++-        if config.payment_method == "gopay" and config.proxy_pool:
+++        if config.payment_method in {"gopay", "momo"} and config.proxy_pool:
++             unique = {
++                 str(item).strip() for item in config.proxy_pool if str(item).strip()
++             }
++@@ -558,7 +558,7 @@ class TaskManager:
++             )
++         for attempt_index in range(total_attempts):
++-            if attempt_index and retry_plan.payment_method == "gopay":
+++            if attempt_index and retry_plan.payment_method in {"gopay", "momo"}:
++                 delay = gopay_retry_backoff_seconds(attempt_index)
++                 if delay > 0:
++                     task_log.info(
++@@ -635,6 +635,7 @@ class TaskManager:
++                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
++                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
++                     is_gopay = record.config.payment_method == "gopay"
+++                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
++                     explicit_retryable = getattr(exc, "retryable", None)
++                     status_code = getattr(exc, "status_code", None)
++                     try:
++@@ -646,9 +647,9 @@ class TaskManager:
++                     )
++                     may_retry = (
++                         attempt_index < retry_count
++-                        and (not is_gopay or explicit_retryable is not False)
++-                        and not (is_gopay and status_code == 401)
++-                        and not (is_gopay and record.checkout_opportunity_consumed)
+++                        and (not is_checkout_sensitive or explicit_retryable is not False)
+++                        and not (is_checkout_sensitive and status_code == 401)
+++                        and not (is_checkout_sensitive and record.checkout_opportunity_consumed)
++                         and (
++                             record.config.payment_method != "gcash"
++                             or mk_retryable
++@@ -759,7 +760,7 @@ class TaskManager:
++             if record is None or record.status in TERMINAL_STATES:
++                 return
++             if (
++-                record.config.payment_method == "gopay"
+++                record.config.payment_method in {"gopay", "momo"}
++                 and str(stage) == "checkout_committed"
++             ):
++                 record.checkout_opportunity_consumed = True
++diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
++index 21187f3..b57715f 100644
++--- a/payment_link_extractor/web/templates/index.html
+++++ b/payment_link_extractor/web/templates/index.html
++@@ -106,9 +106,11 @@
++                   <option value="paypal" selected>PayPal</option>
++                   <option value="gopay">GoPay（印度尼西亚）</option>
++                   <option value="gcash">GCash（菲律宾）</option>
+++                  <option value="momo">MoMo（越南）</option>
++                 </select>
++                 <small id="gopay-country-note" class="quiet" hidden>GoPay 固定使用印度尼西亚 ID / IDR，选择后直接调用 GoPay 核心。</small>
++                 <small id="gcash-country-note" class="quiet" hidden>GCash 固定使用菲律宾 PH / PHP，无需选择国家。</small>
+++                <small id="momo-country-note" class="quiet" hidden>MoMo 固定使用越南 VN / VND，无需选择国家。</small>
++               </label>
++               <section id="gopay-zero-trial-field" class="gopay-zero-trial-field" hidden>
++                 <label class="check-field" for="gopay-zero-trial-validation">
++diff --git a/tests/test_channel_isolation.py b/tests/test_channel_isolation.py
++index af387e2..4aca6f4 100644
++--- a/tests/test_channel_isolation.py
+++++ b/tests/test_channel_isolation.py
++@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
++ def test_all_channels_have_unique_adapters_and_result_fields() -> None:
++     channels = list(PAYMENT_CHANNELS.values())
++-    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash")
+++    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash", "momo")
++     assert len({channel.adapter_module for channel in channels}) == len(channels)
++     assert len({channel.result_field for channel in channels}) == len(channels)
++     assert SUPPORTED_PAYMENT_METHODS == tuple(PAYMENT_CHANNELS)
++@@ -21,9 +21,12 @@ def test_channel_country_currency_and_transport_contracts_are_isolated() -> None
++     paypal = PAYMENT_CHANNELS["paypal"]
++     gopay = PAYMENT_CHANNELS["gopay"]
++     gcash = PAYMENT_CHANNELS["gcash"]
+++    momo = PAYMENT_CHANNELS["momo"]
++     assert (paypal.country, paypal.currency, paypal.uses_legacy_transport) == ("", "", True)
++     assert (gopay.country, gopay.currency, gopay.uses_legacy_transport) == ("ID", "IDR", False)
++     assert (gcash.country, gcash.currency, gcash.uses_legacy_transport) == ("PH", "PHP", False)
+++    assert (momo.country, momo.currency, momo.uses_legacy_transport) == ("VN", "VND", False)
+++    assert momo.uses_checkout_update is False
++     assert paypal.uses_checkout_update is True
++     assert gopay.uses_checkout_update is True
++     assert gcash.uses_checkout_update is False
++diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
++index 166a36f..fc05ffc 100644
++--- a/tests/test_gcash_support.py
+++++ b/tests/test_gcash_support.py
++@@ -80,8 +80,9 @@ def test_defaults_expose_all_payment_choices() -> None:
++         ("paypal", "PayPal"),
++         ("gopay", "GoPay"),
++         ("gcash", "GCash"),
+++        ("momo", "MoMo"),
++     ]
++-    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH"}
+++    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH", "momo": "VN"}
++ class _Response:
+diff --git a/artifacts/momo-channel-20260901/MODIFIED_FILE b/artifacts/momo-channel-20260901/MODIFIED_FILE
+new file mode 100644
+index 0000000..9fa193f
+--- /dev/null
++++ b/artifacts/momo-channel-20260901/MODIFIED_FILE
+@@ -0,0 +1,112 @@
++from __future__ import annotations
++
++"""Isolated payment-channel registry and dispatch boundary."""
++
++from dataclasses import dataclass
++from importlib import import_module
++import threading
++from typing import Any, Callable
++
++from .errors import ConfigurationError
++from .models import ExtractionConfig, PaymentLinkResult
++
++
++@dataclass(frozen=True)
++class PaymentChannel:
++    name: str
++    label: str
++    adapter_module: str
++    adapter_callable: str
++    result_field: str
++    country: str = ""
++    currency: str = ""
++    uses_legacy_transport: bool = False
++    uses_checkout_update: bool = False
++
++
++PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
++    "paypal": PaymentChannel(
++        name="paypal",
++        label="PayPal",
++        adapter_module="payment_link_extractor.paypal_channel",
++        adapter_callable="extract_paypal_payment_link",
++        result_field="paypal_url",
++        uses_legacy_transport=True,
++        uses_checkout_update=True,
++    ),
++    "gopay": PaymentChannel(
++        name="gopay",
++        label="GoPay",
++        adapter_module="payment_link_extractor.gopay_channel",
++        adapter_callable="extract_gopay_payment_link",
++        result_field="gopay_url",
++        country="ID",
++        currency="IDR",
++        uses_legacy_transport=False,
++        uses_checkout_update=True,
++    ),
++    "gcash": PaymentChannel(
++        name="gcash",
++        label="GCash",
++        adapter_module="payment_link_extractor.mk_gcash",
++        adapter_callable="extract_mk_gcash_payment_link",
++        result_field="gcash_url",
++        country="PH",
++        currency="PHP",
++    ),
++    "momo": PaymentChannel(
++        name="momo",
++        label="MoMo",
++        adapter_module="payment_link_extractor.momo_channel",
++        adapter_callable="extract_momo_payment_link",
++        result_field="momo_url",
++        country="VN",
++        currency="VND",
++        uses_legacy_transport=False,
++        uses_checkout_update=False,
++    ),
++}
++PAYMENT_CHANNEL_NAMES = tuple(PAYMENT_CHANNELS)
++
++
++def payment_channel(name: str) -> PaymentChannel:
++    key = str(name or "paypal").strip().lower() or "paypal"
++    try:
++        return PAYMENT_CHANNELS[key]
++    except KeyError as exc:
++        raise ConfigurationError(
++            "payment_method must be one of " + ", ".join(PAYMENT_CHANNEL_NAMES)
++        ) from exc
++
++
++def public_payment_channels() -> list[dict[str, str]]:
++    result: list[dict[str, str]] = []
++    for channel in PAYMENT_CHANNELS.values():
++        item = {"value": channel.name, "label": channel.label}
++        if channel.country:
++            item.update(country=channel.country, currency=channel.currency)
++        result.append(item)
++    return result
++
++
++def invoke_payment_channel(
++    channel: PaymentChannel,
++    config: ExtractionConfig,
++    *,
++    transport_factory: Any = None,
++    cancel_event: threading.Event | None = None,
++    stage_callback: Callable[[str], None] | None = None,
++) -> PaymentLinkResult:
++    module = import_module(channel.adapter_module)
++    extractor = getattr(module, channel.adapter_callable, None)
++    if not callable(extractor):
++        raise ConfigurationError(
++            f"payment channel adapter is unavailable: {channel.name}"
++        )
++    kwargs: dict[str, Any] = {
++        "cancel_event": cancel_event,
++        "stage_callback": stage_callback,
++    }
++    if transport_factory is not None and channel.name in {"paypal", "gopay", "momo"}:
++        kwargs["transport_factory"] = transport_factory
++    return extractor(config, **kwargs)
+diff --git a/artifacts/momo-channel-20260901/ROLLBACK.sh b/artifacts/momo-channel-20260901/ROLLBACK.sh
+new file mode 100755
+index 0000000..395a6e6
+--- /dev/null
++++ b/artifacts/momo-channel-20260901/ROLLBACK.sh
+@@ -0,0 +1,6 @@
++#!/usr/bin/env bash
++set -euo pipefail
++target="${1:?usage: ROLLBACK.sh <copy> [repo-root]}"
++root="${2:-$(cd "$(dirname "$0")/../.." && pwd)}"
++git -C "$root" show f203a50cb1640b218cff9f249dcdf4b09dc51c03:payment_link_extractor/channels.py > "$target"
++sha256sum "$target"
+diff --git a/artifacts/momo-channel-20260901/ROLLBACK_TEST_COPY b/artifacts/momo-channel-20260901/ROLLBACK_TEST_COPY
+new file mode 100644
+index 0000000..47c79fa
+--- /dev/null
++++ b/artifacts/momo-channel-20260901/ROLLBACK_TEST_COPY
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++"""Isolated payment-channel registry and dispatch boundary."""
++
++from dataclasses import dataclass
++from importlib import import_module
++import threading
++from typing import Any, Callable
++
++from .errors import ConfigurationError
++from .models import ExtractionConfig, PaymentLinkResult
++
++
++@dataclass(frozen=True)
++class PaymentChannel:
++    name: str
++    label: str
++    adapter_module: str
++    adapter_callable: str
++    result_field: str
++    country: str = ""
++    currency: str = ""
++    uses_legacy_transport: bool = False
++    uses_checkout_update: bool = False
++
++
++PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
++    "paypal": PaymentChannel(
++        name="paypal",
++        label="PayPal",
++        adapter_module="payment_link_extractor.paypal_channel",
++        adapter_callable="extract_paypal_payment_link",
++        result_field="paypal_url",
++        uses_legacy_transport=True,
++        uses_checkout_update=True,
++    ),
++    "gopay": PaymentChannel(
++        name="gopay",
++        label="GoPay",
++        adapter_module="payment_link_extractor.gopay_channel",
++        adapter_callable="extract_gopay_payment_link",
++        result_field="gopay_url",
++        country="ID",
++        currency="IDR",
++        uses_legacy_transport=False,
++        uses_checkout_update=True,
++    ),
++    "gcash": PaymentChannel(
++        name="gcash",
++        label="GCash",
++        adapter_module="payment_link_extractor.mk_gcash",
++        adapter_callable="extract_mk_gcash_payment_link",
++        result_field="gcash_url",
++        country="PH",
++        currency="PHP",
++    ),
++}
++PAYMENT_CHANNEL_NAMES = tuple(PAYMENT_CHANNELS)
++
++
++def payment_channel(name: str) -> PaymentChannel:
++    key = str(name or "paypal").strip().lower() or "paypal"
++    try:
++        return PAYMENT_CHANNELS[key]
++    except KeyError as exc:
++        raise ConfigurationError(
++            "payment_method must be one of " + ", ".join(PAYMENT_CHANNEL_NAMES)
++        ) from exc
++
++
++def public_payment_channels() -> list[dict[str, str]]:
++    result: list[dict[str, str]] = []
++    for channel in PAYMENT_CHANNELS.values():
++        item = {"value": channel.name, "label": channel.label}
++        if channel.country:
++            item.update(country=channel.country, currency=channel.currency)
++        result.append(item)
++    return result
++
++
++def invoke_payment_channel(
++    channel: PaymentChannel,
++    config: ExtractionConfig,
++    *,
++    transport_factory: Any = None,
++    cancel_event: threading.Event | None = None,
++    stage_callback: Callable[[str], None] | None = None,
++) -> PaymentLinkResult:
++    module = import_module(channel.adapter_module)
++    extractor = getattr(module, channel.adapter_callable, None)
++    if not callable(extractor):
++        raise ConfigurationError(
++            f"payment channel adapter is unavailable: {channel.name}"
++        )
++    kwargs: dict[str, Any] = {
++        "cancel_event": cancel_event,
++        "stage_callback": stage_callback,
++    }
++    if transport_factory is not None and channel.name in {"paypal", "gopay"}:
++        kwargs["transport_factory"] = transport_factory
++    return extractor(config, **kwargs)
+diff --git a/artifacts/momo-channel-20260901/VERIFICATION.txt b/artifacts/momo-channel-20260901/VERIFICATION.txt
+new file mode 100644
+index 0000000..6170547
+--- /dev/null
++++ b/artifacts/momo-channel-20260901/VERIFICATION.txt
+@@ -0,0 +1,26 @@
++Momo channel verification record
++
++Changed branch/field: momo / momo_url; fixed VN / VND; independent momo_channel, momo_core, momo_checkout, momo_stripe, momo_transport and provider adapter.
++Task-start commit: f203a50cb1640b218cff9f249dcdf4b09dc51c03
++Baseline channels.py blob: 47c79fa6d1f837a17cd59c74000b28da20ec639c
++Modified channels.py working-tree hash: 9fa193fa582554bff1863ac481736d7e8dc2d7b5
++HAR source: C:\Users\Administrator\Downloads\payment.momo.vn.har (read-only, never replayed)
++HAR SHA-256: 729B6D7E89D7E3C8DB0CDEE7DE58C0E4B91615F2A4A7C0C35079A0DC23541988
++
++Artifacts:
++- MODIFIED_FILE: artifacts/momo-channel-20260901/MODIFIED_FILE
++- DIFF_FILE: artifacts/momo-channel-20260901/DIFF_FILE
++- VERIFICATION.txt: artifacts/momo-channel-20260901/VERIFICATION.txt
++- ROLLBACK.sh: artifacts/momo-channel-20260901/ROLLBACK.sh
++
++BASELINE: `py -m pytest -q`
++BASELINE result: 255 passed, 1 failed (pre-existing Sentinel SDK SHA assertion in tests/test_gopay_isolated_optimization.py; expected 49d028..., observed 97bc85...). Exit status 1.
++MODIFIED: `py -m pytest -q`
++MODIFIED result: 255 passed, 1 failed (same pre-existing Sentinel SDK SHA assertion; no Momo failure). Exit status 1.
++重点: `py -m pytest -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_gcash_support.py`
++重点 result: 25 passed. Exit status 0.
++Syntax: `node --check payment_link_extractor/web/static/app.js; py -m compileall -q payment_link_extractor tests` result: success. Exit status 0.
++ROLLBACK: `bash artifacts/momo-channel-20260901/ROLLBACK.sh <copy>` result: copy restored to task-start channels.py bytes; exit status 0.
++ROLLBACK_TEST: `cmd /c "git show f203a50cb1640b218cff9f249dcdf4b09dc51c03:payment_link_extractor/channels.py > artifacts\\momo-channel-20260901\\ROLLBACK_TEST_COPY"` then `git hash-object ...`; literal output `ROLLBACK_TEST_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c BASELINE_HASH=47c79fa6d1f837a17cd59c74000b28da20ec639c ROLLBACK_TEST_MATCH=1`; exit status 0.
++
++Restored behavior/status: rollback test copy restored; working tree remains on modified Momo branch. No AT, Cookie, Sentinel, proxy credential, or order identifier is recorded here.
+diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
+new file mode 100644
+index 0000000..04d1be3
+--- /dev/null
++++ b/docs/MOMO_HAR_STATE_MACHINE.md
+@@ -0,0 +1,20 @@
++# Momo HAR 状态机（脱敏）
++
++来源：本机 `payment.momo.vn.har`，仅离线读取，未重放请求。原始 SHA-256 记录在验证制品中。
++
++## 观察到的链路
++
++1. Sentinel SDK/frame/req/ping 建立 `chatgpt_checkout` 与 `checkout_session_approval` 挑战上下文。
++2. `POST /backend-api/payments/checkout` 返回 `oaics_*`，界面类型为 custom，账单国家 `VN`、币种 `VND`。
++3. 浏览器连续三次 `POST /backend-api/payments/checkout/taxes` 刷新税费和可用支付方式；HAR 没有 `checkout/update`。
++4. Stripe 使用 Elements 会话，然后 `POST /v1/confirmation_tokens`，表单字段明确为 `payment_method_data[type]=momo`，Stripe 版本为 `2025-03-31.basil`。
++5. ChatGPT `POST /backend-api/payments/checkout/confirm` 后，Stripe `payment_intents/{pi_*}/confirm` 返回外部跳转。
++6. `pm-redirects.stripe.com/authorize/...` 返回 302，最终落到 `https://payment.momo.vn/v2/gateway/pay?t=<opaque>&s=<opaque>`。
++7. Momo 页面通过 `POST https://payment.momo.vn/v2/gateway/querySession` 携带 JSON `sessionId` 轮询；HAR 观察到 `status_code=1000`、`redirect=false` 的待确认状态。
++
++## 固定契约
++
++- 渠道名称 `momo`，适配器 `payment_link_extractor.momo_channel`，结果字段 `momo_url`。
++- Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
++- 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
++- AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
+diff --git a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+index 9a57742..df54124 100644
+--- a/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
++++ b/payment_link_extractor/EXTRACTION_ARCHITECTURE.md
+@@ -7,6 +7,7 @@
+ | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
+ | GoPay | `gopay_channel.py` | `gopay_core.py`、`gopay_*` flow/Stripe/Checkout 副本、`providers/gopay.py` | `gopay_transport.py` |
+ | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
++| MoMo | `momo_channel.py` | `momo_core.py`、`momo_checkout.py`、`momo_stripe.py`、`momo_transport.py` | Momo-only VN gateway transport |
+ | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
+
+ ## GCash 调用边界
+diff --git a/payment_link_extractor/channels.py b/payment_link_extractor/channels.py
+index 47c79fa..9fa193f 100644
+--- a/payment_link_extractor/channels.py
++++ b/payment_link_extractor/channels.py
+@@ -54,6 +54,17 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
+         country="PH",
+         currency="PHP",
+     ),
++    "momo": PaymentChannel(
++        name="momo",
++        label="MoMo",
++        adapter_module="payment_link_extractor.momo_channel",
++        adapter_callable="extract_momo_payment_link",
++        result_field="momo_url",
++        country="VN",
++        currency="VND",
++        uses_legacy_transport=False,
++        uses_checkout_update=False,
++    ),
+ }
+ PAYMENT_CHANNEL_NAMES = tuple(PAYMENT_CHANNELS)
+
+@@ -96,6 +107,6 @@ def invoke_payment_channel(
+         "cancel_event": cancel_event,
+         "stage_callback": stage_callback,
+     }
+-    if transport_factory is not None and channel.name in {"paypal", "gopay"}:
++    if transport_factory is not None and channel.name in {"paypal", "gopay", "momo"}:
+         kwargs["transport_factory"] = transport_factory
+     return extractor(config, **kwargs)
+diff --git a/payment_link_extractor/cli.py b/payment_link_extractor/cli.py
+index db4a9b8..a335a05 100644
+--- a/payment_link_extractor/cli.py
++++ b/payment_link_extractor/cli.py
+@@ -18,7 +18,7 @@ SUPPORTED_PAYMENT_METHODS = PAYMENT_CHANNEL_NAMES
+
+ def parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser(
+-        description="Extract PayPal, GoPay, or GCash links from cs_* and oaics_* checkouts."
++        description="Extract PayPal, GoPay, GCash, or MoMo links from cs_* and oaics_* checkouts."
+     )
+     parser.add_argument("--env-file", help="path to a .env file")
+     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")
+diff --git a/payment_link_extractor/config.py b/payment_link_extractor/config.py
+index e9e9303..720a5a9 100644
+--- a/payment_link_extractor/config.py
++++ b/payment_link_extractor/config.py
+@@ -38,6 +38,7 @@ COUNTRY_PROFILES = {
+     "ES": {"currency": "EUR", "locale": "es-ES", "timezone": "Europe/Madrid"},
+     "FI": {"currency": "EUR", "locale": "fi-FI", "timezone": "Europe/Helsinki"},
+     "FR": {"currency": "EUR", "locale": "fr-FR", "timezone": "Europe/Paris"},
++    "VN": {"currency": "VND", "locale": "vi-VN", "timezone": "Asia/Ho_Chi_Minh"},
+ }
+
+ _BILLING_VALUES = {
+@@ -56,6 +57,7 @@ _BILLING_VALUES = {
+     "ES": ("Carlos García", "carlos.garcia@example.com", "+34911234567", "Calle de Alcalá, 1", "Madrid", "Madrid", "28014"),
+     "FI": ("Matti Meikäläinen", "matti.meikalainen@example.com", "+35891234567", "Mannerheimintie 1", "Helsinki", "Uusimaa", "00100"),
+     "FR": ("Jean Dupont", "jean.dupont@example.com", "+33142345678", "10 Rue de Rivoli", "Paris", "Île-de-France", "75001"),
++    "VN": ("Nguyen Van An", "nguyen.van.an@example.com", "+84281234567", "12 Nguyen Hue", "Ho Chi Minh City", "Ho Chi Minh", "700000"),
+ }
+
+ SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)
+diff --git a/payment_link_extractor/momo_channel.py b/payment_link_extractor/momo_channel.py
+new file mode 100644
+index 0000000..a74dc1c
+--- /dev/null
++++ b/payment_link_extractor/momo_channel.py
+@@ -0,0 +1,11 @@
++from __future__ import annotations
++
++import threading
++from typing import Callable, Any
++
++from .models import ExtractionConfig, PaymentLinkResult
++from .momo_core import extract_momo_payment_link as _extract_momo_payment_link
++
++
++def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: Any = None, cancel_event: threading.Event | None = None, stage_callback: Callable[[str], None] | None = None) -> PaymentLinkResult:
++    return _extract_momo_payment_link(config, transport_factory=transport_factory, cancel_event=cancel_event, stage_callback=stage_callback)
+diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
+new file mode 100644
+index 0000000..98a8ec6
+--- /dev/null
++++ b/payment_link_extractor/momo_checkout.py
+@@ -0,0 +1,114 @@
++from __future__ import annotations
++
++"""Momo OAICS Checkout requests derived from the VN HAR state machine."""
++
++import json
++import re
++from typing import Any
++
++from .config import billing_for_country, processor_entity_for_country
++from .errors import ProtocolError
++
++MOMO_COUNTRY = "VN"
++MOMO_CURRENCY = "VND"
++SESSION_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
++
++
++def _walk(value: Any, keys: tuple[str, ...]) -> Any:
++    if isinstance(value, dict):
++        for key in keys:
++            if value.get(key) not in (None, "", [], {}):
++                return value[key]
++        for child in value.values():
++            found = _walk(child, keys)
++            if found not in (None, "", [], {}):
++                return found
++    elif isinstance(value, list):
++        for child in value:
++            found = _walk(child, keys)
++            if found not in (None, "", [], {}):
++                return found
++    return None
++
++
++def session_id(payload: Any) -> str:
++    raw = _walk(payload, ("checkout_session_id", "checkoutSessionId", "session_id"))
++    match = SESSION_RE.search(str(raw or "")) or SESSION_RE.search(json.dumps(payload, ensure_ascii=False, default=str))
++    return match.group(0) if match else ""
++
++
++def json_payload(response: Any, stage: str) -> dict[str, Any]:
++    try:
++        value = response.json()
++    except Exception as exc:
++        try:
++            value = json.loads(str(getattr(response, "text", "")))
++        except Exception as parse_exc:
++            raise ProtocolError(502, f"{stage} returned invalid JSON") from parse_exc
++    if not isinstance(value, dict):
++        raise ProtocolError(502, f"{stage} returned a non-object payload")
++    return value
++
++
++def request(session: Any, method: str, url: str, stage: str, **kwargs: Any) -> dict[str, Any]:
++    response = session.request(method, url, timeout=30, **kwargs)
++    if int(getattr(response, "status_code", 0) or 0) >= 400:
++        raise ProtocolError(int(response.status_code), f"{stage} failed")
++    return json_payload(response, stage)
++
++
++def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
++    path = "/backend-api/payments/checkout"
++    payload = request(
++        session,
++        "POST",
++        "https://chatgpt.com" + path,
++        "Momo checkout",
++        json={
++            "entry_point": "all_plans_pricing_modal",
++            "plan_name": "chatgptplusplan",
++            "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
++            "checkout_ui_mode": "custom",
++        },
++        headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
++    )
++    sid = session_id(payload)
++    if not sid.startswith("oaics_"):
++        raise ProtocolError(502, "Momo checkout did not return an oaics_ session")
++    checkout = {
++        "cs_id": sid,
++        "session_kind": "openai_custom_checkout",
++        "processor_entity": str(_walk(payload, ("processor_entity", "processorEntity")) or "openai_ie"),
++        "billing_country": MOMO_COUNTRY,
++        "currency": MOMO_CURRENCY,
++        "account_email": account_email,
++    }
++    for key in ("checkout_session", "checkout_state", "publishable_key", "customer_session_client_secret", "confirm_return_url"):
++        value = _walk(payload, (key,))
++        if value not in (None, "", [], {}):
++            checkout[key] = value
++    return checkout
++
++
++def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
++    path = "/backend-api/payments/checkout/taxes"
++    processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
++    payload = request(
++        session,
++        "POST",
++        "https://chatgpt.com" + path,
++        "Momo checkout taxes",
++        json={
++            "checkout_session_id": checkout["cs_id"],
++            "checkout_email": checkout.get("account_email") or billing["email"],
++            "billing_country": MOMO_COUNTRY,
++            "billing_name": billing["name"],
++            "currency": MOMO_CURRENCY.lower(),
++            "processor_entity": processor,
++            "tax_id": None,
++            "billing_address": {"line1": billing["line1"], "line2": "", "city": billing["city"], "country": MOMO_COUNTRY, "postal_code": billing["postal_code"], "state": billing["state"]},
++        },
++        headers={"Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}", "x-openai-target-path": path, "x-openai-target-route": path},
++    )
++    checkout.update({k: v for k, v in payload.items() if k in {"checkout_session", "checkout_state", "custom_payment_methods", "confirm_return_url"}})
++    return payload
+diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
+new file mode 100644
+index 0000000..be0adc0
+--- /dev/null
++++ b/payment_link_extractor/momo_core.py
+@@ -0,0 +1,110 @@
++from __future__ import annotations
++
++"""Independent VN/VND MoMo extraction core."""
++
++import base64
++import json
++import time
++from dataclasses import replace
++from typing import Any, Callable
++from urllib.parse import parse_qs, urlparse
++
++from .auth import account_email
++from .config import billing_for_country, currency_minor_scale
++from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
++from .models import ExtractionConfig, PaymentLinkResult
++from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
++from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, validate_momo_url
++from .momo_transport import MomoTransportFactory, close
++
++MOMO_RESULT_FIELD = "momo_url"
++
++
++def pin_momo_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
++    proxy = str(config.checkout_proxy or "").strip()
++    return replace(config, checkout_proxy=proxy, update_proxy=proxy, checkout_proxy_attempts=(proxy,), update_proxy_attempts=(proxy,), proxy_pool=(proxy,))
++
++
++def _gateway_session_id(url: str) -> str:
++    token = parse_qs(urlparse(url).query).get("t", [""])[0]
++    try:
++        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("utf-8", "ignore")
++        return decoded.split("|", 1)[0]
++    except Exception:
++        return ""
++
++
++def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
++    session_id = _gateway_session_id(url)
++    if not session_id:
++        raise ProtocolError(502, "Momo gateway URL has invalid session token")
++    last: dict[str, Any] = {}
++    for index in range(max(1, polls)):
++        response = session.request("POST", "https://payment.momo.vn/v2/gateway/querySession", json={"sessionId": session_id}, timeout=30)
++        if int(getattr(response, "status_code", 0) or 0) >= 400:
++            raise ProtocolError(int(response.status_code), "Momo querySession failed")
++        try:
++            value = response.json()
++        except Exception:
++            value = json.loads(str(getattr(response, "text", "{}")))
++        last = value if isinstance(value, dict) else {}
++        if bool(last.get("redirect")):
++            break
++        if index + 1 < polls:
++            time.sleep(0.25)
++    return last
++
++
++def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: Any = None, cancel_event: Any = None, stage_callback: Callable[[str], None] | None = None) -> PaymentLinkResult:
++    if str(config.payment_method or "").lower() != "momo":
++        raise ConfigurationError("Momo core requires payment_method=momo")
++    if str(config.country or "").upper() != MOMO_COUNTRY:
++        raise ConfigurationError("Momo core requires country=VN")
++    config = pin_momo_attempt_proxy(config)
++    def checkpoint(stage: str) -> None:
++        if cancel_event is not None and cancel_event.is_set():
++            raise ExtractionCancelled("task cancellation requested")
++        if stage_callback:
++            stage_callback(stage)
++    billing_profile = billing_for_country(MOMO_COUNTRY)
++    email = account_email(config.access_token)
++    if email:
++        billing_profile = replace(billing_profile, email=email)
++    billing = billing_profile.to_dict()
++    factory = transport_factory or MomoTransportFactory()
++    chatgpt = factory.chatgpt(config, config.checkout_proxy)
++    stripe = None
++    momo = None
++    try:
++        checkpoint("checkout")
++        checkout = create_checkout(chatgpt, account_email=email)
++        checkpoint("checkout_committed")
++        checkpoint("checkout_kind:openai_custom_checkout")
++        for _ in range(3):
++            checkpoint("taxes")
++            taxes(chatgpt, checkout, billing)
++        stripe = factory.stripe(config)
++        checkpoint("stripe_init")
++        elements_session(stripe, checkout)
++        checkpoint("stripe_elements")
++        token = confirmation_token(stripe, checkout, billing, config.stripe_hcaptcha_token)
++        checkpoint("payment_confirmation")
++        confirmed = checkout_confirm(chatgpt, checkout, token)
++        intent = intent_confirm(stripe, checkout, token, confirmed)
++        raw = redirect_url(intent)
++        if not validate_momo_url(raw):
++            raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
++        checkpoint("redirect_resolution")
++        momo = factory.momo(config) if callable(getattr(factory, "momo", None)) else stripe
++        query_gateway(momo, raw, polls=1)
++        checkout_state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
++        total = checkout_state.get("total") if isinstance(checkout_state.get("total"), dict) else {}
++        due = total.get("total") if isinstance(total.get("total"), dict) else {}
++        minor = int(due.get("minorUnitsAmount") or 0)
++        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession"})
++    finally:
++        close(momo)
++        if momo is stripe:
++            stripe = None
++        close(stripe)
++        close(chatgpt)
+diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
+new file mode 100644
+index 0000000..6713d52
+--- /dev/null
++++ b/payment_link_extractor/momo_stripe.py
+@@ -0,0 +1,107 @@
++from __future__ import annotations
++
++"""Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
++
++import random
++import uuid
++from typing import Any
++from urllib.parse import parse_qs, urlencode, urlparse
++
++from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
++from .errors import ProtocolError
++from .momo_checkout import json_payload
++
++
++def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
++    response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
++    if int(getattr(response, "status_code", 0) or 0) >= 400:
++        raise ProtocolError(int(response.status_code), f"{stage} failed")
++    return json_payload(response, stage)
++
++
++def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
++    response = session.request("GET", "https://api.stripe.com/v1/elements/sessions", params={"locale": "vi-VN", "currency": "vnd", "mode": "subscription", "key": checkout.get("publishable_key") or DEFAULT_STRIPE_PK}, timeout=30)
++    if int(getattr(response, "status_code", 0) or 0) >= 400:
++        raise ProtocolError(int(response.status_code), "Momo Stripe Elements init failed")
++    payload = json_payload(response, "Momo Stripe Elements init")
++    checkout["elements_session"] = payload
++    return payload
++
++
++def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str, str], captcha: str = "") -> str:
++    key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
++    body: dict[str, Any] = {
++        "payment_method_data[type]": "momo",
++        "payment_method_data[billing_details][name]": billing["name"],
++        "payment_method_data[billing_details][address][line1]": billing["line1"],
++        "payment_method_data[billing_details][address][city]": billing["city"],
++        "payment_method_data[billing_details][address][country]": "VN",
++        "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
++        "payment_method_data[billing_details][address][state]": billing["state"],
++        "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
++        "payment_method_data[referrer]": "https://chatgpt.com",
++        "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
++        "payment_method_data[guid]": uuid.uuid4().hex,
++        "payment_method_data[muid]": uuid.uuid4().hex,
++        "payment_method_data[sid]": uuid.uuid4().hex,
++        "setup_future_usage": "off_session",
++        "mandate_data[customer_acceptance][type]": "online",
++        "mandate_data[customer_acceptance][online][infer_from_client]": "true",
++        "client_context[currency]": "vnd",
++        "client_context[mode]": "subscription",
++        "client_context[payment_method_types][0]": "momo",
++        "client_context[payment_method_types][1]": "link",
++        "client_context[payment_method_types][2]": "card",
++        "set_as_default_payment_method": "false",
++        "key": key,
++        "_stripe_version": STRIPE_VERSION_BASE,
++    }
++    if captcha:
++        body["payment_method_data[radar_options][hcaptcha_token]"] = captcha
++    ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
++    for source, target in (("session_id", "elements_session_id"), ("config_id", "elements_session_config_id")):
++        if ctx.get(source):
++            body[f"payment_method_data[client_attribution_metadata][{target}]"] = str(ctx[source])
++    payload = _post(session, "https://api.stripe.com/v1/confirmation_tokens", "Momo Stripe confirmation token", body)
++    token = str(payload.get("id") or "")
++    if not token.startswith("ctoken_"):
++        raise ProtocolError(502, "Momo Stripe confirmation token missing ctoken_ id")
++    return token
++
++
++def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict[str, Any]:
++    path = "/backend-api/payments/checkout/confirm"
++    response = session.request("POST", "https://chatgpt.com" + path, json={"checkout_session_id": checkout["cs_id"], "confirm_token": token, "selected_payment_method_type": "momo"}, timeout=30)
++    if int(getattr(response, "status_code", 0) or 0) >= 400:
++        raise ProtocolError(int(response.status_code), "Momo checkout confirm failed")
++    payload = json_payload(response, "Momo checkout confirm")
++    if str(payload.get("status") or "").lower() != "success" or "client_secret" not in payload:
++        raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
++    return payload
++
++
++def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed: dict[str, Any]) -> dict[str, Any]:
++    secret = str(confirmed.get("client_secret") or "")
++    intent_id = secret.split("_secret_", 1)[0]
++    if not intent_id.startswith(("pi_", "seti_")):
++        raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
++    endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
++    return _post(session, endpoint, "Momo Stripe intent confirm", {"return_url": str(confirmed.get("confirm_return_url") or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"), "confirmation_token": token, "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK), "_stripe_version": STRIPE_VERSION_FULL, "client_secret": secret})
++
++
++def redirect_url(payload: dict[str, Any]) -> str:
++    for key in ("redirect_to_url", "url", "next_action", "payment_method_options"):
++        value = payload.get(key)
++        if isinstance(value, str) and value.startswith("http"):
++            return value
++        if isinstance(value, dict):
++            found = redirect_url(value)
++            if found:
++                return found
++    return ""
++
++
++def validate_momo_url(value: str) -> bool:
++    parsed = urlparse(str(value or ""))
++    query = parse_qs(parsed.query)
++    return parsed.scheme == "https" and parsed.hostname == "payment.momo.vn" and parsed.path == "/v2/gateway/pay" and bool(query.get("t")) and bool(query.get("s"))
+diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
+new file mode 100644
+index 0000000..0258ac8
+--- /dev/null
++++ b/payment_link_extractor/momo_transport.py
+@@ -0,0 +1,55 @@
++from __future__ import annotations
++
++"""Momo-only HTTP sessions with one proxy and one cookie jar per attempt."""
++
++from typing import Any
++
++import requests
++
++from .config import DEFAULT_USER_AGENT
++
++
++class MomoTransportFactory:
++    """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
++
++    def chatgpt(self, config: Any, proxy: str) -> requests.Session:
++        session = requests.Session()
++        session.headers.update(
++            {
++                "Authorization": f"Bearer {config.access_token}",
++                "User-Agent": DEFAULT_USER_AGENT,
++                "Accept": "application/json",
++                "Origin": "https://chatgpt.com",
++            }
++        )
++        _set_proxy(session, proxy)
++        return session
++
++    def stripe(self, config: Any) -> requests.Session:
++        session = requests.Session()
++        session.headers.update(
++            {
++                "User-Agent": DEFAULT_USER_AGENT,
++                "Origin": "https://checkout.stripe.com",
++                "Referer": "https://checkout.stripe.com/",
++            }
++        )
++        _set_proxy(session, config.checkout_proxy)
++        return session
++
++    def momo(self, config: Any) -> requests.Session:
++        session = requests.Session()
++        session.headers.update({"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/html,application/json"})
++        _set_proxy(session, config.checkout_proxy)
++        return session
++
++
++def _set_proxy(session: Any, proxy: str) -> None:
++    value = str(proxy or "").strip()
++    if value:
++        session.proxies.update({"http": value, "https": value})
++
++
++def close(session: Any) -> None:
++    if session is not None and callable(getattr(session, "close", None)):
++        session.close()
+diff --git a/payment_link_extractor/providers/momo.py b/payment_link_extractor/providers/momo.py
+new file mode 100644
+index 0000000..605adc9
+--- /dev/null
++++ b/payment_link_extractor/providers/momo.py
+@@ -0,0 +1,8 @@
++from .base import ProviderAdapter
++
++
++MOMO = ProviderAdapter(
++    name="momo",
++    result_field="momo_url",
++    preferred_hosts=("payment.momo.vn", "momo.vn"),
++)
+diff --git a/payment_link_extractor/providers/registry.py b/payment_link_extractor/providers/registry.py
+index ec579b5..b232820 100644
+--- a/payment_link_extractor/providers/registry.py
++++ b/payment_link_extractor/providers/registry.py
+@@ -4,10 +4,11 @@ from .base import ProviderAdapter
+ from .gcash import GCASH
+ from .gopay import GOPAY
+ from .paypal import PAYPAL
++from .momo import MOMO
+
+
+ PROVIDERS: dict[str, ProviderAdapter] = {
+-    provider.name: provider for provider in (PAYPAL, GOPAY, GCASH)
++    provider.name: provider for provider in (PAYPAL, GOPAY, GCASH, MOMO)
+ }
+
+
+diff --git a/payment_link_extractor/web/static/app.js b/payment_link_extractor/web/static/app.js
+index 02f40e0..434ce6f 100644
+--- a/payment_link_extractor/web/static/app.js
++++ b/payment_link_extractor/web/static/app.js
+@@ -337,7 +337,7 @@
+   function saveFormPreferences() {
+     syncSingleProxyPool();
+     const paymentMethod = byId("payment-method").value;
+-    if (!new Set(["gcash", "gopay"]).has(paymentMethod) && byId("country").value) {
++    if (!new Set(["gcash", "gopay", "momo"]).has(paymentMethod) && byId("country").value) {
+       paypalCountryPreference = byId("country").value;
+     }
+     const preferences = {
+@@ -411,12 +411,14 @@
+     const method = byId("payment-method").value;
+     const isGcash = method === "gcash";
+     const isGopay = method === "gopay";
+-    const isFixedCountry = isGcash || isGopay;
+-    const fixedCountry = isGopay ? "ID" : "PH";
++    const isMomo = method === "momo";
++    const isFixedCountry = isGcash || isGopay || isMomo;
++    const fixedCountry = isGopay ? "ID" : isMomo ? "VN" : "PH";
+     const country = byId("country");
+     const countryField = byId("country-field");
+     const gcashNote = byId("gcash-country-note");
+     const gopayNote = byId("gopay-country-note");
++    const momoNote = byId("momo-country-note");
+     const gopayZeroTrialField = byId("gopay-zero-trial-field");
+     if (!isFixedCountry && country.value) {
+       paypalCountryPreference = country.value;
+@@ -431,6 +433,7 @@
+     if (countryField) countryField.hidden = isFixedCountry;
+     if (gcashNote) gcashNote.hidden = !isGcash;
+     if (gopayNote) gopayNote.hidden = !isGopay;
++    if (momoNote) momoNote.hidden = !isMomo;
+     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
+     renderBillingPreview();
+   }
+@@ -598,7 +601,7 @@
+       result.gopay_zero_trial_validation = byId("gopay-zero-trial-validation").checked;
+     }
+     const values = [
+-      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : byId("country").value],
++      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
+       ["payment_method", paymentMethod],
+     ];
+     values.forEach(([key, value]) => {
+@@ -1318,7 +1321,7 @@
+   }
+
+   function taskResultUrl(result) {
+-    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || "";
++    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || result.momo_url || "";
+   }
+
+   function isPaypalBaLink(url) {
+@@ -1876,7 +1879,7 @@
+       field.addEventListener("input", saveFormPreferences);
+     });
+     byId("country").addEventListener("change", () => {
+-      if (!["gcash", "gopay"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
++      if (!["gcash", "gopay", "momo"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
+       renderBillingPreview();
+     });
+     byId("payment-method").addEventListener("change", () => {
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 5ba55f5..e1413e6 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -469,7 +469,7 @@ class TaskManager:
+         proxy_plan: tuple[str, ...] | None = None,
+     ) -> ExtractionConfig:
+         total_attempts = cls._total_attempts(config)
+-        if config.payment_method == "gopay":
++        if config.payment_method in {"gopay", "momo"}:
+             # GoPay owns one proxy for the entire current attempt. A new
+             # proxy is selected only when the attempt fails and the outer
+             # retry loop rebuilds the complete flow from the beginning.
+@@ -510,7 +510,7 @@ class TaskManager:
+         replacement attempt set. Other channels retain the existing bounded
+         retry_count contract.
+         """
+-        if config.payment_method == "gopay" and config.proxy_pool:
++        if config.payment_method in {"gopay", "momo"} and config.proxy_pool:
+             unique = {
+                 str(item).strip() for item in config.proxy_pool if str(item).strip()
+             }
+@@ -558,7 +558,7 @@ class TaskManager:
+             )
+
+         for attempt_index in range(total_attempts):
+-            if attempt_index and retry_plan.payment_method == "gopay":
++            if attempt_index and retry_plan.payment_method in {"gopay", "momo"}:
+                 delay = gopay_retry_backoff_seconds(attempt_index)
+                 if delay > 0:
+                     task_log.info(
+@@ -635,6 +635,7 @@ class TaskManager:
+                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
+                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
+                     is_gopay = record.config.payment_method == "gopay"
++                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
+                     explicit_retryable = getattr(exc, "retryable", None)
+                     status_code = getattr(exc, "status_code", None)
+                     try:
+@@ -646,9 +647,9 @@ class TaskManager:
+                     )
+                     may_retry = (
+                         attempt_index < retry_count
+-                        and (not is_gopay or explicit_retryable is not False)
+-                        and not (is_gopay and status_code == 401)
+-                        and not (is_gopay and record.checkout_opportunity_consumed)
++                        and (not is_checkout_sensitive or explicit_retryable is not False)
++                        and not (is_checkout_sensitive and status_code == 401)
++                        and not (is_checkout_sensitive and record.checkout_opportunity_consumed)
+                         and (
+                             record.config.payment_method != "gcash"
+                             or mk_retryable
+@@ -759,7 +760,7 @@ class TaskManager:
+             if record is None or record.status in TERMINAL_STATES:
+                 return
+             if (
+-                record.config.payment_method == "gopay"
++                record.config.payment_method in {"gopay", "momo"}
+                 and str(stage) == "checkout_committed"
+             ):
+                 record.checkout_opportunity_consumed = True
+diff --git a/payment_link_extractor/web/templates/index.html b/payment_link_extractor/web/templates/index.html
+index 21187f3..b57715f 100644
+--- a/payment_link_extractor/web/templates/index.html
++++ b/payment_link_extractor/web/templates/index.html
+@@ -106,9 +106,11 @@
+                   <option value="paypal" selected>PayPal</option>
+                   <option value="gopay">GoPay（印度尼西亚）</option>
+                   <option value="gcash">GCash（菲律宾）</option>
++                  <option value="momo">MoMo（越南）</option>
+                 </select>
+                 <small id="gopay-country-note" class="quiet" hidden>GoPay 固定使用印度尼西亚 ID / IDR，选择后直接调用 GoPay 核心。</small>
+                 <small id="gcash-country-note" class="quiet" hidden>GCash 固定使用菲律宾 PH / PHP，无需选择国家。</small>
++                <small id="momo-country-note" class="quiet" hidden>MoMo 固定使用越南 VN / VND，无需选择国家。</small>
+               </label>
+               <section id="gopay-zero-trial-field" class="gopay-zero-trial-field" hidden>
+                 <label class="check-field" for="gopay-zero-trial-validation">
+diff --git a/tests/test_channel_isolation.py b/tests/test_channel_isolation.py
+index af387e2..4aca6f4 100644
+--- a/tests/test_channel_isolation.py
++++ b/tests/test_channel_isolation.py
+@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
+
+ def test_all_channels_have_unique_adapters_and_result_fields() -> None:
+     channels = list(PAYMENT_CHANNELS.values())
+-    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash")
++    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash", "momo")
+     assert len({channel.adapter_module for channel in channels}) == len(channels)
+     assert len({channel.result_field for channel in channels}) == len(channels)
+     assert SUPPORTED_PAYMENT_METHODS == tuple(PAYMENT_CHANNELS)
+@@ -21,9 +21,12 @@ def test_channel_country_currency_and_transport_contracts_are_isolated() -> None
+     paypal = PAYMENT_CHANNELS["paypal"]
+     gopay = PAYMENT_CHANNELS["gopay"]
+     gcash = PAYMENT_CHANNELS["gcash"]
++    momo = PAYMENT_CHANNELS["momo"]
+     assert (paypal.country, paypal.currency, paypal.uses_legacy_transport) == ("", "", True)
+     assert (gopay.country, gopay.currency, gopay.uses_legacy_transport) == ("ID", "IDR", False)
+     assert (gcash.country, gcash.currency, gcash.uses_legacy_transport) == ("PH", "PHP", False)
++    assert (momo.country, momo.currency, momo.uses_legacy_transport) == ("VN", "VND", False)
++    assert momo.uses_checkout_update is False
+     assert paypal.uses_checkout_update is True
+     assert gopay.uses_checkout_update is True
+     assert gcash.uses_checkout_update is False
+diff --git a/tests/test_gcash_support.py b/tests/test_gcash_support.py
+index 166a36f..fc05ffc 100644
+--- a/tests/test_gcash_support.py
++++ b/tests/test_gcash_support.py
+@@ -80,8 +80,9 @@ def test_defaults_expose_all_payment_choices() -> None:
+         ("paypal", "PayPal"),
+         ("gopay", "GoPay"),
+         ("gcash", "GCash"),
++        ("momo", "MoMo"),
+     ]
+-    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH"}
++    assert data["payment_method_countries"] == {"gopay": "ID", "gcash": "PH", "momo": "VN"}
+
+
+ class _Response:
+diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
+new file mode 100644
+index 0000000..5ec1746
+--- /dev/null
++++ b/tests/test_momo_support.py
+@@ -0,0 +1,57 @@
++from __future__ import annotations
++
++import base64
++import json
++from types import SimpleNamespace
++
++from payment_link_extractor.application import _normalize_config
++from payment_link_extractor.channels import PAYMENT_CHANNELS
++from payment_link_extractor.config import billing_for_country
++from payment_link_extractor.models import ExtractionConfig
++from payment_link_extractor.momo_core import _gateway_session_id, query_gateway
++from payment_link_extractor.momo_stripe import validate_momo_url
++from payment_link_extractor.web.app import create_app
++from payment_link_extractor.web.routes import _config_from_payload
++
++
++def test_momo_registry_and_fixed_country() -> None:
++    channel = PAYMENT_CHANNELS["momo"]
++    assert channel.adapter_module == "payment_link_extractor.momo_channel"
++    assert channel.result_field == "momo_url"
++    assert (channel.country, channel.currency) == ("VN", "VND")
++    assert channel.uses_legacy_transport is False
++    assert channel.uses_checkout_update is False
++    config = _normalize_config(ExtractionConfig("token", "http://proxy", "", country="US", payment_method="momo"))
++    assert (config.country, config.payment_method) == ("VN", "momo")
++
++
++def test_momo_route_and_ui_defaults() -> None:
++    config = _config_from_payload({"access_token": "token", "proxy_pool": ["http://proxy"], "payment_method": "momo", "country": "US"})
++    assert (config.country, config.payment_method, config.update_proxy) == ("VN", "momo", "http://proxy")
++    app = create_app({"TESTING": True})
++    data = app.test_client().get("/api/defaults", headers={"X-Workbench-Password": "test-password"}).get_json()
++    methods = {item["value"]: item for item in data["payment_methods"]}
++    assert methods["momo"]["label"] == "MoMo"
++    assert data["payment_method_countries"]["momo"] == "VN"
++
++
++def test_momo_url_and_gateway_session_contract() -> None:
++    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
++    assert validate_momo_url(url)
++    assert not validate_momo_url(url.replace("payment.momo.vn", "example.com"))
++    assert _gateway_session_id(url) == "MOMO_SESSION"
++
++    class Session:
++        def request(self, method, endpoint, **kwargs):
++            assert method == "POST"
++            assert endpoint.endswith("/querySession")
++            assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
++            return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
++
++    assert query_gateway(Session(), url)["status_code"] == 1000
++
++
++def test_momo_transport_and_result_field_are_isolated() -> None:
++    source = (PAYMENT_CHANNELS["momo"].adapter_module, PAYMENT_CHANNELS["momo"].result_field)
++    assert source == ("payment_link_extractor.momo_channel", "momo_url")
++    assert billing_for_country("VN").country == "VN"

@@ -38,6 +38,7 @@ COUNTRY_PROFILES = {
     "ES": {"currency": "EUR", "locale": "es-ES", "timezone": "Europe/Madrid"},
     "FI": {"currency": "EUR", "locale": "fi-FI", "timezone": "Europe/Helsinki"},
     "FR": {"currency": "EUR", "locale": "fr-FR", "timezone": "Europe/Paris"},
+    "VN": {"currency": "VND", "locale": "vi-VN", "timezone": "Asia/Ho_Chi_Minh"},
 }
 
 _BILLING_VALUES = {
@@ -56,6 +57,7 @@ _BILLING_VALUES = {
     "ES": ("Carlos García", "carlos.garcia@example.com", "+34911234567", "Calle de Alcalá, 1", "Madrid", "Madrid", "28014"),
     "FI": ("Matti Meikäläinen", "matti.meikalainen@example.com", "+35891234567", "Mannerheimintie 1", "Helsinki", "Uusimaa", "00100"),
     "FR": ("Jean Dupont", "jean.dupont@example.com", "+33142345678", "10 Rue de Rivoli", "Paris", "Île-de-France", "75001"),
+    "VN": ("Nguyen Van An", "nguyen.van.an@example.com", "+84281234567", "12 Nguyen Hue", "Ho Chi Minh City", "Ho Chi Minh", "700000"),
 }
 
 SUPPORTED_COUNTRIES = tuple(COUNTRY_PROFILES)

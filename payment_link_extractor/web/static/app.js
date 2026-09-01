@@ -337,7 +337,7 @@
   function saveFormPreferences() {
     syncSingleProxyPool();
     const paymentMethod = byId("payment-method").value;
-    if (!new Set(["gcash", "gopay"]).has(paymentMethod) && byId("country").value) {
+    if (!new Set(["gcash", "gopay", "momo"]).has(paymentMethod) && byId("country").value) {
       paypalCountryPreference = byId("country").value;
     }
     const preferences = {
@@ -411,12 +411,14 @@
     const method = byId("payment-method").value;
     const isGcash = method === "gcash";
     const isGopay = method === "gopay";
-    const isFixedCountry = isGcash || isGopay;
-    const fixedCountry = isGopay ? "ID" : "PH";
+    const isMomo = method === "momo";
+    const isFixedCountry = isGcash || isGopay || isMomo;
+    const fixedCountry = isGopay ? "ID" : isMomo ? "VN" : "PH";
     const country = byId("country");
     const countryField = byId("country-field");
     const gcashNote = byId("gcash-country-note");
     const gopayNote = byId("gopay-country-note");
+    const momoNote = byId("momo-country-note");
     const gopayZeroTrialField = byId("gopay-zero-trial-field");
     if (!isFixedCountry && country.value) {
       paypalCountryPreference = country.value;
@@ -431,6 +433,7 @@
     if (countryField) countryField.hidden = isFixedCountry;
     if (gcashNote) gcashNote.hidden = !isGcash;
     if (gopayNote) gopayNote.hidden = !isGopay;
+    if (momoNote) momoNote.hidden = !isMomo;
     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
     renderBillingPreview();
   }
@@ -598,7 +601,7 @@
       result.gopay_zero_trial_validation = byId("gopay-zero-trial-validation").checked;
     }
     const values = [
-      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : byId("country").value],
+      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
       ["payment_method", paymentMethod],
     ];
     values.forEach(([key, value]) => {
@@ -1318,7 +1321,7 @@
   }
 
   function taskResultUrl(result) {
-    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || "";
+    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || result.momo_url || "";
   }
 
   function isPaypalBaLink(url) {
@@ -1876,7 +1879,7 @@
       field.addEventListener("input", saveFormPreferences);
     });
     byId("country").addEventListener("change", () => {
-      if (!["gcash", "gopay"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
+      if (!["gcash", "gopay", "momo"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
       renderBillingPreview();
     });
     byId("payment-method").addEventListener("change", () => {
