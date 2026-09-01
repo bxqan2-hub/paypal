@@ -231,7 +231,14 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
     if client_secret:
         payload.setdefault("client_secret", client_secret)
     if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
-        raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
+        nested = payload.get("setup_intent") or payload.get("payment_intent") or {}
+        nested_keys = ",".join(sorted(str(key) for key in nested.keys())) if isinstance(nested, dict) else ""
+        top_keys = ",".join(sorted(str(key) for key in payload.keys()))
+        raise ProtocolError(
+            409,
+            "Momo checkout confirm did not return a client secret "
+            f"(status={payload.get('status') or '-'}, top_keys={top_keys}, nested_keys={nested_keys})",
+        )
     return payload
 
 
