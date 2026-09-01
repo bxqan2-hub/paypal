@@ -73,8 +73,8 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
         gopay_transport.PlaywrightSentinelProvider,
     )
     assert session.headers["oai-language"] == "id-ID"
-    assert session.headers["oai-client-build-number"] == "10012890"
-    assert session.headers["oai-client-version"] == "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+    assert session.headers["oai-client-build-number"] == "10109010"
+    assert session.headers["oai-client-version"] == "prod-31e08510fe1189856ad77823ca134a25c60715b5"
     session.openai_checkout_telemetry = "[1,627.5,21,23,28,2,0,631]"
     telemetry = session.refresh_openai_request_headers(
         "POST", "https://chatgpt.com/backend-api/payments/checkout"
@@ -619,6 +619,45 @@ def test_gopay_checkout_methods_merge_nested_values() -> None:
         {"id": "cpmt_1", "name": "GoPay", "display_name": "GoPay Indonesia"},
         {"id": "cpmt_2", "name": "Bank"},
     ]
+
+
+def test_gopay_nonzero_checkout_matches_roxy_har_shape(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+        text = "{}"
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {"checkout_session_id": "cs_fixture", "processor_entity": "openai_llc"}
+
+    def request(_session, _label, _method, _url, _log, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(gopay_checkout, "stage_http_request", request)
+    monkeypatch.setattr(
+        gopay_checkout,
+        "openai_sentinel_headers",
+        lambda *_args, **_kwargs: {"OpenAI-Sentinel-Token": "proof"},
+    )
+    config = ExtractionConfig(
+        access_token="fixture-token",
+        checkout_proxy="http://proxy.example:8080",
+        update_proxy="http://proxy.example:8080",
+        country="ID",
+        payment_method="gopay",
+        gopay_zero_trial_validation=False,
+    )
+    gopay_checkout.create_checkout(config, object(), None)
+    assert captured["json"] == {
+        "entry_point": "all_plans_pricing_modal",
+        "plan_name": "chatgptplusplan",
+        "billing_details": {"country": "ID", "currency": "IDR"},
+        "checkout_ui_mode": "custom",
+    }
+    assert captured["headers"]["Referer"] == "https://chatgpt.com/"
 
 
 def test_gopay_amount_gate_is_zero_only() -> None:

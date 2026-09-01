@@ -93,10 +93,10 @@ class TransportFactory(Protocol):
 
 GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
     {
-        "name": "chrome151",
+        "name": "chrome152",
         "impersonate": "chrome",
-        "user_agent": DEFAULT_USER_AGENT,
-        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "user_agent": DEFAULT_USER_AGENT.replace("Chrome/151.", "Chrome/152."),
+        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="152", "Chromium";v="152"',
         "weight": 70,
     },
     {
@@ -1595,12 +1595,12 @@ class DefaultTransportFactory:
                 # when the web deployment rotates its build identifier.
                 "oai-client-build-number": (
                     os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "").strip()
-                    or ("10012890" if is_gopay else "9748354")
+                    or ("10109010" if is_gopay else "9748354")
                 ),
                 "oai-client-version": (
                     os.getenv("OPLL_OAI_CLIENT_VERSION", "").strip()
                     or (
-                        "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+                        "prod-31e08510fe1189856ad77823ca134a25c60715b5"
                         if is_gopay
                         else "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
                     )
