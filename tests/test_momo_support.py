@@ -11,7 +11,7 @@ from payment_link_extractor.models import ExtractionConfig
 from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
 from payment_link_extractor.momo_eligibility import probe_momo_trial_eligibility
 from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
-from payment_link_extractor.momo_checkout import create_checkout
+from payment_link_extractor.momo_checkout import apply_trial_promotion, create_checkout
 from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
 from payment_link_extractor.web.app import create_app
 from payment_link_extractor.web.tasks import TaskManager
@@ -254,12 +254,11 @@ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
             )
 
     session = Session()
-    checkout = create_checkout(
-        session, trial_eligible=True, campaign_id="plus-1-month-free"
-    )
+    checkout = create_checkout(session)
     assert checkout["processor_entity"] == "openai_llc"
-    assert calls[0][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
-    assert calls[0][2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
+    apply_trial_promotion(session, checkout, campaign_id="plus-1-month-free")
+    assert calls[1][2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+    assert calls[1][2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
     checkout_confirm(session, checkout, "ctoken_fixture")
     confirm_headers = calls[-1][2]["headers"]
     assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"

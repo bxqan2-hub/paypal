@@ -89,11 +89,6 @@ def create_checkout(
         "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
         "checkout_ui_mode": "custom",
     }
-    if trial_eligible:
-        body["promo_campaign"] = {
-            "promo_campaign_id": str(campaign_id or "plus-1-month-free"),
-            "is_coupon_from_query_param": False,
-        }
     payload = request(
         session,
         "POST",
@@ -139,6 +134,52 @@ def create_checkout(
         if value not in (None, "", [], {}):
             checkout[target] = value
     return checkout
+
+
+def apply_trial_promotion(
+    session: Any, checkout: dict[str, Any], *, campaign_id: str = ""
+) -> dict[str, Any]:
+    """Apply the eligible campaign on the existing Momo Checkout session."""
+    path = "/backend-api/payments/checkout/update"
+    processor = str(checkout.get("processor_entity") or "openai_llc")
+    payload = request(
+        session,
+        "POST",
+        "https://chatgpt.com" + path,
+        "Momo checkout promotion",
+        json={
+            "checkout_session_id": checkout["cs_id"],
+            "processor_entity": processor,
+            "plan_name": "chatgptplusplan",
+            "price_interval": "month",
+            "seat_quantity": 1,
+            "discount_code": None,
+            "promo_campaign": {
+                "promo_campaign_id": str(campaign_id or "plus-1-month-free"),
+                "is_coupon_from_query_param": False,
+            },
+        },
+        headers={
+            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
+    )
+    checkout.update(
+        {
+            key: value
+            for key, value in payload.items()
+            if key
+            in {
+                "checkout_session",
+                "checkout_state",
+                "custom_payment_methods",
+                "confirm_return_url",
+                "processor_entity",
+            }
+        }
+    )
+    return payload
 
 
 def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
