@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tools.mitm_capture import (
-    ROXY_IP_CHECK_IGNORE_HOSTS,
+    TLS_PASSTHROUGH_HOSTS,
     find_mitm_binary,
     parse_upstream,
     read_devtools_port,
@@ -47,10 +47,12 @@ def test_upstream_arguments_reject_invalid_scheme() -> None:
 def test_roxy_ip_check_passthrough_is_narrow() -> None:
     import re
 
-    assert re.match(ROXY_IP_CHECK_IGNORE_HOSTS, "ipcheck.roxybrowser.com:443")
-    assert re.match(ROXY_IP_CHECK_IGNORE_HOSTS, "ipcheck.roxybrowser.co:443")
-    assert not re.match(ROXY_IP_CHECK_IGNORE_HOSTS, "paypal.com:443")
-    assert not re.match(ROXY_IP_CHECK_IGNORE_HOSTS, "api.ip2location.io:443")
+    assert re.match(TLS_PASSTHROUGH_HOSTS, "ipcheck.roxybrowser.com:443")
+    assert re.match(TLS_PASSTHROUGH_HOSTS, "ipcheck.roxybrowser.co:443")
+    assert re.match(TLS_PASSTHROUGH_HOSTS, "chatgpt.com:443")
+    assert re.match(TLS_PASSTHROUGH_HOSTS, "auth.openai.com:443")
+    assert not re.match(TLS_PASSTHROUGH_HOSTS, "paypal.com:443")
+    assert not re.match(TLS_PASSTHROUGH_HOSTS, "api.ip2location.io:443")
 
 
 def test_require_free_port_rejects_invalid_port() -> None:

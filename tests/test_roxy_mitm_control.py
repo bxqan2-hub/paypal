@@ -4,7 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from tools.roxy_mitm_control import create_roxy_window, resolve_workspace_id
+from tools.roxy_mitm_control import cleanup_stale_mitmweb, create_roxy_window, resolve_workspace_id
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -59,3 +59,8 @@ def test_roxy_workspace_and_window_payload() -> None:
         "proxyUserName": "",
         "proxyPassword": "",
     }
+
+
+def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
+    monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
+    cleanup_stale_mitmweb((8899, 8081))

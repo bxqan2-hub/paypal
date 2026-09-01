@@ -21,6 +21,8 @@ py -3 tools\mitm_capture.py --doctor
 
 RoxyBrowser 的桌面主进程不使用 Windows 系统 CA。工具仅对 `ipcheck.roxybrowser.com` 和 `ipcheck.roxybrowser.co` 两个内置 IP 检测域名启用 TLS 透传，避免 Roxy 的“测试代理 IP”误报证书错误；其余业务域名仍由 mitmproxy 正常解密和记录。
 
+ChatGPT 首页和登录域名同样使用 TLS 透传，以保留 RoxyChrome 的 TLS 指纹并避免 Cloudflare 返回未激活的静态页面。PayPal、GoPay、GCash、Stripe、Midtrans 等支付与渠道域名不在透传名单内，仍由 mitmproxy 正常记录和解析。
+
 ```powershell
 $env:OPLL_CAPTURE_UPSTREAM = 'HOST:PORT:USERNAME:PASSWORD'
 $env:OPLL_CAPTURE_CHANNEL = 'gopay'

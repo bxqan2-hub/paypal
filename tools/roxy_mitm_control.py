@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import signal
@@ -19,6 +21,49 @@ from urllib.request import Request, urlopen
 
 CHANNELS = {"paypal", "gopay", "gcash"}
 DEFAULT_ROXY_API = "http://127.0.0.1:50000"
+
+
+def cleanup_stale_mitmweb(ports: tuple[int, ...]) -> None:
+    if os.name != "nt":
+        return
+    result = subprocess.run(
+        ["netstat", "-ano", "-p", "tcp"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    target_pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[0].upper() != "TCP" or fields[3].upper() != "LISTENING":
+            continue
+        local_address = fields[1]
+        if not any(local_address.endswith(f":{port}") for port in ports):
+            continue
+        try:
+            target_pids.add(int(fields[4]))
+        except ValueError:
+            continue
+    for process_id in target_pids:
+        task = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {process_id}", "/FO", "CSV", "/NH"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        rows = list(csv.reader(io.StringIO(task.stdout)))
+        if not rows or rows[0][0].lower() != "mitmweb.exe":
+            continue
+        subprocess.run(
+            ["taskkill", "/PID", str(process_id), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def roxy_request(
@@ -173,6 +218,7 @@ class CaptureState:
             self.output = ""
             self.dir_id = ""
             self.window_name = window_name
+        cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         output = (self.root / "artifacts-local" / f"{channel}-roxy-mitm-{timestamp}.har").resolve()
         command = [
@@ -261,6 +307,7 @@ class CaptureState:
             self.process = None
             self.status = "idle"
             self.message = "抓包已停止；Roxy 窗口保持打开"
+        cleanup_stale_mitmweb((self.proxy_port, self.web_port))
         return self.snapshot()
 
 

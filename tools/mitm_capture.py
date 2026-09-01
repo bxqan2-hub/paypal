@@ -32,7 +32,10 @@ MITMPROXY_BIN_DIRS = (
     Path(r"C:\Program Files (x86)\mitmproxy\bin"),
 )
 CHANNELS = ("paypal", "gopay", "gcash")
-ROXY_IP_CHECK_IGNORE_HOSTS = r"^ipcheck\.roxybrowser\.(?:com|co):443$"
+TLS_PASSTHROUGH_HOSTS = (
+    r"^(?:ipcheck\.roxybrowser\.(?:com|co)|chatgpt\.com|"
+    r"auth(?:0)?\.openai\.com|login\.openai\.com):443$"
+)
 
 
 def find_mitm_binary(name: str, explicit: str = "") -> Path:
@@ -400,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             "--set",
             "http3=false",
             "--ignore-hosts",
-            ROXY_IP_CHECK_IGNORE_HOSTS,
+            TLS_PASSTHROUGH_HOSTS,
             "--save-stream-file",
             str(flow_file),
             "--quiet",
