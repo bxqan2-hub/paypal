@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import base64
 import json
+import re
 import secrets
 import shutil
 import subprocess
@@ -550,6 +551,19 @@ class BrowserSentinelProvider:
         self.enhanced = bool(enhanced)
         self.session_token = str(session_token or "").strip()
         self.timezone = str(timezone or "Asia/Manila").strip() or "Asia/Manila"
+        # The HTTP side uses a curl_cffi-supported profile by default. Keep the
+        # browser's native UA override disabled unless an operator explicitly
+        # chooses the installed Chrome engine for an A/B run.
+        self.native_browser_ua = bool(
+            self.enhanced
+            and os.getenv("OPLL_MOMO_NATIVE_BROWSER_UA", "0").strip().lower()
+            not in {"0", "false", "off", "no"}
+        )
+        self.browser_headed = bool(
+            self.enhanced
+            and os.getenv("OPLL_MOMO_BROWSER_HEADED", "1").strip().lower()
+            not in {"0", "false", "off", "no"}
+        )
         self.browser_profile = str(
             os.getenv("OPLL_MOMO_BROWSER_PROFILE_DIR", "") if self.enhanced else ""
         ).strip()
@@ -564,6 +578,28 @@ class BrowserSentinelProvider:
             f"Object.defineProperty(navigator, 'languages', {{get: () => [{json.dumps(self.locale)}, 'en']}});",
             encoding="utf-8",
         )
+        if self.enhanced and not self.native_browser_ua:
+            ua_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", self.user_agent)
+            ua_major = ua_match.group(1) if ua_match else "150"
+            ua_data_script = (
+                "try { Object.defineProperty(navigator, 'userAgentData', {"
+                "configurable: true, get: () => ({"
+                "brands: [{brand:'Not?A_Brand',version:'24'},"
+                "{brand:'Chromium',version:'" + ua_major + "'},"
+                "{brand:'Google Chrome',version:'" + ua_major + "'}],"
+                "mobile: false, platform: 'Windows', getHighEntropyValues: async () => ({"
+                "architecture:'x86',bitness:'64',fullVersionList:["
+                "{brand:'Not?A_Brand',version:'24'},"
+                "{brand:'Chromium',version:'" + ua_major + ".0.0.0'},"
+                "{brand:'Google Chrome',version:'" + ua_major + ".0.0.0'}],"
+                "mobile:false,model:'',platform:'Windows',platformVersion:'10.0.0',"
+                "uaFullVersion:'" + ua_major + ".0.0.0',wow64:false})"
+                "}) }); } catch (_) {}"
+            )
+            self.locale_script.write_text(
+                self.locale_script.read_text(encoding="utf-8") + ua_data_script,
+                encoding="utf-8",
+            )
         if self.enhanced:
             self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
             self.sentinel_init_script.write_text(
@@ -650,9 +686,11 @@ class BrowserSentinelProvider:
             self.namespace,
             "--session",
             self.session_name,
-            "--user-agent",
-            self.user_agent,
         ]
+        if not bool(getattr(self, "native_browser_ua", False)):
+            command.extend(["--user-agent", self.user_agent])
+        if bool(getattr(self, "browser_headed", False)):
+            command.append("--headed")
         # agent-browser applies navigation-scoped init scripts only when the
         # flags follow the open URL.  The enhanced Momo path appends them via
         # _enhanced_open_args(); the legacy path keeps its original command.
@@ -887,11 +925,21 @@ class BrowserSentinelProvider:
                 cookies = [item for item in data["cookies"] if isinstance(item, dict)]
             elif isinstance(data, list):
                 cookies = [item for item in data if isinstance(item, dict)]
+        cookie_allowlist = getattr(self.transport_session, "momo_cookie_allowlist", None)
+        if cookie_allowlist:
+            try:
+                cookie_allowlist = {
+                    str(name).strip().lower() for name in cookie_allowlist
+                }
+            except Exception:
+                cookie_allowlist = None
         pairs = []
         for cookie in cookies:
             name = str(cookie.get("name") or "").strip()
             val = str(cookie.get("value") or "")
-            if name:
+            if name and (
+                not cookie_allowlist or name.lower() in cookie_allowlist
+            ):
                 pairs.append(f"{name}={val}")
                 if self.enhanced and name.lower() == "oai-did" and val:
                     self.device_id = val
@@ -905,7 +953,14 @@ class BrowserSentinelProvider:
                     for cookie in cookies:
                         name = str(cookie.get("name") or "").strip()
                         value = str(cookie.get("value") or "")
-                        if not name or not value:
+                        if (
+                            not name
+                            or not value
+                            or (
+                                cookie_allowlist
+                                and name.lower() not in cookie_allowlist
+                            )
+                        ):
                             continue
                         domain = str(cookie.get("domain") or ".chatgpt.com")
                         path = str(cookie.get("path") or "/")
@@ -939,7 +994,7 @@ class BrowserSentinelProvider:
                 + SENTINEL_SDK_VERSION
             )
             injected: Any = {}
-            for _ in range(10):
+            for _ in range(30):
                 injected = self._eval(
                     "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
                 )
@@ -948,7 +1003,7 @@ class BrowserSentinelProvider:
                     or injected.get("proto2") == "function"
                 ):
                     break
-                self._run(["wait", "100"])
+                self._run(["wait", "250"])
             if not isinstance(injected, dict) or not (
                 injected.get("token") == "function"
                 or injected.get("proto2") == "function"
@@ -960,7 +1015,7 @@ class BrowserSentinelProvider:
                 # that finish navigation after the first probe.
                 try:
                     self._run(self._enhanced_open_args(frame_url))
-                    for _ in range(10):
+                    for _ in range(30):
                         injected = self._eval(
                             "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
                         )
@@ -969,7 +1024,28 @@ class BrowserSentinelProvider:
                             or injected.get("proto2") == "function"
                         ):
                             break
-                        self._run(["wait", "100"])
+                        self._run(["wait", "250"])
+                except Exception:
+                    pass
+            if not isinstance(injected, dict) or not (
+                injected.get("token") == "function"
+                or injected.get("proto2") == "function"
+            ):
+                # A slow/proxied document can finish after the frame fallback;
+                # one final real-origin navigation gives the init script a new
+                # navigation scope without creating another browser profile.
+                try:
+                    self._run(self._enhanced_open_args("https://chatgpt.com/"))
+                    for _ in range(20):
+                        injected = self._eval(
+                            "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
+                        )
+                        if isinstance(injected, dict) and (
+                            injected.get("token") == "function"
+                            or injected.get("proto2") == "function"
+                        ):
+                            break
+                        self._run(["wait", "250"])
                 except Exception:
                     pass
             if not isinstance(injected, dict) or not (

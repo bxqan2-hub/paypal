@@ -8,18 +8,38 @@ session.
 """
 
 from dataclasses import replace
+import os
 import threading
 from typing import Any, Callable
 
 from .auth import account_id, normalize_access_token
 from .config import normalize_payment_method
 from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
-from .momo_transport import MomoTransportFactory, close, momo_request_headers
+from .momo_transport import (
+    MOMO_EMPTY_PENDING_UPDATES,
+    MomoTransportFactory,
+    close,
+    momo_request_headers,
+    record_momo_pending_updates,
+)
 
 
 MOMO_TRIAL_COUPON = "plus-1-month-free"
 MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+MOMO_PRICING_PATH = "/backend-api/checkout_pricing_config/configs/VN"
 MOMO_TIMEZONE_OFFSET_MIN = -420
+MOMO_ANON_PREFLIGHT_PATHS = (
+    (
+        "/backend-anon/accounts/check/v4-2023-04-27"
+        f"?timezone_offset_min={MOMO_TIMEZONE_OFFSET_MIN}",
+        "/backend-anon/accounts/check/v4-2023-04-27",
+    ),
+    ("/backend-anon/me", "/backend-anon/me"),
+    (
+        "/backend-anon/checkout_pricing_config/configs/VN",
+        "/backend-anon/checkout_pricing_config/configs/{country_code}",
+    ),
+)
 
 
 class MomoEligibilityError(ProtocolError):
@@ -28,6 +48,7 @@ class MomoEligibilityError(ProtocolError):
     def __init__(self, status_code: int, message: str, *, retryable: bool = True) -> None:
         super().__init__(status_code, message)
         self.retryable = retryable
+        self.probes: list[dict[str, Any]] = []
 
 
 def _proxy_candidates(config: Any) -> tuple[str, ...]:
@@ -46,6 +67,89 @@ def _attempt_config(config: Any, proxy: str) -> Any:
         update_proxy_attempts=(proxy,),
         proxy_pool=(proxy,),
     )
+
+
+def _momo_checkout_preflight(chatgpt: Any) -> dict[str, int]:
+    """Load the stable read-only VN browser prerequisites before Checkout."""
+    paths = (
+        MOMO_PRICING_PATH,
+        "/backend-api/subscriptions/has_app_store_subscription_in_billing_retry",
+        "/backend-api/settings/user",
+        "/backend-api/payments/payment_methods",
+    )
+    statuses: dict[str, int] = {}
+    for path in paths:
+        url = "https://chatgpt.com" + path
+        try:
+            response = chatgpt.request(
+                "GET",
+                url,
+                headers=momo_request_headers(
+                    chatgpt,
+                    "GET",
+                    url,
+                    {
+                        "Accept": "*/*",
+                        "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+                        "x-openai-target-path": path,
+                        "x-openai-target-route": path,
+                    },
+                ),
+                timeout=30,
+            )
+            record_momo_pending_updates(chatgpt, response)
+            statuses[path] = int(getattr(response, "status_code", 0) or 0)
+        except Exception:
+            statuses[path] = 0
+    return statuses
+
+
+def _momo_anonymous_shell_preflight(chatgpt: Any) -> dict[str, int]:
+    """Mirror the read-only anonymous shell requests before AT checks.
+
+    The browser loads these routes without an Authorization header while
+    constructing the VN shell.  They do not authenticate or create Checkout;
+    keeping them in the same session preserves the route/locale warm-up shape.
+    """
+    enabled = os.getenv("OPLL_MOMO_ANON_PREFLIGHT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    if not enabled:
+        return {}
+    statuses: dict[str, int] = {}
+    for relative, target_route in MOMO_ANON_PREFLIGHT_PATHS:
+        url = "https://chatgpt.com" + relative
+        # None values explicitly suppress the session-level AT/API entity and
+        # account headers.  Both requests and curl_cffi omit those entries when
+        # preparing the wire request, while the device/session fingerprint and
+        # cookie jar remain available like the browser shell.
+        headers = {
+            "Accept": "*/*",
+            "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Authorization": None,
+            "Content-Type": None,
+            "Origin": None,
+            "x-oai-is-client-observation": None,
+            "x-oai-is-pending-updates": MOMO_EMPTY_PENDING_UPDATES,
+            "chatgpt-account-id": None,
+            "x-openai-target-path": target_route,
+            "x-openai-target-route": target_route,
+        }
+        key = relative.split("?", 1)[0]
+        try:
+            response = chatgpt.request(
+                "GET", url, headers=headers, timeout=30
+            )
+            statuses[key] = int(getattr(response, "status_code", 0) or 0)
+        except Exception:
+            statuses[key] = 0
+    return statuses
 
 
 def probe_momo_trial_eligibility(
@@ -84,6 +188,9 @@ def probe_momo_trial_eligibility(
             stage_callback(f"eligibility_proxy:{index}")
         attempt = _attempt_config(replace(config, access_token=token), proxy)
         chatgpt = factory.chatgpt(attempt, proxy)
+        # Reproduce the anonymous shell before starting the authenticated
+        # browser/Sentinel bootstrap, matching the canonical HAR ordering.
+        anon_preflight_statuses = _momo_anonymous_shell_preflight(chatgpt)
         # Bootstrap the browser Sentinel context before the authenticated
         # account/coupon probes.  The captured route establishes the same
         # device, cookies and SDK context before eligibility and reuses it
@@ -114,7 +221,7 @@ def probe_momo_trial_eligibility(
         )
         selected_account = account_id(token)
         eligibility_headers = {
-            "Accept": "application/json",
+            "Accept": "*/*",
             "Referer": "https://chatgpt.com/",
             "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
             "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
@@ -124,6 +231,8 @@ def probe_momo_trial_eligibility(
         # added later by momo_request_headers for taxes/confirm only.
         keep_session = False
         try:
+            if stage_callback is not None:
+                stage_callback(f"eligibility_request:{index}")
             response = chatgpt.request(
                 "GET",
                 url,
@@ -135,6 +244,7 @@ def probe_momo_trial_eligibility(
                 ),
                 timeout=30,
             )
+            record_momo_pending_updates(chatgpt, response)
             status = int(getattr(response, "status_code", 0) or 0)
             if status >= 400:
                 probes.append(
@@ -186,6 +296,12 @@ def probe_momo_trial_eligibility(
                 ).strip()
                 state = "eligible" if campaign_id else "not_eligible"
                 eligible = bool(campaign_id)
+            # Match the browser's read-only shell warm-up before the promo
+            # endpoint. These calls seed receipts, oai-sc and account routing
+            # state; they do not create a checkout or mutate payment state.
+            if stage_callback is not None:
+                stage_callback(f"preflight:{index}")
+            preflight_statuses = _momo_checkout_preflight(chatgpt)
             # The browser route validates the same offer again through the
             # promo endpoint before opening Checkout.  Keep this probe in the
             # same authenticated session.  Older deployments may omit or
@@ -198,6 +314,8 @@ def probe_momo_trial_eligibility(
                 f"?coupon={MOMO_TRIAL_COUPON}&is_coupon_from_query_param=true"
             )
             try:
+                if stage_callback is not None:
+                    stage_callback(f"promo_request:{index}")
                 coupon_response = chatgpt.request(
                     "GET",
                     coupon_url,
@@ -206,7 +324,7 @@ def probe_momo_trial_eligibility(
                         "GET",
                         coupon_url,
                         {
-                            "Accept": "application/json",
+                            "Accept": "*/*",
                             "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
                             "x-openai-target-path": "/backend-api/promo_campaign/check_coupon",
                             "x-openai-target-route": "/backend-api/promo_campaign/check_coupon",
@@ -214,6 +332,7 @@ def probe_momo_trial_eligibility(
                     ),
                     timeout=30,
                 )
+                record_momo_pending_updates(chatgpt, coupon_response)
                 coupon_http_status = int(
                     getattr(coupon_response, "status_code", 0) or 0
                 )
@@ -230,6 +349,7 @@ def probe_momo_trial_eligibility(
                 campaign_id = MOMO_TRIAL_COUPON
                 eligible = True
                 state = "eligible"
+            pricing_http_status = preflight_statuses.get(MOMO_PRICING_PATH, 0)
             probes.append(
                 {
                     "attempt": index,
@@ -241,6 +361,9 @@ def probe_momo_trial_eligibility(
                     "campaign_id": campaign_id if eligible else "",
                     "coupon_state": coupon_state,
                     "coupon_http_status": coupon_http_status,
+                    "pricing_http_status": pricing_http_status,
+                    "preflight_http_statuses": preflight_statuses,
+                    "anon_preflight_http_statuses": anon_preflight_statuses,
                 }
             )
             if eligible:
@@ -259,6 +382,9 @@ def probe_momo_trial_eligibility(
                     "proxy": proxy,
                     "campaign_id": campaign_id,
                     "source": "chatgpt_check_coupon",
+                    "pricing_http_status": pricing_http_status,
+                    "preflight_http_statuses": preflight_statuses,
+                    "anon_preflight_http_statuses": anon_preflight_statuses,
                     "probes": probes,
                 }
                 if retain_session:
@@ -284,8 +410,10 @@ def probe_momo_trial_eligibility(
             if not keep_session:
                 close(chatgpt)
 
-    raise MomoEligibilityError(
+    error = MomoEligibilityError(
         409,
         "Momo trial eligibility rejected on all VN proxies",
         retryable=True,
     )
+    error.probes = probes  # type: ignore[attr-defined]
+    raise error

@@ -6,13 +6,14 @@ import json
 import re
 from typing import Any
 
-from .config import billing_for_country, processor_entity_for_country
+from .config import processor_entity_for_country
 from .errors import ProtocolError
-from .momo_transport import momo_request_headers
+from .momo_transport import momo_request_headers, record_momo_pending_updates
 
 MOMO_COUNTRY = "VN"
 MOMO_CURRENCY = "VND"
 SESSION_RE = re.compile(r"(?:oaics_|cs_)[A-Za-z0-9_]+")
+CHECKOUT_DATA_QUERY = "_routes=routes%2Fcheckout.%24entity.%24checkoutId"
 
 
 def _walk(value: Any, keys: tuple[str, ...]) -> Any:
@@ -69,6 +70,7 @@ def request(
         referer=str((kwargs.get("headers") or {}).get("Referer") or ""),
     )
     response = session.request(method, url, timeout=30, **kwargs)
+    record_momo_pending_updates(session, response)
     if int(getattr(response, "status_code", 0) or 0) >= 400:
         status = int(response.status_code)
         raise ProtocolError(status, f"{stage} failed (HTTP {status})")
@@ -128,6 +130,10 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
             "customerSessionClientSecret",
         ),
         "customer": ("customer", "customer_id", "customerId"),
+        "payment_method_types": (
+            "payment_method_types",
+            "paymentMethodTypes",
+        ),
         "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
     }
     for target, keys in aliases.items():
@@ -135,6 +141,153 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
         if value not in (None, "", [], {}):
             checkout[target] = value
     return checkout
+
+
+def hydrate_checkout_route(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
+    """Fetch the Remix checkout route-data document used by the VN browser.
+
+    The ``.data`` response is a route-hydration artifact rather than another
+    Checkout mutation.  It is still part of the browser sequence and can
+    advance runtime cookies/receipt state, so failures are recorded and the
+    main protocol response remains authoritative.
+    """
+    processor = str(checkout.get("processor_entity") or "openai_llc")
+    checkout_id = str(checkout.get("cs_id") or "").strip()
+    if not checkout_id:
+        checkout["momo_checkout_hydration"] = {"status": 0, "body_length": 0}
+        return {}
+    url = (
+        f"https://chatgpt.com/checkout/{processor}/{checkout_id}.data?"
+        f"{CHECKOUT_DATA_QUERY}"
+    )
+    # The canonical route-data request is a same-origin fetch driven by the
+    # checkout page.  Suppress platform API headers while retaining the
+    # session cookie jar and coherent browser identity.
+    headers = {
+        "Accept": "*/*",
+        "Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Authorization": None,
+        "Content-Type": None,
+        "Origin": None,
+        "oai-device-id": None,
+        "oai-session-id": None,
+        "oai-language": None,
+        "oai-client-build-number": None,
+        "oai-client-version": None,
+        "x-oai-is-client-observation": None,
+        "x-oai-is-pending-updates": None,
+        "x-openai-target-path": None,
+        "x-openai-target-route": None,
+    }
+    # Keep explicit ``None`` values in the per-request mapping.  requests and
+    # curl_cffi use them as deletion markers while merging session defaults;
+    # filtering them here would silently re-add Authorization/Origin/JSON
+    # headers to the canonical route-data document.
+    wire_headers = headers
+    try:
+        response = session.request("GET", url, headers=wire_headers, timeout=30)
+    except Exception:
+        checkout["momo_checkout_hydration"] = {"status": 0, "body_length": 0}
+        return {}
+    record_momo_pending_updates(session, response)
+    status = int(getattr(response, "status_code", 0) or 0)
+    attempts = 1
+    # A logged-in browser relies on cookies for this document, while the
+    # AT-only route may require the same Bearer AT on a fresh profile. Retry
+    # only the two auth-style responses with the current runtime header.
+    body_probe = str(getattr(response, "text", "") or "").lower()
+    if status in {401, 403} or "/auth/login" in body_probe:
+        auth = str(
+            getattr(session, "headers", {}).get("Authorization", "")
+            if getattr(session, "headers", None) is not None
+            else ""
+        ).strip()
+        if auth:
+            fallback_headers = dict(wire_headers)
+            fallback_headers["Authorization"] = auth
+            device = str(
+                getattr(session, "openai_device_id", "") or ""
+            ).strip()
+            session_id = str(
+                getattr(session, "openai_session_id", "") or ""
+            ).strip()
+            account = str(
+                getattr(session, "openai_account_id", "") or ""
+            ).strip()
+            if device:
+                fallback_headers["oai-device-id"] = device
+            if session_id:
+                fallback_headers["oai-session-id"] = session_id
+            if account:
+                fallback_headers["chatgpt-account-id"] = account
+            response = session.request(
+                "GET", url, headers=fallback_headers, timeout=30
+            )
+            record_momo_pending_updates(session, response)
+            status = int(getattr(response, "status_code", 0) or 0)
+            attempts = 2
+    body = str(getattr(response, "text", "") or "")
+    # Remix may answer a document request with a successful-looking 202 while
+    # embedding a login redirect.  Keep that distinction explicit: the route
+    # was reached, but it was not hydrated for the current AT context.
+    redirect_to_login = "/auth/login" in body.lower()
+    checkout["momo_checkout_hydration"] = {
+        "status": status,
+        "body_length": len(body),
+        "ok": status < 400 and not redirect_to_login,
+        "redirect_to_login": redirect_to_login,
+        "attempts": attempts,
+    }
+    # Route data is serialized as a compact array in current deployments;
+    # retain only a small structural marker and never copy opaque values.
+    checkout["momo_checkout_hydration_format"] = (
+        "devalue_array" if body.lstrip().startswith("[") else "other"
+    )
+    return {"status": status, "body_length": len(body)}
+
+
+def refresh_momo_customer_balance(
+    session: Any, checkout: dict[str, Any]
+) -> dict[str, Any]:
+    """Run the read-only customer-balance bootstrap seen after hydration."""
+    account = str(getattr(session, "openai_account_id", "") or "").strip()
+    if not account:
+        checkout["momo_customer_balance"] = {"status": 0}
+        return {}
+    path = f"/backend-api/accounts/{account}/customer-balance"
+    url = "https://chatgpt.com" + path
+    headers = momo_request_headers(
+        session,
+        "GET",
+        url,
+        {
+            "Accept": "*/*",
+            "Referer": (
+                f"https://chatgpt.com/checkout/"
+                f"{checkout.get('processor_entity') or 'openai_llc'}/"
+                f"{checkout.get('cs_id') or ''}"
+            ),
+            "chatgpt-account-id": account,
+            "x-openai-target-path": path,
+            "x-openai-target-route": path,
+        },
+    )
+    try:
+        response = session.request("GET", url, headers=headers, timeout=30)
+    except Exception:
+        checkout["momo_customer_balance"] = {"status": 0}
+        return {}
+    record_momo_pending_updates(session, response)
+    status = int(getattr(response, "status_code", 0) or 0)
+    checkout["momo_customer_balance"] = {"status": status, "ok": status < 400}
+    try:
+        payload = json_payload(response, "Momo customer balance")
+    except ProtocolError:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
 
 def taxes(
     session: Any,
@@ -198,6 +351,7 @@ def taxes(
             "customer_session_client_secret",
             "publishable_key",
             "processor_entity",
+            "payment_method_types",
         ):
             value = nested.get(key)
             if value not in (None, "", [], {}):
