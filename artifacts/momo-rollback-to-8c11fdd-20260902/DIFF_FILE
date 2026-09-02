@@ -1,0 +1,3354 @@
+diff --git a/.env.example b/.env.example
+index 59ca09b..66c5044 100644
+--- a/.env.example
++++ b/.env.example
+@@ -20,24 +20,6 @@ OPLL_SENTINEL_HEADLESS=true
+ OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL=chrome
+ OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT=true
+ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
+-# MoMo VN runtime values are channel-isolated; leave proof/session values
+-# blank so each attempt derives them from its current browser context.
+-OPLL_MOMO_SENTINEL_BROWSER=auto
+-OPLL_MOMO_BROWSER_PROFILE=
+-OPLL_MOMO_OAI_LANGUAGE=vi-VN
+-OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER=
+-OPLL_MOMO_OAI_CLIENT_VERSION=
+-OPLL_MOMO_X_OAI_IS_PENDING_UPDATES=
+-OPLL_MOMO_OAI_CHECKOUT_TELEMETRY=
+-OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION=
+-OPLL_MOMO_OPENAI_SENTINEL_TOKEN=
+-OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN=
+-OPLL_MOMO_BROWSER_TIMEZONE=Asia/Saigon
+-OPLL_MOMO_STRIPE_RUNTIME_VERSION=
+-OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN=
+-OPLL_MOMO_ZERO_TRIAL_VALIDATION=true
+-OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK=true
+-OPLL_SESSION_TOKEN=
+ # MK GCash runtime: prewarm its shared Playwright Chromium and bound only the
+ # dead-proxy TCP connect phase. The upstream 30-second request timeout remains.
+ MK_GCASH_PREWARM=true
+diff --git a/docs/MOMO_HAR_STATE_MACHINE.md b/docs/MOMO_HAR_STATE_MACHINE.md
+index 37ba29a..2b9a7e7 100644
+--- a/docs/MOMO_HAR_STATE_MACHINE.md
++++ b/docs/MOMO_HAR_STATE_MACHINE.md
+@@ -1,6 +1,6 @@
+ # Momo HAR 状态机（脱敏）
+ 
+-来源：本机 `artifacts-local/momo-roxy-mitm-20260902-023932.har`，仅离线读取，未重放请求。原始 SHA-256 记录在验证制品中。
++来源：本机 `payment.momo.vn.har`，仅离线读取，未重放请求。原始 SHA-256 记录在验证制品中。
+ 
+ ## 观察到的链路
+ 
+@@ -8,15 +8,15 @@
+ 2. `POST /backend-api/payments/checkout` 返回 `oaics_*`，界面类型为 custom，账单国家 `VN`、币种 `VND`。
+ 3. 浏览器连续三次 `POST /backend-api/payments/checkout/taxes` 刷新税费和可用支付方式；HAR 没有 `checkout/update`。
+ 4. Stripe 使用 Elements 会话，然后 `POST /v1/confirmation_tokens`，表单字段明确为 `payment_method_data[type]=momo`，Stripe 版本为 `2025-03-31.basil`。
+-5. ChatGPT `POST /backend-api/payments/checkout/confirm` 后，Stripe `payment_intents/{pi_*}` 或 `setup_intents/{seti_*}/confirm` 返回外部跳转。
++5. ChatGPT `POST /backend-api/payments/checkout/confirm` 后，Stripe `payment_intents/{pi_*}/confirm` 返回外部跳转。
+ 6. `pm-redirects.stripe.com/authorize/...` 返回 302，最终落到 `https://payment.momo.vn/v2/gateway/pay?t=<opaque>&s=<opaque>`。
+-7. Momo 页面通过无请求体的 `POST https://payment.momo.vn/v2/gateway/querySession` 轮询（会话绑定在网关页面 Cookie）；旧适配器若不支持空请求体才使用 JSON `sessionId` 回退。HAR 观察到多次 `status_code=1000`、`redirect=false`，最终以 `status_code=9000`、`redirect=true` 和零金额回调结束。
++7. Momo 页面通过 `POST https://payment.momo.vn/v2/gateway/querySession` 携带 JSON `sessionId` 轮询；HAR 观察到 `status_code=1000`、`redirect=false` 的待确认状态。
+ 
+ ## 固定契约
+ 
+ - 渠道名称 `momo`，适配器 `payment_link_extractor.momo_channel`，结果字段 `momo_url`。
+ - Momo 只接受 `https://payment.momo.vn/v2/gateway/pay`，且必须同时存在 `t`、`s` 查询参数。
+-- 一个完整尝试固定同一个代理，并让 ChatGPT、Stripe、Momo 各自的 Cookie 会话只服务本次尝试；Checkout 提交后由任务层禁止在同一尝试创建第二单。
++- 一个完整尝试固定同一个代理、ChatGPT/Stripe/Momo Cookie 会话；Checkout 提交后由任务层禁止在同一尝试创建第二单。
+ - AT、Cookie、Sentinel、代理凭据和订单标识不写入本文档、日志或 Git。
+ 
+ ## 运行时适配
+@@ -25,6 +25,6 @@
+ - Checkout 与 confirm 分别使用 `chatgpt_checkout`、`checkout_session_approval` 的短时 Sentinel proof。proof、deployment attestation 和 Cookie 只能由运行时浏览器上下文或环境注入，仓库不保存抓包值。
+ - `hk.1024proxy.io:3000:user:password` 导出格式在 Momo 适配器中解析为认证 SOCKS5H；同一代理在 ChatGPT、Stripe 和 Momo 会话中保持固定。
+ - 生成 `momo_url` 后先打开 `/v2/gateway/pay`，从实时页面/响应 Cookie 读取 CSRF（或使用运行时环境值），再按 HAR 的 `Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；不会重放 HAR 中的令牌。
+-- 提链第一步先在同一 VN 代理/设备会话中读取账号 `eligible_promo_campaigns.plus.id`，再请求 `promo_campaign/check_coupon` 校验活动回显、`state=eligible` 和未兑换状态；任一代理不满足就切换下一条，确认资格后才创建 Checkout。
++- 提链第一步先用当前 VN 代理请求 `/backend-api/accounts/check/v4-2023-04-27`，读取账号 `eligible_promo_campaigns.plus`；未返回活动标识时切换代理继续检查，确认资格后才创建 Checkout。
+ - `momo_zero_trial_validation` 只控制金额闸门：开启时 taxes 后要求 VND payable minor units 为 0，关闭时跳过该金额判断；资格预检仍保持在 Checkout 之前。
+ - 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。
+diff --git a/payment_link_extractor/auth.py b/payment_link_extractor/auth.py
+index 7d1f564..d42cede 100644
+--- a/payment_link_extractor/auth.py
++++ b/payment_link_extractor/auth.py
+@@ -166,21 +166,6 @@ def account_email(access_token: str) -> str:
+     return ""
+ 
+ 
+-def account_name(access_token: str) -> str:
+-    """Extract the browser account display name for billing snapshots."""
+-    payload = decode_jwt_payload(access_token)
+-    profile = payload.get("https://api.openai.com/profile")
+-    if isinstance(profile, dict):
+-        value = str(profile.get("name") or "").strip()
+-        if value:
+-            return value
+-    for key in ("name", "given_name"):
+-        value = str(payload.get(key) or "").strip()
+-        if value:
+-            return value
+-    return ""
+-
+-
+ def account_id(access_token: str) -> str:
+     """Extract the ChatGPT account UUID used by the browser API headers."""
+     payload = decode_jwt_payload(access_token)
+diff --git a/payment_link_extractor/momo_checkout.py b/payment_link_extractor/momo_checkout.py
+index b39a69c..25e9770 100644
+--- a/payment_link_extractor/momo_checkout.py
++++ b/payment_link_extractor/momo_checkout.py
+@@ -4,9 +4,7 @@ from __future__ import annotations
+ 
+ import json
+ import re
+-import time
+ from typing import Any
+-from urllib.parse import quote
+ 
+ from .config import billing_for_country, processor_entity_for_country
+ from .errors import ProtocolError
+@@ -77,48 +75,14 @@ def request(
+     return json_payload(response, stage)
+ 
+ 
+-def create_checkout(
+-    session: Any,
+-    *,
+-    account_email: str = "",
+-    trial_eligible: bool = False,
+-    campaign_id: str = "",
+-) -> dict[str, Any]:
++def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
+     path = "/backend-api/payments/checkout"
+     body: dict[str, Any] = {
+         "entry_point": "all_plans_pricing_modal",
+         "plan_name": "chatgptplusplan",
+         "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
++        "checkout_ui_mode": "custom",
+     }
+-    referer = "https://chatgpt.com/"
+-    # The complete zero-due MoMo HAR has this campaign object on the initial
+-    # Checkout request (body length 245).  It does not use checkout/update.
+-    if trial_eligible:
+-        campaign = str(campaign_id or "plus-1-month-free").strip()
+-        body["promo_campaign"] = {
+-            "promo_campaign_id": campaign,
+-            "is_coupon_from_query_param": False,
+-        }
+-        referer = (
+-            "https://chatgpt.com/?promo_campaign=" + quote(campaign, safe="")
+-        )
+-        # The browser establishes the promo landing-page context before the
+-        # POST. Keep this warm-up best-effort so a slow proxy does not hide the
+-        # Checkout response that remains the source of truth.
+-        if not bool(getattr(session, "momo_promo_context_ready", False)):
+-            try:
+-                session.request(
+-                    "GET",
+-                    referer,
+-                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
+-                    timeout=30,
+-                )
+-            except Exception:
+-                pass
+-    body["checkout_ui_mode"] = "custom"
+-    flow_started_at = float(
+-        getattr(session, "momo_flow_started_at", 0.0) or time.perf_counter()
+-    )
+     payload = request(
+         session,
+         "POST",
+@@ -126,11 +90,7 @@ def create_checkout(
+         "Momo checkout",
+         json=body,
+         sentinel_flow="chatgpt_checkout",
+-        headers={
+-            "Referer": referer,
+-            "x-openai-target-path": path,
+-            "x-openai-target-route": path,
+-        },
++        headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
+     )
+     sid = session_id(payload)
+     if not sid.startswith("oaics_"):
+@@ -146,13 +106,8 @@ def create_checkout(
+         ),
+         "billing_country": MOMO_COUNTRY,
+         "currency": MOMO_CURRENCY,
+-        "requested_currency": MOMO_CURRENCY,
+         "account_email": account_email,
+-        "flow_started_at": flow_started_at,
+     }
+-    server_currency = _walk(payload, ("currency",))
+-    if isinstance(server_currency, str) and server_currency.strip():
+-        checkout["currency"] = server_currency.strip().upper()
+     aliases = {
+         "checkout_session": ("checkout_session", "checkoutSession"),
+         "checkout_state": ("checkout_state", "checkoutState"),
+@@ -167,149 +122,16 @@ def create_checkout(
+         ),
+         "customer": ("customer", "customer_id", "customerId"),
+         "confirm_return_url": ("confirm_return_url", "confirmReturnUrl"),
+-        "payment_method_types": ("payment_method_types", "paymentMethodTypes"),
+-        "selected_payment_method_type": (
+-            "selected_payment_method_type",
+-            "selectedPaymentMethodType",
+-        ),
+     }
+     for target, keys in aliases.items():
+         value = _walk(payload, keys)
+         if value not in (None, "", [], {}):
+             checkout[target] = value
+-    server_promo_campaign = _walk(payload, ("promo_campaign",))
+-    checkout["promo_campaign_response"] = (
+-        server_promo_campaign if isinstance(server_promo_campaign, dict) else {}
+-    )
+-    checkout["promo_campaign"] = server_promo_campaign or body.get(
+-        "promo_campaign", {}
+-    )
+     return checkout
+ 
+-
+-def checkout_amount_minor(checkout: dict[str, Any]) -> int | None:
+-    def coerce(value: Any) -> int | None:
+-        if value in (None, ""):
+-            return None
+-        try:
+-            return int(value)
+-        except (TypeError, ValueError):
+-            try:
+-                number = float(str(value).strip())
+-            except (TypeError, ValueError):
+-                return None
+-            return int(number) if number.is_integer() else None
+-
+-    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+-    total = state.get("total") if isinstance(state.get("total"), dict) else {}
+-    due = total.get("total") if isinstance(total.get("total"), dict) else {}
+-    nested = coerce(due.get("minorUnitsAmount"))
+-    if nested is not None:
+-        return nested
+-    parsed_total = coerce(checkout.get("amount_total"))
+-    if parsed_total is not None:
+-        return parsed_total
+-    return coerce(checkout.get("payable_amount_minor"))
+-
+-
+-def momo_checkout_method_state(checkout: dict[str, Any]) -> bool | None:
+-    """Return whether Checkout advertises MoMo, or ``None`` if absent."""
+-    values: list[Any] = []
+-    for key in (
+-        "custom_payment_methods",
+-        "payment_method_types",
+-        "selected_payment_method_type",
+-    ):
+-        if key in checkout:
+-            values.append(checkout.get(key))
+-    state = checkout.get("checkout_state")
+-    if isinstance(state, dict):
+-        for key in ("customPaymentMethods", "custom_payment_methods", "paymentMethodTypes"):
+-            if key in state:
+-                values.append(state.get(key))
+-    if not values:
+-        return None
+-
+-    found_any = False
+-    found_momo = False
+-
+-    def visit(value: Any) -> None:
+-        nonlocal found_any, found_momo
+-        if isinstance(value, str):
+-            text = value.strip().lower()
+-            if text:
+-                found_any = True
+-                if "momo" in text:
+-                    found_momo = True
+-        elif isinstance(value, dict):
+-            for key, child in value.items():
+-                if "momo" in str(key).lower():
+-                    found_any = True
+-                    found_momo = True
+-                visit(child)
+-        elif isinstance(value, (list, tuple)):
+-            for child in value:
+-                visit(child)
+-
+-    for value in values:
+-        visit(value)
+-    return found_momo if found_any else None
+-
+-
+-def validate_zero_trial_checkout(checkout: dict[str, Any]) -> None:
+-    """Require the initial Checkout response to carry the 100% discount."""
+-    campaign_response = checkout.get("promo_campaign_response")
+-    campaign = campaign_response if isinstance(campaign_response, dict) else {}
+-    campaign_id = campaign.get("promo_campaign_id") if isinstance(campaign, dict) else ""
+-    amount = checkout_amount_minor(checkout)
+-    currency = str(checkout.get("currency") or "").strip().upper()
+-    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+-    total = state.get("total") if isinstance(state.get("total"), dict) else {}
+-    subtotal = total.get("subtotal") if isinstance(total.get("subtotal"), dict) else {}
+-    discount = total.get("discount") if isinstance(total.get("discount"), dict) else {}
+-    subtotal_minor = subtotal.get("minorUnitsAmount")
+-    discount_minor = discount.get("minorUnitsAmount")
+-    if campaign_id != "plus-1-month-free":
+-        raise ProtocolError(409, "Momo Checkout promo campaign was not echoed")
+-    if not isinstance(campaign, dict) or campaign.get("is_coupon_from_query_param") is not False:
+-        raise ProtocolError(409, "Momo Checkout promo query flag was not false")
+-    if currency != MOMO_CURRENCY:
+-        raise ProtocolError(409, f"Momo Checkout currency mismatch: {currency}")
+-    if amount is None or amount != 0:
+-        raise ProtocolError(409, f"Momo Checkout zero amount validation failed: {amount}")
+-    top_amount = checkout.get("amount_total")
+-    if top_amount not in (None, ""):
+-        try:
+-            if float(str(top_amount)) != 0:
+-                raise ProtocolError(
+-                    409, f"Momo Checkout top-level amount is non-zero: {top_amount}"
+-                )
+-        except ValueError as exc:
+-            raise ProtocolError(409, "Momo Checkout top-level amount is invalid") from exc
+-    if subtotal_minor in (None, "") or discount_minor in (None, ""):
+-        raise ProtocolError(409, "Momo Checkout discount fields are missing")
+-    try:
+-        if int(discount_minor) != int(subtotal_minor):
+-            raise ProtocolError(409, "Momo Checkout discount is not 100 percent")
+-    except (TypeError, ValueError) as exc:
+-        raise ProtocolError(409, "Momo Checkout discount fields are invalid") from exc
+-
+-def taxes(
+-    session: Any,
+-    checkout: dict[str, Any],
+-    billing: dict[str, str],
+-    *,
+-    phase: int = 2,
+-) -> dict[str, Any]:
++def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
+     path = "/backend-api/payments/checkout/taxes"
+     processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
+-    address = {
+-        "line1": billing["line1"],
+-        "city": billing["city"],
+-        "country": MOMO_COUNTRY,
+-        "postal_code": billing["postal_code"] if int(phase) >= 2 else "",
+-        "state": billing["state"] if int(phase) >= 1 else "",
+-    }
+     payload = request(
+         session,
+         "POST",
+@@ -322,42 +144,10 @@ def taxes(
+             "billing_name": billing["name"],
+             "currency": MOMO_CURRENCY.lower(),
+             "processor_entity": processor,
+-            "billing_address": address,
++            "tax_id": None,
++            "billing_address": {"line1": billing["line1"], "line2": "", "city": billing["city"], "country": MOMO_COUNTRY, "postal_code": billing["postal_code"], "state": billing["state"]},
+         },
+         headers={"Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}", "x-openai-target-path": path, "x-openai-target-route": path},
+     )
+-    checkout.update(
+-        {
+-            k: v
+-            for k, v in payload.items()
+-            if k
+-            in {
+-                "checkout_session",
+-                "checkout_state",
+-                "custom_payment_methods",
+-                "confirm_return_url",
+-                "amount_total",
+-                "total_details",
+-                "payment_method_types",
+-            }
+-        }
+-    )
+-    nested = payload.get("checkout_session")
+-    if isinstance(nested, dict):
+-        # Tax responses wrap the authoritative amount and state one level
+-        # deeper than the initial Checkout response.
+-        for key in (
+-            "checkout_state",
+-            "amount_total",
+-            "total_details",
+-            "payment_method_types",
+-            "custom_payment_methods",
+-            "confirm_return_url",
+-            "processor_entity",
+-            "publishable_key",
+-            "customer_session_client_secret",
+-            "customer",
+-        ):
+-            if nested.get(key) not in (None, "", [], {}):
+-                checkout[key] = nested[key]
++    checkout.update({k: v for k, v in payload.items() if k in {"checkout_session", "checkout_state", "custom_payment_methods", "confirm_return_url"}})
+     return payload
+diff --git a/payment_link_extractor/momo_core.py b/payment_link_extractor/momo_core.py
+index cd5514e..78e3da3 100644
+--- a/payment_link_extractor/momo_core.py
++++ b/payment_link_extractor/momo_core.py
+@@ -9,77 +9,46 @@ from dataclasses import replace
+ from typing import Any, Callable
+ from urllib.parse import parse_qs, urlparse
+ 
+-from .auth import account_email, account_name
++from .auth import account_email
+ from .config import billing_for_country, currency_minor_scale
+ from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
+ from .models import ExtractionConfig, PaymentLinkResult
+-from .momo_checkout import (
+-    MOMO_COUNTRY,
+-    MOMO_CURRENCY,
+-    checkout_amount_minor,
+-    create_checkout,
+-    momo_checkout_method_state,
+-    taxes,
+-    validate_zero_trial_checkout,
+-)
++from .momo_checkout import MOMO_COUNTRY, MOMO_CURRENCY, create_checkout, taxes
+ from .momo_eligibility import probe_momo_trial_eligibility
+-from .momo_stripe import (
+-    checkout_confirm,
+-    confirmation_token,
+-    elements_session,
+-    intent_confirm,
+-    redirect_url,
+-    resolve_momo_redirect,
+-    synchronize_momo_stripe_ids,
+-    validate_momo_url,
+-)
++from .momo_stripe import checkout_confirm, confirmation_token, elements_session, intent_confirm, redirect_url, resolve_momo_redirect, validate_momo_url
+ from .momo_transport import (
+     MomoTransportFactory,
+     capture_momo_csrf_token,
+     close,
+     momo_gateway_headers,
+-    momo_gateway_navigation_headers,
+ )
+ 
+ MOMO_RESULT_FIELD = "momo_url"
+ 
+ 
+ def momo_checkout_payable_amount(checkout: dict[str, Any]) -> int | None:
+-    return checkout_amount_minor(checkout)
++    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
++    total = state.get("total") if isinstance(state.get("total"), dict) else {}
++    due = total.get("total") if isinstance(total.get("total"), dict) else {}
++    raw = due.get("minorUnitsAmount")
++    if raw in (None, ""):
++        raw = checkout.get("payable_amount_minor")
++    try:
++        return None if raw in (None, "") else int(raw)
++    except (TypeError, ValueError):
++        return None
+ 
+ 
+ def validate_momo_amount(amount_due_minor: int | None) -> None:
+     if amount_due_minor is None:
+         raise ProtocolError(409, "Momo expected zero amount, got missing")
+-    try:
+-        value = int(amount_due_minor)
+-    except (TypeError, ValueError):
+-        try:
+-            parsed = float(str(amount_due_minor).strip())
+-        except (TypeError, ValueError):
+-            raise ProtocolError(409, "Momo expected zero amount, got invalid")
+-        value = int(parsed) if parsed.is_integer() else -1
+-    if value != 0:
++    if int(amount_due_minor) != 0:
+         raise ProtocolError(409, f"Momo expected zero amount, got {amount_due_minor}")
+ 
+ 
+ def pin_momo_attempt_proxy(config: ExtractionConfig) -> ExtractionConfig:
+     proxy = str(config.checkout_proxy or "").strip()
+-    pool = tuple(
+-        dict.fromkeys(
+-            str(value).strip()
+-            for value in (config.proxy_pool or (proxy,))
+-            if str(value).strip()
+-        )
+-    )
+-    return replace(
+-        config,
+-        checkout_proxy=proxy,
+-        update_proxy=proxy,
+-        checkout_proxy_attempts=(proxy,),
+-        update_proxy_attempts=(proxy,),
+-        proxy_pool=pool,
+-    )
++    return replace(config, checkout_proxy=proxy, update_proxy=proxy, checkout_proxy_attempts=(proxy,), update_proxy_attempts=(proxy,), proxy_pool=(proxy,))
+ 
+ 
+ def _gateway_session_id(url: str) -> str:
+@@ -91,80 +60,39 @@ def _gateway_session_id(url: str) -> str:
+         return ""
+ 
+ 
+-def query_gateway(
+-    session: Any,
+-    url: str,
+-    *,
+-    polls: int = 17,
+-    require_redirect: bool = False,
+-    poll_interval: float = 4.0,
+-    expected_amount: int | None = None,
+-    cancel_event: Any = None,
+-    deadline_seconds: float = 120.0,
+-) -> dict[str, Any]:
++def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
+     session_id = _gateway_session_id(url)
+     if not session_id:
+         raise ProtocolError(502, "Momo gateway URL has invalid session token")
+     # The browser first opens the gateway page.  That navigation establishes
+     # the page origin and may set the CSRF cookie used by querySession.
+-    started = time.monotonic()
+     opener = getattr(session, "request", None)
+     if callable(opener):
+         try:
+-            if cancel_event is not None and cancel_event.is_set():
+-                raise ExtractionCancelled("task cancellation requested")
+             page = opener(
+                 "GET",
+                 url,
+-                headers=momo_gateway_navigation_headers(session, url),
+-                timeout=max(1, min(30, int(max(1, deadline_seconds)))),
++                headers=momo_gateway_headers(session, url),
++                timeout=30,
+             )
+             if int(getattr(page, "status_code", 0) or 0) >= 400:
+                 raise ProtocolError(
+                     int(page.status_code), "Momo gateway page failed"
+                 )
+             capture_momo_csrf_token(session, page)
+-        except (ProtocolError, ExtractionCancelled):
++        except ProtocolError:
+             raise
+         except Exception as exc:
+             raise ProtocolError(502, "Momo gateway page request failed") from exc
+     last: dict[str, Any] = {}
+     for index in range(max(1, polls)):
+-        if cancel_event is not None and cancel_event.is_set():
+-            raise ExtractionCancelled("task cancellation requested")
+-        remaining = float(deadline_seconds) - (time.monotonic() - started)
+-        if remaining <= 0:
+-            raise ProtocolError(504, "Momo gateway polling deadline exceeded")
+-        query_headers = momo_gateway_headers(session, url)
+-        # The browser sends an empty POST (the session id is bound to the
+-        # gateway cookie/page); retain a JSON fallback for older deployments.
+-        query_headers["Accept"] = "*/*"
+-        query_headers.pop("Content-Type", None)
+-        try:
+-            response = session.request(
+-                "POST",
+-                "https://payment.momo.vn/v2/gateway/querySession",
+-                data="",
+-                headers=query_headers,
+-                timeout=max(1, min(30, int(remaining))),
+-            )
+-        except TypeError:
+-            # Small test/legacy adapters may expose only a JSON keyword.
+-            response = session.request(
+-                "POST",
+-                "https://payment.momo.vn/v2/gateway/querySession",
+-                json={"sessionId": session_id},
+-                headers=momo_gateway_headers(session, url),
+-                timeout=max(1, min(30, int(remaining))),
+-            )
+-        if int(getattr(response, "status_code", 0) or 0) >= 400:
+-            response = session.request(
+-                "POST",
+-                "https://payment.momo.vn/v2/gateway/querySession",
+-                json={"sessionId": session_id},
+-                headers=momo_gateway_headers(session, url),
+-                timeout=30,
+-            )
++        response = session.request(
++            "POST",
++            "https://payment.momo.vn/v2/gateway/querySession",
++            json={"sessionId": session_id},
++            headers=momo_gateway_headers(session, url),
++            timeout=30,
++        )
+         if int(getattr(response, "status_code", 0) or 0) >= 400:
+             raise ProtocolError(int(response.status_code), "Momo querySession failed")
+         try:
+@@ -174,46 +102,8 @@ def query_gateway(
+         last = value if isinstance(value, dict) else {}
+         if bool(last.get("redirect")):
+             break
+-        status_text = str(last.get("status_code") or "")
+-        if status_text and status_text not in {"1000", "200", "PENDING"}:
+-            break
+         if index + 1 < polls:
+-            sleep_for = min(max(0.0, float(poll_interval)), max(0.0, remaining))
+-            if cancel_event is not None:
+-                if cancel_event.wait(sleep_for):
+-                    raise ExtractionCancelled("task cancellation requested")
+-            else:
+-                time.sleep(sleep_for)
+-    if require_redirect and not bool(last.get("redirect")):
+-        status_code = str(last.get("status_code") or "")
+-        raise ProtocolError(
+-            409,
+-            "Momo gateway session did not reach redirect"
+-            + (f" (status_code={status_code})" if status_code else ""),
+-        )
+-    if require_redirect and str(last.get("status_code") or "") != "9000":
+-        raise ProtocolError(
+-            409,
+-            "Momo gateway session returned unexpected status"
+-            f" (status_code={last.get('status_code') or '-'})",
+-        )
+-    if require_redirect:
+-        return_url = str(last.get("return_url") or "").strip()
+-        if not return_url:
+-            raise ProtocolError(409, "Momo gateway redirect URL is missing")
+-        return_parts = urlparse(return_url)
+-        if return_parts.hostname != "payment.momo.vn" or return_parts.path != "/v2/gateway/redirect":
+-            raise ProtocolError(409, "Momo gateway returned an invalid redirect URL")
+-        query = parse_qs(return_parts.query)
+-        amount_values = query.get("amount") or query.get("amount_total")
+-        if expected_amount is not None:
+-            if not amount_values:
+-                raise ProtocolError(409, "Momo gateway redirect amount is missing")
+-            try:
+-                if any(float(str(value)) != float(expected_amount) for value in amount_values):
+-                    raise ProtocolError(409, "Momo gateway returned an unexpected amount")
+-            except ValueError as exc:
+-                raise ProtocolError(409, "Momo gateway returned an invalid amount") from exc
++            time.sleep(0.25)
+     return last
+ 
+ 
+@@ -222,12 +112,7 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+         raise ConfigurationError("Momo core requires payment_method=momo")
+     if str(config.country or "").upper() != MOMO_COUNTRY:
+         raise ConfigurationError("Momo core requires country=VN")
+-    factory = transport_factory or MomoTransportFactory(
+-        str(getattr(config, "momo_fingerprint", "") or "")
+-    )
+-    trial_eligible = False
+-    trial_campaign = ""
+-    chatgpt = None
++    factory = transport_factory or MomoTransportFactory()
+     if bool(getattr(config, "momo_trial_eligibility_check", True)):
+         if stage_callback:
+             stage_callback("eligibility_check")
+@@ -237,9 +122,6 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+             cancel_event=cancel_event,
+             stage_callback=stage_callback,
+         )
+-        trial_eligible = bool(eligibility.get("eligible"))
+-        trial_campaign = str(eligibility.get("campaign_id") or "").strip()
+-        chatgpt = eligibility.pop("_chatgpt_session", None)
+         selected_proxy = str(eligibility.get("proxy") or config.checkout_proxy).strip()
+         config = replace(
+             config,
+@@ -257,16 +139,10 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+             stage_callback(stage)
+     billing_profile = billing_for_country(MOMO_COUNTRY)
+     email = account_email(config.access_token)
+-    name = account_name(config.access_token)
+-    if email or name:
+-        billing_profile = replace(
+-            billing_profile,
+-            email=email or billing_profile.email,
+-            name=name or billing_profile.name,
+-        )
++    if email:
++        billing_profile = replace(billing_profile, email=email)
+     billing = billing_profile.to_dict()
+-    if chatgpt is None:
+-        chatgpt = factory.chatgpt(config, config.checkout_proxy)
++    chatgpt = factory.chatgpt(config, config.checkout_proxy)
+     stripe = None
+     momo = None
+     try:
+@@ -274,37 +150,21 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+         checkout = create_checkout(
+             chatgpt,
+             account_email=email,
+-            trial_eligible=trial_eligible,
+-            campaign_id=trial_campaign,
+         )
+         checkpoint("checkout_committed")
+         checkpoint("checkout_kind:openai_custom_checkout")
+-        method_state = momo_checkout_method_state(checkout)
+-        if method_state is False:
+-            raise ProtocolError(409, "Momo payment method is not available in Checkout")
+-        if method_state is True:
+-            checkpoint("momo_method_confirmed")
+-        if config.momo_zero_trial_validation:
+-            validate_zero_trial_checkout(checkout)
+-        # The successful zero-due HAR initializes Stripe Elements from the
+-        # Checkout's initial total before taxes are refreshed. This binds the
+-        # deferred intent to the zero amount instead of letting a later tax
+-        # request create a fresh paid intent.
+-        stripe = factory.stripe(config)
+-        checkpoint("stripe_init")
+-        synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
+-        elements_session(stripe, checkout)
+-        checkpoint("stripe_elements")
+-        for tax_phase in range(3):
++        for _ in range(3):
+             checkpoint("taxes")
+-            taxes(chatgpt, checkout, billing, phase=tax_phase)
+-            synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
++            taxes(chatgpt, checkout, billing)
+         amount_minor = momo_checkout_payable_amount(checkout)
+         if config.momo_zero_trial_validation:
+             checkpoint("zero_amount_validation")
+-            validate_zero_trial_checkout(checkout)
+             validate_momo_amount(amount_minor)
+             checkpoint("zero_amount_confirmed")
++        stripe = factory.stripe(config)
++        checkpoint("stripe_init")
++        elements_session(stripe, checkout)
++        checkpoint("stripe_elements")
+         token = confirmation_token(stripe, checkout, billing, config.stripe_hcaptcha_token)
+         checkpoint("payment_confirmation")
+         confirmed = checkout_confirm(chatgpt, checkout, token)
+@@ -316,20 +176,12 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
+             raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
+         checkpoint("redirect_resolution")
+         momo = factory.momo(config) if callable(getattr(factory, "momo", None)) else stripe
+-        gateway_state = query_gateway(
+-            momo,
+-            raw,
+-            polls=17,
+-            require_redirect=True,
+-            poll_interval=4.0,
+-            expected_amount=0 if config.momo_zero_trial_validation else None,
+-            cancel_event=cancel_event,
+-        )
++        query_gateway(momo, raw, polls=1)
+         checkout_state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+         total = checkout_state.get("total") if isinstance(checkout_state.get("total"), dict) else {}
+         due = total.get("total") if isinstance(total.get("total"), dict) else {}
+         minor = int(due.get("minorUnitsAmount") if due.get("minorUnitsAmount") not in (None, "") else (checkout.get("payable_amount_minor") or 0))
+-        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_gateway_status_code": str(gateway_state.get("status_code") or ""), "momo_checkout_momo_available": method_state, "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
++        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
+     finally:
+         close(momo)
+         if momo is stripe:
+diff --git a/payment_link_extractor/momo_eligibility.py b/payment_link_extractor/momo_eligibility.py
+index 75a418d..2397032 100644
+--- a/payment_link_extractor/momo_eligibility.py
++++ b/payment_link_extractor/momo_eligibility.py
+@@ -9,9 +9,7 @@ session.
+ 
+ from dataclasses import replace
+ import threading
+-import time
+ from typing import Any, Callable
+-from urllib.parse import quote
+ 
+ from .auth import account_id, normalize_access_token
+ from .config import normalize_payment_method
+@@ -20,68 +18,7 @@ from .momo_transport import MomoTransportFactory, close, momo_request_headers
+ 
+ 
+ MOMO_TRIAL_COUPON = "plus-1-month-free"
+-MOMO_ELIGIBILITY_PATH = "/backend-api/promo_campaign/check_coupon"
+-
+-
+-def _catalog_campaign_match(
+-    payload: Any, campaign_id: str, *, account_key: str = ""
+-) -> tuple[bool, bool]:
+-    """Inspect the account catalog without trusting display-only flags.
+-
+-    The account endpoint returns a mapping keyed by account UUID (and often a
+-    ``default`` entry).  ``eligible_promo_campaigns.plus.id`` is the upstream
+-    project's eligibility hint; the coupon endpoint remains the final check.
+-    The first return value says that a catalog was present, the second says
+-    that at least one catalog entry named the requested campaign.
+-    """
+-    present = False
+-    matched = False
+-
+-    def visit(value: Any) -> None:
+-        nonlocal present, matched
+-        if isinstance(value, dict):
+-            campaigns = value.get("eligible_promo_campaigns")
+-            if isinstance(campaigns, dict) and "plus" in campaigns:
+-                present = True
+-                plus = campaigns.get("plus")
+-                candidates: list[Any] = []
+-                if isinstance(plus, dict):
+-                    candidates.extend(
+-                        plus.get(key)
+-                        for key in ("id", "promo_campaign_id", "campaign_id", "code")
+-                    )
+-                elif isinstance(plus, list):
+-                    candidates.extend(plus)
+-                for candidate in candidates:
+-                    if isinstance(candidate, dict):
+-                        candidate = next(
+-                            (
+-                                candidate.get(key)
+-                                for key in ("id", "promo_campaign_id", "campaign_id", "code")
+-                                if candidate.get(key)
+-                            ),
+-                            "",
+-                        )
+-                    if str(candidate or "").strip() == campaign_id:
+-                        matched = True
+-            for child in value.values():
+-                visit(child)
+-        elif isinstance(value, list):
+-            for child in value:
+-                visit(child)
+-
+-    target = payload
+-    if isinstance(payload, dict) and isinstance(payload.get("accounts"), dict):
+-        accounts = payload["accounts"]
+-        # Prefer the account selected by the AT; the API also supplies a
+-        # ``default`` view for single-account sessions.
+-        target = accounts.get(account_key)
+-        if target is None and not account_key:
+-            target = accounts.get("default")
+-        if target is None:
+-            return True, False
+-    visit(target)
+-    return present, matched
++MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+ 
+ 
+ class MomoEligibilityError(ProtocolError):
+@@ -90,7 +27,6 @@ class MomoEligibilityError(ProtocolError):
+     def __init__(self, status_code: int, message: str, *, retryable: bool = True) -> None:
+         super().__init__(status_code, message)
+         self.retryable = retryable
+-        self.probes: tuple[dict[str, Any], ...] = ()
+ 
+ 
+ def _proxy_candidates(config: Any) -> tuple[str, ...]:
+@@ -130,9 +66,7 @@ def probe_momo_trial_eligibility(
+     if not proxies:
+         raise ConfigurationError("VN checkout proxy is required for Momo eligibility")
+ 
+-    factory = transport_factory or MomoTransportFactory(
+-        str(getattr(config, "momo_fingerprint", "") or "")
+-    )
++    factory = transport_factory or MomoTransportFactory()
+     probes: list[dict[str, Any]] = []
+     for index, proxy in enumerate(proxies, start=1):
+         if cancel_event is not None and cancel_event.is_set():
+@@ -141,156 +75,19 @@ def probe_momo_trial_eligibility(
+             stage_callback(f"eligibility_proxy:{index}")
+         attempt = _attempt_config(replace(config, access_token=token), proxy)
+         chatgpt = factory.chatgpt(attempt, proxy)
+-        campaign_url = (
+-            "https://chatgpt.com/?promo_campaign=" + MOMO_TRIAL_COUPON
+-        )
+         url = (
+             f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
+-            f"?coupon={MOMO_TRIAL_COUPON}&is_coupon_from_query_param=true"
+         )
++        selected_account = account_id(token)
+         eligibility_headers = {
+-            "Accept": "*/*",
+-            "Referer": campaign_url,
++            "Accept": "application/json",
++            "Referer": "https://chatgpt.com/",
+             "x-openai-target-path": MOMO_ELIGIBILITY_PATH,
+             "x-openai-target-route": MOMO_ELIGIBILITY_PATH,
+         }
+-        session_kept = False
++        if selected_account:
++            eligibility_headers["chatgpt-account-id"] = selected_account
+         try:
+-            setattr(chatgpt, "momo_flow_started_at", time.perf_counter())
+-            # Establish the same promo landing-page context used by the
+-            # successful zero-due HAR before asking for coupon eligibility.
+-            try:
+-                landing_response = chatgpt.request(
+-                    "GET",
+-                    campaign_url,
+-                    headers={"Accept": "text/html", "Referer": "https://chatgpt.com/"},
+-                    timeout=30,
+-                )
+-                if 200 <= int(getattr(landing_response, "status_code", 0) or 0) < 400:
+-                    setattr(chatgpt, "momo_promo_context_ready", True)
+-            except Exception:
+-                pass
+-            # Prime the browser proof on the same promo origin before the
+-            # eligibility/Checkout pair.  This is best-effort for installs
+-            # without Chromium; the coupon response remains authoritative.
+-            provider = getattr(chatgpt, "openai_sentinel_provider", None)
+-            prepare_flow = getattr(provider, "prepare_flow", None)
+-            if callable(prepare_flow):
+-                try:
+-                    prepare_flow("chatgpt_checkout", referer=campaign_url)
+-                    setattr(chatgpt, "momo_promo_context_ready", True)
+-                except Exception:
+-                    pass
+-            # The complete browser flow warms the account catalog immediately
+-            # before coupon evaluation. Keep both calls on the same session;
+-            # their responses provide the account-scoped eligibility signal;
+-            # check_coupon below must independently echo the same campaign.
+-            selected_account = account_id(token)
+-            account_headers = {
+-                "Accept": "*/*",
+-                "Referer": "https://chatgpt.com/",
+-                "x-openai-target-path": "/backend-api/accounts/optimized/check",
+-                "x-openai-target-route": "/backend-api/accounts/optimized/check",
+-            }
+-            if selected_account:
+-                account_headers["chatgpt-account-id"] = selected_account
+-            try:
+-                chatgpt.request(
+-                    "GET",
+-                    "https://chatgpt.com/backend-api/accounts/optimized/check",
+-                    headers=momo_request_headers(
+-                        chatgpt,
+-                        "GET",
+-                        "https://chatgpt.com/backend-api/accounts/optimized/check",
+-                        account_headers,
+-                    ),
+-                    timeout=30,
+-                )
+-            except Exception:
+-                pass
+-            account_path = "/backend-api/accounts/check/v4-2023-04-27"
+-            account_url = "https://chatgpt.com" + account_path + "?timezone_offset_min=-420"
+-            account_headers["x-openai-target-path"] = account_path
+-            account_headers["x-openai-target-route"] = "/backend-api/accounts/check/{version}"
+-            catalog_present = False
+-            catalog_match = False
+-            catalog_request_ok = False
+-            try:
+-                account_response = chatgpt.request(
+-                    "GET",
+-                    account_url,
+-                    headers=momo_request_headers(
+-                        chatgpt, "GET", account_url, account_headers
+-                    ),
+-                    timeout=30,
+-                )
+-                if int(getattr(account_response, "status_code", 0) or 0) < 400:
+-                    catalog_request_ok = True
+-                    try:
+-                        account_payload = account_response.json() or {}
+-                    except Exception:
+-                        account_payload = None
+-                        catalog_request_ok = False
+-                    if account_payload is None:
+-                        catalog_present = True
+-                        catalog_match = False
+-                    else:
+-                        catalog_present, catalog_match = _catalog_campaign_match(
+-                            account_payload,
+-                            MOMO_TRIAL_COUPON,
+-                            account_key=selected_account,
+-                        )
+-            except Exception:
+-                catalog_request_ok = False
+-            # Keep the pricing and saved-payment context warm on the same
+-            # device/session.  The account/catalog result is required for a
+-            # selected AT; a coupon-only response must not green-light a
+-            # checkout when the account catalog was unavailable.
+-            pricing_path = "/backend-api/checkout_pricing_config/configs/VN"
+-            pricing_url = "https://chatgpt.com" + pricing_path
+-            pricing_headers = {
+-                "Accept": "*/*",
+-                "Referer": "https://chatgpt.com/",
+-                "x-openai-target-path": pricing_path,
+-                "x-openai-target-route": "/backend-api/checkout_pricing_config/configs/{country_code}",
+-            }
+-            try:
+-                chatgpt.request(
+-                    "GET",
+-                    pricing_url,
+-                    headers=momo_request_headers(
+-                        chatgpt, "GET", pricing_url, pricing_headers
+-                    ),
+-                    timeout=30,
+-                )
+-            except Exception:
+-                pass
+-            if selected_account:
+-                methods_path = "/backend-api/payments/payment_methods"
+-                methods_url = (
+-                    "https://chatgpt.com"
+-                    + methods_path
+-                    + "?account_id="
+-                    + quote(selected_account, safe="")
+-                )
+-                methods_headers = {
+-                    "Accept": "*/*",
+-                    "Referer": "https://chatgpt.com/",
+-                    "x-openai-target-path": methods_path,
+-                    "x-openai-target-route": methods_path,
+-                    "chatgpt-account-id": selected_account,
+-                }
+-                try:
+-                    chatgpt.request(
+-                        "GET",
+-                        methods_url,
+-                        headers=momo_request_headers(
+-                            chatgpt, "GET", methods_url, methods_headers
+-                        ),
+-                        timeout=30,
+-                    )
+-                except Exception:
+-                    pass
+             response = chatgpt.request(
+                 "GET",
+                 url,
+@@ -302,21 +99,6 @@ def probe_momo_trial_eligibility(
+                 ),
+                 timeout=30,
+             )
+-            # The browser reloads pricing after the coupon route resolves;
+-            # keep the promo referer on this second read before Checkout.
+-            promo_pricing_headers = dict(pricing_headers)
+-            promo_pricing_headers["Referer"] = campaign_url
+-            try:
+-                chatgpt.request(
+-                    "GET",
+-                    pricing_url,
+-                    headers=momo_request_headers(
+-                        chatgpt, "GET", pricing_url, promo_pricing_headers
+-                    ),
+-                    timeout=30,
+-                )
+-            except Exception:
+-                pass
+             status = int(getattr(response, "status_code", 0) or 0)
+             if status >= 400:
+                 probes.append(
+@@ -330,13 +112,11 @@ def probe_momo_trial_eligibility(
+                     }
+                 )
+                 if status == 401:
+-                    error = MomoEligibilityError(
++                    raise MomoEligibilityError(
+                         status,
+                         "Momo eligibility authentication failed (HTTP 401)",
+                         retryable=False,
+                     )
+-                    error.probes = tuple(probes)
+-                    raise error
+                 continue
+             try:
+                 payload = response.json() or {}
+@@ -352,41 +132,23 @@ def probe_momo_trial_eligibility(
+                     }
+                 )
+                 continue
+-            state = ""
+-            eligible = False
+-            redeemed = False
+-            campaign_id = ""
+-            coupon_match = False
+-            redemption_valid = False
+             if not isinstance(payload, dict):
+                 state = ""
++                eligible = False
+             else:
+-                state = str(payload.get("state") or "").strip().lower()
+-                coupon_match = str(payload.get("coupon") or "").strip() == MOMO_TRIAL_COUPON
+-                redemption = payload.get("redemption")
+-                redemption_valid = isinstance(redemption, dict) and "redeemed" in redemption
+-                redemption = redemption if isinstance(redemption, dict) else {}
+-                redeemed = bool(
+-                    redemption.get("redeemed")
+-                    or redemption.get("redeemed_by_user")
+-                    or redemption.get("redeemed_by_workspace")
+-                )
+-                # Fail closed when the account catalog explicitly lacks the
+-                # campaign.  If that optional endpoint is unavailable, the
+-                # coupon response can still decide eligibility.
+-                eligible = (
+-                    state == "eligible"
+-                    and coupon_match
+-                    and redemption_valid
+-                    and not redeemed
+-                    and (
+-                        (catalog_present and catalog_match)
+-                        if selected_account
+-                        else (not catalog_present or catalog_match)
+-                    )
+-                    and (not selected_account or catalog_request_ok)
+-                )
+-                campaign_id = MOMO_TRIAL_COUPON if eligible else ""
++                accounts = payload.get("accounts")
++                accounts = accounts if isinstance(accounts, dict) else {}
++                account = accounts.get(selected_account) or accounts.get("default") or {}
++                account = account if isinstance(account, dict) else {}
++                campaigns = account.get("eligible_promo_campaigns")
++                campaigns = campaigns if isinstance(campaigns, dict) else {}
++                plus = campaigns.get("plus")
++                plus = plus if isinstance(plus, dict) else {}
++                campaign_id = str(
++                    plus.get("id") or plus.get("campaign_id") or ""
++                ).strip()
++                state = "eligible" if campaign_id else "not_eligible"
++                eligible = bool(campaign_id)
+             probes.append(
+                 {
+                     "attempt": index,
+@@ -396,18 +158,11 @@ def probe_momo_trial_eligibility(
+                     "eligible": eligible,
+                     "coupon": MOMO_TRIAL_COUPON,
+                     "campaign_id": campaign_id if eligible else "",
+-                    "redeemed": redeemed if isinstance(payload, dict) else False,
+-                    "coupon_match": coupon_match,
+-                    "redemption_valid": redemption_valid,
+-                    "catalog_present": catalog_present,
+-                    "catalog_match": catalog_match if catalog_present else None,
+-                    "catalog_request_ok": catalog_request_ok,
+                 }
+             )
+             if eligible:
+                 if stage_callback is not None:
+                     stage_callback("eligibility_confirmed")
+-                session_kept = True
+                 return {
+                     "ok": True,
+                     "eligible": True,
+@@ -422,9 +177,6 @@ def probe_momo_trial_eligibility(
+                     "campaign_id": campaign_id,
+                     "source": "chatgpt_check_coupon",
+                     "probes": probes,
+-                    # Internal-only handle; the core reuses this exact
+-                    # device/session/cookie context for Checkout.
+-                    "_chatgpt_session": chatgpt,
+                 }
+         except MomoEligibilityError:
+             raise
+@@ -440,13 +192,10 @@ def probe_momo_trial_eligibility(
+                 }
+             )
+         finally:
+-            if not session_kept:
+-                close(chatgpt)
++            close(chatgpt)
+ 
+-    error = MomoEligibilityError(
++    raise MomoEligibilityError(
+         409,
+         "Momo trial eligibility rejected on all VN proxies",
+         retryable=True,
+     )
+-    error.probes = tuple(probes)
+-    raise error
+diff --git a/payment_link_extractor/momo_stripe.py b/payment_link_extractor/momo_stripe.py
+index c57a88b..d8630b5 100644
+--- a/payment_link_extractor/momo_stripe.py
++++ b/payment_link_extractor/momo_stripe.py
+@@ -2,9 +2,9 @@ from __future__ import annotations
+ 
+ """Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
+ 
++import random
+ import os
+ import secrets
+-import time
+ import uuid
+ from typing import Any
+ from urllib.parse import parse_qs, urlencode, urlparse
+@@ -15,12 +15,6 @@ from .momo_checkout import json_payload
+ from .momo_transport import momo_request_headers
+ 
+ 
+-MOMO_STRIPE_RUNTIME_VERSION = (
+-    os.getenv("OPLL_MOMO_STRIPE_RUNTIME_VERSION", "").strip()
+-    or "939d686cd5"
+-)
+-
+-
+ def _payable_amount_minor(checkout: dict[str, Any]) -> int:
+     state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
+     total = state.get("total") if isinstance(state.get("total"), dict) else {}
+@@ -29,14 +23,9 @@ def _payable_amount_minor(checkout: dict[str, Any]) -> int:
+     if raw in (None, ""):
+         raw = checkout.get("payable_amount_minor")
+     try:
+-        value = int(raw)
++        return max(0, int(raw))
+     except (TypeError, ValueError):
+-        try:
+-            parsed = float(str(raw).strip())
+-        except (TypeError, ValueError):
+-            return 0
+-        value = int(parsed) if parsed.is_integer() else 0
+-    return value if value >= 0 else 0
++        return 0
+ 
+ 
+ def _stripe_fingerprint_id() -> str:
+@@ -45,11 +34,7 @@ def _stripe_fingerprint_id() -> str:
+ 
+ 
+ def _attribution_fields(checkout: dict[str, Any], *, source: str) -> dict[str, str]:
+-    session_id = str(
+-        checkout.get("stripe_client_session_id")
+-        or checkout.get("stripe_js_id")
+-        or uuid.uuid4()
+-    )
++    session_id = str(checkout.get("stripe_client_session_id") or uuid.uuid4())
+     checkout["stripe_client_session_id"] = session_id
+     fields = {
+         "client_session_id": session_id,
+@@ -94,103 +79,6 @@ def _find_client_secret(value: Any) -> str:
+     return ""
+ 
+ 
+-def _find_customer_id(value: Any) -> str:
+-    """Extract Stripe's customer id from Elements' nested customer object."""
+-    if isinstance(value, str):
+-        candidate = value.strip()
+-        return candidate if candidate.startswith("cus_") else ""
+-    if isinstance(value, dict):
+-        # Elements returns customer.customer_session.customer; inspect this
+-        # path before generic id keys so unrelated config/session ids are not
+-        # sent as the Stripe customer.
+-        for key in ("customer", "customer_session", "customerSession"):
+-            found = _find_customer_id(value.get(key))
+-            if found:
+-                return found
+-        for key in ("id", "customer_id", "customerId"):
+-            found = _find_customer_id(value.get(key))
+-            if found:
+-                return found
+-        for child in value.values():
+-            found = _find_customer_id(child)
+-            if found:
+-                return found
+-    elif isinstance(value, list):
+-        for child in value:
+-            found = _find_customer_id(child)
+-            if found:
+-                return found
+-    return ""
+-
+-
+-def _session_cookie_value(session: Any, name: str) -> str:
+-    target = str(name or "").strip()
+-    headers = getattr(session, "headers", None)
+-    cookie_header = str(headers.get("Cookie") or "") if headers is not None else ""
+-    for part in cookie_header.split(";"):
+-        key, separator, value = part.strip().partition("=")
+-        if separator and key.strip() == target:
+-            return value.strip()
+-    jar = getattr(session, "cookies", None)
+-    if jar is not None:
+-        try:
+-            value = jar.get(target)
+-        except Exception:
+-            value = ""
+-        if value:
+-            return str(value).strip()
+-    return ""
+-
+-
+-def _set_session_cookie(session: Any, name: str, value: str) -> None:
+-    if not session or not value:
+-        return
+-    headers = getattr(session, "headers", None)
+-    if headers is not None:
+-        current = str(headers.get("Cookie") or "")
+-        parts = [item.strip() for item in current.split(";") if item.strip()]
+-        replaced = False
+-        for index, item in enumerate(parts):
+-            if item.split("=", 1)[0].strip() == name:
+-                parts[index] = f"{name}={value}"
+-                replaced = True
+-                break
+-        if not replaced:
+-            parts.append(f"{name}={value}")
+-        headers["Cookie"] = "; ".join(parts)
+-    jar = getattr(session, "cookies", None)
+-    if jar is not None:
+-        try:
+-            jar.set(name, value, domain=".chatgpt.com", path="/")
+-        except Exception:
+-            try:
+-                jar.set(name, value)
+-            except Exception:
+-                pass
+-
+-
+-def synchronize_momo_stripe_ids(
+-    chatgpt_session: Any, stripe_session: Any, checkout: dict[str, Any]
+-) -> None:
+-    """Keep Stripe fingerprint cookies and form fields on one flow identity."""
+-    values: dict[str, str] = {}
+-    for name in ("__stripe_mid", "__stripe_sid"):
+-        value = _session_cookie_value(chatgpt_session, name) or _session_cookie_value(
+-            stripe_session, name
+-        )
+-        if value:
+-            values[name] = value
+-    # Keep a single in-memory fingerprint when a fresh browser has not yet
+-    # received Stripe cookies.  The complete VN HAR carries 42-character
+-    # ``__stripe_mid``/``__stripe_sid`` values, so preserve that shape.
+-    values.setdefault("__stripe_mid", _stripe_fingerprint_id())
+-    values.setdefault("__stripe_sid", _stripe_fingerprint_id())
+-    for name, value in values.items():
+-        _set_session_cookie(chatgpt_session, name, value)
+-    checkout["stripe_muid"] = values["__stripe_mid"]
+-    checkout["stripe_sid"] = values["__stripe_sid"]
+-
+-
+ def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str, Any]:
+     response = session.request("POST", url, data=data, timeout=30, headers={"Content-Type": "application/x-www-form-urlencoded"})
+     if int(getattr(response, "status_code", 0) or 0) >= 400:
+@@ -239,13 +127,7 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
+         raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
+     payload = json_payload(response, "Momo Stripe Elements init")
+     checkout["elements_session"] = payload
+-    customer_id = _find_customer_id(payload.get("customer"))
+-    if customer_id:
+-        checkout["customer"] = customer_id
+-    checkout["stripe_js_id"] = str(
+-        checkout.get("stripe_js_id") or params["stripe_js_id"]
+-    )
+-    checkout["stripe_client_session_id"] = checkout["stripe_js_id"]
++    checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
+     return payload
+ 
+ 
+@@ -255,43 +137,17 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+     body: dict[str, Any] = {
+         "payment_method_data[type]": "momo",
+         "payment_method_data[billing_details][name]": billing["name"],
+-        "payment_method_data[billing_details][phone]": "",
+         "payment_method_data[billing_details][address][line1]": billing["line1"],
+         "payment_method_data[billing_details][address][city]": billing["city"],
+         "payment_method_data[billing_details][address][country]": "VN",
+         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
+         "payment_method_data[billing_details][address][state]": billing["state"],
+-        "payment_method_data[payment_user_agent]": (
+-            f"stripe.js/{MOMO_STRIPE_RUNTIME_VERSION}; "
+-            f"stripe-js-v3/{MOMO_STRIPE_RUNTIME_VERSION}; "
+-            "payment-element; deferred-intent"
+-        ),
++        "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
+         "payment_method_data[referrer]": "https://chatgpt.com",
+-        # Stripe.js reports elapsed page time.  Use the live flow clock and
+-        # keep a short synthetic floor for very fast test/CLI runs.
+-        "payment_method_data[time_on_page]": str(
+-            max(
+-                2000,
+-                min(
+-                    60000,
+-                    round(
+-                        (
+-                            time.perf_counter()
+-                            - float(
+-                                checkout.get("flow_started_at")
+-                                or time.perf_counter()
+-                            )
+-                        )
+-                        * 1000
+-                    ),
+-                ),
+-            )
+-        ),
++        "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
+         "payment_method_data[guid]": _stripe_fingerprint_id(),
+-        "payment_method_data[muid]": str(
+-            checkout.get("stripe_muid") or _stripe_fingerprint_id()
+-        ),
+-        "payment_method_data[sid]": str(checkout.get("stripe_sid") or "NA"),
++        "payment_method_data[muid]": _stripe_fingerprint_id(),
++        "payment_method_data[sid]": _stripe_fingerprint_id(),
+         "setup_future_usage": "off_session",
+         "mandate_data[customer_acceptance][type]": "online",
+         "mandate_data[customer_acceptance][online][infer_from_client]": "true",
+@@ -304,16 +160,13 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
+         "key": key,
+         "_stripe_version": STRIPE_VERSION_BASE,
+     }
+-    body["payment_method_data[billing_details][phone]"] = ""
+     captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
+     if captcha_value:
+         body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
+-    ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
+-    customer = _find_customer_id(checkout.get("customer"))
+-    if not customer:
+-        customer = _find_customer_id(ctx.get("customer"))
++    customer = str(checkout.get("customer") or "").strip()
+     if customer:
+         body["client_context[customer]"] = customer
++    ctx = checkout.get("elements_session") if isinstance(checkout.get("elements_session"), dict) else {}
+     elements_session_id = str(
+         ctx.get("session_id") or ctx.get("id") or ctx.get("elements_session_id") or ""
+     )
+@@ -378,14 +231,7 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
+     if client_secret:
+         payload.setdefault("client_secret", client_secret)
+     if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
+-        nested = payload.get("setup_intent") or payload.get("payment_intent") or {}
+-        nested_keys = ",".join(sorted(str(key) for key in nested.keys())) if isinstance(nested, dict) else ""
+-        top_keys = ",".join(sorted(str(key) for key in payload.keys()))
+-        raise ProtocolError(
+-            409,
+-            "Momo checkout confirm did not return a client secret "
+-            f"(status={payload.get('status') or '-'}, top_keys={top_keys}, nested_keys={nested_keys})",
+-        )
++        raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
+     return payload
+ 
+ 
+@@ -395,29 +241,19 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
+     if not intent_id.startswith(("pi_", "seti_")):
+         raise ProtocolError(502, "Momo Stripe client secret has unsupported intent type")
+     endpoint = f"https://api.stripe.com/v1/{'payment_intents' if intent_id.startswith('pi_') else 'setup_intents'}/{intent_id}/confirm"
+-    return_url_value = str(confirmed.get("confirm_return_url") or "").strip()
+-    if not return_url_value:
+-        return_url_value = (
+-            "https://chatgpt.com/checkout/verify?stripe_session_id="
+-            + str(checkout["cs_id"])
+-            + "&processor_entity="
+-            + str(checkout.get("processor_entity") or "openai_llc")
+-            + "&plan_type=plus"
+-        )
+     data: dict[str, Any] = {
+-        "return_url": return_url_value,
++        "return_url": str(
++            confirmed.get("confirm_return_url")
++            or f"https://chatgpt.com/checkout/verify?stripe_session_id={checkout['cs_id']}"
++        ),
+         "confirmation_token": token,
+         "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
+-        "_stripe_version": STRIPE_VERSION_BASE,
++        "_stripe_version": STRIPE_VERSION_FULL,
+         "client_secret": secret,
+     }
+     attribution = _attribution_fields(checkout, source="l1")
+-    # The SetupIntent confirm in the complete VN HAR carries only these two
+-    # attribution fields; the richer set belongs to confirmation_tokens.
+-    data["client_attribution_metadata[client_session_id]"] = attribution[
+-        "client_session_id"
+-    ]
+-    data["client_attribution_metadata[merchant_integration_source]"] = "l1"
++    for name, value in attribution.items():
++        data[f"client_attribution_metadata[{name}]"] = value
+     return _post(session, endpoint, "Momo Stripe intent confirm", data)
+ 
+ 
+diff --git a/payment_link_extractor/momo_transport.py b/payment_link_extractor/momo_transport.py
+index 1dcd924..ae664fb 100644
+--- a/payment_link_extractor/momo_transport.py
++++ b/payment_link_extractor/momo_transport.py
+@@ -46,7 +46,6 @@ class MomoSentinelProvider:
+         user_agent: str,
+         proxy: str,
+         transport_session: Any,
+-        session_token: str = "",
+     ) -> None:
+         from .transport import BrowserSentinelProvider
+ 
+@@ -57,13 +56,7 @@ class MomoSentinelProvider:
+             user_agent=user_agent,
+             proxy=_browser_proxy_for(proxy),
+             transport_session=transport_session,
+-            session_token=session_token,
+             enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
+-            language="vi-VN",
+-            client_build_number="10109010",
+-            client_version="prod-31e08510fe1189856ad77823ca134a25c60715b5",
+-            locale="vi-VN",
+-            timezone="Asia/Saigon",
+         )
+ 
+     @property
+@@ -73,27 +66,10 @@ class MomoSentinelProvider:
+     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+         return dict(self._delegate.headers(flow, referer=referer) or {})
+ 
+-    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
+-        prepare = getattr(self._delegate, "prepare_flow", None)
+-        if callable(prepare):
+-            prepare(flow, referer=referer)
+-
+     def close(self) -> None:
+         self._delegate.close()
+ 
+ 
+-def _curl_profile_supported(impersonate: str) -> bool:
+-    """Check the installed curl_cffi enum before selecting a TLS profile."""
+-    try:
+-        from curl_cffi.requests.impersonate import BrowserType
+-
+-        return str(impersonate or "").lower() in {
+-            str(item.value).lower() for item in BrowserType
+-        }
+-    except Exception:
+-        return True
+-
+-
+ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+     {
+         "name": "chrome150",
+@@ -113,12 +89,6 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+         "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
+     },
+-    {
+-        "name": "chrome152",
+-        "impersonate": "chrome152",
+-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+-        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+-    },
+ )
+ 
+ 
+@@ -126,36 +96,9 @@ class MomoTransportFactory:
+     """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
+ 
+     def __init__(self, fingerprint: str = "") -> None:
+-        requested = str(fingerprint or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")).strip().lower()
++        requested = str(fingerprint or "").strip().lower()
+         matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
+-        if matches and not _curl_profile_supported(matches[0]["impersonate"]):
+-            matches = []
+-        # Bind the current Momo HAR identity by default. Older profiles remain
+-        # available only through an explicit per-attempt override.
+-        if matches:
+-            selected = matches[0]
+-        else:
+-            # Prefer the HAR's Chrome 152 identity when the installed
+-            # curl_cffi build supports it; current 0.16.x falls back to the
+-            # first supported Chrome profile without mixing UA/TLS versions.
+-            preferred = next(
+-                (
+-                    profile
+-                    for profile in MOMO_BROWSER_PROFILES
+-                    if profile["name"] == "chrome152"
+-                    and _curl_profile_supported(profile["impersonate"])
+-                ),
+-                None,
+-            )
+-            selected = preferred or next(
+-                (
+-                    profile
+-                    for profile in MOMO_BROWSER_PROFILES
+-                    if _curl_profile_supported(profile["impersonate"])
+-                ),
+-                MOMO_BROWSER_PROFILES[0],
+-            )
+-        self.profile = dict(selected)
++        self.profile = dict(matches[0] if matches else secrets.choice(MOMO_BROWSER_PROFILES))
+ 
+     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
+         session = _new_session(self.profile["impersonate"])
+@@ -169,20 +112,21 @@ class MomoTransportFactory:
+                 "Accept": "*/*",
+                 "Origin": "https://chatgpt.com",
+                 "Referer": "https://chatgpt.com/",
+-                "Accept-Language": "vi-VN,vi;q=0.9",
++                "Content-Type": "application/json",
++                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                 "oai-device-id": device_id,
+                 "oai-session-id": session_id,
+-                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
++                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
+                 "oai-client-build-number": os.getenv(
+-                    "OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", ""
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
+                 ).strip()
+-                or "10109010",
++                or "9748354",
+                 "oai-client-version": os.getenv(
+-                    "OPLL_MOMO_OAI_CLIENT_VERSION", ""
++                    "OPLL_OAI_CLIENT_VERSION", ""
+                 ).strip()
+-                or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
++                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                 "x-oai-is-pending-updates": os.getenv(
+-                    "OPLL_MOMO_X_OAI_IS_PENDING_UPDATES", ""
++                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
+                 ).strip()
+                 or MOMO_EMPTY_PENDING_UPDATES,
+                 "x-oai-is-client-observation": observation
+@@ -196,25 +140,14 @@ class MomoTransportFactory:
+                 "Cookie": f"oai-did={device_id}",
+             }
+         )
++        account = account_id(str(getattr(config, "access_token", "") or ""))
++        if account:
++            session.headers["chatgpt-account-id"] = account
+         session.openai_device_id = device_id
+         session.openai_did = device_id
+         session.openai_session_id = session_id
+-        session.openai_account_id = account_id(
+-            str(getattr(config, "access_token", "") or "")
+-        )
+         session.openai_proxy = proxy
+         session.openai_request_started = time.perf_counter()
+-        session.momo_flow_started_at = session.openai_request_started
+-        session.momo_session_token = str(
+-            getattr(config, "session_token", "") or ""
+-        ).strip()
+-        if session.momo_session_token:
+-            session.headers["Cookie"] = (
+-                str(session.headers.get("Cookie") or "")
+-                + "; "
+-                + "__Secure-next-auth.session-token="
+-                + session.momo_session_token
+-            )
+ 
+         def refresh_momo_request_headers(method: str, url: str) -> dict[str, str]:
+             pinned = observation or os.getenv(
+@@ -226,43 +159,34 @@ class MomoTransportFactory:
+             if method.upper() == "POST":
+                 normalized = str(url or "").lower()
+                 if normalized.endswith("/backend-api/payments/checkout"):
+-                    configured = os.getenv(
+-                        "OPLL_MOMO_OAI_CHECKOUT_TELEMETRY", ""
+-                    ).strip()
+-                    if configured:
+-                        dynamic["oai-telemetry"] = configured
+-                    else:
+-                        elapsed = round(
+-                            (time.perf_counter() - session.openai_request_started) * 1000,
+-                            1,
+-                        )
+-                        dynamic["oai-telemetry"] = json.dumps(
+-                            [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
+-                            separators=(",", ":"),
+-                        )
++                    dynamic["oai-telemetry"] = os.getenv(
++                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
++                    )
+                 elif normalized.endswith("/backend-api/payments/checkout/confirm"):
+                     elapsed = round(
+                         (time.perf_counter() - session.openai_request_started) * 1000,
+                         1,
+                     )
+                     dynamic["oai-telemetry"] = json.dumps(
+-                        [1, elapsed, 0, 0, 0, 0, 0, elapsed + 1],
++                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
+                         separators=(",", ":"),
+                     )
+             return dynamic
+ 
+         session.refresh_momo_request_headers = refresh_momo_request_headers
+-        attestation = os.getenv(
+-            "OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", ""
+-        ).strip()
++        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+         if attestation:
+             session.headers["oai-web-deployment-attestation"] = attestation
+         # A browser-generated proof is preferred. Explicit values remain a
+         # useful runtime fallback for deployments that inject their own proof.
+-        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip()
++        sentinel = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "").strip() or os.getenv(
++            "OPLL_OPENAI_SENTINEL_TOKEN", ""
++        ).strip()
+         if sentinel:
+             session.openai_sentinel_token = sentinel
+-        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip()
++        sentinel_so = os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "").strip() or os.getenv(
++            "OPLL_OPENAI_SENTINEL_SO_TOKEN", ""
++        ).strip()
+         if sentinel_so:
+             session.openai_sentinel_so_token = sentinel_so
+         _set_proxy(session, proxy)
+@@ -279,7 +203,6 @@ class MomoTransportFactory:
+                         user_agent=self.profile["user_agent"],
+                         proxy=normalize_momo_proxy(proxy),
+                         transport_session=session,
+-                        session_token=session.momo_session_token,
+                     )
+             except Exception:
+                 # Keep the explicit token fallback and let the API return its
+@@ -292,16 +215,8 @@ class MomoTransportFactory:
+         session.headers.update(
+             {
+                 "User-Agent": self.profile["user_agent"],
+-                "Accept": "application/json, text/javascript, */*; q=0.01",
+-                "Accept-Language": "vi-VN,vi;q=0.9",
+-                "Origin": "https://js.stripe.com",
+-                "Referer": "https://js.stripe.com/",
+-                "Sec-CH-UA": self.profile["sec_ch_ua"],
+-                "Sec-CH-UA-Mobile": "?0",
+-                "Sec-CH-UA-Platform": '"Windows"',
+-                "Sec-Fetch-Dest": "empty",
+-                "Sec-Fetch-Mode": "cors",
+-                "Sec-Fetch-Site": "same-site",
++                "Origin": "https://checkout.stripe.com",
++                "Referer": "https://checkout.stripe.com/",
+             }
+         )
+         _set_proxy(session, config.checkout_proxy)
+@@ -313,7 +228,7 @@ class MomoTransportFactory:
+             {
+                 "User-Agent": self.profile["user_agent"],
+                 "Accept": "text/html,application/json",
+-                "Accept-Language": "vi-VN,vi;q=0.9",
++                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+                 "Sec-CH-UA": self.profile["sec_ch_ua"],
+                 "Sec-CH-UA-Mobile": "?0",
+                 "Sec-CH-UA-Platform": '"Windows"',
+@@ -382,7 +297,7 @@ def momo_sentinel_headers(
+     token = str(
+         getattr(session, "openai_sentinel_token", "")
+         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_TOKEN", "")
+-        or ""
++        or os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+     ).strip()
+     if token and not any(
+         key.lower() == "openai-sentinel-token" for key in result
+@@ -391,7 +306,7 @@ def momo_sentinel_headers(
+     so_token = str(
+         getattr(session, "openai_sentinel_so_token", "")
+         or os.getenv("OPLL_MOMO_OPENAI_SENTINEL_SO_TOKEN", "")
+-        or ""
++        or os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+     ).strip()
+     if so_token and not any(
+         key.lower() == "openai-sentinel-so-token" for key in result
+@@ -399,7 +314,7 @@ def momo_sentinel_headers(
+         result["OpenAI-Sentinel-SO-Token"] = so_token
+     attestation = str(
+         getattr(session, "openai_web_deployment_attestation", "")
+-        or os.getenv("OPLL_MOMO_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
++        or os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "")
+     ).strip()
+     if attestation and not any(
+         key.lower() == "oai-web-deployment-attestation" for key in result
+@@ -423,37 +338,6 @@ def momo_request_headers(
+     if callable(refresh):
+         dynamic = refresh(str(method).upper(), url) or {}
+         merged.update(dynamic)
+-    normalized_url = str(url or "").split("?", 1)[0].lower()
+-    account = str(getattr(session, "openai_account_id", "") or "").strip()
+-    if account and (
+-        normalized_url.endswith("/backend-api/payments/checkout/taxes")
+-        or normalized_url.endswith("/backend-api/payments/checkout/confirm")
+-    ):
+-        merged.setdefault("chatgpt-account-id", account)
+-    if str(method or "").upper() == "POST":
+-        merged.setdefault("Content-Type", "application/json")
+-    # Requests with an explicit Cookie header otherwise stop consulting the
+-    # cookie jar. Merge newly issued cookies before every ChatGPT call so the
+-    # eligibility → checkout → taxes sequence keeps one evolving context.
+-    jar = getattr(session, "cookies", None)
+-    if jar is not None:
+-        try:
+-            jar_values = jar.get_dict()
+-        except Exception:
+-            jar_values = {}
+-        if isinstance(jar_values, dict):
+-            current: dict[str, str] = {}
+-            for part in str(merged.get("Cookie") or "").split(";"):
+-                key, separator, value = part.strip().partition("=")
+-                if separator and key:
+-                    current[key] = value
+-            for key, value in jar_values.items():
+-                if str(key).strip():
+-                    current[str(key).strip()] = str(value or "")
+-            if current:
+-                merged["Cookie"] = "; ".join(
+-                    f"{key}={value}" for key, value in current.items()
+-                )
+     if flow:
+         merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
+     return merged
+@@ -464,7 +348,7 @@ def momo_gateway_headers(
+ ) -> dict[str, str]:
+     """Build the browser-like headers used by MoMo gateway polling."""
+     headers = {
+-        "Accept": "*/*",
++        "Accept": "application/json, text/plain, */*",
+         "Content-Type": "application/json",
+         "Origin": "https://payment.momo.vn",
+         "Referer": gateway_url,
+@@ -482,25 +366,6 @@ def momo_gateway_headers(
+     return headers
+ 
+ 
+-def momo_gateway_navigation_headers(session: Any, gateway_url: str) -> dict[str, str]:
+-    """Build the document-navigation headers used before gateway polling."""
+-    headers = {
+-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+-        "Referer": "https://chatgpt.com/",
+-        "Sec-Fetch-Dest": "document",
+-        "Sec-Fetch-Mode": "navigate",
+-        "Sec-Fetch-Site": "cross-site",
+-        "Upgrade-Insecure-Requests": "1",
+-    }
+-    session_headers = getattr(session, "headers", None)
+-    if session_headers is not None:
+-        for key in ("User-Agent", "Accept-Language", "Cookie"):
+-            value = str(session_headers.get(key) or "").strip()
+-            if value:
+-                headers[key] = value
+-    return headers
+-
+-
+ def capture_momo_csrf_token(session: Any, response: Any) -> str:
+     """Capture a runtime CSRF value from the gateway response or cookie jar."""
+     candidates: list[str] = []
+@@ -516,10 +381,7 @@ def capture_momo_csrf_token(session: Any, response: Any) -> str:
+         # persist it in logs or source.
+         patterns = (
+             r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
+-            r"<meta[^>]+name=[\"']_csrf[\"'][^>]+content=[\"']([^\"']+)",
+             r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
+-            r"<input[^>]+name=[\"']_csrf[\"'][^>]+value=[\"']([^\"']+)",
+-            r"setRequestHeader\(\s*[\"']X-CSRF-TOKEN[\"']\s*,\s*[\"']([^\"']+)",
+         )
+         for pattern in patterns:
+             match = re.search(pattern, body, re.I)
+diff --git a/payment_link_extractor/transport.py b/payment_link_extractor/transport.py
+index 530cc76..c0222cf 100644
+--- a/payment_link_extractor/transport.py
++++ b/payment_link_extractor/transport.py
+@@ -519,12 +519,6 @@ class BrowserSentinelProvider:
+         transport_session: Any,
+         log: Any | None = None,
+         enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
+-        session_token: str = "",
+-        language: str = "en-US",
+-        client_build_number: str = "",
+-        client_version: str = "",
+-        locale: str = "en-PH",
+-        timezone: str = "Asia/Manila",
+     ) -> None:
+         self.access_token = str(access_token or "").strip()
+         self.device_id = str(device_id or "").strip()
+@@ -534,24 +528,14 @@ class BrowserSentinelProvider:
+         self.transport_session = transport_session
+         self.log = log
+         self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
+-        self.session_token = str(session_token or "").strip()
+-        self.language = str(language or "en-US").strip() or "en-US"
+-        self.client_build_number = str(client_build_number or "").strip()
+-        self.client_version = str(client_version or "").strip()
+-        self.locale = str(locale or "en-PH").strip() or "en-PH"
+-        self.timezone = str(timezone or "Asia/Manila").strip() or "Asia/Manila"
+-        language_list = json.dumps([self.locale, self.locale.split("-", 1)[0]])
+         self.binary = _agent_browser_binary()
+         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
+         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
+         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
+         self.locale_script = self.temp_dir / "locale.js"
+         self.locale_script.write_text(
+-            "Object.defineProperty(navigator, 'language', {get: () => "
+-            + json.dumps(self.locale)
+-            + "});Object.defineProperty(navigator, 'languages', {get: () => "
+-            + language_list
+-            + "});",
++            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
++            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
+             encoding="utf-8",
+         )
+         self._lock = threading.RLock()
+@@ -594,7 +578,7 @@ class BrowserSentinelProvider:
+         env = dict(os.environ)
+         # Chromium uses TZ when constructing the browser fingerprint.  Keep
+         # the browser and the PH checkout locale coherent when supported.
+-        env.setdefault("TZ", self.timezone)
++        env.setdefault("TZ", "Asia/Manila")
+         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
+         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+         status = -1
+@@ -646,113 +630,6 @@ class BrowserSentinelProvider:
+             if attestation:
+                 self._attestation = attestation
+ 
+-        # Some deployments expose the signed value only on a same-context
+-        # backend request rather than in client-bootstrap.  Read header
+-        # metadata from the browser monitor without retaining request bodies.
+-        if self._attestation:
+-            return
+-        try:
+-            captured = self._run(
+-                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+-                timeout=20,
+-            )
+-        except Exception:
+-            return
+-        data = captured.get("data") if isinstance(captured, dict) else None
+-        requests = data.get("requests") if isinstance(data, dict) else None
+-        if not isinstance(requests, list):
+-            return
+-        for item in reversed(requests):
+-            if not isinstance(item, dict):
+-                continue
+-            headers = item.get("requestHeaders") or item.get("headers")
+-            if isinstance(headers, list):
+-                header_map = {
+-                    str(header.get("name") or "").lower(): str(header.get("value") or "")
+-                    for header in headers
+-                    if isinstance(header, dict)
+-                }
+-            elif isinstance(headers, dict):
+-                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
+-            else:
+-                continue
+-            value = str(header_map.get("oai-web-deployment-attestation") or "").strip()
+-            if value:
+-                self._attestation = value
+-                return
+-
+-    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
+-        """Install a cookie in the browser, chunking long session values."""
+-        cookie_name = str(name or "").strip()
+-        cookie_value = str(value or "")
+-        if not cookie_name or not cookie_value:
+-            return
+-        chunk_size = 3800
+-        chunks = [
+-            cookie_value[index : index + chunk_size]
+-            for index in range(0, len(cookie_value), chunk_size)
+-        ]
+-        names = (
+-            [(cookie_name, chunks[0])]
+-            if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096
+-            else [(f"{cookie_name}.{index}", chunk) for index, chunk in enumerate(chunks)]
+-        )
+-        for chunk_name, chunk in names:
+-            args = ["cookies", "set", chunk_name, chunk]
+-            # __Host- cookies are host-only by RFC and reject Domain=.chatgpt.com.
+-            if not cookie_name.lower().startswith("__host-"):
+-                args.extend(["--domain", ".chatgpt.com"])
+-            args.extend(["--path", "/"])
+-            if http_only:
+-                args.append("--httpOnly")
+-            args.append("--secure")
+-            self._run(args)
+-
+-    def _import_transport_cookies(self) -> None:
+-        """Seed Chromium with cookies already collected by the HTTP session."""
+-        headers = getattr(self.transport_session, "headers", None)
+-        cookie_header = str(headers.get("Cookie") or "") if headers is not None else ""
+-        if not cookie_header:
+-            return
+-        for part in cookie_header.split(";"):
+-            name, separator, value = part.strip().partition("=")
+-            if separator and name.strip() and value:
+-                try:
+-                    self._set_cookie(name.strip(), value, http_only=False)
+-                except Exception:
+-                    # A malformed/non-browser cookie must not prevent proof
+-                    # generation for the remaining context.
+-                    continue
+-
+-    def _sync_pending_update_from_browser(self) -> None:
+-        """Mirror only the latest opaque receipt header into the HTTP session."""
+-        try:
+-            value = self._run(
+-                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+-                timeout=20,
+-            )
+-        except Exception:
+-            return
+-        data = value.get("data") if isinstance(value, dict) else None
+-        requests = data.get("requests") if isinstance(data, dict) else None
+-        if not isinstance(requests, list):
+-            return
+-        for item in reversed(requests):
+-            if not isinstance(item, dict):
+-                continue
+-            headers = item.get("responseHeaders")
+-            if not isinstance(headers, dict):
+-                continue
+-            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
+-            if not receipt:
+-                continue
+-            transport_headers = getattr(self.transport_session, "headers", None)
+-            if transport_headers is not None:
+-                transport_headers["x-oai-is-pending-updates"] = json.dumps(
+-                    {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
+-                )
+-            return
+-
+     def _sync_cookies(self) -> None:
+         value = self._run(["cookies", "get", "--json"])
+         cookies: list[dict[str, Any]] = []
+@@ -769,29 +646,7 @@ class BrowserSentinelProvider:
+             if name:
+                 pairs.append(f"{name}={val}")
+         if pairs:
+-            # Merge rather than replace: Stripe/ChatGPT may set additional
+-            # cookies between checkout, taxes and confirm.
+-            merged: dict[str, str] = {}
+-            transport_headers = getattr(self.transport_session, "headers", None)
+-            existing_header = (
+-                str(transport_headers.get("Cookie") or "")
+-                if transport_headers is not None
+-                else ""
+-            )
+-            for part in (
+-                str(self._cookies or "").split(";")
+-                + existing_header.split(";")
+-            ):
+-                key, sep, value = part.strip().partition("=")
+-                if sep and key:
+-                    merged[key] = value
+-            for part in pairs:
+-                key, sep, value = part.partition("=")
+-                if sep and key:
+-                    merged[key] = value
+-            self._cookies = "; ".join(
+-                f"{key}={value}" for key, value in merged.items()
+-            )
++            self._cookies = "; ".join(pairs)
+             headers = getattr(self.transport_session, "headers", None)
+             if headers is not None:
+                 headers["Cookie"] = self._cookies
+@@ -803,14 +658,6 @@ class BrowserSentinelProvider:
+             self._run(["open", "about:blank", "--json"])
+             self._started = True
+             self._launch_args_used = True
+-            # Do not inherit a prior account's split NextAuth cookies.  A
+-            # supplied runtime session token is installed before the
+-            # authenticated promo navigation; values never enter logs.
+-            if self.session_token:
+-                try:
+-                    self._run(["cookies", "clear"])
+-                except Exception:
+-                    pass
+             self._run(
+                 [
+                     "cookies",
+@@ -821,13 +668,6 @@ class BrowserSentinelProvider:
+                     "https://chatgpt.com",
+                 ]
+             )
+-            if self.session_token:
+-                self._set_cookie(
+-                    "__Secure-next-auth.session-token",
+-                    self.session_token,
+-                    http_only=True,
+-                )
+-            self._import_transport_cookies()
+             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
+             # The bootstrap document carries the current signed deployment
+             # attestation.  The initial navigation is authenticated when an
+@@ -837,15 +677,15 @@ class BrowserSentinelProvider:
+                 "Authorization": f"Bearer {self.access_token}",
+                 "oai-device-id": self.device_id,
+                 "oai-session-id": self.session_id,
+-                "oai-language": self.language,
++                "oai-language": "en-US",
+                 # The current browser HAR (m.gcash.com111.har) uses the
+                 # deployed checkout build below.  Keep both values overridable
+                 # because the web client rotates them independently of the
+                 # payment flow.
+-                "oai-client-build-number": self.client_build_number
+-                or _env_or_default("OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"),
+-                "oai-client-version": self.client_version
+-                or _env_or_default(
++                "oai-client-build-number": _env_or_default(
++                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
++                ),
++                "oai-client-version": _env_or_default(
+                     "OPLL_OAI_CLIENT_VERSION",
+                     "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                 ),
+@@ -865,14 +705,7 @@ class BrowserSentinelProvider:
+                     "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+                 ]
+             )
+-            # Let the page issue its initial account/receipt requests before
+-            # copying cookies and deployment attestation to the HTTP session.
+-            try:
+-                self._run(["wait", "1000"], timeout=15)
+-            except Exception:
+-                pass
+             self._capture_bootstrap()
+-            self._sync_pending_update_from_browser()
+             self._run(["open", "https://chatgpt.com/backend-api/sentinel/frame.html"])
+             self._sync_cookies()
+         except Exception:
+@@ -884,51 +717,18 @@ class BrowserSentinelProvider:
+         # checkout calls.  Running it in the same browser context keeps the
+         # Cloudflare/Sentinel cookies on the matching proxy IP.
+         expression = (
+-            "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
+             "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
+             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
+             ",headers:{'Content-Type':'text/plain;charset=UTF-8'}});return r.status})()"
+         )
+         self._eval(expression, timeout=30)
+ 
+-    def prepare_flow(self, flow: str, *, referer: str = "") -> None:
+-        """Initialize a named Sentinel context before requesting its token."""
+-        with self._lock:
+-            if self._failed:
+-                raise RuntimeError("Sentinel browser provider failed during startup")
+-            if not self._started:
+-                self._start()
+-            selected = str(flow or "").strip() or "chatgpt_checkout"
+-            self._eval(
+-                "window.__opllSentinelReferer=" + json.dumps(referer or "https://chatgpt.com/") + ";"
+-                "(async()=>{if(typeof SentinelSDK.init==='function'){await "
+-                "SentinelSDK.init(" + json.dumps(selected) + ");}return true})()",
+-                timeout=90,
+-            )
+-
+     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
+         with self._lock:
+             if self._failed:
+                 raise RuntimeError("Sentinel browser provider failed during startup")
+             if not self._started:
+                 self._start()
+-            # A fresh init binds the proof to the current checkout/approval
+-            # flow instead of reusing the landing-page challenge.
+-            try:
+-                self._eval(
+-                    "window.__opllSentinelReferer="
+-                    + json.dumps(referer or "https://chatgpt.com/")
+-                    + ";true",
+-                    timeout=15,
+-                )
+-                self._eval(
+-                    "(async()=>{if(typeof SentinelSDK.init==='function'){await "
+-                    "SentinelSDK.init(" + json.dumps(str(flow or "chatgpt_checkout"))
+-                    + ");}return true})()",
+-                    timeout=90,
+-                )
+-            except Exception:
+-                pass
+             self._ping(referer)
+             raw = self._eval(
+                 "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",
+@@ -943,35 +743,6 @@ class BrowserSentinelProvider:
+             if not token:
+                 raise RuntimeError("SentinelSDK returned an empty token")
+             result = {"OpenAI-Sentinel-Token": token}
+-            # Some SDK builds expose a session-observer proof separately.
+-            # Include it when available; older builds simply return empty.
+-            try:
+-                observer_raw = self._eval(
+-                    "(async()=>{if(typeof SentinelSDK.sessionObserverToken!=='function')return '';"
+-                    "return await SentinelSDK.sessionObserverToken("
+-                    + json.dumps(str(flow or "chatgpt_checkout"))
+-                    + ")||''})()",
+-                    timeout=45,
+-                )
+-                observer = (
+-                    observer_raw
+-                    if isinstance(observer_raw, str)
+-                    else json.dumps(observer_raw, separators=(",", ":"))
+-                    if isinstance(observer_raw, dict)
+-                    else ""
+-                )
+-                if observer:
+-                    result["OpenAI-Sentinel-SO-Token"] = observer
+-            except Exception:
+-                pass
+-            try:
+-                self._sync_pending_update_from_browser()
+-            except Exception:
+-                pass
+-            try:
+-                self._sync_cookies()
+-            except Exception:
+-                pass
+             if self._attestation:
+                 result["oai-web-deployment-attestation"] = self._attestation
+                 session_headers = getattr(self.transport_session, "headers", None)
+diff --git a/payment_link_extractor/web/events.py b/payment_link_extractor/web/events.py
+index 2d4bc12..2c4184e 100644
+--- a/payment_link_extractor/web/events.py
++++ b/payment_link_extractor/web/events.py
+@@ -17,18 +17,6 @@ _TOKEN_KEYS = {
+     "token", "ba_token", "batoken", "ec_token", "ectoken",
+     "billing_agreement_id", "billingagreementid", "billingagreementtoken",
+ }
+-_IDENTIFIER_KEYS = {
+-    "checkout_session_id",
+-    "checkoutsessionid",
+-    "session_id",
+-    "sessionid",
+-    "payment_method_id",
+-    "paymentmethodid",
+-    "client_secret",
+-    "clientsecret",
+-    "setup_intent_id",
+-    "payment_intent_id",
+-}
+ _FUNCTIONAL_URL_KEYS = {"provider_url", "paypal_url"}
+ 
+ 
+@@ -42,31 +30,14 @@ def redact_text(value: Any, secrets: Iterable[str] = ()) -> str:
+         secret = str(secret or "")
+         if secret:
+             text = text.replace(secret, "***")
+-    text = re.sub(
+-        r"((?:https?|socks4a?|socks5h?)://[^\s:/]+:)[^@\s]+@",
+-        r"\1***@",
+-        text,
+-        flags=re.I,
+-    )
+-    # Bare vendor exports use host:port:user:password. Keep only a marker in
+-    # task history/logs; the runtime transport still receives the original.
+-    text = re.sub(
+-        r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}:\d{2,5}:[^:\s]+:[^\s]+\b",
+-        "<proxy-redacted>",
+-        text,
+-    )
++    text = re.sub(r"(https?://[^\s:/]+:)[^@\s]+@", r"\1***@", text, flags=re.I)
+     text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/]+=*", "Bearer <redacted>", text)
+     text = re.sub(r"\b(?:BA|EC)-[A-Za-z0-9]{8,80}\b", _mask_token_match, text)
+     text = re.sub(
+-        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin|t|s|sid|session_id|sessionId|nonce|signature)=)[^&\s\"']+",
++        r"(?i)([?&](?:access_token|client_secret|ba_token|ec_token|token|otp|pin)=)[^&\s\"']+",
+         r"\1<redacted>",
+         text,
+     )
+-    text = re.sub(
+-        r"(?i)\b(?:oaics|seti|pi|acct|cus|ctoken|sa_nonce|authsess)[_-][A-Za-z0-9_-]+\b",
+-        "<id-redacted>",
+-        text,
+-    )
+     return text
+ 
+ 
+@@ -91,8 +62,6 @@ def sanitize_event_data(value: Any, key: str = "") -> Any:
+     if compact in _TOKEN_KEYS or collapsed in _TOKEN_KEYS:
+         text = str(value or "")
+         return _mask_token(text) if len(text) > 10 else "<redacted>"
+-    if compact in _IDENTIFIER_KEYS or collapsed in _IDENTIFIER_KEYS:
+-        return "<redacted>"
+     if not isinstance(value, str):
+         return value
+     # A successful PayPal extraction is delivered to the browser through the
+diff --git a/payment_link_extractor/web/routes.py b/payment_link_extractor/web/routes.py
+index 2e859e1..506559d 100644
+--- a/payment_link_extractor/web/routes.py
++++ b/payment_link_extractor/web/routes.py
+@@ -283,10 +283,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         "momo_trial_eligibility_check",
+         _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
+     )
+-    momo_fingerprint = str(
+-        payload.get("momo_fingerprint")
+-        or os.getenv("OPLL_MOMO_BROWSER_PROFILE", "")
+-    ).strip()
+     if "max_attempts" in payload:
+         max_attempts = _max_attempts_value(payload.get("max_attempts"))
+         retry_count = max_attempts - 1
+@@ -306,8 +302,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         raise ConfigurationError("momo_zero_trial_validation must be boolean")
+     if not isinstance(momo_trial_eligibility_check, bool):
+         raise ConfigurationError("momo_trial_eligibility_check must be boolean")
+-    if len(momo_fingerprint) > 32 or any(ch.isspace() for ch in momo_fingerprint):
+-        raise ConfigurationError("momo_fingerprint must be a short profile name")
+     if not str(access_token or "").strip():
+         raise ConfigurationError("AT is required")
+     if not str(checkout_proxy or "").strip():
+@@ -352,7 +346,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         gopay_zero_trial_validation=gopay_zero_trial_validation,
+         momo_zero_trial_validation=momo_zero_trial_validation,
+         momo_trial_eligibility_check=momo_trial_eligibility_check,
+-        momo_fingerprint=momo_fingerprint,
+         verbose=False,
+         oaics_only=oaics_only,
+         retry_count=retry_count,
+@@ -361,11 +354,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
+         proxy_pool=submitted_pool,
+         account_name=str(payload.get("name") or "").strip(),
+         account_email=str(payload.get("email") or "").strip(),
+-        session_token=str(
+-            extract_session_token(payload)
+-            or _value(payload, "session_token", "OPLL_SESSION_TOKEN")
+-            or ""
+-        ).strip(),
++        session_token=extract_session_token(payload),
+     )
+ 
+ 
+diff --git a/payment_link_extractor/web/tasks.py b/payment_link_extractor/web/tasks.py
+index 249dfdb..6f9718c 100644
+--- a/payment_link_extractor/web/tasks.py
++++ b/payment_link_extractor/web/tasks.py
+@@ -5,7 +5,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
+ from dataclasses import dataclass, field, replace
+ from datetime import datetime, timedelta, timezone
+ import queue
+-import hashlib
+ import random
+ import os
+ import threading
+@@ -31,7 +30,6 @@ STAGE_PROGRESS = {
+     "eligibility_confirmed": 12,
+     "checkout": 15,
+     "checkout_update": 25,
+-    "momo_method_confirmed": 18,
+     "promotion_applied": 30,
+     "stripe_init": 35,
+     "elements_session": 50,
+@@ -44,14 +42,6 @@ STAGE_PROGRESS = {
+ }
+ 
+ 
+-def _proxy_reference(value: str) -> str:
+-    """Return a non-secret diagnostic reference for a Momo proxy."""
+-    raw = str(value or "").strip()
+-    if not raw:
+-        return ""
+-    return "momo-proxy:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+-
+-
+ def gopay_retry_backoff_seconds(attempt_index: int) -> float:
+     """Return bounded exponential backoff for the next GoPay attempt."""
+     try:
+@@ -644,7 +634,7 @@ class TaskManager:
+                     error = redact_text(exc, self._secrets(record.config))
+                     elapsed_ms = round((time.perf_counter() - attempt_started) * 1000)
+                     mk_retryable = bool(getattr(exc, "mk_retryable", False))
+-                    is_checkout_channel = record.config.payment_method in {"gopay", "momo"}
++                    is_gopay = record.config.payment_method == "gopay"
+                     # Momo may restart a fresh full attempt with the same AT;
+                     # each attempt gets a new proxy and browser fingerprint.
+                     is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
+@@ -686,7 +676,7 @@ class TaskManager:
+                                 "ip_rotated": True,
+                                 **(
+                                     {"failure_mode": failure_mode, "retryable": True}
+-                                    if is_checkout_channel
++                                    if is_gopay
+                                     else {}
+                                 ),
+                                 "elapsed_ms": elapsed_ms,
+@@ -716,7 +706,7 @@ class TaskManager:
+                                     "failure_mode": failure_mode,
+                                     "retryable": bool(explicit_retryable),
+                                 }
+-                                if is_checkout_channel
++                                if is_gopay
+                                 else {}
+                             ),
+                             "progress": record.progress,
+@@ -752,11 +742,7 @@ class TaskManager:
+                     {
+                         "status": record.status,
+                         "result": record.result,
+-                        "checkout_proxy": (
+-                            _proxy_reference(record.config.checkout_proxy)
+-                            if record.config.payment_method == "momo"
+-                            else record.config.checkout_proxy
+-                        ),
++                        "checkout_proxy": record.config.checkout_proxy,
+                         "progress": record.progress,
+                         "attempt": record.attempt,
+                         "max_attempts": total_attempts,
+@@ -868,11 +854,7 @@ class TaskManager:
+         if record.retry_of:
+             snapshot["retry_of"] = record.retry_of
+         if record.status == "succeeded":
+-            snapshot["checkout_proxy"] = (
+-                _proxy_reference(record.config.checkout_proxy)
+-                if record.config.payment_method == "momo"
+-                else record.config.checkout_proxy
+-            )
++            snapshot["checkout_proxy"] = record.config.checkout_proxy
+         if record.result is not None:
+             snapshot["result"] = record.result
+         if record.error:
+diff --git a/tests/test_har_tools.py b/tests/test_har_tools.py
+index 0c2ff72..02b5c2f 100644
+--- a/tests/test_har_tools.py
++++ b/tests/test_har_tools.py
+@@ -14,7 +14,7 @@ from tools.har_capture import (
+     infer_proxy_country,
+     locale_profile_for_proxy,
+ )
+-from tools.har_utils import analyze_har, entry_summary, markdown_report, redact_url
++from tools.har_utils import analyze_har, entry_summary, markdown_report
+ 
+ 
+ def _fixture() -> dict:
+@@ -97,22 +97,6 @@ def test_entry_summary_can_include_raw_values_and_markdown_is_reusable() -> None
+     assert "checkout/confirm" in markdown
+ 
+ 
+-def test_redact_url_masks_path_and_gateway_query_identifiers() -> None:
+-    value = (
+-        "https://chatgpt.com/backend-api/payments/checkout/openai_llc/"
+-        "oaics_secret123?sessionId=raw-session&t=opaque&s=signature"
+-    )
+-    redacted = redact_url(value)
+-    assert "oaics_secret123" not in redacted
+-    assert "raw-session" not in redacted
+-    assert "opaque" not in redacted
+-    assert "signature" not in redacted
+-    assert "/checkout/openai_llc/" in redacted
+-
+-    auth_url = redact_url("https://user:password@example.test/path")
+-    assert "user" not in auth_url and "password" not in auth_url
+-
+-
+ def test_socks5_bridge_allocates_local_http_endpoint() -> None:
+     bridge = Socks5HttpBridge("socks5://127.0.0.1:1080:user:password")
+     try:
+@@ -539,30 +523,6 @@ def test_momo_audit_accepts_bodyless_browser_query_session_poll() -> None:
+     assert "momo_query_session:request_body_missing" not in audit["issues"]
+ 
+ 
+-def test_momo_audit_accepts_setup_intent_confirmation() -> None:
+-    urls = [
+-        ("POST", "https://chatgpt.com/backend-api/payments/checkout", "{}"),
+-        ("POST", "https://chatgpt.com/backend-api/payments/checkout/taxes", "{}"),
+-        ("GET", "https://api.stripe.com/v1/elements/sessions", ""),
+-        ("POST", "https://api.stripe.com/v1/confirmation_tokens", "{}"),
+-        ("POST", "https://chatgpt.com/backend-api/payments/checkout/confirm", "{}"),
+-        ("POST", "https://api.stripe.com/v1/setup_intents/seti_fixture/confirm", "{}"),
+-        ("GET", "https://payment.momo.vn/v2/gateway/pay", ""),
+-        ("POST", "https://payment.momo.vn/v2/gateway/querySession", ""),
+-    ]
+-    entries = [
+-        {
+-            "request": {"method": method, "url": url, "postData": {"text": body} if body else {}},
+-            "response": {"status": 200, "content": {"text": "{}"}},
+-        }
+-        for method, url, body in urls
+-    ]
+-    audit = audit_har_completeness({"log": {"entries": entries}})
+-    assert audit["channel"] == "momo"
+-    assert audit["complete"] is True
+-    assert audit["issues"] == []
+-
+-
+ def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
+     har = _gopay_fixture(include_redirect=True)
+     complete = audit_har_completeness(har)
+diff --git a/tests/test_momo_support.py b/tests/test_momo_support.py
+index edb261e..52e5708 100644
+--- a/tests/test_momo_support.py
++++ b/tests/test_momo_support.py
+@@ -9,22 +9,9 @@ from payment_link_extractor.channels import PAYMENT_CHANNELS
+ from payment_link_extractor.config import billing_for_country, currency_minor_scale
+ from payment_link_extractor.models import ExtractionConfig
+ from payment_link_extractor.momo_core import _gateway_session_id, query_gateway, validate_momo_amount
+-import payment_link_extractor.momo_core as momo_core_module
+-from payment_link_extractor.momo_eligibility import (
+-    _catalog_campaign_match,
+-    probe_momo_trial_eligibility,
+-)
+-from payment_link_extractor.momo_stripe import (
+-    checkout_confirm,
+-    confirmation_token,
+-    elements_session,
+-    intent_confirm,
+-    resolve_momo_redirect,
+-    synchronize_momo_stripe_ids,
+-    validate_momo_url,
+-)
+-from payment_link_extractor.momo_checkout import create_checkout, momo_checkout_method_state
+-from payment_link_extractor.momo_checkout import validate_zero_trial_checkout
++from payment_link_extractor.momo_eligibility import probe_momo_trial_eligibility
++from payment_link_extractor.momo_stripe import checkout_confirm, resolve_momo_redirect, validate_momo_url
++from payment_link_extractor.momo_checkout import create_checkout
+ from payment_link_extractor.momo_transport import MOMO_BROWSER_PROFILES, MomoTransportFactory, _set_proxy, capture_momo_csrf_token, momo_gateway_headers, momo_request_headers, normalize_momo_proxy
+ from payment_link_extractor.web.app import create_app
+ from payment_link_extractor.web.tasks import TaskManager
+@@ -67,14 +54,11 @@ def test_momo_url_and_gateway_session_contract() -> None:
+                 return SimpleNamespace(status_code=200, headers={})
+             assert method == "POST"
+             assert endpoint.endswith("/querySession")
+-            if "json" in kwargs:
+-                assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
+-            else:
+-                assert kwargs.get("data") == ""
++            assert kwargs["json"] == {"sessionId": "MOMO_SESSION"}
+             assert kwargs["headers"]["Origin"] == "https://payment.momo.vn"
+             return SimpleNamespace(status_code=200, json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False})
+ 
+-    assert query_gateway(Session(), url, polls=1, poll_interval=0)["status_code"] == 1000
++    assert query_gateway(Session(), url)["status_code"] == 1000
+ 
+ 
+ def test_momo_transport_and_result_field_are_isolated() -> None:
+@@ -101,7 +85,6 @@ def test_momo_transport_uses_socks5h_for_1024proxy_vn_exports() -> None:
+ 
+ def test_momo_zero_amount_gate_matches_gopay_behavior() -> None:
+     validate_momo_amount(0)
+-    validate_momo_amount("0.00")
+     for value in (None, 1, -1):
+         try:
+             validate_momo_amount(value)
+@@ -116,8 +99,7 @@ def test_vnd_uses_zero_decimal_minor_units() -> None:
+ 
+ 
+ def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
+-    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150", "chrome152"}
+-    assert MomoTransportFactory().profile["name"] == "chrome150"
++    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+     assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
+     assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
+ 
+@@ -142,8 +124,7 @@ def test_momo_chatgpt_headers_follow_har_contract(monkeypatch) -> None:
+             {"Referer": "https://chatgpt.com/"},
+             flow="chatgpt_checkout",
+         )
+-        telemetry = json.loads(headers["oai-telemetry"])
+-        assert len(telemetry) == 8 and telemetry[0] == 1
++        assert headers["oai-telemetry"] == "[1,null]"
+         assert headers["Referer"] == "https://chatgpt.com/"
+     finally:
+         from payment_link_extractor.momo_transport import close
+@@ -194,15 +175,6 @@ def test_momo_gateway_csrf_can_be_captured_from_live_page() -> None:
+     assert session.momo_csrf_token == "csrf-from-page"
+ 
+ 
+-def test_momo_gateway_csrf_reads_spring_security_meta() -> None:
+-    session = SimpleNamespace(cookies={})
+-    response = SimpleNamespace(
+-        headers={},
+-        text='<meta name="_csrf" content="csrf-meta-value"/><meta name="_csrf_header" content="X-CSRF-TOKEN"/>',
+-    )
+-    assert capture_momo_csrf_token(session, response) == "csrf-meta-value"
+-
+-
+ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
+     class Response:
+         status_code = 200
+@@ -212,9 +184,17 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
+ 
+         def json(self):
+             return {
+-                "coupon": "plus-1-month-free",
+-                "state": "eligible" if self.state == "eligible" else "not_eligible",
+-                "redemption": {"redeemed": False},
++                "accounts": {
++                    "default": {
++                        "eligible_promo_campaigns": {
++                            "plus": (
++                                {"campaign_id": "plus-1-month-free"}
++                                if self.state == "eligible"
++                                else {}
++                            )
++                        }
++                    }
++                }
+             }
+ 
+     class Session:
+@@ -224,10 +204,8 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
+ 
+         def request(self, method, url, **kwargs):
+             assert method == "GET"
+-            if "/promo_campaign/check_coupon" in url:
+-                return Response(self.state)
+-            assert "?promo_campaign=plus-1-month-free" in url
+-            return SimpleNamespace(status_code=200, headers={}, text="")
++            assert "/accounts/check/v4-2023-04-27" in url
++            return Response(self.state)
+ 
+         def close(self):
+             pass
+@@ -254,249 +232,9 @@ def test_momo_trial_eligibility_rotates_vn_proxies_before_checkout() -> None:
+     )
+     assert result["eligible"] is True
+     assert result["proxy"] == "proxy-2"
+-    assert result["campaign_id"] == "plus-1-month-free"
+-    assert result["_chatgpt_session"] is not None
+     assert events == ["eligibility_proxy:1", "eligibility_proxy:2", "eligibility_confirmed"]
+ 
+ 
+-def test_momo_catalog_campaign_is_scoped_to_selected_account() -> None:
+-    payload = {
+-        "accounts": {
+-            "selected": {"eligible_promo_campaigns": {"plus": {"id": "other"}}},
+-            "other": {
+-                "eligible_promo_campaigns": {"plus": {"id": "plus-1-month-free"}}
+-            },
+-        }
+-    }
+-    assert _catalog_campaign_match(payload, "plus-1-month-free", account_key="selected") == (
+-        True,
+-        False,
+-    )
+-    assert _catalog_campaign_match(payload, "plus-1-month-free", account_key="other") == (
+-        True,
+-        True,
+-    )
+-
+-
+-def test_momo_checkout_method_state_detects_hidden_custom_method() -> None:
+-    assert momo_checkout_method_state({"custom_payment_methods": [{"type": "momo"}]}) is True
+-    assert momo_checkout_method_state({"payment_method_types": ["card", "link"]}) is False
+-    assert momo_checkout_method_state({"checkout_state": {"customPaymentMethods": [{"id": "momo"}]}}) is True
+-    assert momo_checkout_method_state({}) is None
+-
+-
+-def test_momo_zero_gate_requires_server_promo_echo_and_full_discount() -> None:
+-    base = {
+-        "currency": "VND",
+-        "promo_campaign_response": {
+-            "promo_campaign_id": "plus-1-month-free",
+-            "is_coupon_from_query_param": False,
+-        },
+-        "checkout_state": {
+-            "currency": "VND",
+-            "total": {
+-                "subtotal": {"minorUnitsAmount": 475000},
+-                "discount": {"minorUnitsAmount": 475000},
+-                "total": {"minorUnitsAmount": 0},
+-            },
+-        },
+-    }
+-    validate_zero_trial_checkout(base)
+-    missing_echo = dict(base)
+-    missing_echo["promo_campaign_response"] = {}
+-    try:
+-        validate_zero_trial_checkout(missing_echo)
+-    except Exception as exc:
+-        assert getattr(exc, "status_code", None) == 409
+-    else:
+-        raise AssertionError("missing server promo echo was accepted")
+-
+-
+-def test_momo_elements_customer_and_stripe_ids_are_forwarded() -> None:
+-    calls = []
+-
+-    class Session:
+-        headers = {}
+-        cookies = {}
+-
+-        def request(self, method, url, **kwargs):
+-            calls.append((method, url, kwargs))
+-            if url.endswith("/v1/elements/sessions"):
+-                return SimpleNamespace(
+-                    status_code=200,
+-                    json=lambda: {
+-                        "session_id": "elements_fixture",
+-                        "config_id": "config_fixture",
+-                        "customer": {"customer_session": {"customer": "cus_fixture"}},
+-                    },
+-                )
+-            return SimpleNamespace(status_code=200, json=lambda: {"id": "ctoken_fixture"})
+-
+-    chatgpt = SimpleNamespace(headers={"Cookie": "__stripe_mid=mid_fixture; __stripe_sid=sid_fixture"}, cookies={})
+-    stripe = Session()
+-    checkout = {"publishable_key": "pk_fixture", "checkout_state": {"total": {"total": {"minorUnitsAmount": 0}}}}
+-    synchronize_momo_stripe_ids(chatgpt, stripe, checkout)
+-    elements_session(stripe, checkout)
+-    token = confirmation_token(
+-        stripe,
+-        checkout,
+-        {"name": "Fixture", "line1": "1 Main", "city": "Hanoi", "state": "HN", "postal_code": "100000"},
+-    )
+-    assert token == "ctoken_fixture"
+-    form = calls[-1][2]["data"]
+-    assert form["client_context[customer]"] == "cus_fixture"
+-    assert form["payment_method_data[muid]"] == "mid_fixture"
+-    assert form["payment_method_data[sid]"] == "sid_fixture"
+-
+-
+-def test_momo_gateway_bodyless_poll_reaches_zero_redirect() -> None:
+-    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
+-
+-    class Session:
+-        def __init__(self):
+-            self.calls = []
+-
+-        def request(self, method, endpoint, **kwargs):
+-            self.calls.append((method, endpoint, kwargs))
+-            if method == "GET":
+-                return SimpleNamespace(status_code=200, headers={}, text="")
+-            result = {"sessionId": "MOMO_SESSION", "status_code": 1000, "redirect": False}
+-            if len([item for item in self.calls if item[0] == "POST"]) == 2:
+-                result = {
+-                    "sessionId": "MOMO_SESSION",
+-                    "status_code": 9000,
+-                    "redirect": True,
+-                    "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=0",
+-                }
+-            return SimpleNamespace(status_code=200, json=lambda: result)
+-
+-    session = Session()
+-    result = __import__("payment_link_extractor.momo_core", fromlist=["query_gateway"]).query_gateway(
+-        session, url, polls=3, poll_interval=0, require_redirect=True, expected_amount=0
+-    )
+-    assert result["status_code"] == 9000
+-    assert len([item for item in session.calls if item[0] == "POST"]) == 2
+-    assert all(item[2].get("data") == "" for item in session.calls if item[0] == "POST")
+-
+-
+-def test_momo_gateway_amount_check_follows_zero_validation_switch() -> None:
+-    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
+-
+-    class Session:
+-        def request(self, method, endpoint, **kwargs):
+-            if method == "GET":
+-                return SimpleNamespace(status_code=200, headers={}, text="")
+-            return SimpleNamespace(
+-                status_code=200,
+-                json=lambda: {
+-                    "status_code": 9000,
+-                    "redirect": True,
+-                    "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=100",
+-                },
+-            )
+-
+-    assert query_gateway(
+-        Session(), url, polls=1, poll_interval=0, require_redirect=True, expected_amount=None
+-    )["status_code"] == 9000
+-    try:
+-        query_gateway(
+-            Session(), url, polls=1, poll_interval=0, require_redirect=True, expected_amount=0
+-        )
+-    except Exception as exc:
+-        assert getattr(exc, "status_code", None) == 409
+-    else:
+-        raise AssertionError("non-zero gateway amount passed the zero gate")
+-
+-
+-def test_momo_core_reuses_eligible_session_and_gates_before_confirmation(monkeypatch) -> None:
+-    events = []
+-    calls = []
+-
+-    class Session:
+-        def close(self):
+-            pass
+-
+-    chatgpt = Session()
+-    stripe = Session()
+-    momo = Session()
+-
+-    class Factory:
+-        def chatgpt(self, config, proxy):
+-            calls.append(("chatgpt", proxy))
+-            return chatgpt
+-
+-        def stripe(self, config):
+-            calls.append(("stripe", config.checkout_proxy))
+-            return stripe
+-
+-        def momo(self, config):
+-            calls.append(("momo", config.checkout_proxy))
+-            return momo
+-
+-    checkout = {
+-        "cs_id": "oaics_fixture",
+-        "processor_entity": "openai_llc",
+-        "currency": "VND",
+-        "payment_method_types": ["card", "link", "momo"],
+-        "promo_campaign": {
+-            "promo_campaign_id": "plus-1-month-free",
+-            "is_coupon_from_query_param": False,
+-        },
+-        "checkout_state": {
+-            "currency": "VND",
+-            "total": {
+-                "subtotal": {"minorUnitsAmount": 475000},
+-                "discount": {"minorUnitsAmount": 475000},
+-                "total": {"minorUnitsAmount": 0},
+-            },
+-        },
+-    }
+-
+-    monkeypatch.setattr(
+-        momo_core_module,
+-        "probe_momo_trial_eligibility",
+-        lambda *args, **kwargs: {
+-            "eligible": True,
+-            "campaign_id": "plus-1-month-free",
+-            "proxy": "proxy-2",
+-            "_chatgpt_session": chatgpt,
+-        },
+-    )
+-    monkeypatch.setattr(
+-        momo_core_module,
+-        "create_checkout",
+-        lambda session, **kwargs: (calls.append(("checkout_session", session)), checkout)[1],
+-    )
+-    monkeypatch.setattr(momo_core_module, "validate_zero_trial_checkout", lambda value: None)
+-    monkeypatch.setattr(momo_core_module, "elements_session", lambda *args, **kwargs: {})
+-    monkeypatch.setattr(momo_core_module, "taxes", lambda *args, **kwargs: {})
+-    monkeypatch.setattr(momo_core_module, "confirmation_token", lambda *args, **kwargs: "ctoken_fixture")
+-    monkeypatch.setattr(momo_core_module, "checkout_confirm", lambda *args, **kwargs: {"status": "success", "client_secret": "seti_fixture_secret"})
+-    monkeypatch.setattr(momo_core_module, "intent_confirm", lambda *args, **kwargs: {"url": "https://payment.momo.vn/v2/gateway/pay?t=x&s=y"})
+-    monkeypatch.setattr(momo_core_module, "redirect_url", lambda value: value["url"])
+-    monkeypatch.setattr(momo_core_module, "query_gateway", lambda *args, **kwargs: {"status_code": "9000", "redirect": True, "return_url": "https://payment.momo.vn/v2/gateway/redirect?amount=0"})
+-
+-    from payment_link_extractor.models import ExtractionConfig
+-
+-    result = momo_core_module.extract_momo_payment_link(
+-        ExtractionConfig(
+-            "opaque.token",
+-            "proxy-1",
+-            "proxy-1",
+-            country="VN",
+-            payment_method="momo",
+-            proxy_pool=("proxy-1", "proxy-2"),
+-        ),
+-        transport_factory=Factory(),
+-        stage_callback=events.append,
+-    )
+-    assert result.amount_due_minor == 0
+-    assert result.provider_field == "momo_url"
+-    assert calls[0] == ("checkout_session", chatgpt)
+-    assert events.index("eligibility_check") < events.index("checkout")
+-    assert events.index("zero_amount_confirmed") < events.index("payment_confirmation")
+-
+-
+ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
+     calls = []
+ 
+@@ -516,16 +254,8 @@ def test_momo_checkout_route_fallback_and_confirm_headers() -> None:
+             )
+ 
+     session = Session()
+-    checkout = create_checkout(
+-        session, trial_eligible=True, campaign_id="plus-1-month-free"
+-    )
++    checkout = create_checkout(session)
+     assert checkout["processor_entity"] == "openai_llc"
+-    checkout_call = next(item for item in calls if item[0] == "POST")
+-    assert checkout_call[2]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+-    assert checkout_call[2]["json"]["promo_campaign"]["is_coupon_from_query_param"] is False
+-    import json
+-
+-    assert len(json.dumps(checkout_call[2]["json"], separators=(",", ":"))) == 245
+     checkout_confirm(session, checkout, "ctoken_fixture")
+     confirm_headers = calls[-1][2]["headers"]
+     assert confirm_headers["x-openai-target-path"] == "/backend-api/payments/checkout/confirm"
+diff --git a/tests/test_roxy_mitm_control.py b/tests/test_roxy_mitm_control.py
+index 7db0c54..34c7246 100644
+--- a/tests/test_roxy_mitm_control.py
++++ b/tests/test_roxy_mitm_control.py
+@@ -12,13 +12,11 @@ from tools.roxy_mitm_control import (
+     cleanup_stale_mitmweb,
+     close_cdp_browser,
+     create_roxy_window,
+-    delete_roxy_window,
+     force_stop_process_tree,
+     HTML,
+     merge_hybrid_har,
+     request_cdp_stop,
+     resolve_workspace_id,
+-    parse_proxy_pool,
+ )
+ 
+ 
+@@ -76,26 +74,6 @@ def test_roxy_workspace_and_window_payload() -> None:
+     }
+ 
+ 
+-def test_delete_roxy_window_uses_dir_ids_payload() -> None:
+-    FixtureHandler.requests.clear()
+-    server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+-    thread.start()
+-    base_url = f"http://127.0.0.1:{server.server_port}"
+-    try:
+-        delete_roxy_window(base_url, "secret", "workspace", "dir-to-delete")
+-    finally:
+-        server.shutdown()
+-        server.server_close()
+-    request = FixtureHandler.requests[0]
+-    assert request["path"] == "/browser/delete"
+-    assert request["payload"] == {"workspaceId": "workspace", "dirIds": ["dir-to-delete"]}
+-
+-
+-def test_parse_proxy_pool_deduplicates_preserving_order() -> None:
+-    assert parse_proxy_pool(" a:1\nb:2\na:1\n\n") == ["a:1", "b:2"]
+-
+-
+ def test_cleanup_stale_mitmweb_is_noop_off_windows(monkeypatch) -> None:
+     monkeypatch.setattr("tools.roxy_mitm_control.os.name", "posix")
+     cleanup_stale_mitmweb((8899, 8081))
+@@ -140,8 +118,6 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
+     closed: list[int | None] = []
+     monkeypatch.setattr("tools.roxy_mitm_control.force_stop_process_tree", lambda process: killed.append(process))
+     monkeypatch.setattr("tools.roxy_mitm_control.close_cdp_browser", lambda port: closed.append(port))
+-    deleted: list[tuple[str, str, str, str]] = []
+-    monkeypatch.setattr("tools.roxy_mitm_control.delete_roxy_window", lambda base, key, workspace, directory: deleted.append((base, key, workspace, directory)))
+     monkeypatch.setattr("tools.roxy_mitm_control.cleanup_stale_mitmweb", lambda _ports: None)
+     state = CaptureState(root=tmp_path, proxy_port=8899, web_port=8081)
+     state.process = Process()  # type: ignore[assignment]
+@@ -151,18 +127,13 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
+     state.cdp_stop_file = cdp_output.with_suffix(".stop")
+     state.cdp_output = cdp_output
+     state.cdp_port = 62345
+-    state.api_base = "http://roxy"
+-    state.api_key = "secret"
+-    state.workspace_id = "workspace"
+-    state.dir_id = "directory"
+ 
+     result = state.discard()
+ 
+-    assert result["message"] == "本次抓包已放弃，窗口已关闭并删除，未保存文件"
++    assert result["message"] == "本次抓包已放弃，窗口已关闭，未保存文件"
+     assert result["running"] is False
+     assert killed == [state.cdp_process, state.process] or len(killed) == 2
+     assert closed == [62345]
+-    assert deleted == [("http://roxy", "secret", "workspace", "directory")]
+     assert all(not path.exists() for path in paths)
+     assert "CAPTURE_DISCARDED=1" in result["logs"]
+ 
+@@ -170,8 +141,6 @@ def test_discard_closes_window_and_removes_capture_files(tmp_path: Path, monkeyp
+ def test_control_panel_exposes_discard_action() -> None:
+     assert 'id="discard"' in HTML
+     assert "/api/discard" in HTML
+-    assert 'id="upstreamPool"' in HTML
+-    assert "elements.apiKey.value=''" not in HTML
+ 
+ 
+ def test_startup_failures_use_discard_path() -> None:
+diff --git a/tools/har_capture.py b/tools/har_capture.py
+index c536e39..4d66705 100644
+--- a/tools/har_capture.py
++++ b/tools/har_capture.py
+@@ -833,8 +833,8 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
+         },
+         {
+             "name": "momo_stripe_confirm",
+-            "marker": "/v1/",
+-            "path_pattern": (r"^/v1/(?:payment_intents|setup_intents)/[^/]+/confirm$",),
++            "marker": "/v1/payment_intents/",
++            "path_pattern": (r"^/v1/payment_intents/[^/]+/confirm$",),
+             "method": "POST",
+             "requires_request_body": True,
+         },
+@@ -1004,10 +1004,6 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
+         response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+         if int(response.get("status", 0) or 0) in {101, 204, 205, 304}:
+             continue
+-        if str(request.get("method") or "").upper() == "OPTIONS":
+-            # CORS preflight responses are intentionally bodyless; they are
+-            # not extraction payloads and must not downgrade completeness.
+-            continue
+         parsed = urlsplit(str(request.get("url") or ""))
+         missing_responses.append(
+             {
+diff --git a/tools/har_utils.py b/tools/har_utils.py
+index 83ff4c8..cc7a3cd 100644
+--- a/tools/har_utils.py
++++ b/tools/har_utils.py
+@@ -13,21 +13,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+ SENSITIVE_NAME_RE = re.compile(
+     r"(?:authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|"
+     r"id[_-]?token|client[_-]?secret|password|passwd|secret|signature|redirectdata|"
+-    r"requestdata|^p$|qr[_-]?code|session[_-]?token|"
+-    r"(?:checkout|account|customer|payment|setup|confirmation|client|session)[_-]?id)",
++    r"requestdata|^p$|qr[_-]?code|session[_-]?token)",
+     re.IGNORECASE,
+ )
+-SENSITIVE_URL_NAME_RE = re.compile(
+-    r"^(?:t|s|sid|session(?:id|_id)?|nonce|token|signature|redirect|return_url)$",
+-    re.IGNORECASE,
+-)
+-SENSITIVE_PATH_RE = re.compile(
+-    r"(?i)(?:oaics|seti|pi|cus|acct|ctoken|sa_nonce|authsess)[_-][A-Za-z0-9_-]+"
+-)
+-UUID_PATH_RE = re.compile(
+-    r"(?i)(?<![A-Za-z0-9])[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+-    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![A-Za-z0-9])"
+-)
+ MAX_INLINE_TEXT = 600
+ 
+ 
+@@ -70,35 +58,13 @@ def _short_hash(value: str) -> str:
+ 
+ def redact_value(name: str, value: Any, *, redact: bool = True) -> Any:
+     text = str(value or "")
+-    if redact and (
+-        SENSITIVE_NAME_RE.search(str(name))
+-        or SENSITIVE_URL_NAME_RE.fullmatch(str(name).strip())
+-    ):
++    if redact and SENSITIVE_NAME_RE.search(str(name)):
+         return f"<redacted len={len(text)} sha256={_short_hash(text)}>"
+     if len(text) > MAX_INLINE_TEXT:
+         return f"<truncated len={len(text)} sha256={_short_hash(text)} preview={text[:120]!r}>"
+     return value
+ 
+ 
+-def redact_path(path: str, *, redact: bool = True) -> str:
+-    if not redact:
+-        return path
+-    value = str(path or "")
+-    value = SENSITIVE_PATH_RE.sub("<redacted-id>", value)
+-    value = UUID_PATH_RE.sub("<redacted-uuid>", value)
+-    # Stripe authorize paths contain opaque account/nonce segments without a
+-    # stable prefix; retain only the endpoint shape.
+-    value = re.sub(r"(?i)(/authorize/)[^/?#]+", r"\1<redacted>", value)
+-    # Browser telemetry endpoints can put opaque base64 blobs directly in a
+-    # path. Keep the route shape but never publish those blobs.
+-    segments = value.split("/")
+-    value = "/".join(
+-        "<redacted-path>" if len(segment) > 160 else segment
+-        for segment in segments
+-    )
+-    return value
+-
+-
+ def redact_url(url: str, *, redact: bool = True) -> str:
+     if not redact:
+         return url
+@@ -106,22 +72,7 @@ def redact_url(url: str, *, redact: bool = True) -> str:
+     query = []
+     for name, value in parse_qsl(parts.query, keep_blank_values=True):
+         query.append((name, redact_value(name, value, redact=True)))
+-    host = parts.hostname or ""
+-    try:
+-        port = parts.port
+-    except ValueError:
+-        port = None
+-    if port:
+-        host = f"{host}:{port}"
+-    return urlunsplit(
+-        (
+-            parts.scheme,
+-            host,
+-            redact_path(parts.path, redact=True),
+-            urlencode(query),
+-            "",
+-        )
+-    )
++    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+ 
+ 
+ def summarize_payload(text: Any, *, content_type: str = "", redact: bool = True) -> Any:
+@@ -178,24 +129,14 @@ def entry_summary(index: int, entry: dict[str, Any], *, redact: bool = True) ->
+     post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+     response_content = response.get("content") if isinstance(response.get("content"), dict) else {}
+     response_text = response_content.get("text", "")
+-    if redact:
+-        entry_host = parts.hostname or ""
+-        try:
+-            entry_port = parts.port
+-        except ValueError:
+-            entry_port = None
+-        if entry_port:
+-            entry_host = f"{entry_host}:{entry_port}"
+-    else:
+-        entry_host = parts.netloc
+     return {
+         "index": index,
+         "startedDateTime": entry.get("startedDateTime"),
+         "time_ms": round(float(entry.get("time", 0) or 0), 2),
+         "method": str(request.get("method") or "GET").upper(),
+         "url": redact_url(url, redact=redact),
+-        "host": entry_host,
+-        "path": redact_path(parts.path, redact=redact) or "/",
++        "host": parts.netloc,
++        "path": parts.path or "/",
+         "status": int(response.get("status", 0) or 0),
+         "statusText": response.get("statusText", ""),
+         "mimeType": response_content.get("mimeType") or response_headers.get("content-type", ""),
+@@ -245,11 +186,6 @@ def analyze_har(
+ ) -> dict[str, Any]:
+     har, sha256 = load_har(path)
+     all_entries = list(iter_entries(har))
+-    channel = "momo" if any(
+-        "payment.momo.vn" in str((entry.get("request") or {}).get("url") or "").lower()
+-        or "/promo_campaign/check_coupon" in str((entry.get("request") or {}).get("url") or "").lower()
+-        for _, entry in all_entries
+-    ) else "gopay"
+     selected: list[tuple[int, dict[str, Any]]] = []
+     host_text = host.lower().strip()
+     path_text = path_contains.lower().strip()
+@@ -288,9 +224,6 @@ def analyze_har(
+     gopay_redirects: list[dict[str, Any]] = []
+     gopay_payment_methods: set[str] = set()
+     gopay_amounts: set[str] = set()
+-    momo_gateway_statuses: Counter[str] = Counter()
+-    momo_gateway_amounts: set[str] = set()
+-    momo_gateway_redirects = 0
+     notable: list[dict[str, Any]] = []
+     stripe_init_entries: list[dict[str, Any]] = []
+     short_url_re = re.compile(r"https://m\.gcash/s/[A-Za-z0-9_-]+")
+@@ -319,18 +252,8 @@ def analyze_har(
+         # GoPay observations: authorize redirect (request url / redirect header /
+         # response body), payment method types, amount.
+         response_redirect = str(summary.get("redirect_url") or "")
+-        raw_request_url = str((entry.get("request") or {}).get("url") or "")
+-        raw_response_headers = header_dict((entry.get("response") or {}).get("headers"))
+-        raw_redirect = str(
+-            (entry.get("response") or {}).get("redirectURL")
+-            or raw_response_headers.get("location")
+-            or ""
+-        )
+-        raw_response_body = str(
+-            ((entry.get("response") or {}).get("content") or {}).get("text") or ""
+-        )
+         redirect_haystack = (
+-            raw_request_url + "\n" + raw_redirect + "\n" + raw_response_body
++            str(summary.get("url") or "") + "\n" + response_redirect + "\n" + body_text
+         )
+         gopay_redirects.extend(
+             {
+@@ -356,31 +279,6 @@ def analyze_har(
+                     body_text,
+                 )
+             )
+-        if summary["host"].lower() == "payment.momo.vn":
+-            raw_response = str(
+-                ((entry.get("response") or {}).get("content") or {}).get("text") or ""
+-            )
+-            try:
+-                momo_payload = json.loads(raw_response) if raw_response else {}
+-            except (TypeError, json.JSONDecodeError):
+-                momo_payload = {}
+-            if isinstance(momo_payload, dict):
+-                status_value = momo_payload.get("status_code")
+-                if status_value not in (None, ""):
+-                    momo_gateway_statuses[str(status_value)] += 1
+-                for key in ("amount", "amount_total", "amountTotal"):
+-                    value = momo_payload.get(key)
+-                    if value not in (None, ""):
+-                        momo_gateway_amounts.add(str(value))
+-                return_url = str(momo_payload.get("return_url") or "")
+-                if return_url:
+-                    for value in dict(parse_qsl(urlsplit(return_url).query)).get(
+-                        "amount", ""
+-                    ).split(","):
+-                        if value != "":
+-                            momo_gateway_amounts.add(str(value))
+-                if bool(momo_payload.get("redirect")):
+-                    momo_gateway_redirects += 1
+         operation = ""
+         request_body = str((entry.get("request") or {}).get("postData", {}).get("text", ""))
+         for marker in (
+@@ -391,7 +289,6 @@ def analyze_har(
+             "authorisation.stateless.consult",
+             "short.dynamic.link",
+             "query.result",
+-            "querySession",
+             "payments/checkout/approve",
+             "payments/checkout/snapshot",
+             "payment_pages/",
+@@ -413,7 +310,6 @@ def analyze_har(
+ 
+     return {
+         "schema": "opll.har-analysis.v1",
+-        "channel": channel,
+         "source": str(Path(path).resolve()),
+         "sha256": sha256,
+         "har_version": har.get("log", {}).get("version", ""),
+@@ -442,9 +338,6 @@ def analyze_har(
+             "gopay_redirects": gopay_redirects,
+             "gopay_payment_methods": sorted(gopay_payment_methods),
+             "gopay_amounts": sorted(gopay_amounts),
+-            "momo_gateway_statuses": dict(momo_gateway_statuses),
+-            "momo_gateway_amounts": sorted(momo_gateway_amounts),
+-            "momo_gateway_redirects": momo_gateway_redirects,
+             "gopay_stripe_init": stripe_init_entries,
+             "notable_operations": notable,
+         },
+@@ -455,19 +348,6 @@ def analyze_har(
+ def markdown_report(report: dict[str, Any]) -> str:
+     counts = report.get("counts", {})
+     observations = report.get("observations", {})
+-    channel = str(report.get("channel") or "").lower()
+-    if channel == "momo":
+-        channel_lines = [
+-            f"- MoMo gateway redirects (#): `{observations.get('momo_gateway_redirects', 0)}`",
+-            f"- MoMo gateway statuses: `{json.dumps(observations.get('momo_gateway_statuses', {}), ensure_ascii=False)}`",
+-            f"- MoMo gateway amounts: `{', '.join(observations.get('momo_gateway_amounts', [])) or '-'}`",
+-        ]
+-    else:
+-        channel_lines = [
+-            f"- GoPay redirects (#): `{len(observations.get('gopay_redirects', []))}`",
+-            f"- GoPay payment methods: `{', '.join(observations.get('gopay_payment_methods', [])) or '-'}`",
+-            f"- GoPay amounts: `{', '.join(observations.get('gopay_amounts', [])) or '-'}`",
+-        ]
+     lines = [
+         "# HAR analysis",
+         "",
+@@ -487,7 +367,9 @@ def markdown_report(report: dict[str, Any]) -> str:
+         f"- Client versions: `{', '.join(observations.get('oai_client_versions', [])) or '-'}`",
+         f"- Sentinel header lengths: `{', '.join(map(str, observations.get('sentinel_header_lengths', []))) or '-'}`",
+         f"- HAR-observed short URLs: `{', '.join(observations.get('short_urls', [])) or '-'}`",
+-        *channel_lines,
++        f"- GoPay redirects (#): `{len(observations.get('gopay_redirects', []))}`",
++        f"- GoPay payment methods: `{', '.join(observations.get('gopay_payment_methods', [])) or '-'}`",
++        f"- GoPay amounts: `{', '.join(observations.get('gopay_amounts', [])) or '-'}`",
+         "",
+         "## Notable operations",
+         "",
+@@ -497,7 +379,7 @@ def markdown_report(report: dict[str, Any]) -> str:
+     for item in observations.get("notable_operations", []):
+         lines.append(f"| {item.get('index')} | `{item.get('operation')}` | {item.get('status')} | `{item.get('url')}` |")
+     gopay_redirects = observations.get("gopay_redirects", [])
+-    if gopay_redirects and channel != "momo":
++    if gopay_redirects:
+         lines.extend(
+             [
+                 "",
+diff --git a/tools/roxy_mitm_control.py b/tools/roxy_mitm_control.py
+index 8ccca10..47f3a6d 100644
+--- a/tools/roxy_mitm_control.py
++++ b/tools/roxy_mitm_control.py
+@@ -180,34 +180,6 @@ def close_cdp_browser(port: int | None) -> None:
+         return
+ 
+ 
+-def delete_roxy_window(
+-    base_url: str,
+-    api_key: str,
+-    workspace_id: str,
+-    dir_id: str,
+-) -> None:
+-    """Delete a Roxy profile after its browser process has been closed."""
+-    if not workspace_id or not dir_id:
+-        return
+-    roxy_request(
+-        base_url,
+-        "/browser/delete",
+-        api_key,
+-        method="POST",
+-        payload={"workspaceId": workspace_id, "dirIds": [dir_id]},
+-        timeout=30,
+-    )
+-
+-
+-def parse_proxy_pool(value: Any) -> list[str]:
+-    """Normalize one-per-line proxy pool input while retaining order."""
+-    if isinstance(value, (list, tuple)):
+-        items = [str(item).strip() for item in value]
+-    else:
+-        items = [line.strip() for line in str(value or "").splitlines()]
+-    return list(dict.fromkeys(item for item in items if item))
+-
+-
+ def roxy_request(
+     base_url: str,
+     path: str,
+@@ -317,11 +289,6 @@ class CaptureState:
+     cdp_output: Path | None = None
+     cdp_port: int | None = None
+     channel: str = "gopay"
+-    api_key: str = ""
+-    api_base: str = DEFAULT_ROXY_API
+-    workspace_id: str = ""
+-    proxy_pool: list[str] = field(default_factory=list)
+-    proxy_index: int = 0
+     logs: list[str] = field(default_factory=list)
+     lock: threading.RLock = field(default_factory=threading.RLock)
+ 
+@@ -350,12 +317,15 @@ class CaptureState:
+             del self.logs[:-100]
+ 
+     def start(self, options: dict[str, Any]) -> dict[str, Any]:
+-        requested_pool = parse_proxy_pool(options.get("upstreamPool"))
+-        single_upstream = str(options.get("upstream") or "").strip()
++        upstream = str(options.get("upstream") or "").strip()
+         api_key = str(options.get("apiKey") or "").strip()
+         api_base = str(options.get("apiBase") or DEFAULT_ROXY_API).strip()
+         channel = str(options.get("channel") or "gopay").strip().lower()
+         window_name = str(options.get("windowName") or "").strip()
++        if not upstream:
++            raise ValueError("请输入上游 SOCKS5 代理")
++        if not api_key:
++            raise ValueError("请输入 Roxy API Key")
+         if channel not in CHANNELS:
+             raise ValueError("抓包渠道无效")
+         if not window_name:
+@@ -363,20 +333,6 @@ class CaptureState:
+         with self.lock:
+             if self.process is not None and self.process.poll() is None:
+                 raise RuntimeError("抓包服务已经在运行")
+-            if requested_pool:
+-                self.proxy_pool = requested_pool
+-                self.proxy_index = 0
+-            elif single_upstream:
+-                self.proxy_pool = [single_upstream]
+-                self.proxy_index = 0
+-            if not self.proxy_pool:
+-                raise ValueError("请输入至少一条上游 SOCKS5 代理")
+-            if not api_key:
+-                api_key = self.api_key
+-            if not api_key:
+-                raise ValueError("请输入 Roxy API Key")
+-            upstream = self.proxy_pool[self.proxy_index % len(self.proxy_pool)]
+-            self.proxy_index = (self.proxy_index + 1) % len(self.proxy_pool)
+             self.status = "starting"
+             self.message = "正在启动 mitmproxy"
+             self.logs.clear()
+@@ -386,8 +342,6 @@ class CaptureState:
+             self.cdp_output = None
+             self.cdp_port = None
+             self.channel = channel
+-            self.api_key = api_key
+-            self.api_base = api_base
+             self.dir_id = ""
+             self.window_name = window_name
+         cleanup_stale_mitmweb((self.proxy_port, self.web_port))
+@@ -448,8 +402,6 @@ class CaptureState:
+         try:
+             existing_ports = {target.port for target in discover_roxy_targets(default_roxy_cache())}
+             workspace_id = resolve_workspace_id(api_base, api_key)
+-            with self.lock:
+-                self.workspace_id = workspace_id
+             dir_id = create_roxy_window(
+                 api_base,
+                 api_key,
+@@ -611,9 +563,6 @@ class CaptureState:
+             cdp_output = self.cdp_output
+             cdp_port = self.cdp_port
+             dir_id = self.dir_id
+-            api_base = self.api_base
+-            api_key = self.api_key
+-            workspace_id = self.workspace_id
+             self.status = "discarding"
+             self.message = "正在放弃抓包并关闭窗口"
+ 
+@@ -627,11 +576,6 @@ class CaptureState:
+             except (OSError, RuntimeError, ValueError):
+                 cdp_port = None
+         close_cdp_browser(cdp_port)
+-        delete_error = ""
+-        try:
+-            delete_roxy_window(api_base, api_key, workspace_id, dir_id)
+-        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+-            delete_error = str(exc)
+ 
+         paths: set[Path] = set()
+         if output is not None:
+@@ -664,19 +608,10 @@ class CaptureState:
+             self.cdp_port = None
+             self.output = ""
+             self.dir_id = ""
+-            self.workspace_id = ""
+             self.window_name = ""
+             self.logs.append("CAPTURE_DISCARDED=1")
+-            if delete_error:
+-                self.logs.append(f"ROXY_WINDOW_DELETE_ERROR={delete_error}")
+-            else:
+-                self.logs.append("ROXY_WINDOW_DELETED=1")
+             self.status = "idle"
+-            self.message = (
+-                "本次抓包已放弃，窗口已关闭并删除，未保存文件"
+-                if not delete_error
+-                else f"本次抓包已放弃，窗口已关闭；删除失败：{delete_error}"
+-            )
++            self.message = "本次抓包已放弃，窗口已关闭，未保存文件"
+         return self.snapshot()
+ 
+ 
+@@ -691,7 +626,7 @@ HTML = r"""<!doctype html>
+ *{box-sizing:border-box}body{margin:0;min-height:100vh}header{height:56px;background:#20262d;color:#fff;display:flex;align-items:center;padding:0 18px;gap:14px}header h1{font-size:17px;margin:0;font-weight:600}header span{font-size:12px;color:#b8c2cc}
+ main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc(100vh - 56px)}
+ .controls{background:#fff;border-bottom:1px solid #d7dee5;padding:14px 18px;display:grid;grid-template-columns:minmax(320px,2fr) minmax(220px,1fr) 150px 190px auto;gap:10px;align-items:end}
+- label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select,textarea{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}textarea{height:72px;padding-top:8px;resize:vertical}input:focus,select:focus,textarea:focus{outline:2px solid #2589d8;outline-offset:-1px}
++label{display:grid;gap:5px;font-size:12px;color:#52606d}input,select{height:36px;border:1px solid #b8c2cc;border-radius:4px;padding:0 10px;font:inherit;background:#fff;min-width:0}input:focus,select:focus{outline:2px solid #2589d8;outline-offset:-1px}
+ .actions{display:flex;gap:8px}.button{height:36px;border:0;border-radius:4px;padding:0 15px;font-weight:600;cursor:pointer;white-space:nowrap}.primary{background:#1683d8;color:#fff}.danger{background:#d64545;color:#fff}.discard{background:#59636e;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}
+ .status{height:46px;background:#f8fafb;border-bottom:1px solid #d7dee5;display:flex;align-items:center;gap:12px;padding:0 18px;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#8996a3}.dot.running{background:#1f9d61}.dot.starting,.dot.stopping,.dot.discarding{background:#e0a126}.status code{margin-left:auto;color:#52606d}
+ .workspace{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0}.mitm{position:relative;background:#fff}.mitm iframe{width:100%;height:100%;border:0}.empty{position:absolute;inset:0;display:grid;place-items:center;color:#6b7785;background:#fff}.log{background:#20262d;color:#d9e1e8;padding:12px;overflow:auto;font:12px/1.5 Consolas,monospace;white-space:pre-wrap}.log h2{font:600 13px Segoe UI;margin:0 0 8px;color:#fff}
+@@ -702,7 +637,7 @@ main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc
+ <header><h1>mitmproxy Roxy 控制台</h1><span>上游代理仅保存在当前进程内存</span></header>
+ <main>
+ <section class="controls">
+-<label>上游 SOCKS5 代理池（每行一条）<textarea id="upstreamPool" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></textarea></label>
++<label>上游 SOCKS5 代理<input id="upstream" type="password" autocomplete="off" placeholder="HOST:PORT:USERNAME:PASSWORD"></label>
+ <label>Roxy API Key<input id="apiKey" type="password" autocomplete="off" placeholder="仅本机 API 使用"></label>
+ <label>渠道<select id="channel"><option value="gopay">GoPay</option><option value="momo">MoMo</option><option value="paypal">PayPal</option><option value="gcash">GCash</option></select></label>
+ <label>新窗口名称<input id="windowName" placeholder="留空自动命名"></label>
+@@ -713,11 +648,11 @@ main{display:grid;grid-template-rows:auto auto minmax(420px,1fr);min-height:calc
+ <section class="workspace"><div class="mitm"><div id="empty" class="empty">启动后在这里查看 mitmweb</div><iframe id="mitm" title="mitmweb"></iframe></div><aside id="log" class="log"><h2>运行状态</h2></aside></section>
+ </main>
+ <script>
+-const elements={upstreamPool:document.querySelector('#upstreamPool'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
++const elements={upstream:document.querySelector('#upstream'),apiKey:document.querySelector('#apiKey'),apiBase:document.querySelector('#apiBase'),channel:document.querySelector('#channel'),windowName:document.querySelector('#windowName'),start:document.querySelector('#start'),stop:document.querySelector('#stop'),discard:document.querySelector('#discard'),dot:document.querySelector('#dot'),state:document.querySelector('#state'),message:document.querySelector('#message'),proxy:document.querySelector('#proxy'),log:document.querySelector('#log'),mitm:document.querySelector('#mitm'),empty:document.querySelector('#empty')};
+ async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const data=await response.json();if(!response.ok)throw new Error(data.error||'操作失败');return data}
+ function render(data){elements.dot.className='dot '+data.status;elements.state.textContent={idle:'未启动',starting:'启动中',running:'运行中',stopping:'停止保存中',discarding:'正在放弃'}[data.status]||data.status;elements.message.textContent=data.message;elements.proxy.textContent='HTTP '+data.proxy;const busy=data.status==='starting'||data.status==='stopping'||data.status==='discarding';elements.start.disabled=data.running||busy;elements.stop.disabled=!data.running||busy;elements.discard.disabled=!data.running||busy;elements.log.replaceChildren();const title=document.createElement('h2');title.textContent='运行状态';elements.log.append(title,document.createTextNode(data.logs.join('\n')));if(data.running){elements.empty.hidden=true;if(!elements.mitm.src)elements.mitm.src=data.mitmweb}else{elements.empty.hidden=false;elements.mitm.removeAttribute('src')}}
+ async function refresh(){try{render(await (await fetch('/api/status')).json())}catch(error){elements.message.textContent=error.message}}
+-elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstreamPool:elements.upstreamPool.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
++elements.start.addEventListener('click',async()=>{elements.start.disabled=true;elements.message.textContent='正在启动';try{const data=await request('/api/start',{upstream:elements.upstream.value,apiKey:elements.apiKey.value,apiBase:elements.apiBase.value,channel:elements.channel.value,windowName:elements.windowName.value});elements.apiKey.value='';elements.upstream.value='';render(data)}catch(error){elements.message.textContent=error.message;await refresh()}});
+ elements.stop.addEventListener('click',async()=>{elements.stop.disabled=true;try{render(await request('/api/stop'))}catch(error){elements.message.textContent=error.message;await refresh()}});
+ elements.discard.addEventListener('click',async()=>{elements.discard.disabled=true;try{render(await request('/api/discard'))}catch(error){elements.message.textContent=error.message;await refresh()}});
+ setInterval(refresh,1500);refresh();
