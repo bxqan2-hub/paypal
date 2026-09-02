@@ -136,9 +136,26 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
             checkout[target] = value
     return checkout
 
-def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> dict[str, Any]:
+def taxes(
+    session: Any,
+    checkout: dict[str, Any],
+    billing: dict[str, str],
+    *,
+    tax_iteration: int | None = None,
+) -> dict[str, Any]:
     path = "/backend-api/payments/checkout/taxes"
     processor = processor_entity_for_country(MOMO_COUNTRY, str(checkout.get("processor_entity") or ""))
+    # The VN browser progressively fills the address across the three tax
+    # refreshes: blank state/postal, state only, then the complete postal
+    # code.  Preserve that same session-local progression when requested by
+    # the full MoMo route; direct callers retain the complete-address default.
+    address_state = billing["state"]
+    address_postal = billing["postal_code"]
+    if tax_iteration == 1:
+        address_state = ""
+        address_postal = ""
+    elif tax_iteration == 2:
+        address_postal = ""
     payload = request(
         session,
         "POST",
@@ -151,10 +168,44 @@ def taxes(session: Any, checkout: dict[str, Any], billing: dict[str, str]) -> di
             "billing_name": billing["name"],
             "currency": MOMO_CURRENCY.lower(),
             "processor_entity": processor,
-            "tax_id": None,
-            "billing_address": {"line1": billing["line1"], "line2": "", "city": billing["city"], "country": MOMO_COUNTRY, "postal_code": billing["postal_code"], "state": billing["state"]},
+            "billing_address": {"line1": billing["line1"], "city": billing["city"], "country": MOMO_COUNTRY, "postal_code": address_postal, "state": address_state},
         },
         headers={"Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}", "x-openai-target-path": path, "x-openai-target-route": path},
     )
-    checkout.update({k: v for k, v in payload.items() if k in {"checkout_session", "checkout_state", "custom_payment_methods", "confirm_return_url"}})
+    checkout.update(
+        {
+            k: v
+            for k, v in payload.items()
+            if k
+            in {
+                "checkout_session",
+                "checkout_state",
+                "custom_payment_methods",
+                "confirm_return_url",
+                "customer_session_client_secret",
+            }
+        }
+    )
+    # Current responses wrap the refreshed state under checkout_session;
+    # flatten the protocol fields consumed by the next Stripe step while
+    # retaining the raw wrapper for diagnostics.
+    nested = payload.get("checkout_session")
+    if isinstance(nested, dict):
+        for key in (
+            "checkout_state",
+            "custom_payment_methods",
+            "confirm_return_url",
+            "customer_session_client_secret",
+            "publishable_key",
+            "processor_entity",
+        ):
+            value = nested.get(key)
+            if value not in (None, "", [], {}):
+                checkout[key] = value
+        amount_total = nested.get("amount_total")
+        if amount_total not in (None, ""):
+            try:
+                checkout["payable_amount_minor"] = int(amount_total)
+            except (TypeError, ValueError):
+                pass
     return payload

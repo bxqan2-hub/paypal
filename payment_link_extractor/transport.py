@@ -27,6 +27,13 @@ from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
 from .models import ExtractionConfig
 
+
+# The browser Sentinel SDK is versioned independently from the ChatGPT API
+# client.  Keep this value in the transport layer so the optional Momo browser
+# context can load the same-origin frame used by the captured VN flow without
+# importing any other payment-channel implementation.
+SENTINEL_SDK_VERSION = "20260810913b"
+
 try:
     from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
 except ImportError:  # pragma: no cover
@@ -522,6 +529,12 @@ class BrowserSentinelProvider:
         locale: str = "en-PH",
         client_build_number: str = "",
         client_version: str = "",
+        # ``enhanced`` is deliberately opt-in.  Existing GCash callers retain
+        # the historical lightweight browser bootstrap; Momo enables the
+        # same-origin SDK/cookie/telemetry bridge explicitly.
+        enhanced: bool = False,
+        session_token: str = "",
+        timezone: str = "Asia/Manila",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -534,16 +547,28 @@ class BrowserSentinelProvider:
         self.locale = str(locale or "en-PH").strip() or "en-PH"
         self.client_build_number = str(client_build_number or "").strip()
         self.client_version = str(client_version or "").strip()
+        self.enhanced = bool(enhanced)
+        self.session_token = str(session_token or "").strip()
+        self.timezone = str(timezone or "Asia/Manila").strip() or "Asia/Manila"
+        self.browser_profile = str(
+            os.getenv("OPLL_MOMO_BROWSER_PROFILE_DIR", "") if self.enhanced else ""
+        ).strip()
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
         self.locale_script = self.temp_dir / "locale.js"
+        self.sentinel_init_script: Path | None = None
         self.locale_script.write_text(
             f"Object.defineProperty(navigator, 'language', {{get: () => {json.dumps(self.locale)}}});"
             f"Object.defineProperty(navigator, 'languages', {{get: () => [{json.dumps(self.locale)}, 'en']}});",
             encoding="utf-8",
         )
+        if self.enhanced:
+            self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
+            self.sentinel_init_script.write_text(
+                self._build_sentinel_init_script(), encoding="utf-8"
+            )
         self._lock = threading.RLock()
         self._started = False
         self._closed = False
@@ -551,6 +576,65 @@ class BrowserSentinelProvider:
         self._attestation = ""
         self._cookies = ""
         self._launch_args_used = False
+
+    @staticmethod
+    def _build_sentinel_init_script() -> str:
+        """Build a same-origin init script for the opt-in Momo context.
+
+        The bundled SDK is intentionally loaded from the local, pinned asset
+        rather than fetched from a foreign payment-channel module.  The small
+        ``fetch`` wrapper records the timing tuple consumed by the ChatGPT
+        checkout telemetry header while leaving all non-Sentinel requests
+        untouched.
+        """
+        assets = Path(__file__).resolve().parent / "sentinel_assets"
+        sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
+        return (
+            "(() => {\n"
+            "  const install = () => { try {\n"
+            f"{sdk}\n"
+            "    window.SentinelSDK = SentinelSDK;\n"
+            "    globalThis.SentinelSDK = SentinelSDK;\n"
+            "    if (!window.__opllSentinelFetchWrapped) {\n"
+            "      const originalFetch = window.fetch.bind(window);\n"
+            "      window.fetch = async (...args) => {\n"
+            "        const raw = args[0] && args[0].url ? args[0].url : String(args[0] || '');\n"
+            "        const absolute = new URL(raw, location.origin).href;\n"
+            "        const isPing = new URL(absolute).pathname === '/backend-api/sentinel/ping';\n"
+            "        const started = performance.now();\n"
+            "        if (isPing && window.__opllSentinelReferer) {\n"
+            "          const init = Object.assign({}, args[1] || {}, {referrer: window.__opllSentinelReferer, referrerPolicy: 'strict-origin-when-cross-origin'});\n"
+            "          args = [args[0], init];\n"
+            "        }\n"
+            "        const response = await originalFetch(...args);\n"
+            "        if (isPing) {\n"
+            "          const headersAt = performance.now();\n"
+            "          try { await response.clone().arrayBuffer(); } catch (_) {}\n"
+            "          await new Promise(resolve => setTimeout(resolve, 0));\n"
+            "          const ended = performance.now();\n"
+            "          const entries = performance.getEntriesByName(absolute);\n"
+            "          const entry = entries[entries.length - 1];\n"
+            "          const action = entry && entry.responseStart && entry.requestStart ? entry.responseStart - entry.requestStart : headersAt - started;\n"
+            "          const total = Math.max(0, Math.round(ended - started));\n"
+            "          const bodyRead = Math.max(0, Math.round(ended - headersAt));\n"
+            "          const number = name => Number(response.headers.get(name) || 0) || 0;\n"
+            "          const rtt = number('s-cf-tcp-rtt-msec') || number('s-cf-quic-rtt-msec');\n"
+            "          const protocol = entry && String(entry.nextHopProtocol || '').toLowerCase();\n"
+            "          const protocolCode = protocol.includes('h3') ? 3 : protocol.includes('h2') ? 2 : protocol.includes('http/1') ? 1 : 0;\n"
+            "          window.__opllLastSentinelTelemetry = [1, action, number('s-cf-edge-msec'), number('s-cf-origin-ttfb-msec'), rtt, protocolCode, bodyRead, Math.max(total, Math.ceil(action))];\n"
+            "        }\n"
+            "        return response;\n"
+            "      };\n"
+            "      window.__opllSentinelFetchWrapped = true;\n"
+            "    }\n"
+            "    window.__opllSentinelInjected = true;\n"
+            "  } catch (error) {\n"
+            "    window.__opllSentinelInjectionError = String(error && error.message || error);\n"
+            "  } };\n"
+            "  if (document.body) install();\n"
+            "  else document.addEventListener('DOMContentLoaded', install, {once:true});\n"
+            "})();\n"
+        )
 
     @property
     def enabled(self) -> bool:
@@ -568,23 +652,51 @@ class BrowserSentinelProvider:
             self.session_name,
             "--user-agent",
             self.user_agent,
-            "--init-script",
-            str(self.locale_script),
         ]
+        # agent-browser applies navigation-scoped init scripts only when the
+        # flags follow the open URL.  The enhanced Momo path appends them via
+        # _enhanced_open_args(); the legacy path keeps its original command.
+        if not self.enhanced:
+            command.extend(["--init-script", str(self.locale_script)])
+        if self.enhanced and self.browser_profile:
+            command.extend(["--profile", self.browser_profile])
         if self.proxy:
             command.extend(["--proxy", self.proxy])
         if not self._launch_args_used:
             command.extend(["--args", "--disable-blink-features=AutomationControlled"])
         return command
 
+    def _enhanced_open_args(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Build an open command with init scripts after the URL."""
+        args = ["open", str(url)]
+        if self.enhanced:
+            args.extend(["--init-script", str(self.locale_script)])
+            if self.sentinel_init_script is not None:
+                args.extend(["--init-script", str(self.sentinel_init_script)])
+        if headers:
+            args.extend(
+                ["--headers", json.dumps(headers, separators=(",", ":"))]
+            )
+        args.append("--json")
+        return args
+
     def _run(self, args: list[str], timeout: float = 75.0) -> Any:
         if self._closed:
             raise RuntimeError("Sentinel browser provider is closed")
         output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
         env = dict(os.environ)
-        # Chromium uses TZ when constructing the browser fingerprint.  Keep
-        # the browser and the PH checkout locale coherent when supported.
-        env.setdefault("TZ", "Asia/Manila")
+        # Chromium uses TZ when constructing the browser fingerprint.  The
+        # enhanced Momo context must override a stale process-level timezone;
+        # the legacy GCash path keeps its historical default semantics.
+        if self.enhanced:
+            env["TZ"] = self.timezone
+        else:
+            env.setdefault("TZ", "Asia/Manila")
         env["AGENT_BROWSER_NAMESPACE"] = self.namespace
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         status = -1
@@ -615,7 +727,11 @@ class BrowserSentinelProvider:
                 except OSError:
                     time.sleep(0.05)
         if status != 0:
-            raise RuntimeError(f"agent-browser exited with status {status}")
+            detail = safe_log_text(text, 600)
+            raise RuntimeError(
+                f"agent-browser exited with status {status}"
+                + (f": {detail}" if detail else "")
+            )
         return _decode_agent_browser_output(text)
 
     def _eval(self, expression: str, timeout: float = 75.0) -> Any:
@@ -635,8 +751,134 @@ class BrowserSentinelProvider:
             attestation = str(value.get("attestation") or "").strip()
             if attestation:
                 self._attestation = attestation
+        if self._attestation or not self.enhanced:
+            return
+        # Some current deployments do not expose client-bootstrap.  The
+        # browser request monitor still contains the fresh attestation on a
+        # same-origin backend request; inspect only header names/values in
+        # memory and never persist the opaque value.
+        try:
+            captured = self._run(
+                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+                timeout=20,
+            )
+        except Exception:
+            return
+        data = captured.get("data") if isinstance(captured, dict) else None
+        requests = data.get("requests") if isinstance(data, dict) else None
+        if not isinstance(requests, list):
+            return
+        for item in reversed(requests):
+            if not isinstance(item, dict):
+                continue
+            headers = item.get("requestHeaders") or item.get("headers")
+            if isinstance(headers, list):
+                header_map = {
+                    str(header.get("name") or "").lower(): str(header.get("value") or "")
+                    for header in headers
+                    if isinstance(header, dict)
+                }
+            elif isinstance(headers, dict):
+                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
+            else:
+                continue
+            attestation = str(
+                header_map.get("oai-web-deployment-attestation") or ""
+            ).strip()
+            if attestation:
+                self._attestation = attestation
+                return
+
+    def _sync_pending_update_from_browser(self) -> None:
+        """Mirror the latest opaque update receipt into the HTTP session."""
+        if not self.enhanced:
+            return
+        try:
+            value = self._run(
+                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
+                timeout=20,
+            )
+        except Exception:
+            return
+        data = value.get("data") if isinstance(value, dict) else None
+        requests = data.get("requests") if isinstance(data, dict) else None
+        if not isinstance(requests, list):
+            return
+        for item in reversed(requests):
+            if not isinstance(item, dict):
+                continue
+            headers = item.get("responseHeaders")
+            if not isinstance(headers, dict):
+                continue
+            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
+            if not receipt:
+                continue
+            transport_headers = getattr(self.transport_session, "headers", None)
+            if transport_headers is not None:
+                transport_headers["x-oai-is-pending-updates"] = json.dumps(
+                    {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
+                )
+            return
+
+    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
+        """Install a browser cookie, chunking large session values."""
+        if not self.enhanced:
+            return
+        cookie_name = str(name or "").strip()
+        cookie_value = str(value or "")
+        if not cookie_name or not cookie_value:
+            return
+        chunk_size = 3800
+        chunks = [
+            cookie_value[index : index + chunk_size]
+            for index in range(0, len(cookie_value), chunk_size)
+        ]
+        if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096:
+            names = [(cookie_name, chunks[0])]
+        else:
+            names = [
+                (f"{cookie_name}.{index}", chunk)
+                for index, chunk in enumerate(chunks)
+            ]
+        for chunk_name, chunk in names:
+            args = [
+                "cookies",
+                "set",
+                chunk_name,
+                chunk,
+                "--domain",
+                ".chatgpt.com",
+                "--path",
+                "/",
+            ]
+            if http_only:
+                args.append("--httpOnly")
+            args.append("--secure")
+            self._run(args)
 
     def _sync_cookies(self) -> None:
+        if not self.enhanced:
+            # Preserve the original lightweight GCash behavior byte-for-byte.
+            value = self._run(["cookies", "get", "--json"])
+            cookies: list[dict[str, Any]] = []
+            if isinstance(value, dict):
+                data = value.get("data")
+                if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+                    cookies = [item for item in data["cookies"] if isinstance(item, dict)]
+                elif isinstance(data, list):
+                    cookies = [item for item in data if isinstance(item, dict)]
+            pairs = []
+            for cookie in cookies:
+                name = str(cookie.get("name") or "").strip()
+                val = str(cookie.get("value") or "")
+                if name:
+                    pairs.append(f"{name}={val}")
+            if pairs:
+                self._cookies = "; ".join(pairs)
+                headers = getattr(self.transport_session, "headers", None)
+                if headers is not None:
+                    headers["Cookie"] = self._cookies
+            return
         value = self._run(["cookies", "get", "--json"])
         cookies: list[dict[str, Any]] = []
         if isinstance(value, dict):
@@ -651,17 +893,151 @@ class BrowserSentinelProvider:
             val = str(cookie.get("value") or "")
             if name:
                 pairs.append(f"{name}={val}")
+                if self.enhanced and name.lower() == "oai-did" and val:
+                    self.device_id = val
         if pairs:
             self._cookies = "; ".join(pairs)
             headers = getattr(self.transport_session, "headers", None)
-            if headers is not None:
+            jar_mode = bool(getattr(self.transport_session, "momo_cookie_jar_mode", False))
+            if jar_mode:
+                jar = getattr(self.transport_session, "cookies", None)
+                if jar is not None:
+                    for cookie in cookies:
+                        name = str(cookie.get("name") or "").strip()
+                        value = str(cookie.get("value") or "")
+                        if not name or not value:
+                            continue
+                        domain = str(cookie.get("domain") or ".chatgpt.com")
+                        path = str(cookie.get("path") or "/")
+                        try:
+                            jar.set(name, value, domain=domain, path=path)
+                        except Exception:
+                            pass
+                if headers is not None:
+                    headers.pop("Cookie", None)
+                    if self.device_id:
+                        headers["oai-device-id"] = self.device_id
+            elif headers is not None:
                 headers["Cookie"] = self._cookies
+                if self.device_id:
+                    headers["oai-device-id"] = self.device_id
 
-    def _start(self) -> None:
+    def _start_enhanced(self) -> None:
+        """Bootstrap the optional Momo Sentinel context on chatgpt.com."""
         if not self.enabled:
             raise RuntimeError("agent-browser is disabled or unavailable")
         try:
-            self._run(["open", "about:blank", "--json"])
+            # The first navigation must be the real origin with init scripts
+            # attached after the URL.  An explicit about:blank prewarm causes
+            # agent-browser to bind eval/cookies to a different tab and
+            # consumes the navigation-scoped scripts before ChatGPT loads.
+            self._run(self._enhanced_open_args("https://chatgpt.com/"))
+            self._started = True
+            self._launch_args_used = True
+            frame_url = (
+                "https://chatgpt.com/backend-api/sentinel/frame.html?sv="
+                + SENTINEL_SDK_VERSION
+            )
+            injected: Any = {}
+            for _ in range(10):
+                injected = self._eval(
+                    "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
+                )
+                if isinstance(injected, dict) and (
+                    injected.get("token") == "function"
+                    or injected.get("proto2") == "function"
+                ):
+                    break
+                self._run(["wait", "100"])
+            if not isinstance(injected, dict) or not (
+                injected.get("token") == "function"
+                or injected.get("proto2") == "function"
+            ):
+                # A page-level navigation can replace an init-script global
+                # while the same-origin Sentinel frame still loads the
+                # deployed SDK normally.  Try that frame once before failing
+                # closed; this also handles proxied Cloudflare interstitials
+                # that finish navigation after the first probe.
+                try:
+                    self._run(self._enhanced_open_args(frame_url))
+                    for _ in range(10):
+                        injected = self._eval(
+                            "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
+                        )
+                        if isinstance(injected, dict) and (
+                            injected.get("token") == "function"
+                            or injected.get("proto2") == "function"
+                        ):
+                            break
+                        self._run(["wait", "100"])
+                except Exception:
+                    pass
+            if not isinstance(injected, dict) or not (
+                injected.get("token") == "function"
+                or injected.get("proto2") == "function"
+            ):
+                detail = str((injected or {}).get("error") or "SentinelSDK injection failed")
+                if isinstance(injected, dict):
+                    detail += " [sdk=%s token=%s proto2=%s]" % (
+                        bool(injected.get("injected")),
+                        str(injected.get("token") or ""),
+                        str(injected.get("proto2") or ""),
+                    )
+                raise RuntimeError(detail)
+
+            # Replace stale browser state only when a session cookie was
+            # supplied.  This avoids combining old chunked NextAuth values
+            # with the current runtime identity.
+            if self.session_token:
+                self._run(["cookies", "clear"])
+            self._set_cookie("oai-did", self.device_id)
+            if self.session_token:
+                self._set_cookie("__Secure-next-auth.session-token", self.session_token)
+            self._run(self._enhanced_open_args(frame_url))
+            build_number = self.client_build_number or _env_or_default(
+                "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
+            )
+            client_version = self.client_version or _env_or_default(
+                "OPLL_OAI_CLIENT_VERSION",
+                "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+            )
+            auth_headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "oai-device-id": self.device_id,
+                "oai-session-id": self.session_id,
+                "oai-language": self.locale,
+                "oai-client-build-number": build_number,
+                "oai-client-version": client_version,
+            }
+            account = account_id(self.access_token)
+            if account:
+                auth_headers["chatgpt-account-id"] = account
+            self._run(
+                self._enhanced_open_args(
+                    "https://chatgpt.com/?promo_campaign=plus-1-month-free",
+                    headers=auth_headers,
+                )
+            )
+            self._capture_bootstrap()
+            self._sync_pending_update_from_browser()
+            self._run(self._enhanced_open_args(frame_url))
+            self._sync_cookies()
+        except Exception:
+            self._failed = True
+            raise
+
+    def _start(self) -> None:
+        if self.enhanced:
+            self._start_enhanced()
+            return
+        if not self.enabled:
+            raise RuntimeError("agent-browser is disabled or unavailable")
+        try:
+            # Do not navigate to about:blank here: agent-browser consumes
+            # registered init scripts on that explicit navigation.  Launch
+            # without a target, stage the device cookie, then navigate to the
+            # real ChatGPT origin so the legacy locale shim is applied too.
+            self._run(["open", "--json"])
             self._started = True
             self._launch_args_used = True
             self._run(
@@ -724,6 +1100,18 @@ class BrowserSentinelProvider:
         # The SDK itself uses a zero-length POST immediately before protected
         # checkout calls.  Running it in the same browser context keeps the
         # Cloudflare/Sentinel cookies on the matching proxy IP.
+        if self.enhanced:
+            expression = (
+                "(async()=>{window.__opllSentinelReferer="
+                + json.dumps(str(referer or "https://chatgpt.com/"))
+                + ";const r=await fetch('/backend-api/sentinel/ping',"
+                "{method:'POST',credentials:'include',referrer:window.__opllSentinelReferer,"
+                "referrerPolicy:'strict-origin-when-cross-origin',"
+                "headers:{'Content-Type':'text/plain;charset=UTF-8'}});"
+                "return r.status})()"
+            )
+            self._eval(expression, timeout=30)
+            return
         expression = (
             "(async()=>{const r=await fetch('/backend-api/sentinel/ping',"
             "{method:'POST',credentials:'include',referrer:" + json.dumps(referer or "https://chatgpt.com/") +
@@ -731,12 +1119,133 @@ class BrowserSentinelProvider:
         )
         self._eval(expression, timeout=30)
 
+    def prepare(self) -> None:
+        """Eagerly start the enhanced browser and mirror pending state."""
+        if not self.enhanced:
+            return
+        with self._lock:
+            if self._failed:
+                raise RuntimeError("Sentinel browser provider failed during startup")
+            if not self._started:
+                self._start()
+            else:
+                self._sync_pending_update_from_browser()
+
+    @staticmethod
+    def _normalize_flow(flow: str) -> str:
+        selected = str(flow or "").strip()
+        return "chatgpt_checkout" if selected.lower() in {"", "default", "__default__"} else selected
+
+    def prepare_flow(self, *, flow: str, referer: str) -> None:
+        """Run the SDK's flow initializer in the same browser context."""
+        if not self.enhanced:
+            return
+        with self._lock:
+            if self._failed:
+                raise RuntimeError("Sentinel browser provider failed during startup")
+            if not self._started:
+                self._start()
+            selected_flow = self._normalize_flow(flow)
+            self._eval(
+                "(async()=>{window.__opllSentinelReferer="
+                + json.dumps(str(referer or ""))
+                + ";await window.SentinelSDK.init("
+                + json.dumps(selected_flow)
+                + ");return true})()",
+                timeout=90,
+            )
+            self._sync_pending_update_from_browser()
+            self._sync_cookies()
+
+    def _store_ping_telemetry(self, name: str, telemetry: list[Any]) -> None:
+        if len(telemetry) != 8:
+            return
+        setattr(
+            self.transport_session,
+            name,
+            json.dumps(telemetry, separators=(",", ":")),
+        )
+
+    def _captured_ping_telemetry(self) -> list[Any]:
+        if not self.enhanced:
+            return []
+        try:
+            value = self._eval(
+                "(() => Array.isArray(window.__opllLastSentinelTelemetry) ? window.__opllLastSentinelTelemetry : [])()"
+            )
+        except Exception:
+            return []
+        if not isinstance(value, list) or len(value) != 8:
+            return []
+        try:
+            numbers = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return []
+        if numbers[1] <= 0 or numbers[7] < numbers[1]:
+            return []
+        return [
+            1,
+            numbers[1],
+            int(numbers[2]),
+            int(numbers[3]),
+            int(numbers[4]),
+            int(numbers[5]),
+            int(numbers[6]),
+            numbers[7],
+        ]
+
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         with self._lock:
             if self._failed:
                 raise RuntimeError("Sentinel browser provider failed during startup")
             if not self._started:
                 self._start()
+            if self.enhanced:
+                selected_flow = self._normalize_flow(flow)
+                generated = self._eval(
+                    "(async()=>{window.__opllSentinelReferer="
+                    + json.dumps(str(referer or "https://chatgpt.com/"))
+                    + ";const token=await window.SentinelSDK.token("
+                    + json.dumps(selected_flow)
+                    + ");const timing=typeof window.SentinelSDK.timing==='function'"
+                    + "?window.SentinelSDK.timing():null;return {token,timing}})()",
+                    timeout=90,
+                )
+                raw = generated.get("token") if isinstance(generated, dict) else generated
+                timing_raw = generated.get("timing") if isinstance(generated, dict) else None
+                if isinstance(raw, str):
+                    token = raw.strip()
+                elif isinstance(raw, dict):
+                    token = json.dumps(raw, separators=(",", ":"))
+                else:
+                    token = ""
+                if not token:
+                    raise RuntimeError("SentinelSDK returned an empty token")
+                if isinstance(timing_raw, str):
+                    try:
+                        timing_value = json.loads(timing_raw)
+                    except (TypeError, ValueError):
+                        timing_value = None
+                else:
+                    timing_value = timing_raw
+                if not isinstance(timing_value, list) or len(timing_value) != 8:
+                    timing_value = self._captured_ping_telemetry()
+                telemetry_name = (
+                    "openai_checkout_telemetry"
+                    if selected_flow == "chatgpt_checkout"
+                    else "openai_approve_telemetry"
+                )
+                self._store_ping_telemetry(telemetry_name, timing_value)
+                self._sync_pending_update_from_browser()
+                self._sync_cookies()
+                result = {"OpenAI-Sentinel-Token": token}
+                if self._attestation:
+                    result["oai-web-deployment-attestation"] = self._attestation
+                if self._cookies:
+                    result["Cookie"] = self._cookies
+                if self.device_id:
+                    result["oai-device-id"] = self.device_id
+                return result
             self._ping(referer)
             raw = self._eval(
                 "(async()=>{const token=await SentinelSDK.token(" + json.dumps(flow) + ");return token})()",

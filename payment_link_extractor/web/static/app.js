@@ -421,12 +421,14 @@
     const momoNote = byId("momo-country-note");
     const gopayZeroTrialField = byId("gopay-zero-trial-field");
     const momoZeroTrialField = byId("momo-zero-trial-field");
+    const momoFingerprintField = byId("momo-fingerprint-field");
     if (!isFixedCountry && country.value) {
       paypalCountryPreference = country.value;
     }
     if (isFixedCountry) {
       if (country.value && country.value !== fixedCountry) paypalCountryPreference = country.value;
       if (isGopay) country.value = "ID";
+      else if (isMomo) country.value = "VN";
       else country.value = "PH";
     } else if (paypalCountryPreference && ["PH", "ID"].includes(country.value)) {
       country.value = paypalCountryPreference;
@@ -437,6 +439,7 @@
     if (momoNote) momoNote.hidden = !isMomo;
     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
     if (momoZeroTrialField) momoZeroTrialField.hidden = !isMomo;
+    if (momoFingerprintField) momoFingerprintField.hidden = !isMomo;
     renderBillingPreview();
   }
 
@@ -604,6 +607,7 @@
     }
     if (paymentMethod === "momo") {
       result.momo_zero_trial_validation = byId("momo-zero-trial-validation").checked;
+      result.momo_fingerprint = byId("momo-fingerprint")?.value || "";
     }
     const values = [
       ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
@@ -1076,7 +1080,7 @@
       retrying: "更换代理 IP 后完整重试",
       checkout_update: "提交优惠参数", promotion_applied: "优惠已提交，等待金额校验", stripe_init: "初始化支付", elements_session: "准备支付方式",
       taxes: "同步税费", payment_confirmation: "确认支付方式", redirect_resolution: "解析跳转链接",
-      zero_amount_validation: "校验 GoPay 链接金额是否为 0 元", zero_amount_confirmed: "GoPay 0 元链接校验通过",
+      zero_amount_validation: "校验 0 元链接金额", zero_amount_confirmed: "0 元链接金额校验通过",
       completed: "任务完成", cancelled: "任务已取消", failed: "任务失败",
     };
     return labels[stage] || stage || "处理中";

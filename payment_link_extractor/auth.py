@@ -102,6 +102,18 @@ def extract_access_token(raw: Any) -> str:
 
 def _find_session_token(value: Any) -> str:
     if isinstance(value, dict):
+        # Browser exports split large NextAuth cookies into .0/.1 chunks.
+        # Reassemble them in numeric order before the generic key walk.
+        chunked: list[tuple[int, str]] = []
+        for key, nested in value.items():
+            normalized_key = str(key or "").replace("-", "_").lower()
+            if not normalized_key.startswith("__secure_next_auth.session_token."):
+                continue
+            suffix = normalized_key.rsplit(".", 1)[-1]
+            if suffix.isdigit() and isinstance(nested, str):
+                chunked.append((int(suffix), nested.strip()))
+        if chunked:
+            return "".join(part for _, part in sorted(chunked))
         for key, nested in value.items():
             normalized_key = str(key or "").replace("-", "_").lower()
             compact_key = normalized_key.replace("_", "")
@@ -127,7 +139,21 @@ def _find_session_token(value: Any) -> str:
 def extract_session_token(raw: Any) -> str:
     """Extract an optional NextAuth session token from an import envelope."""
     if isinstance(raw, (dict, list)):
-        return _find_session_token(raw)
+        found = _find_session_token(raw)
+        if found:
+            return found
+        # Accept a browser Cookie header in an import envelope without
+        # persisting or echoing its value.
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                if str(key or "").lower() in {"cookie", "cookies", "cookie_header"}:
+                    match = re.search(
+                        r"(?:^|;\s*)__Secure-next-auth\.session-token=([^;]+)",
+                        str(value or ""),
+                    )
+                    if match:
+                        return match.group(1).strip()
+        return ""
     text = str(raw or "").strip()
     if not text.startswith(("{", "[")):
         return ""

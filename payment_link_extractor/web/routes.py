@@ -269,6 +269,8 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         update_proxy = payload.get("update_proxy") or pool_first or os.getenv("OPLL_UPDATE_PROXY", "")
     hcaptcha = _value(payload, "stripe_hcaptcha_token", "OPLL_STRIPE_HCAPTCHA_TOKEN")
     payment_method = str(payload.get("payment_method", os.getenv("OPLL_PAYMENT_METHOD", "paypal")) or "paypal").lower()
+    if payment_method == "momo" and not str(hcaptcha or "").strip():
+        hcaptcha = os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")
     country = str(_value(payload, "country", "OPLL_COUNTRY", "DE") or "DE").upper()
     apply_update = payload.get("apply_checkout_update", _env_bool("OPLL_UPDATE_CHECKOUT", True))
     gopay_zero_trial_validation = payload.get(
@@ -283,6 +285,13 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         "momo_trial_eligibility_check",
         _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
     )
+    momo_fingerprint = str(
+        payload.get(
+            "momo_fingerprint",
+            os.getenv("OPLL_MOMO_FINGERPRINT", ""),
+        )
+        or ""
+    ).strip()
     if "max_attempts" in payload:
         max_attempts = _max_attempts_value(payload.get("max_attempts"))
         retry_count = max_attempts - 1
@@ -346,6 +355,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         gopay_zero_trial_validation=gopay_zero_trial_validation,
         momo_zero_trial_validation=momo_zero_trial_validation,
         momo_trial_eligibility_check=momo_trial_eligibility_check,
+        momo_fingerprint=momo_fingerprint,
         verbose=False,
         oaics_only=oaics_only,
         retry_count=retry_count,
@@ -354,7 +364,14 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         proxy_pool=submitted_pool,
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
-        session_token=extract_session_token(payload),
+        session_token=(
+            extract_session_token(payload)
+            or (
+                os.getenv("OPLL_MOMO_SESSION_TOKEN", "").strip()
+                if payment_method == "momo"
+                else ""
+            )
+        ),
     )
 
 

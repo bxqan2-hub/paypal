@@ -2,17 +2,99 @@ from __future__ import annotations
 
 """Stripe MoMo confirmation chain; no PayPal or GoPay protocol imports."""
 
-import random
 import os
 import secrets
 import uuid
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE, STRIPE_VERSION_FULL
+from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE
 from .errors import ProtocolError
 from .momo_checkout import json_payload
 from .momo_transport import momo_request_headers
+
+
+class MomoConfirmBlockedError(ProtocolError):
+    """A server-side block caused by incomplete browser risk context."""
+
+    retryable = False
+    failure_mode = "auth_state_missing"
+
+
+def _cookie_value(session: Any, name: str) -> str:
+    """Read a cookie from a requests/curl cookie jar or Cookie header."""
+    cookies = getattr(session, "cookies", None)
+    if cookies is not None:
+        try:
+            value = cookies.get(name)
+        except Exception:
+            value = ""
+        if value:
+            return str(value).strip()
+    headers = getattr(session, "headers", {}) or {}
+    raw = ""
+    try:
+        raw = str(headers.get("Cookie") or headers.get("cookie") or "")
+    except Exception:
+        raw = ""
+    for pair in raw.split(";"):
+        key, separator, value = pair.strip().partition("=")
+        if separator and key.strip() == name:
+            return value.strip()
+    return ""
+
+
+def _set_cookie(session: Any, name: str, value: str, domain: str) -> None:
+    cookies = getattr(session, "cookies", None)
+    if cookies is not None:
+        try:
+            cookies.set(name, value, domain=domain, path="/")
+            return
+        except Exception:
+            pass
+    headers = getattr(session, "headers", None)
+    if headers is not None:
+        existing = str(headers.get("Cookie") or "")
+        pairs = [p.strip() for p in existing.split(";") if p.strip()]
+        pairs = [p for p in pairs if not p.split("=", 1)[0].strip() == name]
+        pairs.append(f"{name}={value}")
+        headers["Cookie"] = "; ".join(pairs)
+
+
+def synchronize_momo_stripe_browser_ids(
+    chatgpt: Any, stripe: Any, checkout: dict[str, Any]
+) -> dict[str, str]:
+    """Keep Stripe ``muid``/``sid`` identical to the ChatGPT browser cookies.
+
+    Stripe Elements sets these two cookies on the platform origin.  The
+    confirmation token then echoes the same values, while ``guid`` remains a
+    separate per-token identifier.  Generate a fresh 42-character value only
+    when a live cookie is not available.
+    """
+    result: dict[str, str] = {}
+    for cookie_name, checkout_key in (
+        ("__stripe_mid", "stripe_muid"),
+        ("__stripe_sid", "stripe_sid"),
+    ):
+        value = (
+            _cookie_value(chatgpt, cookie_name)
+            or _cookie_value(stripe, cookie_name)
+            or str(checkout.get(checkout_key) or "").strip()
+        )
+        if len(value) != 42:
+            value = _stripe_fingerprint_id()
+        _set_cookie(chatgpt, cookie_name, value, ".chatgpt.com")
+        _set_cookie(stripe, cookie_name, value, ".stripe.com")
+        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+        setter = getattr(provider, "set_cookie", None)
+        if callable(setter):
+            try:
+                setter(cookie_name, value, http_only=False)
+            except Exception:
+                pass
+        checkout[checkout_key] = value
+        result[cookie_name] = value
+    return result
 
 
 def _payable_amount_minor(checkout: dict[str, Any]) -> int:
@@ -26,6 +108,43 @@ def _payable_amount_minor(checkout: dict[str, Any]) -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return 0
+
+
+def _find_runtime_captcha(value: Any) -> str:
+    """Find a live captcha token returned by a Stripe Elements context."""
+    if isinstance(value, dict):
+        for key in ("token", "captcha_token", "hcaptcha_token", "passive_captcha_token"):
+            candidate = str(value.get(key) or "").strip()
+            if candidate and len(candidate) >= 64:
+                return candidate
+        for child in value.values():
+            found = _find_runtime_captcha(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_runtime_captcha(child)
+            if found:
+                return found
+    return ""
+
+
+def _find_captcha_field(value: Any, field_names: tuple[str, ...]) -> str:
+    if isinstance(value, dict):
+        for key in field_names:
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate
+        for child in value.values():
+            found = _find_captcha_field(child, field_names)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_captcha_field(child, field_names)
+            if found:
+                return found
+    return ""
 
 
 def _stripe_fingerprint_id() -> str:
@@ -92,7 +211,12 @@ def _post(session: Any, url: str, stage: str, data: dict[str, Any]) -> dict[str,
 def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
     amount = _payable_amount_minor(checkout)
     key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
-    params: dict[str, Any] = {
+    params: dict[str, Any] = {}
+    secret = str(checkout.get("customer_session_client_secret") or "").strip()
+    if secret:
+        # Stripe.js serializes this first in the current VN HAR.
+        params["customer_session_client_secret"] = secret
+    params.update({
         "deferred_intent[mode]": "subscription",
         "deferred_intent[amount]": str(amount),
         "deferred_intent[currency]": "vnd",
@@ -110,10 +234,7 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
         "browser_timezone": os.getenv("OPLL_MOMO_BROWSER_TIMEZONE", "").strip()
         or "Asia/Saigon",
         "type": "deferred_intent",
-    }
-    secret = str(checkout.get("customer_session_client_secret") or "").strip()
-    if secret:
-        params["customer_session_client_secret"] = secret
+    })
     response = session.request(
         "GET",
         "https://api.stripe.com/v1/elements/sessions",
@@ -127,6 +248,12 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError(status, f"Momo Stripe Elements init failed (HTTP {status}{suffix})")
     payload = json_payload(response, "Momo Stripe Elements init")
     checkout["elements_session"] = payload
+    checkout["momo_hcaptcha_site_key"] = _find_captcha_field(
+        payload, ("site_key", "sitekey", "hcaptcha_site_key")
+    )
+    checkout["momo_hcaptcha_rqdata"] = _find_captcha_field(
+        payload, ("rqdata", "hcaptcha_rqdata")
+    )
     checkout["stripe_js_id"] = str(checkout.get("stripe_js_id") or params["stripe_js_id"])
     return payload
 
@@ -134,6 +261,22 @@ def elements_session(session: Any, checkout: dict[str, Any]) -> dict[str, Any]:
 def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str, str], captcha: str = "") -> str:
     key = str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK)
     nested_attribution = _attribution_fields(checkout, source="elements")
+    stripe_js_version = (
+        os.getenv("OPLL_MOMO_STRIPE_JS_VERSION", "").strip() or "939d686cd5"
+    )
+    try:
+        time_on_page = max(
+            1,
+            min(
+                120000,
+                int(os.getenv("OPLL_MOMO_TIME_ON_PAGE_MS", "") or "20000"),
+            ),
+        )
+    except ValueError:
+        time_on_page = 20000
+    guid = _stripe_fingerprint_id()
+    muid = str(checkout.get("stripe_muid") or _stripe_fingerprint_id())
+    sid = str(checkout.get("stripe_sid") or _stripe_fingerprint_id())
     body: dict[str, Any] = {
         "payment_method_data[type]": "momo",
         "payment_method_data[billing_details][name]": billing["name"],
@@ -150,16 +293,16 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         ).strip(),
         "payment_method_data[payment_user_agent]": (
             "stripe.js/"
-            + (os.getenv("OPLL_MOMO_STRIPE_JS_VERSION", "").strip() or "939d686cd5")
+            + stripe_js_version
             + "; stripe-js-v3/"
-            + (os.getenv("OPLL_MOMO_STRIPE_JS_VERSION", "").strip() or "939d686cd5")
+            + stripe_js_version
             + "; payment-element; deferred-intent"
         ),
         "payment_method_data[referrer]": "https://chatgpt.com",
-        "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
-        "payment_method_data[guid]": _stripe_fingerprint_id(),
-        "payment_method_data[muid]": _stripe_fingerprint_id(),
-        "payment_method_data[sid]": _stripe_fingerprint_id(),
+        "payment_method_data[time_on_page]": str(time_on_page),
+        "payment_method_data[guid]": guid,
+        "payment_method_data[muid]": muid,
+        "payment_method_data[sid]": sid,
         "setup_future_usage": "off_session",
         "mandate_data[customer_acceptance][type]": "online",
         "mandate_data[customer_acceptance][online][infer_from_client]": "true",
@@ -172,7 +315,17 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "key": key,
         "_stripe_version": STRIPE_VERSION_BASE,
     }
-    captcha_value = str(captcha or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "")).strip()
+    supplied_captcha = str(captcha or "").strip()
+    env_captcha = os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "").strip()
+    runtime_captcha = _find_runtime_captcha(checkout.get("elements_session"))
+    captcha_value = supplied_captcha or env_captcha or runtime_captcha
+    checkout["momo_hcaptcha_source"] = (
+        "argument" if supplied_captcha else
+        "environment" if env_captcha else
+        "elements_session" if runtime_captcha else
+        "absent"
+    )
+    checkout["momo_hcaptcha_supplied"] = bool(captcha_value)
     if captcha_value:
         body["payment_method_data[radar_options][hcaptcha_token]"] = captcha_value
     customer = str(checkout.get("customer") or "").strip()
@@ -246,11 +399,51 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
     if status_value not in {"success", "open", "processing"} or not client_secret:
         response_keys = ",".join(sorted(str(key) for key in payload.keys()))
         response_type = str(payload.get("type") or "")
-        raise ProtocolError(
+        cookie_header = str(
+            getattr(session, "headers", {}).get("Cookie", "")
+            if getattr(session, "headers", None) is not None
+            else ""
+        )
+        has_next_auth = "next-auth.session-token" in cookie_header.lower()
+        if not has_next_auth:
+            cookies = getattr(session, "cookies", None)
+            try:
+                get_dict = getattr(cookies, "get_dict", None)
+                cookie_names = list((get_dict() or {}).keys()) if callable(get_dict) else []
+                has_next_auth = any(
+                    "next-auth.session-token" in str(name).lower()
+                    for name in cookie_names
+                )
+                if not has_next_auth:
+                    has_next_auth = any(
+                        "next-auth.session-token" in str(getattr(item, "name", "")).lower()
+                        for item in (cookies or [])
+                    )
+            except Exception:
+                has_next_auth = False
+        has_attestation = bool(
+            str(
+                getattr(session, "headers", {}).get(
+                    "oai-web-deployment-attestation", ""
+                )
+                if getattr(session, "headers", None) is not None
+                else ""
+            ).strip()
+        )
+        error_type = (
+            MomoConfirmBlockedError
+            if status_value == "blocked"
+            else ProtocolError
+        )
+        raise error_type(
             409,
             "Momo checkout confirm did not return a client secret "
             f"(status={status_value or '?'}, type={response_type or '?'}, "
-            f"response_keys={response_keys or '?'})",
+            f"response_keys={response_keys or '?'}, "
+            f"hcaptcha={checkout.get('momo_hcaptcha_source', 'absent')}, "
+            f"hcaptcha_site_key={'present' if checkout.get('momo_hcaptcha_site_key') else 'absent'}, "
+            f"nextauth_cookie={'present' if has_next_auth else 'absent'}, "
+            f"attestation={'present' if has_attestation else 'absent'})",
         )
     return payload
 
@@ -268,11 +461,17 @@ def intent_confirm(session: Any, checkout: dict[str, Any], token: str, confirmed
         ),
         "confirmation_token": token,
         "key": str(checkout.get("publishable_key") or DEFAULT_STRIPE_PK),
-        "_stripe_version": STRIPE_VERSION_FULL,
+        # This is the OAICS/Custom branch.  The long beta suffix belongs to
+        # hosted cs_live_ Payment Pages; the VN MoMo HAR uses the base version.
+        "_stripe_version": STRIPE_VERSION_BASE,
         "client_secret": secret,
     }
     attribution = _attribution_fields(checkout, source="l1")
-    for name, value in attribution.items():
+    # OAICS/Custom intent confirmation carries only the two top-level
+    # attribution fields observed in the VN HAR.  The additional Elements
+    # metadata belongs to confirmation_tokens, not this endpoint.
+    for name in ("client_session_id", "merchant_integration_source"):
+        value = attribution[name]
         data[f"client_attribution_metadata[{name}]"] = value
     return _post(session, endpoint, "Momo Stripe intent confirm", data)
 
@@ -301,11 +500,21 @@ def resolve_momo_redirect(session: Any, value: str) -> str:
         response = session.request(
             "GET",
             candidate,
-            allow_redirects=True,
+            # Read the authorize Location without fetching the MoMo page in
+            # the Stripe session.  The dedicated MoMo session performs the
+            # single gateway GET later, matching the browser HAR and keeping
+            # Cookie/CSRF state on the correct host.
+            allow_redirects=False,
             timeout=30,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://checkout.stripe.com/",
+                "Referer": "https://chatgpt.com/",
+                "Content-Type": None,
+                "Origin": None,
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "cross-site",
+                "Upgrade-Insecure-Requests": "1",
             },
         )
     except Exception:

@@ -46,6 +46,8 @@ class MomoSentinelProvider:
         user_agent: str,
         proxy: str,
         transport_session: Any,
+        session_token: str = "",
+        timezone: str = "",
     ) -> None:
         from .transport import BrowserSentinelProvider
 
@@ -62,6 +64,16 @@ class MomoSentinelProvider:
             or "10109010",
             client_version=os.getenv("OPLL_MOMO_OAI_CLIENT_VERSION", "").strip()
             or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
+            # The enhanced bridge is Momo-only.  It loads the bundled SDK on
+            # chatgpt.com, mirrors runtime cookies/receipts, and uses the VN
+            # browser timezone rather than the legacy GCash default.
+            enhanced=True,
+            session_token=session_token,
+            timezone=(
+                str(timezone or "").strip()
+                or os.getenv("OPLL_MOMO_BROWSER_TIMEZONE", "").strip()
+                or "Asia/Saigon"
+            ),
         )
 
     @property
@@ -71,20 +83,26 @@ class MomoSentinelProvider:
     def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
         return dict(self._delegate.headers(flow, referer=referer) or {})
 
+    def prepare(self) -> None:
+        prepare = getattr(self._delegate, "prepare", None)
+        if callable(prepare):
+            prepare()
+
+    def prepare_flow(self, *, flow: str, referer: str = "") -> None:
+        prepare_flow = getattr(self._delegate, "prepare_flow", None)
+        if callable(prepare_flow):
+            prepare_flow(flow=flow, referer=referer)
+
+    def set_cookie(self, name: str, value: str, *, http_only: bool = False) -> None:
+        setter = getattr(self._delegate, "set_cookie", None)
+        if callable(setter):
+            setter(name, value, http_only=http_only)
+
     def close(self) -> None:
         self._delegate.close()
 
 
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
-    {
-        "name": "chrome152",
-        # curl_cffi currently exposes Chrome 150 as its newest stable TLS
-        # impersonation.  Keep the browser headers at the captured Chrome
-        # 152 shape while using the supported wire profile.
-        "impersonate": "chrome150",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
-    },
     {
         "name": "chrome150",
         "impersonate": "chrome150",
@@ -98,6 +116,12 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
         "sec_ch_ua": '"Chromium";v="145", "Google Chrome";v="145", "Not=A?Brand";v="99"',
     },
     {
+        "name": "chrome146",
+        "impersonate": "chrome146",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="146", "Google Chrome";v="146", "Not=A?Brand";v="99"',
+    },
+    {
         "name": "chrome136",
         "impersonate": "chrome136",
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
@@ -105,12 +129,18 @@ MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
     },
 )
 
+# Keep a compatibility alias for callers that recorded the Chrome 152 label;
+# the active wire/header pair remains internally consistent and uses the
+# supported Chrome 150 profile. Defaults rotate only among matching pairs.
+MOMO_BROWSER_ALIASES = {"chrome152": "chrome150"}
+
 
 class MomoTransportFactory:
     """Create isolated ChatGPT, Stripe and Momo sessions for one attempt."""
 
     def __init__(self, fingerprint: str = "") -> None:
         requested = str(fingerprint or "").strip().lower()
+        requested = MOMO_BROWSER_ALIASES.get(requested, requested)
         matches = [p for p in MOMO_BROWSER_PROFILES if requested == p["name"]]
         if not matches:
             matches = [p for p in MOMO_BROWSER_PROFILES if requested == p["impersonate"]]
@@ -139,7 +169,7 @@ class MomoTransportFactory:
                 "Origin": "https://chatgpt.com",
                 "Referer": "https://chatgpt.com/",
                 "Content-Type": "application/json",
-                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Language": "vi-VN,vi;q=0.9",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
                 "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
@@ -160,12 +190,23 @@ class MomoTransportFactory:
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
-                "Cookie": f"oai-did={device_id}",
             }
         )
-        account = account_id(str(getattr(config, "access_token", "") or ""))
-        if account:
-            session.headers["chatgpt-account-id"] = account
+        # Let the HTTP client's cookie jar merge Set-Cookie updates from the
+        # account/checkout responses.  A fixed Cookie header would freeze the
+        # pre-Sentinel state and break the same-session binding.
+        try:
+            session.cookies.set("oai-did", device_id, domain=".chatgpt.com", path="/")
+        except Exception:
+            session.headers["Cookie"] = f"oai-did={device_id}"
+        session.momo_cookie_jar_mode = True
+        # The browser only adds the selected account header after Checkout
+        # opens (taxes/confirm).  Keep it as session metadata and let
+        # momo_request_headers add it per route; the initial eligibility and
+        # checkout requests in the VN HAR do not carry this header.
+        session.openai_account_id = account_id(
+            str(getattr(config, "access_token", "") or "")
+        )
         session.openai_device_id = device_id
         session.openai_did = device_id
         session.openai_session_id = session_id
@@ -181,26 +222,41 @@ class MomoTransportFactory:
             dynamic: dict[str, str] = {"x-oai-is-client-observation": value}
             if method.upper() == "POST":
                 normalized = str(url or "").lower()
+                started_at = float(
+                    getattr(
+                        session,
+                        "momo_header_started",
+                        session.openai_request_started,
+                    )
+                )
                 if normalized.endswith("/backend-api/payments/checkout"):
                     elapsed = round(
-                        (time.perf_counter() - session.openai_request_started) * 1000,
+                        (time.perf_counter() - started_at) * 1000,
                         1,
                     )
+                    captured = str(
+                        getattr(session, "openai_checkout_telemetry", "") or ""
+                    ).strip()
                     dynamic["oai-telemetry"] = os.getenv(
                         "OPLL_MOMO_OAI_CHECKOUT_TELEMETRY",
-                        json.dumps(
+                        captured
+                        or json.dumps(
                             [1, elapsed, 8, 96, 48, 2, 0, elapsed + 4],
                             separators=(",", ":"),
                         ),
                     )
                 elif normalized.endswith("/backend-api/payments/checkout/confirm"):
                     elapsed = round(
-                        (time.perf_counter() - session.openai_request_started) * 1000,
+                        (time.perf_counter() - started_at) * 1000,
                         1,
                     )
+                    captured = str(
+                        getattr(session, "openai_approve_telemetry", "") or ""
+                    ).strip()
                     dynamic["oai-telemetry"] = os.getenv(
                         "OPLL_MOMO_OAI_CONFIRM_TELEMETRY",
-                        json.dumps(
+                        captured
+                        or json.dumps(
                             [1, elapsed, 8, 103, 47, 2, 0, elapsed + 5],
                             separators=(",", ":"),
                         ),
@@ -237,6 +293,11 @@ class MomoTransportFactory:
                         user_agent=self.profile["user_agent"],
                         proxy=normalize_momo_proxy(proxy),
                         transport_session=session,
+                        session_token=str(getattr(config, "session_token", "") or ""),
+                        timezone=(
+                            os.getenv("OPLL_MOMO_BROWSER_TIMEZONE", "").strip()
+                            or "Asia/Saigon"
+                        ),
                     )
             except Exception:
                 # Keep the explicit token fallback and let the API return its
@@ -253,9 +314,16 @@ class MomoTransportFactory:
                 # from the hosted Checkout origin.  Keep the browser contract
                 # used by the captured MoMo flow, including locale headers.
                 "Accept": "application/json",
-                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Language": "vi-VN,vi;q=0.9",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "Origin": "https://js.stripe.com",
                 "Referer": "https://js.stripe.com/",
+                "Sec-CH-UA": self.profile["sec_ch_ua"],
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
             }
         )
         _set_proxy(session, config.checkout_proxy)
@@ -267,7 +335,7 @@ class MomoTransportFactory:
             {
                 "User-Agent": self.profile["user_agent"],
                 "Accept": "text/html,application/json",
-                "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+                "Accept-Language": "vi-VN,vi;q=0.9",
                 "Sec-CH-UA": self.profile["sec_ch_ua"],
                 "Sec-CH-UA-Mobile": "?0",
                 "Sec-CH-UA-Platform": '"Windows"',
@@ -330,10 +398,12 @@ def momo_sentinel_headers(
     """Return fresh Momo Sentinel proof plus runtime-injected fallbacks."""
     result: dict[str, str] = {}
     provider = getattr(session, "openai_sentinel_provider", None)
+    provider_error: Exception | None = None
     if flow and provider is not None:
         try:
             result.update(provider.headers(flow, referer=referer) or {})
-        except Exception:
+        except Exception as exc:
+            provider_error = exc
             # The API response remains the source of truth if the optional
             # browser helper is unavailable; no captured proof is replayed.
             pass
@@ -363,6 +433,14 @@ def momo_sentinel_headers(
         key.lower() == "oai-web-deployment-attestation" for key in result
     ):
         result["oai-web-deployment-attestation"] = attestation
+    if flow and bool(getattr(session, "momo_sentinel_required", False)):
+        has_proof = any(
+            key.lower() == "openai-sentinel-token" and str(value).strip()
+            for key, value in result.items()
+        )
+        if not has_proof:
+            detail = type(provider_error).__name__ if provider_error else "missing"
+            raise RuntimeError(f"Momo Sentinel proof unavailable ({detail})")
     return result
 
 
@@ -377,28 +455,73 @@ def momo_request_headers(
 ) -> dict[str, str]:
     """Merge per-request Momo headers without mutating caller dictionaries."""
     merged = dict(headers or {})
+    normalized_url = str(url or "").lower()
+    if normalized_url.endswith(
+        ("/backend-api/payments/checkout/taxes", "/backend-api/payments/checkout/confirm")
+    ):
+        account = str(getattr(session, "openai_account_id", "") or "").strip()
+        if account:
+            merged.setdefault("chatgpt-account-id", account)
+    if flow:
+        # SentinelSDK.token() performs the browser ping and records its live
+        # timing tuple.  Generate that proof before refreshing telemetry so
+        # the same request carries the measured tuple, not a cumulative
+        # process-start elapsed value.
+        session.momo_header_started = time.perf_counter()
+        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
     refresh = getattr(session, "refresh_momo_request_headers", None)
     if callable(refresh):
         dynamic = refresh(str(method).upper(), url) or {}
         merged.update(dynamic)
-    if flow:
-        merged.update(momo_sentinel_headers(session, flow=flow, referer=referer))
     return merged
 
 
-def momo_gateway_headers(
-    session: Any, gateway_url: str, *, csrf_token: str = ""
-) -> dict[str, str]:
-    """Build the browser-like headers used by MoMo gateway polling."""
+def momo_gateway_page_headers(session: Any, gateway_url: str) -> dict[str, str]:
+    """Build document-navigation headers for the initial MoMo gateway GET."""
+    # The browser follows Stripe's authorize 302 into a top-level document.
+    # Keep this header set separate from the XHR contract used by
+    # ``querySession``; in particular, do not send an Origin or JSON content
+    # type on the navigation request.
     headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8,"
+            "application/signed-exchange;v=b3;q=0.7"
+        ),
+        "Referer": str(
+            getattr(session, "momo_gateway_referer", "") or "https://chatgpt.com/"
+        ),
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    return headers
+
+
+def momo_gateway_headers(
+    session: Any,
+    gateway_url: str,
+    *,
+    csrf_token: str = "",
+    bodyless: bool = False,
+) -> dict[str, str]:
+    """Build the XHR headers used by MoMo gateway polling.
+
+    ``querySession`` in the captured browser flow has an empty body and no
+    Content-Type.  Callers using the legacy JSON fallback can leave
+    ``bodyless`` false to retain the explicit JSON content type.
+    """
+    headers = {
+        "Accept": "*/*" if bodyless else "application/json, text/plain, */*",
         "Origin": "https://payment.momo.vn",
         "Referer": gateway_url,
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
     }
+    if not bodyless:
+        headers["Content-Type"] = "application/json"
     token = str(csrf_token or "").strip()
     if not token:
         token = str(getattr(session, "momo_csrf_token", "") or "").strip()
@@ -423,7 +546,11 @@ def capture_momo_csrf_token(session: Any, response: Any) -> str:
         # deployments.  Read only the value from the live response; never
         # persist it in logs or source.
         patterns = (
-            r"<meta[^>]+name=[\"'](?:csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
+            # Spring's current MoMo gateway uses ``name="_csrf"``; older
+            # deployments used csrf-token/xsrf-token.  Support both attribute
+            # orders because minifiers are free to reorder meta attributes.
+            r"<meta[^>]+name=[\"'](?:_csrf|csrf-token|xsrf-token)[\"'][^>]+content=[\"']([^\"']+)",
+            r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+name=[\"'](?:_csrf|csrf-token|xsrf-token)[\"']",
             r"(?:csrfToken|csrf_token|xsrfToken)\s*[:=]\s*[\"']([^\"']+)",
         )
         for pattern in patterns:

@@ -554,4 +554,5 @@ def test_extractor_ui_contains_gcash_fixed_country_behavior() -> None:
     assert 'id="country-field"' in html
     assert 'id="gcash-country-note"' in html
     assert 'country.value = "PH"' in javascript
+    assert 'else if (isMomo) country.value = "VN"' in javascript
     assert 'paymentMethod === "gcash" ? "PH"' in javascript
