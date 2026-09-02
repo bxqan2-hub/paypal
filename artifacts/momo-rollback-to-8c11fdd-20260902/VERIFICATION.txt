@@ -9,7 +9,7 @@ Changed branch/field:
 Commits:
 - PRE_ROLLBACK_COMMIT=fe66f40
 - RESTORED_SOURCE_COMMIT=8c11fdd
-- ROLLBACK_COMMIT=PENDING (this artifact and source restore are staged together)
+- ROLLBACK_COMMIT=3ce5304 (source restore and rollback artifact pushed to origin/main)
 - REMOTE=origin/main (push follows verification)
 
 Four artifacts (absolute paths):
