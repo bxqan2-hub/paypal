@@ -833,8 +833,11 @@ CRITICAL_SPECS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "name": "momo_stripe_confirm",
-            "marker": "/v1/payment_intents/",
-            "path_pattern": (r"^/v1/payment_intents/[^/]+/confirm$",),
+            # Zero-value MoMo trials use a SetupIntent, while paid retries
+            # can use a PaymentIntent.  Both are part of the same Stripe
+            # confirmation checkpoint.
+            "marker": "api.stripe.com/v1/",
+            "path_pattern": (r"^/v1/(?:payment|setup)_intents/[^/]+/confirm$",),
             "method": "POST",
             "requires_request_body": True,
         },
@@ -1002,6 +1005,10 @@ def audit_har_completeness(har: dict[str, Any]) -> dict[str, Any]:
             continue
         request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
         response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+        # CORS preflight responses commonly have no body by design; their
+        # missing payload is not an incomplete payment-flow capture.
+        if str(request.get("method") or "").upper() == "OPTIONS":
+            continue
         if int(response.get("status", 0) or 0) in {101, 204, 205, 304}:
             continue
         parsed = urlsplit(str(request.get("url") or ""))

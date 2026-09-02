@@ -57,6 +57,11 @@ class MomoSentinelProvider:
             proxy=_browser_proxy_for(proxy),
             transport_session=transport_session,
             enabled_env="OPLL_MOMO_SENTINEL_BROWSER",
+            locale=os.getenv("OPLL_MOMO_BROWSER_LOCALE", "").strip() or "vi-VN",
+            client_build_number=os.getenv("OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", "").strip()
+            or "10109010",
+            client_version=os.getenv("OPLL_MOMO_OAI_CLIENT_VERSION", "").strip()
+            or "prod-31e08510fe1189856ad77823ca134a25c60715b5",
         )
 
     @property
@@ -71,6 +76,15 @@ class MomoSentinelProvider:
 
 
 MOMO_BROWSER_PROFILES: tuple[dict[str, str], ...] = (
+    {
+        "name": "chrome152",
+        # curl_cffi currently exposes Chrome 150 as its newest stable TLS
+        # impersonation.  Keep the browser headers at the captured Chrome
+        # 152 shape while using the supported wire profile.
+        "impersonate": "chrome150",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+    },
     {
         "name": "chrome150",
         "impersonate": "chrome150",
@@ -97,7 +111,9 @@ class MomoTransportFactory:
 
     def __init__(self, fingerprint: str = "") -> None:
         requested = str(fingerprint or "").strip().lower()
-        matches = [p for p in MOMO_BROWSER_PROFILES if requested in {p["name"], p["impersonate"]}]
+        matches = [p for p in MOMO_BROWSER_PROFILES if requested == p["name"]]
+        if not matches:
+            matches = [p for p in MOMO_BROWSER_PROFILES if requested == p["impersonate"]]
         self.profile = dict(matches[0] if matches else secrets.choice(MOMO_BROWSER_PROFILES))
 
     def chatgpt(self, config: Any, proxy: str) -> requests.Session:
@@ -105,6 +121,16 @@ class MomoTransportFactory:
         device_id = str(uuid.uuid4())
         session_id = str(uuid.uuid4())
         observation = os.getenv("OPLL_MOMO_OAI_IS_CLIENT_OBSERVATION", "").strip()
+        client_build_number = (
+            os.getenv("OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", "").strip()
+            or os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "").strip()
+            or "10109010"
+        )
+        client_version = (
+            os.getenv("OPLL_MOMO_OAI_CLIENT_VERSION", "").strip()
+            or os.getenv("OPLL_OAI_CLIENT_VERSION", "").strip()
+            or "prod-31e08510fe1189856ad77823ca134a25c60715b5"
+        )
         session.headers.update(
             {
                 "Authorization": f"Bearer {config.access_token}",
@@ -116,15 +142,12 @@ class MomoTransportFactory:
                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
                 "oai-device-id": device_id,
                 "oai-session-id": session_id,
-                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "en-US",
+                "oai-language": os.getenv("OPLL_MOMO_OAI_LANGUAGE", "").strip() or "vi-VN",
                 "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
+                    "OPLL_MOMO_OAI_CLIENT_BUILD_NUMBER", ""
                 ).strip()
-                or "9748354",
-                "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION", ""
-                ).strip()
-                or "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+                or client_build_number,
+                "oai-client-version": client_version,
                 "x-oai-is-pending-updates": os.getenv(
                     "OPLL_X_OAI_IS_PENDING_UPDATES", ""
                 ).strip()
@@ -159,17 +182,28 @@ class MomoTransportFactory:
             if method.upper() == "POST":
                 normalized = str(url or "").lower()
                 if normalized.endswith("/backend-api/payments/checkout"):
+                    elapsed = round(
+                        (time.perf_counter() - session.openai_request_started) * 1000,
+                        1,
+                    )
                     dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
+                        "OPLL_MOMO_OAI_CHECKOUT_TELEMETRY",
+                        json.dumps(
+                            [1, elapsed, 8, 96, 48, 2, 0, elapsed + 4],
+                            separators=(",", ":"),
+                        ),
                     )
                 elif normalized.endswith("/backend-api/payments/checkout/confirm"):
                     elapsed = round(
                         (time.perf_counter() - session.openai_request_started) * 1000,
                         1,
                     )
-                    dynamic["oai-telemetry"] = json.dumps(
-                        [1, elapsed, 5, 24, 24, 2, 0, elapsed + 3],
-                        separators=(",", ":"),
+                    dynamic["oai-telemetry"] = os.getenv(
+                        "OPLL_MOMO_OAI_CONFIRM_TELEMETRY",
+                        json.dumps(
+                            [1, elapsed, 8, 103, 47, 2, 0, elapsed + 5],
+                            separators=(",", ":"),
+                        ),
                     )
             return dynamic
 
@@ -215,8 +249,13 @@ class MomoTransportFactory:
         session.headers.update(
             {
                 "User-Agent": self.profile["user_agent"],
-                "Origin": "https://checkout.stripe.com",
-                "Referer": "https://checkout.stripe.com/",
+                # Stripe.js sends these requests from its iframe origin, not
+                # from the hosted Checkout origin.  Keep the browser contract
+                # used by the captured MoMo flow, including locale headers.
+                "Accept": "application/json",
+                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://js.stripe.com",
+                "Referer": "https://js.stripe.com/",
             }
         )
         _set_proxy(session, config.checkout_proxy)
@@ -235,6 +274,10 @@ class MomoTransportFactory:
             }
         )
         _set_proxy(session, config.checkout_proxy)
+        # The browser gateway sends an empty POST body and carries the
+        # session in its cookie jar.  query_gateway retains a JSON fallback
+        # for older/fake sessions used by callers and tests.
+        session.momo_query_session_bodyless = True
         return session
 
 

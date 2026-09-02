@@ -523,6 +523,29 @@ def test_momo_audit_accepts_bodyless_browser_query_session_poll() -> None:
     assert "momo_query_session:request_body_missing" not in audit["issues"]
 
 
+def test_momo_audit_accepts_setup_intent_confirmation() -> None:
+    entries = [
+        {
+            "request": {"method": "POST", "url": "https://chatgpt.com/backend-api/payments/checkout", "postData": {"text": "{}"}},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+        {
+            "request": {"method": "POST", "url": "https://api.stripe.com/v1/setup_intents/seti_fixture/confirm", "postData": {"text": "{}"}},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+        {
+            "request": {"method": "GET", "url": "https://payment.momo.vn/v2/gateway/pay"},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+        {
+            "request": {"method": "POST", "url": "https://payment.momo.vn/v2/gateway/querySession"},
+            "response": {"status": 200, "content": {"text": "{}"}},
+        },
+    ]
+    audit = audit_har_completeness({"log": {"entries": entries}})
+    assert "momo_stripe_confirm:entry_missing" not in audit["issues"]
+
+
 def test_gopay_audit_classifies_and_accepts_full_gopay_flow() -> None:
     har = _gopay_fixture(include_redirect=True)
     complete = audit_har_completeness(har)

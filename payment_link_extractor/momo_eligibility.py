@@ -19,6 +19,7 @@ from .momo_transport import MomoTransportFactory, close, momo_request_headers
 
 MOMO_TRIAL_COUPON = "plus-1-month-free"
 MOMO_ELIGIBILITY_PATH = "/backend-api/accounts/check/v4-2023-04-27"
+MOMO_TIMEZONE_OFFSET_MIN = -420
 
 
 class MomoEligibilityError(ProtocolError):
@@ -77,6 +78,7 @@ def probe_momo_trial_eligibility(
         chatgpt = factory.chatgpt(attempt, proxy)
         url = (
             f"https://chatgpt.com{MOMO_ELIGIBILITY_PATH}"
+            f"?timezone_offset_min={MOMO_TIMEZONE_OFFSET_MIN}"
         )
         selected_account = account_id(token)
         eligibility_headers = {

@@ -81,6 +81,13 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {"country": MOMO_COUNTRY, "currency": MOMO_CURRENCY},
+        # The VN browser flow carries the trial campaign in the initial
+        # custom-checkout request.  Eligibility is checked separately, but
+        # omitting this object makes the server price a normal paid plan.
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
         "checkout_ui_mode": "custom",
     }
     payload = request(
@@ -90,7 +97,7 @@ def create_checkout(session: Any, *, account_email: str = "") -> dict[str, Any]:
         "Momo checkout",
         json=body,
         sentinel_flow="chatgpt_checkout",
-        headers={"Referer": "https://chatgpt.com/", "x-openai-target-path": path, "x-openai-target-route": path},
+        headers={"Referer": "https://chatgpt.com/?promo_campaign=plus-1-month-free", "x-openai-target-path": path, "x-openai-target-route": path},
     )
     sid = session_id(payload)
     if not sid.startswith("oaics_"):

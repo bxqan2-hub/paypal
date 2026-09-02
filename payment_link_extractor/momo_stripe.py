@@ -142,7 +142,19 @@ def confirmation_token(session: Any, checkout: dict[str, Any], billing: dict[str
         "payment_method_data[billing_details][address][country]": "VN",
         "payment_method_data[billing_details][address][postal_code]": billing["postal_code"],
         "payment_method_data[billing_details][address][state]": billing["state"],
-        "payment_method_data[payment_user_agent]": "stripe.js/faa58182a6; stripe-js-v3/faa58182a6; payment-element; deferred-intent",
+        # The captured MoMo Elements form submits an empty phone field.  Keep
+        # it empty by default; an explicitly injected runtime value remains
+        # available without changing the stable HAR shape.
+        "payment_method_data[billing_details][phone]": os.getenv(
+            "OPLL_MOMO_STRIPE_BILLING_PHONE", ""
+        ).strip(),
+        "payment_method_data[payment_user_agent]": (
+            "stripe.js/"
+            + (os.getenv("OPLL_MOMO_STRIPE_JS_VERSION", "").strip() or "939d686cd5")
+            + "; stripe-js-v3/"
+            + (os.getenv("OPLL_MOMO_STRIPE_JS_VERSION", "").strip() or "939d686cd5")
+            + "; payment-element; deferred-intent"
+        ),
         "payment_method_data[referrer]": "https://chatgpt.com",
         "payment_method_data[time_on_page]": str(random.randint(45000, 120000)),
         "payment_method_data[guid]": _stripe_fingerprint_id(),
@@ -230,8 +242,16 @@ def checkout_confirm(session: Any, checkout: dict[str, Any], token: str) -> dict
     client_secret = _find_client_secret(payload)
     if client_secret:
         payload.setdefault("client_secret", client_secret)
-    if (str(payload.get("status") or "").lower() not in {"success", "open", "processing"}) or not client_secret:
-        raise ProtocolError(409, "Momo checkout confirm did not return a client secret")
+    status_value = str(payload.get("status") or "").lower()
+    if status_value not in {"success", "open", "processing"} or not client_secret:
+        response_keys = ",".join(sorted(str(key) for key in payload.keys()))
+        response_type = str(payload.get("type") or "")
+        raise ProtocolError(
+            409,
+            "Momo checkout confirm did not return a client secret "
+            f"(status={status_value or '?'}, type={response_type or '?'}, "
+            f"response_keys={response_keys or '?'})",
+        )
     return payload
 
 

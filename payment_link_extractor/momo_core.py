@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from dataclasses import replace
 from typing import Any, Callable
@@ -86,13 +87,28 @@ def query_gateway(session: Any, url: str, *, polls: int = 1) -> dict[str, Any]:
             raise ProtocolError(502, "Momo gateway page request failed") from exc
     last: dict[str, Any] = {}
     for index in range(max(1, polls)):
+        request_kwargs: dict[str, Any] = {
+            "headers": momo_gateway_headers(session, url),
+            "timeout": 30,
+        }
+        # Browser captures carry no postData for querySession: the gateway
+        # cookie is authoritative.  Keep the historical JSON form for custom
+        # sessions and retry it only when a browser-style request is rejected.
+        bodyless = bool(getattr(session, "momo_query_session_bodyless", False))
+        if not bodyless:
+            request_kwargs["json"] = {"sessionId": session_id}
         response = session.request(
             "POST",
             "https://payment.momo.vn/v2/gateway/querySession",
-            json={"sessionId": session_id},
-            headers=momo_gateway_headers(session, url),
-            timeout=30,
+            **request_kwargs,
         )
+        if int(getattr(response, "status_code", 0) or 0) >= 400 and bodyless:
+            request_kwargs["json"] = {"sessionId": session_id}
+            response = session.request(
+                "POST",
+                "https://payment.momo.vn/v2/gateway/querySession",
+                **request_kwargs,
+            )
         if int(getattr(response, "status_code", 0) or 0) >= 400:
             raise ProtocolError(int(response.status_code), "Momo querySession failed")
         try:
@@ -112,7 +128,9 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
         raise ConfigurationError("Momo core requires payment_method=momo")
     if str(config.country or "").upper() != MOMO_COUNTRY:
         raise ConfigurationError("Momo core requires country=VN")
-    factory = transport_factory or MomoTransportFactory()
+    factory = transport_factory or MomoTransportFactory(
+        str(getattr(config, "momo_fingerprint", "") or "")
+    )
     if bool(getattr(config, "momo_trial_eligibility_check", True)):
         if stage_callback:
             stage_callback("eligibility_check")
@@ -176,12 +194,22 @@ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: An
             raise ProtocolError(502, "Stripe response did not return a Momo gateway URL")
         checkpoint("redirect_resolution")
         momo = factory.momo(config) if callable(getattr(factory, "momo", None)) else stripe
-        query_gateway(momo, raw, polls=1)
+        try:
+            gateway_polls = max(
+                1,
+                min(
+                    30,
+                    int(os.getenv("OPLL_MOMO_GATEWAY_POLLS", "15") or "15"),
+                ),
+            )
+        except ValueError:
+            gateway_polls = 15
+        gateway_state = query_gateway(momo, raw, polls=gateway_polls)
         checkout_state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
         total = checkout_state.get("total") if isinstance(checkout_state.get("total"), dict) else {}
         due = total.get("total") if isinstance(total.get("total"), dict) else {}
         minor = int(due.get("minorUnitsAmount") if due.get("minorUnitsAmount") not in (None, "") else (checkout.get("payable_amount_minor") or 0))
-        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
+        return PaymentLinkResult(checkout_session_id=checkout["cs_id"], session_kind="openai_custom_checkout", payment_method="momo", billing_country=MOMO_COUNTRY, currency=MOMO_CURRENCY, amount_due=minor / (10 ** currency_minor_scale(MOMO_CURRENCY)), amount_due_minor=minor, billing=billing_profile, account_email=email, payment_method_id="momo", stripe_redirect_url=raw, provider_url=raw, provider_field=MOMO_RESULT_FIELD, provider_value=raw, extra={"payment_route": "momo_oaics_stripe", "momo_gateway_status": "querySession", "momo_gateway_status_code": gateway_state.get("status_code"), "momo_gateway_redirect": bool(gateway_state.get("redirect")), "momo_zero_trial_validation": bool(config.momo_zero_trial_validation)})
     finally:
         close(momo)
         if momo is stripe:

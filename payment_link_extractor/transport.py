@@ -519,6 +519,9 @@ class BrowserSentinelProvider:
         transport_session: Any,
         log: Any | None = None,
         enabled_env: str = "OPLL_GCASH_SENTINEL_BROWSER",
+        locale: str = "en-PH",
+        client_build_number: str = "",
+        client_version: str = "",
     ) -> None:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
@@ -528,14 +531,17 @@ class BrowserSentinelProvider:
         self.transport_session = transport_session
         self.log = log
         self.enabled_env = str(enabled_env or "OPLL_GCASH_SENTINEL_BROWSER")
+        self.locale = str(locale or "en-PH").strip() or "en-PH"
+        self.client_build_number = str(client_build_number or "").strip()
+        self.client_version = str(client_version or "").strip()
         self.binary = _agent_browser_binary()
         self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
         self.session_name = "checkout_" + uuid.uuid4().hex[:12]
         self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
         self.locale_script = self.temp_dir / "locale.js"
         self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => 'en-PH'});"
-            "Object.defineProperty(navigator, 'languages', {get: () => ['en-PH', 'en']});",
+            f"Object.defineProperty(navigator, 'language', {{get: () => {json.dumps(self.locale)}}});"
+            f"Object.defineProperty(navigator, 'languages', {{get: () => [{json.dumps(self.locale)}, 'en']}});",
             encoding="utf-8",
         )
         self._lock = threading.RLock()
@@ -673,22 +679,24 @@ class BrowserSentinelProvider:
             # attestation.  The initial navigation is authenticated when an
             # AT is available; an unauthenticated page simply leaves this
             # optional field empty while token generation still remains useful.
+            build_number = self.client_build_number or _env_or_default(
+                "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
+            )
+            client_version = self.client_version or _env_or_default(
+                "OPLL_OAI_CLIENT_VERSION",
+                "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
+            )
             auth_headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "oai-device-id": self.device_id,
                 "oai-session-id": self.session_id,
-                "oai-language": "en-US",
+                "oai-language": self.locale,
                 # The current browser HAR (m.gcash.com111.har) uses the
                 # deployed checkout build below.  Keep both values overridable
                 # because the web client rotates them independently of the
                 # payment flow.
-                "oai-client-build-number": _env_or_default(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", "9748354"
-                ),
-                "oai-client-version": _env_or_default(
-                    "OPLL_OAI_CLIENT_VERSION",
-                    "prod-1e268a33279bcedafc2fe5526bfe230880444b77",
-                ),
+                "oai-client-build-number": build_number,
+                "oai-client-version": client_version,
             }
             account = account_id(self.access_token)
             if account:

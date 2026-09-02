@@ -61,6 +61,28 @@ def test_momo_url_and_gateway_session_contract() -> None:
     assert query_gateway(Session(), url)["status_code"] == 1000
 
 
+def test_momo_gateway_uses_bodyless_browser_poll_when_marked() -> None:
+    calls = []
+
+    class Session:
+        momo_query_session_bodyless = True
+        cookies = {}
+
+        def request(self, method, endpoint, **kwargs):
+            calls.append((method, endpoint, kwargs))
+            if method == "GET":
+                return SimpleNamespace(status_code=200, headers={}, text="")
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"sessionId": "MOMO_SESSION", "status_code": 9000, "redirect": True},
+            )
+
+    url = "https://payment.momo.vn/v2/gateway/pay?t=" + base64.urlsafe_b64encode(b"MOMO_SESSION|opaque").decode().rstrip("=") + "&s=signature"
+    result = query_gateway(Session(), url)
+    assert result["redirect"] is True
+    assert "json" not in calls[1][2]
+
+
 def test_momo_transport_and_result_field_are_isolated() -> None:
     source = (PAYMENT_CHANNELS["momo"].adapter_module, PAYMENT_CHANNELS["momo"].result_field)
     assert source == ("payment_link_extractor.momo_channel", "momo_url")
@@ -99,9 +121,33 @@ def test_vnd_uses_zero_decimal_minor_units() -> None:
 
 
 def test_momo_fingerprint_profiles_are_switchable_per_attempt() -> None:
-    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150"}
+    assert {item["name"] for item in MOMO_BROWSER_PROFILES} >= {"chrome145", "chrome150", "chrome152"}
     assert MomoTransportFactory("chrome145").profile["user_agent"].find("Chrome/145.") >= 0
     assert MomoTransportFactory("chrome150").profile["user_agent"].find("Chrome/150.") >= 0
+    assert MomoTransportFactory("chrome152").profile["user_agent"].find("Chrome/152.") >= 0
+
+
+def test_momo_checkout_carries_trial_campaign_in_initial_request() -> None:
+    calls = []
+
+    class Session:
+        headers = {}
+
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"checkout_session_id": "oaics_fixture"},
+            )
+
+    checkout = create_checkout(Session())
+    body = calls[0][2]["json"]
+    assert body["promo_campaign"] == {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": False,
+    }
+    assert calls[0][2]["headers"]["Referer"].endswith("?promo_campaign=plus-1-month-free")
+    assert checkout["cs_id"] == "oaics_fixture"
 
 
 def test_momo_retry_budget_reuses_one_at_with_fingerprint_rotation() -> None:
@@ -124,8 +170,23 @@ def test_momo_chatgpt_headers_follow_har_contract(monkeypatch) -> None:
             {"Referer": "https://chatgpt.com/"},
             flow="chatgpt_checkout",
         )
-        assert headers["oai-telemetry"] == "[1,null]"
+        telemetry = json.loads(headers["oai-telemetry"])
+        assert telemetry[0] == 1
+        assert telemetry[2:7] == [8, 96, 48, 2, 0]
         assert headers["Referer"] == "https://chatgpt.com/"
+    finally:
+        from payment_link_extractor.momo_transport import close
+
+        close(session)
+
+
+def test_momo_stripe_session_uses_stripe_js_origin_and_locale() -> None:
+    config = ExtractionConfig("opaque.token", "http://proxy", "", country="VN", payment_method="momo")
+    session = MomoTransportFactory("chrome150").stripe(config)
+    try:
+        assert session.headers["Origin"] == "https://js.stripe.com"
+        assert session.headers["Referer"] == "https://js.stripe.com/"
+        assert "Accept-Language" in session.headers
     finally:
         from payment_link_extractor.momo_transport import close
 
