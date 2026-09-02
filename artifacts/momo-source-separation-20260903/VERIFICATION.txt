@@ -1,0 +1,119 @@
+VERIFICATION_RECORD
+===================
+
+Changed branch/field
+--------------------
+MoMo extraction source branch: separated package `payment_link_extractor/momo/`.
+Compatibility adapter field: `payment_link_extractor.momo_channel._extract_momo_payment_link` now targets `payment_link_extractor.momo.momo_core`.
+The separated package keeps the standard `extract_momo_payment_link(config, ...)` entrypoint and exports `MOMO_RESULT_FIELD = momo_url` for later registry integration.
+
+Artifacts
+---------
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\artifacts\momo-source-separation-20260903\MODIFIED_FILE
+DIFF_FILE:     C:\Users\Administrator\Desktop\提链\artifacts\momo-source-separation-20260903\DIFF_FILE
+VERIFICATION: C:\Users\Administrator\Desktop\提链\artifacts\momo-source-separation-20260903\VERIFICATION.txt
+ROLLBACK:     C:\Users\Administrator\Desktop\提链\artifacts\momo-source-separation-20260903\ROLLBACK.sh
+SOURCE_DIR:   C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo
+
+Separated source files
+----------------------
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\__init__.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_channel.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_core.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_checkout.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_eligibility.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_stripe.py
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\momo\momo_transport.py
+
+Original source SHA-256 (HEAD)
+------------------------------
+payment_link_extractor/momo_channel.py     F960FF3E5BF14F097604C59431F5E8170FBFD21EF7B43629D291E11B16172811
+payment_link_extractor/momo_core.py        A7BDF1DAB7070CBB3077531D5DEF3B61DB19D6DA4B446F9681C8C403E04F5965
+payment_link_extractor/momo_checkout.py    C7F41934B8C86D4B6D14924266BD17D79452D533A9F2444462D5F56710ABC965
+payment_link_extractor/momo_eligibility.py 60DDCC309CBB73E4401CAADADCDA3A8D4C3348FCE4710C48207C44C3931E75D6
+payment_link_extractor/momo_stripe.py      FE019C0D93621B4B4A856ED3B001FA9B313F407B6143D72D95166606AF095A23
+payment_link_extractor/momo_transport.py   EAA49428BAC116E46B49189C998F7496EB709DE729EA72EAF63DE06BB7146EA7
+
+Separated copy SHA-256
+----------------------
+payment_link_extractor/momo/momo_channel.py      085500F843EEB4C7B23BC008B9CB3EAB47724906C9EDC4B2E0256A489F270897
+payment_link_extractor/momo/momo_core.py         2B477A8B4E41051ED7B055C541CB8728BE6B8E729CA5626014D9E87133F40AF0
+payment_link_extractor/momo/momo_checkout.py     B9241977FAC9CBA0E64C5C9266BC745A133041CCFFAD99AA1F7A2068BAB095E6
+payment_link_extractor/momo/momo_eligibility.py  2A123E68129FEF28A32AA3554F08A38C1D95297C22B3E47AE67D248378580B07
+payment_link_extractor/momo/momo_stripe.py       078D59DE94DBEF0B396C330974021A6D9EF50D9D4CB05BC5EE0C0E6191425486
+payment_link_extractor/momo/momo_transport.py    ADCFA906D238A43E234C2AD9863E68C5C80C4B980ED2E31B61870046ED08B3BB
+
+Artifact SHA-256
+----------------
+MODIFIED_FILE 2B477A8B4E41051ED7B055C541CB8728BE6B8E729CA5626014D9E87133F40AF0
+DIFF_FILE     C824C742B855E03900853CB2F07B50E36AE0A8F74EAD277CAB384F7688BB8A7A
+ROLLBACK.sh   4AA3C67E48771DD226CC3C3506F37A079E8922BEE647B8B657FA4AFF38B1316E
+
+BASELINE test
+-------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\Scripts\pytest.exe' -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_extraction_full_retry.py
+Input: clean HEAD source tree before the separated package, adapter, and architecture path update.
+Literal output:
+........................................................................ [ 94%]
+....                                                                     [100%]
+76 passed in 0.44s
+Exit status: 0
+Result: baseline MoMo/channel/retry tests passed.
+
+MODIFIED test
+-------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\Scripts\pytest.exe' -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_extraction_full_retry.py
+Input: working tree with `payment_link_extractor/momo/`, the compatibility adapter, and updated architecture table.
+Literal output:
+........................................................................ [ 94%]
+....                                                                     [100%]
+76 passed in 0.43s
+Exit status: 0
+Result: modified MoMo/channel/retry tests passed.
+
+Full-suite test
+---------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\Scripts\pytest.exe' -q
+Input: same modified working tree.
+Literal output:
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 67%]
+........................................................................ [ 90%]
+...............................                                          [100%]
+319 passed in 2.27s
+Exit status: 0
+Result: complete test suite passed.
+
+Separated import test
+---------------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\python.exe' -m compileall -q payment_link_extractor\momo; & 'C:\Python314\python.exe' -c "from payment_link_extractor.momo import MOMO_RESULT_FIELD, extract_momo_payment_link; from payment_link_extractor.momo.momo_core import MOMO_COUNTRY, MOMO_CURRENCY; import payment_link_extractor.momo_channel as legacy; print('SEPARATED_IMPORT_OK=1'); print('MOMO_RESULT_FIELD='+MOMO_RESULT_FIELD); print('MOMO_COUNTRY_CURRENCY='+MOMO_COUNTRY+'/'+MOMO_CURRENCY); print('LEGACY_ADAPTER_TARGET='+legacy._extract_momo_payment_link.__module__)"
+Input: separated package import and compatibility adapter resolution.
+Literal output:
+SEPARATED_IMPORT_OK=1
+MOMO_RESULT_FIELD=momo_url
+MOMO_COUNTRY_CURRENCY=VN/VND
+LEGACY_ADAPTER_TARGET=payment_link_extractor.momo.momo_core
+Exit status: 0
+Result: separated source package compiles, imports, and remains integration-ready.
+
+ROLLBACK test (another copy)
+----------------------------
+Command:
+$tmp = Join-Path $env:TEMP ('momo-source-rollback-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp; Copy-Item artifacts\momo-source-separation-20260903\MODIFIED_FILE $tmp\baseline.py; Copy-Item $tmp\baseline.py $tmp\copy.py; Add-Content $tmp\copy.py 'MUTATED_FOR_ROLLBACK_TEST'; & 'C:\Program Files\Git\bin\bash.exe' artifacts\momo-source-separation-20260903\ROLLBACK.sh $tmp\copy.py $tmp\baseline.py
+Input: copy.py was modified with MUTATED_FOR_ROLLBACK_TEST; baseline.py remained unchanged.
+Literal output (observed):
+ROLLBACK_TARGET=C:\Users\ADMINI~1\AppData\Local\Temp\momo-source-rollback-fe4f3121befc412bb49740580596db21\copy.py
+ROLLBACK_RESULT=copied baseline
+ROLLBACK_COMPARE=True
+ROLLBACK_EXIT=0
+Exit status: 0
+Result: rollback restored the other copy to baseline.
+
+RESTORED behavior/status
+------------------------
+The rollback copy hash matched its baseline hash after ROLLBACK.sh ran. The working-tree separated source and MODIFIED_FILE remain changed. The original source hashes are preserved in the HEAD history and were copied before import-path adaptation.

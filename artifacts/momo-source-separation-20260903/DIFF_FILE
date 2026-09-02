@@ -1,0 +1,159 @@
+--- a/payment_link_extractor/momo_channel.py
++++ b/payment_link_extractor/momo/momo_channel.py
+@@ -3,9 +3,10 @@
+ import threading
+ from typing import Callable, Any
+ 
+-from .models import ExtractionConfig, PaymentLinkResult
++from ..models import ExtractionConfig, PaymentLinkResult
+ from .momo_core import extract_momo_payment_link as _extract_momo_payment_link
+ 
+ 
+ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: Any = None, cancel_event: threading.Event | None = None, stage_callback: Callable[[str], None] | None = None) -> PaymentLinkResult:
+     return _extract_momo_payment_link(config, transport_factory=transport_factory, cancel_event=cancel_event, stage_callback=stage_callback)
++
+
+--- a/payment_link_extractor/momo_checkout.py
++++ b/payment_link_extractor/momo/momo_checkout.py
+@@ -6,8 +6,8 @@
+ import re
+ from typing import Any
+ 
+-from .config import processor_entity_for_country
+-from .errors import ProtocolError
++from ..config import processor_entity_for_country
++from ..errors import ProtocolError
+ from .momo_transport import momo_request_headers, record_momo_pending_updates
+ 
+ MOMO_COUNTRY = "VN"
+@@ -363,3 +363,4 @@
+             except (TypeError, ValueError):
+                 pass
+     return payload
++
+
+--- a/payment_link_extractor/momo_core.py
++++ b/payment_link_extractor/momo/momo_core.py
+@@ -10,10 +10,10 @@
+ from typing import Any, Callable
+ from urllib.parse import parse_qs, urlparse
+ 
+-from .auth import account_email, account_id, decode_jwt_payload
+-from .config import billing_for_country, currency_minor_scale
+-from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
+-from .models import ExtractionConfig, PaymentLinkResult
++from ..auth import account_email, account_id, decode_jwt_payload
++from ..config import billing_for_country, currency_minor_scale
++from ..errors import ConfigurationError, ExtractionCancelled, ProtocolError
++from ..models import ExtractionConfig, PaymentLinkResult
+ from .momo_checkout import (
+     MOMO_COUNTRY,
+     MOMO_CURRENCY,
+@@ -465,3 +465,4 @@
+             stripe = None
+         close(stripe)
+         close(chatgpt)
++
+
+--- a/payment_link_extractor/momo_eligibility.py
++++ b/payment_link_extractor/momo/momo_eligibility.py
+@@ -12,9 +12,9 @@
+ import threading
+ from typing import Any, Callable
+ 
+-from .auth import account_id, normalize_access_token
+-from .config import normalize_payment_method
+-from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
++from ..auth import account_id, normalize_access_token
++from ..config import normalize_payment_method
++from ..errors import ConfigurationError, ExtractionCancelled, ProtocolError
+ from .momo_transport import (
+     MOMO_EMPTY_PENDING_UPDATES,
+     MomoTransportFactory,
+@@ -417,3 +417,4 @@
+     )
+     error.probes = probes  # type: ignore[attr-defined]
+     raise error
++
+
+--- a/payment_link_extractor/momo_stripe.py
++++ b/payment_link_extractor/momo/momo_stripe.py
+@@ -9,8 +9,8 @@
+ from typing import Any
+ from urllib.parse import parse_qs, urlencode, urlparse
+ 
+-from .config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE
+-from .errors import ProtocolError
++from ..config import DEFAULT_STRIPE_PK, STRIPE_VERSION_BASE
++from ..errors import ProtocolError
+ from .momo_checkout import json_payload
+ from .momo_transport import (
+     current_momo_pending_updates_header,
+@@ -804,3 +804,4 @@
+     parsed = urlparse(str(value or ""))
+     query = parse_qs(parsed.query)
+     return parsed.scheme == "https" and parsed.hostname == "payment.momo.vn" and parsed.path == "/v2/gateway/pay" and bool(query.get("t")) and bool(query.get("s"))
++
+
+--- a/payment_link_extractor/momo_transport.py
++++ b/payment_link_extractor/momo/momo_transport.py
+@@ -14,7 +14,7 @@
+ 
+ import requests
+ 
+-from .auth import account_id
++from ..auth import account_id
+ 
+ 
+ MOMO_EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
+@@ -385,7 +385,7 @@
+ def _browser_proxy_for(proxy: str) -> str:
+     """Give a browser a CONNECT-capable proxy without changing Momo's API proxy."""
+     try:
+-        from .web.socks5_bridge import http_proxy_for
++        from ..web.socks5_bridge import http_proxy_for
+ 
+         return http_proxy_for(proxy)
+     except Exception:
+@@ -411,7 +411,7 @@
+         session_token: str = "",
+         timezone: str = "",
+     ) -> None:
+-        from .transport import BrowserSentinelProvider
++        from ..transport import BrowserSentinelProvider
+ 
+         self._delegate = BrowserSentinelProvider(
+             access_token=access_token,
+@@ -1281,7 +1281,7 @@
+         mode = os.getenv("OPLL_MOMO_SENTINEL_BROWSER", "auto").strip().lower()
+         if mode not in {"0", "false", "off", "disabled", "no"}:
+             try:
+-                from .transport import _agent_browser_binary
++                from ..transport import _agent_browser_binary
+ 
+                 if _agent_browser_binary():
+                     session.openai_sentinel_provider = MomoSentinelProvider(
+@@ -1643,3 +1643,4 @@
+             pass
+     if callable(getattr(session, "close", None)):
+         session.close()
++
+
+--- a/payment_link_extractor/momo_channel.py
++++ b/payment_link_extractor/momo_channel.py
+@@ -4,7 +4,7 @@
+ from typing import Callable, Any
+ 
+ from .models import ExtractionConfig, PaymentLinkResult
+-from .momo_core import extract_momo_payment_link as _extract_momo_payment_link
++from .momo.momo_core import extract_momo_payment_link as _extract_momo_payment_link
+ 
+ 
+ def extract_momo_payment_link(config: ExtractionConfig, *, transport_factory: Any = None, cancel_event: threading.Event | None = None, stage_callback: Callable[[str], None] | None = None) -> PaymentLinkResult:
+--- /dev/null
++++ b/payment_link_extractor/momo/__init__.py
+@@ -0,0 +1,4 @@
++from .momo_channel import extract_momo_payment_link
++from .momo_core import MOMO_RESULT_FIELD
++
++__all__ = ["extract_momo_payment_link", "MOMO_RESULT_FIELD"]

@@ -7,7 +7,7 @@
 | PayPal | `paypal_channel.py` | `flows/oaics.py`、`flows/cs_live.py`、`providers/paypal.py` | 本站 PayPal transport |
 | GoPay | `gopay_channel.py` | `gopay_core.py`、`gopay_*` flow/Stripe/Checkout 副本、`providers/gopay.py` | `gopay_transport.py` |
 | GCash | `application.py` 的 GCash 分支 | `mk_gcash_open_source/` 内完整开源项目 | `mk_gcash.py` 的单一 `proxy_pool` |
-| MoMo | `momo_channel.py` | `momo_core.py`、`momo_checkout.py`、`momo_stripe.py`、`momo_transport.py` | Momo-only VN gateway transport |
+| MoMo | `momo_channel.py`（兼容适配器） | `momo/`（`momo_core.py`、`momo_checkout.py`、`momo_eligibility.py`、`momo_stripe.py`、`momo_transport.py`） | Momo-only VN gateway transport |
 | 后续方式 | 独立 `flows/<method>.py` 或 `providers/<method>.py` | 该方式自己的目录 | 该方式自己的代理适配 |
 
 ## GCash 调用边界
