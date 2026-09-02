@@ -1,0 +1,63 @@
+VERIFICATION_RECORD
+===================
+
+Changed branch/field
+--------------------
+Documentation branch only: MODIFIED_FILE is the new MoMo comparison report. No runtime MoMo protocol field or source module was changed.
+
+Artifacts
+---------
+MODIFIED_FILE: C:\Users\Administrator\Desktop\提链\docs\2026-09-02_momo-comparison-report.md
+DIFF_FILE:     C:\Users\Administrator\Desktop\提链\docs\2026-09-02_momo-comparison-report.diff
+VERIFICATION: C:\Users\Administrator\Desktop\提链\VERIFICATION.txt
+ROLLBACK:     C:\Users\Administrator\Desktop\提链\ROLLBACK.sh
+
+Provenance and hashes
+---------------------
+Local baseline commit: f6a7a615d0f7edea6f04c2a08c9901e0addf34e5
+Upstream commit inspected: e8b36626162f09363f29b85af42de98cc8114c9b
+Original fixture: docs/MOMO_HAR_STATE_MACHINE.md
+Original fixture SHA-256: F17EB418F74A1A46E147530C10C152BFE7F52838AD0B023E3CB9BFD6D6EE6128
+MODIFIED_FILE SHA-256: DDFD4732E832F345C641FB39DEC56DB9BC5D645B25241664EC3FC5A50CB0E745
+DIFF_FILE SHA-256: 7A11623B1D061C73F6AB431783AAC540C722830B5A9E0461CE790F9F7FC2D96E
+ROLLBACK SHA-256: F3CF219C72F8E19230F2A8BF0D28E157BB04C9BD93A7FD7E1B7957E2D3D27907
+
+BASELINE test
+-------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\Scripts\pytest.exe' -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_extraction_full_retry.py
+Input: Local checkout at f6a7a615d0f7edea6f04c2a08c9901e0addf34e5, before report artifacts were added.
+Literal output:
+........................................                                 [100%]
+40 passed in 0.44s
+Exit status: 0
+Result: baseline MoMo/channel/retry tests passed.
+
+MODIFIED test
+-------------
+Command:
+$env:PYTHONPATH=(Get-Location).Path; & 'C:\Python314\Scripts\pytest.exe' -q tests/test_momo_support.py tests/test_channel_isolation.py tests/test_extraction_full_retry.py
+Input: Same source tree after MODIFIED_FILE, DIFF_FILE and ROLLBACK.sh were created; runtime modules unchanged.
+Literal output:
+........................................                                 [100%]
+40 passed in 0.43s
+Exit status: 0
+Result: modified-tree tests passed; report-only change preserved behavior.
+
+ROLLBACK test (another copy)
+----------------------------
+Command:
+$tmp = Join-Path $env:TEMP ('momo-rollback-test-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp; Copy-Item docs\2026-09-02_momo-comparison-report.md $tmp\baseline.md; Copy-Item $tmp\baseline.md $tmp\copy.md; Add-Content $tmp\copy.md "MUTATED_FOR_ROLLBACK_TEST"; & 'C:\Program Files\Git\bin\bash.exe' ROLLBACK.sh $tmp\copy.md $tmp\baseline.md
+Input: copy.md was changed with MUTATED_FOR_ROLLBACK_TEST; baseline.md remained the original report copy.
+Literal output (observed):
+ROLLBACK_TARGET=C:\Users\ADMINI~1\AppData\Local\Temp\momo-rollback-test-c45c9956b4494545ac0d96efc0c44719\copy.md
+ROLLBACK_RESULT=copied baseline
+ROLLBACK_COMPARE=True
+ROLLBACK_EXIT=0
+Result: restored behavior/status on the other copy; MODIFIED_FILE remains changed.
+
+RESTORED behavior/status
+------------------------
+The rollback test copy hash matched its baseline hash after the script ran. The working-tree MODIFIED_FILE remains the report hash listed above. No runtime source file was restored or altered.
+
+
