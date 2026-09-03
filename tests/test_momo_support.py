@@ -88,6 +88,15 @@ def test_sentinel_build_and_flow_guard() -> None:
         sentinel.mint_sentinel_token(object(), "unsupported_flow")
 
 
+def test_sentinel_runner_script_is_spawnable() -> None:
+    from payment_link_extractor.momo import _sentinel_client as sentinel
+
+    # Every protected MoMo call spawns this script.  A wrong filename here makes
+    # checkout fail with a generic 502 that no other test can see, because the
+    # flow tests stub payment_sentinel_headers out.
+    assert sentinel.RUNNER_SCRIPT.is_file(), sentinel.RUNNER_SCRIPT
+
+
 def test_checkout_carries_vn_trial_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
     from payment_link_extractor.momo import _flow as flow
 

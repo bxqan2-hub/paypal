@@ -15,6 +15,9 @@ from ._transport import normalize_proxy_url
 
 SDK_URL = "https://chatgpt.com/sentinel/20260810913b/sdk.js"
 SDK_BUILD = "20260810913b"
+# Resolved once so a rename of the runner fails at import/test time instead of
+# silently turning every protected MoMo call into a 502 at run time.
+RUNNER_SCRIPT = Path(__file__).with_name("_sentinel_runner.py")
 CLIENT_BUILD_NUMBER = "9999461"
 CLIENT_VERSION = "prod-d040bc6b02dd2a27b54e1d7c56d181a795593f41"
 
@@ -90,14 +93,13 @@ def mint_sentinel_token(
         "sdk_url": SDK_URL,
         "sdk_build": SDK_BUILD,
     }
-    runner = Path(__file__).with_name("sentinel_runner.py")
     attempts = _sentinel_attempts()
     retry_delay = _sentinel_retry_delay()
     last_error = f"payment Sentinel SDK failed for {flow}"
     for attempt in range(1, attempts + 1):
         try:
             completed = subprocess.run(
-                [_runner_python(), str(runner)],
+                [_runner_python(), str(RUNNER_SCRIPT)],
                 input=json.dumps(payload, ensure_ascii=False),
                 text=True,
                 capture_output=True,

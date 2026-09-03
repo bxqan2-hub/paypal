@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import os
 import random
 import re
@@ -11,7 +10,6 @@ from ..models import BillingProfile
 
 
 DEFAULT_TIMEOUT = 30
-PROVIDER_POLL_TIMEOUT_SECONDS = 5
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
@@ -90,10 +88,6 @@ def billing_for_country(country: str, payment_method: str = "momo") -> BillingPr
         state=state,
         postal_code=postal_code,
     )
-
-
-def billing_dict_for_country(country: str, payment_method: str = "momo") -> dict[str, str]:
-    return billing_for_country(country, payment_method).to_dict()
 
 
 def currency_minor_scale(currency: str) -> int:

@@ -649,6 +649,7 @@ class BrowserSentinelProvider:
             attestation = str(value.get("attestation") or "").strip()
             if attestation:
                 self._attestation = attestation
+
     def _sync_cookies(self) -> None:
         # Preserve the original lightweight GCash behavior byte-for-byte.
         value = self._run(["cookies", "get", "--json"])
@@ -671,9 +672,7 @@ class BrowserSentinelProvider:
             if headers is not None:
                 headers["Cookie"] = self._cookies
 
-
     def _start(self) -> None:
-
         if not self.enabled:
             raise RuntimeError("agent-browser is disabled or unavailable")
         try:
