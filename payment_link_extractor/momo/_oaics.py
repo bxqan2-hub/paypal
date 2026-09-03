@@ -389,7 +389,7 @@ def extract_oaics_provider(
         stripe, config, checkout, refreshed, ctx, log, reuse_session=True
     )
     ensure_payment_method_offered(refreshed_elements, payment_method, "oaics refreshed Elements session")
-    if payment_method == "momo":
+    if payment_method == "momo" and config.momo_zero_trial_validation:
         try:
             momo_amount = int(float(str(ctx.get("checkout_amount") or "-1")))
         except (TypeError, ValueError):

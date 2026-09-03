@@ -211,6 +211,7 @@ def _momo_checkout_update(
 
 
 def _momo_stripe_init(
+    config,
     stripe: Any,
     checkout: CheckoutData,
     log: Any | None,
@@ -267,7 +268,7 @@ def _momo_stripe_init(
         amount = int(float(str(ctx["checkout_amount"])))
     except (TypeError, ValueError):
         amount = -1
-    if amount < 0 or amount > MOMO_MAX_MINOR_AMOUNT:
+    if config.momo_zero_trial_validation and (amount < 0 or amount > MOMO_MAX_MINOR_AMOUNT):
         raise ProtocolError(409, f"MoMo amount must be <= {MOMO_MAX_MINOR_AMOUNT} minor units; got {ctx['checkout_amount']}")
     return payload, ctx
 
@@ -501,7 +502,7 @@ def extract_momo_provider(
         )
         return checkout, provider
     _checkpoint(stage_callback, "stripe_init")
-    init_payload, ctx = _momo_stripe_init(stripe, checkout, log)
+    init_payload, ctx = _momo_stripe_init(config, stripe, checkout, log)
     _checkpoint(stage_callback, "payment_confirmation")
     payment_method_id = _momo_payment_method(stripe, checkout, billing, ctx, log)
     confirm_payload = _momo_confirm(
