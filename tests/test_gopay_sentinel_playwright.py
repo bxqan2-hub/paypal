@@ -40,7 +40,8 @@ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
     assert "gopay-sentinel-profiles" in source
     assert "/sentinel/{SENTINEL_SDK_VERSION}/sdk.js" in source
     assert '"headless": headless' in source
-    assert '"chrome"' in source
+    assert "GOPAY_CHROME146_EXECUTABLE" in source
+    assert '"executable_path"' in source
     assert "jsdom" not in source.lower()
 
 

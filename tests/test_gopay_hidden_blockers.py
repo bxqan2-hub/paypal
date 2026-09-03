@@ -66,10 +66,13 @@ def test_playwright_session_cookie_chunks_and_version_guard() -> None:
     ]
     assert [len(item["value"]) for item in records] == [3800, 3800]
     assert gopay_sentinel_playwright._browser_version_matches(
-        "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36", "151.0.7922.170"
+        "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36", "146.0.7680.165"
     )
     assert not gopay_sentinel_playwright._browser_version_matches(
-        "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36", "151.0.7922.170"
+        "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36", "146.0.7680.165"
+    )
+    assert not gopay_sentinel_playwright._browser_version_matches(
+        "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36", "151.0.7922.170"
     )
 
 
@@ -285,7 +288,7 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
             return True
 
     class Context:
-        browser = SimpleNamespace(version="151.0.7922.170")
+        browser = SimpleNamespace(version="146.0.7680.165")
         pages = [Page()]
         closed = False
         clear_calls: list[dict[str, str]] = []
@@ -326,8 +329,14 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
     daemon = object.__new__(gopay_sentinel_playwright.PersistentPlaywrightDaemon)
     daemon._playwright = SimpleNamespace(chromium=Chromium())
     daemon._sessions = {}
+    executable = tmp_path / "chrome-headless-shell.exe"
+    executable.write_bytes(b"chrome-146-fixture")
+    monkeypatch.setattr(
+        gopay_sentinel_playwright,
+        "GOPAY_CHROME146_EXECUTABLE",
+        executable,
+    )
     monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROFILE_DIR", str(tmp_path))
-    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "")
     with pytest.raises(RuntimeError, match="goto-fixture"):
         asyncio.run(
             daemon._open_session_async(
@@ -335,7 +344,7 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
                 account_id="account-fixture",
                 device_id="11111111-1111-4111-8111-111111111111",
                 session_id="22222222-2222-4222-8222-222222222222",
-                user_agent="Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
                 browser_proxy="",
                 session_token=session_token,
                 language="id-ID",
@@ -344,7 +353,8 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
         )
     assert daemon._sessions == {}
     assert context.closed is True
-    assert launch_kwargs["channel"] == "chrome"
+    assert launch_kwargs["executable_path"] == str(executable)
+    assert "channel" not in launch_kwargs
     assert captured_headers
     assert "Authorization" not in captured_headers[0]
     assert "chatgpt-account-id" not in captured_headers[0]
@@ -420,7 +430,7 @@ def test_gopay_ignores_generic_cross_channel_identity_overrides(monkeypatch) -> 
     assert session.headers["User-Agent"] == gopay_transport.GOPAY_BROWSER_PROFILES[0]["user_agent"]
     assert session.headers["sec-ch-ua"] == gopay_transport.GOPAY_BROWSER_PROFILES[0]["sec_ch_ua"]
     assert session.headers["sec-ch-ua-platform"] == '"Windows"'
-    assert session.gopay_tls_impersonate == "chrome151"
+    assert session.gopay_tls_impersonate == "chrome146"
 
 
 def test_gopay_device_id_is_stable_for_same_account_different_jwt_nonce(monkeypatch) -> None:
@@ -436,7 +446,7 @@ def test_gopay_device_id_is_stable_for_same_account_different_jwt_nonce(monkeypa
         ).decode("ascii").rstrip("=")
         return f"header.{encoded}.signature"
 
-    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome151")
+    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome146")
     first = ExtractionConfig(
         access_token=token("one"),
         checkout_proxy="",
@@ -477,6 +487,11 @@ def test_web_route_uses_session_token_environment_fallback(monkeypatch) -> None:
 def test_gopay_identity_does_not_fall_back_to_plain_requests(monkeypatch) -> None:
     monkeypatch.setattr(gopay_transport, "CurlCffiSession", None)
     with pytest.raises(Exception, match="curl_cffi is required"):
+        gopay_transport.new_session("chrome146")
+
+
+def test_gopay_rejects_non_146_curl_profile() -> None:
+    with pytest.raises(Exception, match="chrome146"):
         gopay_transport.new_session("chrome151")
 
 
@@ -502,21 +517,21 @@ def test_gopay_session_constructor_type_error_is_not_downgraded(monkeypatch, met
             gopay_transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
         else:
             gopay_transport.DefaultTransportFactory().stripe(config)
-    assert calls == ["chrome151"]
+    assert calls == ["chrome146"]
 
 
 @pytest.mark.parametrize("sec_ch_ua", ["", '"Not=A?Brand";v="99"'])
 def test_gopay_client_hints_require_chrome_brands(sec_ch_ua) -> None:
     with pytest.raises(Exception, match="client-hints version mismatch"):
         gopay_transport.validate_gopay_client_hints(
-            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+            "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
             sec_ch_ua,
         )
 
 
 def test_required_sentinel_headers_reject_partial_provider_result(monkeypatch) -> None:
     session = SimpleNamespace(
-        gopay_browser_profile="chrome151",
+        gopay_browser_profile="chrome146",
         openai_sentinel_provider=SimpleNamespace(
             headers=lambda *_args, **_kwargs: {"oai-device-id": "device-fixture"}
         ),
@@ -534,8 +549,16 @@ def test_required_sentinel_headers_reject_partial_provider_result(monkeypatch) -
 def test_gopay_client_hints_reject_missing_chromium_brand() -> None:
     with pytest.raises(Exception, match="client-hints version mismatch"):
         gopay_transport.validate_gopay_client_hints(
+            "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
+            '"Google Chrome";v="146"',
+        )
+
+
+def test_gopay_client_hints_reject_non_146_identity() -> None:
+    with pytest.raises(Exception, match="Chrome 146"):
+        gopay_transport.validate_gopay_client_hints(
             "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
-            '"Google Chrome";v="151"',
+            '"Chromium";v="151", "Not-A.Brand";v="24", "Google Chrome";v="151"',
         )
 
 

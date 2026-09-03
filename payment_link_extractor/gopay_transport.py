@@ -28,6 +28,11 @@ EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
 PENDING_RECEIPT_LIMIT = 2
 GOPAY_OAI_CLIENT_BUILD_NUMBER = "10012890"
 GOPAY_OAI_CLIENT_VERSION = "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
+GOPAY_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+GOPAY_BROWSER_SEC_CH_UA = '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"'
 
 
 def browser_checkout_telemetry(action: str) -> str:
@@ -101,10 +106,10 @@ class TransportFactory(Protocol):
 
 GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
     {
-        "name": "chrome151",
-        "impersonate": "chrome151",
-        "user_agent": DEFAULT_USER_AGENT,
-        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        "name": "chrome146",
+        "impersonate": "chrome146",
+        "user_agent": GOPAY_BROWSER_USER_AGENT,
+        "sec_ch_ua": GOPAY_BROWSER_SEC_CH_UA,
     },
 )
 
@@ -116,14 +121,14 @@ def select_gopay_browser_profile(
 ) -> dict[str, Any]:
     """Bind one coherent browser profile to an entire account context."""
     requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
-    if requested not in {"", "auto", "chrome", "chrome151"}:
+    if requested not in {"", "auto", "chrome", "chrome146"}:
         for profile in GOPAY_BROWSER_PROFILES:
             if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
                 return dict(profile)
         raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
 
     selected_transport = str(transport_impersonate or "").strip().lower()
-    if selected_transport and selected_transport not in {"chrome", "chrome151"}:
+    if selected_transport and selected_transport not in {"chrome", "chrome146"}:
         for profile in GOPAY_BROWSER_PROFILES:
             if selected_transport == str(profile["impersonate"]).lower():
                 return dict(profile)
@@ -138,6 +143,8 @@ def validate_gopay_client_hints(user_agent: str, sec_ch_ua: str) -> bool:
     if not ua_match:
         raise ConfigurationError("GoPay User-Agent must identify Chrome or Chromium")
     expected = ua_match.group(1)
+    if expected != "146":
+        raise ConfigurationError("GoPay browser identity must use Chrome 146")
     hints = re.findall(
         r'"(Google Chrome|Chromium)"\s*;\s*v="(\d+)"',
         str(sec_ch_ua or ""),
@@ -161,6 +168,10 @@ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
         raise ConfigurationError(
             f"TLS/UA version mismatch: impersonate={impersonate}, ua={ua_match.group(1)}"
         )
+    if tls_match and tls_match.group(1) != "146":
+        raise ConfigurationError("GoPay TLS profile must use Chrome 146")
+    if ua_match and ua_match.group(1) != "146":
+        raise ConfigurationError("GoPay User-Agent must use Chrome 146")
     return True
 
 
@@ -179,11 +190,13 @@ def gopay_browser_identity(config: ExtractionConfig) -> tuple[str, dict[str, Any
 
 
 def new_session(impersonate: str | None = None) -> Any:
+    if impersonate and str(impersonate).strip().lower() != "chrome146":
+        raise ConfigurationError("GoPay curl_cffi profile must use chrome146")
     if CurlCffiSession is not None:
         selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
         return CurlCffiSession(impersonate=selected)
     if impersonate:
-        raise ConfigurationError("curl_cffi is required for the GoPay Chrome 151 identity")
+        raise ConfigurationError("curl_cffi is required for the GoPay Chrome 146 identity")
     if requests is None:
         raise ConfigurationError("requests is required; install requirements.txt")
     return requests.Session()
@@ -740,7 +753,7 @@ class PlaywrightSentinelProvider:
         self.access_token = str(access_token or "").strip()
         self.device_id = str(device_id or "").strip()
         self.session_id = str(session_id or "").strip()
-        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
+        self.user_agent = str(user_agent or GOPAY_BROWSER_USER_AGENT)
         self.proxy = str(proxy or "").strip()
         try:
             from .web.socks5_bridge import http_proxy_for

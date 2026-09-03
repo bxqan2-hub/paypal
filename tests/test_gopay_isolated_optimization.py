@@ -136,7 +136,7 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
         for index in range(80)
     }
     assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
-    assert profiles == {"chrome151"}
+    assert profiles == {"chrome146"}
     assert gopay_transport.select_gopay_browser_profile(device_id="stable-device") == (
         gopay_transport.select_gopay_browser_profile(device_id="stable-device")
     )
@@ -149,7 +149,7 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
         device_id="stable-device",
         transport_impersonate="chrome",
     ) == gopay_transport.select_gopay_browser_profile(device_id="stable-device")
-    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {"chrome151"}
+    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {"chrome146"}
     for profile in gopay_transport.GOPAY_BROWSER_PROFILES:
         assert gopay_transport.validate_tls_ua_consistency(
             str(profile["impersonate"]), str(profile["user_agent"])
@@ -157,14 +157,15 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
         assert gopay_transport.validate_gopay_client_hints(
             str(profile["user_agent"]), str(profile["sec_ch_ua"])
         )
-    assert gopay_transport.validate_tls_ua_consistency(
-        "chrome131",
-        "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
-    )
-    with pytest.raises(Exception, match="TLS/UA version mismatch"):
+    with pytest.raises(Exception, match="Chrome 146"):
         gopay_transport.validate_tls_ua_consistency(
             "chrome131",
-            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+            "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
+        )
+    with pytest.raises(Exception, match="TLS/UA version mismatch"):
+        gopay_transport.validate_tls_ua_consistency(
+            "chrome146",
+            "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36",
         )
 
 

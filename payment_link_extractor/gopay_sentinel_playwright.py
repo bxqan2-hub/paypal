@@ -28,10 +28,19 @@ except ImportError:  # pragma: no cover - dependency is validated at runtime
     async_playwright = None  # type: ignore[assignment]
 
 from .gopay_transport import GOPAY_OAI_CLIENT_BUILD_NUMBER, GOPAY_OAI_CLIENT_VERSION
+from .gopay_transport import GOPAY_BROWSER_USER_AGENT
 
 
 SENTINEL_SDK_VERSION = "20260810913b"
 CHATGPT_ORIGIN = "https://chatgpt.com"
+GOPAY_CHROME146_EXECUTABLE = (
+    Path(__file__).resolve().parent
+    / "runtime"
+    / "chrome-146.0.7680.165"
+    / "win64-146.0.7680.165"
+    / "chrome-headless-shell-win64"
+    / "chrome-headless-shell.exe"
+)
 
 
 def _enabled(value: str, *, default: bool) -> bool:
@@ -113,6 +122,8 @@ def _browser_version_matches(user_agent: str, browser_version: str) -> bool:
     return bool(
         user_agent_match
         and browser_version_match
+        and user_agent_match.group(1) == "146"
+        and browser_version_match.group(1) == "146"
         and user_agent_match.group(1) == browser_version_match.group(1)
     )
 
@@ -343,12 +354,15 @@ class PersistentPlaywrightDaemon:
         runtime_id = uuid.uuid4().hex
         profile_path = _profile_root() / _profile_key(device_id)
         profile_path.mkdir(parents=True, exist_ok=True)
+        browser_executable = GOPAY_CHROME146_EXECUTABLE
+        if not browser_executable.is_file():
+            raise RuntimeError(
+                f"GoPay Chrome 146 executable is unavailable: {browser_executable}"
+            )
         # Sentinel still runs in the same persistent Playwright context, but
         # the Chromium window stays hidden unless explicitly disabled.
         headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=True)
-        browser_channel = os.getenv(
-            "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
-        ).strip() or "chrome"
+        browser_channel = "chrome146"
         launch_options: dict[str, Any] = {
             "user_data_dir": str(profile_path),
             "headless": headless,
@@ -360,9 +374,8 @@ class PersistentPlaywrightDaemon:
             "bypass_csp": True,
             "ignore_https_errors": False,
             "args": ["--no-first-run", "--no-default-browser-check"],
+            "executable_path": str(browser_executable),
         }
-        if browser_channel:
-            launch_options["channel"] = browser_channel
         context = await self._playwright.chromium.launch_persistent_context(
             **launch_options
         )
