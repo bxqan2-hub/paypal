@@ -4,11 +4,13 @@ import json
 import re
 from typing import Any, Callable
 
+from .auth import account_id
 from .config import DEFAULT_TIMEOUT, normalize_payment_method, processor_entity_for_country
 from .errors import ConfigurationError, ProtocolError
 from .logging_utils import safe_log_text
 from .models import CheckoutData, ExtractionConfig
 from .gopay_transport import (
+    EMPTY_PENDING_UPDATES,
     openai_sentinel_headers,
     response_json,
     set_proxy_url,
@@ -299,6 +301,10 @@ def create_checkout(
     # Neither complete GoPay HAR sends the optional observer token on the
     # protected checkout/approve requests.
     sentinel_headers.pop("OpenAI-Sentinel-SO-Token", None)
+    if hasattr(chatgpt, "openai_pending_receipts"):
+        chatgpt.openai_pending_receipts = []
+    if hasattr(chatgpt, "headers"):
+        chatgpt.headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
     headers.update(sentinel_headers)
     if commit_callback is not None:
         commit_callback()
@@ -335,6 +341,10 @@ def create_checkout(
         "payment_locale": config_locale(config),
     }
     merge_checkout_payload(checkout, payload)
+    account = account_id(config.access_token)
+    headers = getattr(chatgpt, "headers", None)
+    if account and headers is not None:
+        headers["chatgpt-account-id"] = account
     return checkout
 
 

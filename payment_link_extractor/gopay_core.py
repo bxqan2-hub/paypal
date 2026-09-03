@@ -11,8 +11,8 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from .auth import account_email
-from .config import billing_for_country, currency_minor_scale
-from .errors import ConfigurationError, ExtractionCancelled, ProtocolError
+from .config import billing_for_country, currency_minor_scale, processor_entity_for_country
+from .errors import ConfigurationError, ExtractionCancelled, NetworkError, ProtocolError
 from .gopay_checkout import (
     check_coupon_eligibility,
     create_checkout,
@@ -22,7 +22,12 @@ from .gopay_checkout import (
 from .gopay_cs_live import extract_cs_live_provider
 from .gopay_oaics import extract_oaics_provider
 from .gopay_stripe_common import extract_checkout_totals
-from .gopay_transport import GoPayTransportFactory, TransportFactory, safe_close
+from .gopay_transport import (
+    GoPayTransportFactory,
+    TransportFactory,
+    prepare_openai_browser_flow,
+    safe_close,
+)
 from .logging_utils import stage_logger
 from .models import ExtractionConfig, PaymentLinkResult
 
@@ -126,7 +131,9 @@ def extract_gopay_payment_link(
     zero_trial_validation = bool(config.gopay_zero_trial_validation)
     log = stage_logger(config.verbose)
     billing_profile = billing_for_country(GOPAY_COUNTRY)
-    checkout_account_email = account_email(config.access_token)
+    checkout_account_email = account_email(config.access_token) or str(
+        config.account_email or ""
+    ).strip()
     if checkout_account_email:
         # Link lookup, taxes and confirm to the account identity instead of
         # reusing one static fixture email for every account.
@@ -136,6 +143,10 @@ def extract_gopay_payment_link(
     chatgpt = factory.chatgpt(config, config.checkout_proxy)
     stripe = None
     try:
+        provider = getattr(chatgpt, "openai_sentinel_provider", None)
+        prepare = getattr(provider, "prepare", None)
+        if callable(prepare):
+            prepare()
         if zero_trial_validation:
             # Probe the account offer with the same ID proxy/session that will
             # be retained for Checkout. A negative result stops this attempt;
@@ -154,6 +165,16 @@ def extract_gopay_payment_link(
         if config.oaics_only and checkout["session_kind"] == "stripe_checkout":
             raise ConfigurationError("仅 OAICS 模式下检测到 CS Checkout，任务已失败")
         require_country_currency(checkout, config)
+        processor = processor_entity_for_country(
+            str(checkout.get("billing_country") or GOPAY_COUNTRY),
+            str(checkout.get("processor_entity") or ""),
+        )
+        prepare_openai_browser_flow(
+            chatgpt,
+            flow="chatgpt_checkout",
+            referer=f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+            required=bool(getattr(chatgpt, "openai_sentinel_provider", None)),
+        )
         if apply_checkout_update:
             checkpoint("checkout_update")
             update_checkout(config, chatgpt, checkout, log)
@@ -176,7 +197,10 @@ def extract_gopay_payment_link(
             raise ConfigurationError(
                 f"unsupported checkout session: {checkout.get('cs_id')}"
             )
+        require_country_currency(checkout, config)
         amount_due_minor, amount_currency = checkout_payable_amount_with_presence(checkout)
+        if amount_due_minor is None:
+            raise ProtocolError(502, "GoPay checkout did not return a payable amount")
         if zero_trial_validation:
             checkpoint("zero_amount_validation")
             validate_gopay_amount(amount_due_minor, promotion_applied=True)
@@ -211,6 +235,25 @@ def extract_gopay_payment_link(
         )
         checkpoint("completed")
         return result
+    except NetworkError as exc:
+        if not hasattr(exc, "retryable"):
+            exc.retryable = True
+        if not getattr(exc, "failure_mode", ""):
+            exc.failure_mode = "gopay_network_error"
+        raise
+    except ProtocolError as exc:
+        if not hasattr(exc, "retryable"):
+            status_code = int(getattr(exc, "status_code", 0) or 0)
+            exc.retryable = status_code != 401
+        if not getattr(exc, "failure_mode", ""):
+            exc.failure_mode = "gopay_protocol_error"
+        raise
+    except RuntimeError as exc:
+        if not hasattr(exc, "retryable"):
+            exc.retryable = True
+        if not getattr(exc, "failure_mode", ""):
+            exc.failure_mode = "gopay_runtime_error"
+        raise
     finally:
         safe_close(stripe)
         safe_close(chatgpt)

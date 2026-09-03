@@ -30,8 +30,6 @@ class ExtractionConfig:
     # object. GCash uses these before falling back to JWT profile claims.
     account_name: str = ""
     account_email: str = ""
-    # Kept for API compatibility with older task payloads; the shared legacy
-    # PayPal/GoPay core does not require a separate provider session.
     session_token: str = ""
 
 

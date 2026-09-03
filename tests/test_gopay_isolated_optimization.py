@@ -10,6 +10,7 @@ import pytest
 from payment_link_extractor import gopay_checkout
 from payment_link_extractor import gopay_core
 from payment_link_extractor import gopay_cs_live
+from payment_link_extractor import gopay_sentinel_playwright
 from payment_link_extractor import gopay_stripe_common
 from payment_link_extractor import gopay_transport
 from payment_link_extractor.gopay_validation import validate_checkout_batch
@@ -27,10 +28,10 @@ def test_gopay_sentinel_sdk_matches_both_complete_hars() -> None:
     )
     source = data.decode("utf-8")
     assert "timing=function" in source
-    assert gopay_transport.SENTINEL_SDK_VERSION == "20260810913b"
-    injected = gopay_transport.BrowserSentinelProvider._build_sentinel_init_script()
-    assert "__opllSentinelReferer" in injected
-    assert "referrerPolicy: 'strict-origin-when-cross-origin'" in injected
+    assert gopay_sentinel_playwright.SENTINEL_SDK_VERSION == "20260810913b"
+    assert "/sentinel/{SENTINEL_SDK_VERSION}/sdk.js" in (
+        ROOT / "payment_link_extractor/gopay_sentinel_playwright.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_gopay_uses_isolated_copy_and_paypal_core_is_unchanged() -> None:
@@ -54,7 +55,7 @@ def test_gopay_uses_isolated_copy_and_paypal_core_is_unchanged() -> None:
 
 def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(monkeypatch) -> None:
     class Session:
-        def __init__(self) -> None:
+        def __init__(self, *_args, **_kwargs) -> None:
             self.headers: dict[str, str] = {}
             self.proxies: dict[str, str] = {}
 
@@ -73,8 +74,8 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
         gopay_transport.PlaywrightSentinelProvider,
     )
     assert session.headers["oai-language"] == "id-ID"
-    assert session.headers["oai-client-build-number"] == "10109010"
-    assert session.headers["oai-client-version"] == "prod-31e08510fe1189856ad77823ca134a25c60715b5"
+    assert session.headers["oai-client-build-number"] == gopay_transport.GOPAY_OAI_CLIENT_BUILD_NUMBER
+    assert session.headers["oai-client-version"] == gopay_transport.GOPAY_OAI_CLIENT_VERSION
     session.openai_checkout_telemetry = "[1,627.5,21,23,28,2,0,631]"
     telemetry = session.refresh_openai_request_headers(
         "POST", "https://chatgpt.com/backend-api/payments/checkout"
@@ -100,7 +101,7 @@ def test_gopay_transport_matches_har_defaults_without_touching_paypal_transport(
 
 def test_gopay_device_id_is_stable_per_access_token(monkeypatch) -> None:
     class Session:
-        def __init__(self) -> None:
+        def __init__(self, *_args, **_kwargs) -> None:
             self.headers: dict[str, str] = {}
             self.proxies: dict[str, str] = {}
 
@@ -135,27 +136,26 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
         for index in range(80)
     }
     assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
-    assert len(profiles) >= 2
+    assert profiles == {"chrome151"}
     assert gopay_transport.select_gopay_browser_profile(device_id="stable-device") == (
         gopay_transport.select_gopay_browser_profile(device_id="stable-device")
     )
-    assert gopay_transport.select_gopay_browser_profile(
-        device_id="stable-device",
-        transport_impersonate="chrome131",
-    )["name"] == "chrome131"
+    with pytest.raises(Exception, match="no matching browser identity"):
+        gopay_transport.select_gopay_browser_profile(
+            device_id="stable-device",
+            transport_impersonate="chrome131",
+        )
     assert gopay_transport.select_gopay_browser_profile(
         device_id="stable-device",
         transport_impersonate="chrome",
     ) == gopay_transport.select_gopay_browser_profile(device_id="stable-device")
-    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {
-        "chrome124",
-        "chrome131",
-        "chrome136",
-        "chrome150",
-    }
+    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {"chrome151"}
     for profile in gopay_transport.GOPAY_BROWSER_PROFILES:
         assert gopay_transport.validate_tls_ua_consistency(
             str(profile["impersonate"]), str(profile["user_agent"])
+        )
+        assert gopay_transport.validate_gopay_client_hints(
+            str(profile["user_agent"]), str(profile["sec_ch_ua"])
         )
     assert gopay_transport.validate_tls_ua_consistency(
         "chrome131",
@@ -220,9 +220,11 @@ def test_gopay_fingerprint_validation_rejects_malformed_values() -> None:
 
 def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
+    open_kwargs: dict[str, object] = {}
 
     class Daemon:
         def open_session(self, **kwargs):
+            open_kwargs.update(kwargs)
             calls.append(("open", kwargs["device_id"]))
             return {
                 "runtime_id": "runtime-fixture",
@@ -284,6 +286,7 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
         user_agent="fixture-agent",
         proxy="http://proxy.example:8080",
         transport_session=session,
+        promo_campaign=False,
         language="id-ID",
         timezone="Asia/Jakarta",
     )
@@ -313,6 +316,7 @@ def test_gopay_playwright_provider_keeps_one_runtime_for_init_and_token(monkeypa
         624,
     ]
     assert [name for name, _ in calls] == ["open", "init", "token", "cookie", "close"]
+    assert open_kwargs["promo_campaign"] is False
 
 
 def test_gopay_transport_propagates_har_pending_update_receipt() -> None:
@@ -371,119 +375,12 @@ def test_gopay_transport_clears_pending_receipts_on_ack() -> None:
     assert session.headers["x-oai-is-pending-updates"] == '{"v":3,"updates":[]}'
 
 
-def test_gopay_browser_provider_syncs_pending_update_header(monkeypatch) -> None:
-    class Session:
-        def __init__(self) -> None:
-            self.headers: dict[str, str] = {}
-
-    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
-    provider.transport_session = Session()
-    monkeypatch.setattr(
-        provider,
-        "_run",
-        lambda _args, timeout=20: {
-            "success": True,
-            "data": {
-                    "requests": [
-                        {"responseHeaders": {"x-oai-is-receipt": "ois1.browser-fixture"}}
-                    ]
-            },
-        },
-    )
-    provider._sync_pending_update_from_browser()
-    assert json.loads(provider.transport_session.headers["x-oai-is-pending-updates"]) == {
-        "v": 3,
-        "updates": ["ois1.browser-fixture"],
-    }
 
 
-def test_gopay_browser_provider_recovers_attestation_from_request_monitor(monkeypatch) -> None:
-    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
-    provider._attestation = ""
-    monkeypatch.setattr(provider, "_eval", lambda _expression: {})
-    monkeypatch.setattr(
-        provider,
-        "_run",
-        lambda _args, timeout=20: {
-            "data": {
-                "requests": [
-                    {
-                        "requestHeaders": {
-                            "OAI-Web-Deployment-Attestation": "a" * 291
-                        }
-                    }
-                ]
-            }
-        },
-    )
-    provider._capture_bootstrap()
-    assert provider._attestation == "a" * 291
 
 
-def test_gopay_browser_token_uses_sdk_timing_without_manual_ping(monkeypatch) -> None:
-    events: list[str] = []
-    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
-    provider._lock = __import__("threading").RLock()
-    provider._failed = False
-    provider._started = True
-    provider._attestation = ""
-    provider._cookies = ""
-    provider.device_id = "device-fixture"
-    provider.transport_session = type(
-        "Session",
-        (),
-        {"headers": {}, "openai_sentinel_observer_enabled": False},
-    )()
-
-    def fake_eval(expression, timeout=75):
-        if "SentinelSDK.token" in expression:
-            events.append("token")
-            return {
-                "token": "proof-fixture",
-                "timing": "[1,620.5,7,30,26,2,0,624]",
-            }
-        raise AssertionError(expression)
-
-    monkeypatch.setattr(provider, "_eval", fake_eval)
-    monkeypatch.setattr(provider, "_sync_cookies", lambda: events.append("cookies"))
-
-    headers = provider.headers("checkout_session_approval", referer="https://chatgpt.com/checkout/fixture")
-    assert headers["OpenAI-Sentinel-Token"] == "proof-fixture"
-    assert events == ["token", "cookies"]
-    assert json.loads(provider.transport_session.openai_approve_telemetry) == [
-        1,
-        620.5,
-        7,
-        30,
-        26,
-        2,
-        0,
-        624,
-    ]
 
 
-def test_gopay_browser_prepare_flow_uses_sdk_init_without_exporting_token(monkeypatch) -> None:
-    provider = object.__new__(gopay_transport.BrowserSentinelProvider)
-    provider._lock = __import__("threading").RLock()
-    provider._failed = False
-    provider._started = True
-    expressions: list[str] = []
-    cookie_sync: list[str] = []
-    monkeypatch.setattr(
-        provider,
-        "_eval",
-        lambda expression, timeout=90: expressions.append(expression) or True,
-    )
-    monkeypatch.setattr(provider, "_sync_cookies", lambda: cookie_sync.append("cookies"))
-    provider.prepare_flow(
-        flow="checkout_session_approval",
-        referer="https://chatgpt.com/checkout/openai_llc/cs_fixture",
-    )
-    assert len(expressions) == 1
-    assert 'window.__opllSentinelReferer="https://chatgpt.com/checkout/openai_llc/cs_fixture"' in expressions[0]
-    assert 'SentinelSDK.init("checkout_session_approval")' in expressions[0]
-    assert "SentinelSDK.token" not in expressions[0]
-    assert cookie_sync == ["cookies"]
 
 
 def test_gopay_stripe_metrics_reuse_chatgpt_browser_cookie_identity() -> None:
@@ -656,15 +553,6 @@ def test_gopay_checkout_commits_with_required_playwright_token_without_attestati
     assert committed == [True]
 
 
-def test_gopay_sentinel_init_script_uses_dedicated_assets() -> None:
-    script = gopay_transport.BrowserSentinelProvider._build_sentinel_init_script()
-    assert "window.SentinelSDK = SentinelSDK" in script
-    assert "entry.responseStart - entry.requestStart" in script
-    assert "s-cf-edge-msec" in script
-    assert "s-cf-origin-ttfb-msec" in script
-    assert "s-cf-quic-rtt-msec" in script
-    assert "protocolCode" in script
-    assert "mk_gcash_open_source" not in script
 
 
 def test_gopay_checkout_methods_merge_nested_values() -> None:
@@ -1179,7 +1067,7 @@ def test_gopay_confirm_uses_har_stripe_runtime_without_precreating_payment_metho
     assert gopay_cs_live.GOPAY_STRIPE_RUNTIME_VERSION == "b0f5e7abe5"
     source = (ROOT / "payment_link_extractor/gopay_cs_live.py").read_text(encoding="utf-8")
     flow = source[source.index("def extract_cs_live_provider(") : source.index("def payment_method_types(")]
-    assert "stripe_create_payment_method(" not in flow
+    assert "/v1/payment_methods" not in flow
     assert "stripe_confirm_cs_live(" in flow
     assert flow.index("synchronize_stripe_browser_ids(") < flow.index("cs_elements_session(")
     assert flow.index("prefetch_checkout_approval_proof(") < flow.index("cs_checkout_taxes(")
@@ -1221,8 +1109,13 @@ def test_gopay_tax_region_matches_har_progressive_sequence(monkeypatch) -> None:
         "postal_code": "10220",
     }
 
-    gopay_cs_live.cs_update_tax_region(
-        object(), checkout, ctx, billing, None
+    gopay_cs_live._cs_update_tax_region_fields(
+        object(),
+        checkout,
+        ctx,
+        billing,
+        None,
+        ("country", "line1", "city", "state", "postal_code"),
     )
 
     tax_keys = [
@@ -1313,7 +1206,7 @@ def test_gopay_provider_uses_complete_har_tax_and_snapshot_cadence(monkeypatch) 
     monkeypatch.setattr(
         gopay_cs_live,
         "cs_checkout_taxes",
-        lambda *_args: events.append("taxes") or {},
+        lambda *_args, **_kwargs: events.append("taxes") or {},
     )
     monkeypatch.setattr(
         gopay_cs_live,
@@ -1394,10 +1287,16 @@ def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch
 
     factory = Factory()
     calls: list[str] = []
+    refreshes: list[dict[str, object]] = []
     monkeypatch.setattr(
         gopay_core,
         "check_coupon_eligibility",
         lambda *_args: pytest.fail("eligibility step must be skipped when the switch is off"),
+    )
+    monkeypatch.setattr(
+        gopay_core,
+        "prepare_openai_browser_flow",
+        lambda *_args, **kwargs: refreshes.append(kwargs),
     )
     monkeypatch.setattr(
         gopay_core,
@@ -1453,6 +1352,13 @@ def test_gopay_core_zero_validation_off_skips_only_steps_one_and_six(monkeypatch
     assert result.amount_due_minor == 34900000
     assert result.extra["gopay_zero_trial_validation"] is False
     assert calls == ["checkout_update"]
+    assert refreshes == [
+        {
+            "flow": "chatgpt_checkout",
+            "referer": "https://chatgpt.com/checkout/openai_ie/cs_fixture",
+            "required": False,
+        }
+    ]
     assert stages == [
         "checkout",
         "checkout_kind:stripe_checkout",

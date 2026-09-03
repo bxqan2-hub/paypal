@@ -100,11 +100,42 @@ def extract_access_token(raw: Any) -> str:
     return _extract_from_text(text)
 
 
+def _collect_session_cookie_chunks(value: Any, found: dict[int, str]) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = str(key or "").replace("-", "_").lower()
+            if normalized_key.startswith("__secure_next_auth.session_token."):
+                suffix = normalized_key.rsplit(".", 1)[-1]
+                if suffix.isdigit() and isinstance(nested, str):
+                    found[int(suffix)] = nested.strip()
+        cookie_name = str(value.get("name") or value.get("key") or "")
+        cookie_value = value.get("value")
+        normalized_name = cookie_name.replace("-", "_").lower()
+        if normalized_name.startswith("__secure_next_auth.session_token."):
+            suffix = normalized_name.rsplit(".", 1)[-1]
+            if suffix.isdigit() and isinstance(cookie_value, str):
+                found[int(suffix)] = cookie_value.strip()
+        for nested in value.values():
+            _collect_session_cookie_chunks(nested, found)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_session_cookie_chunks(nested, found)
+
+
 def _find_session_token(value: Any) -> str:
     if isinstance(value, dict):
         # Browser exports split large NextAuth cookies into .0/.1 chunks.
         # Reassemble them in numeric order before the generic key walk.
         chunked: list[tuple[int, str]] = []
+        cookie_name = str(value.get("name") or value.get("key") or "")
+        cookie_value = value.get("value")
+        normalized_cookie_name = cookie_name.replace("-", "_").lower()
+        if (
+            normalized_cookie_name.startswith("__secure_next_auth.session_token")
+            and isinstance(cookie_value, str)
+            and cookie_value.strip()
+        ):
+            return _session_token_candidate(cookie_value)
         for key, nested in value.items():
             normalized_key = str(key or "").replace("-", "_").lower()
             if not normalized_key.startswith("__secure_next_auth.session_token."):
@@ -121,7 +152,7 @@ def _find_session_token(value: Any) -> str:
                 normalized_key in _SESSION_TOKEN_KEYS
                 or compact_key in {key.replace("_", "") for key in _SESSION_TOKEN_KEYS}
             ) and isinstance(nested, str):
-                candidate = str(nested).strip()
+                candidate = _session_token_candidate(nested)
                 if candidate:
                     return candidate
         for nested in value.values():
@@ -136,9 +167,69 @@ def _find_session_token(value: Any) -> str:
     return ""
 
 
+def _session_token_from_cookie_text(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            found = _session_token_from_cookie_text(nested)
+            if found:
+                return found
+        return ""
+    text = str(value or "")
+    cookie_chunks: dict[int, str] = {}
+    for match in re.finditer(
+        r"(?:^|;\s*)__Secure-next-auth\.session-token\.(\d+)=([^;]+)",
+        text,
+        re.I,
+    ):
+        cookie_chunks[int(match.group(1))] = match.group(2).strip()
+    if cookie_chunks:
+        return "".join(part for _, part in sorted(cookie_chunks.items()))
+    match = re.search(
+        r"(?:^|;\s*)__Secure-next-auth\.session-token=([^;]+)",
+        text,
+        re.I,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _session_token_candidate(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if candidate.startswith(("{", "[", '"')):
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            decoded = None
+        if decoded is not None:
+            if isinstance(decoded, (dict, list)):
+                found = extract_session_token(decoded)
+            else:
+                found = _session_token_from_cookie_text(decoded)
+            if found:
+                return found
+            if isinstance(decoded, str) and decoded.strip() and decoded.strip() != candidate:
+                return decoded.strip()
+    found = _session_token_from_cookie_text(candidate)
+    return found or candidate
+
+
 def extract_session_token(raw: Any) -> str:
     """Extract an optional NextAuth session token from an import envelope."""
     if isinstance(raw, (dict, list)):
+        if isinstance(raw, dict):
+            for key, nested in raw.items():
+                normalized_key = str(key or "").replace("-", "_").lower()
+                if (
+                    normalized_key in _SESSION_TOKEN_KEYS
+                    and isinstance(nested, str)
+                    and nested.strip()
+                ):
+                    return _session_token_candidate(nested)
+        chunks: dict[int, str] = {}
+        _collect_session_cookie_chunks(raw, chunks)
+        if chunks:
+            return "".join(value for _, value in sorted(chunks.items()))
         found = _find_session_token(raw)
         if found:
             return found
@@ -147,21 +238,26 @@ def extract_session_token(raw: Any) -> str:
         if isinstance(raw, dict):
             for key, value in raw.items():
                 if str(key or "").lower() in {"cookie", "cookies", "cookie_header"}:
-                    match = re.search(
-                        r"(?:^|;\s*)__Secure-next-auth\.session-token=([^;]+)",
-                        str(value or ""),
-                    )
-                    if match:
-                        return match.group(1).strip()
+                    found = _session_token_from_cookie_text(value)
+                    if found:
+                        return found
+        elif isinstance(raw, list):
+            for value in raw:
+                found = _session_token_from_cookie_text(value)
+                if found:
+                    return found
         return ""
     text = str(raw or "").strip()
-    if not text.startswith(("{", "[")):
-        return ""
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        return ""
-    return _find_session_token(value)
+    if text.startswith(("{", "[", '"')):
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            value = None
+        if value is not None:
+            if isinstance(value, (dict, list)):
+                return extract_session_token(value)
+            return _session_token_from_cookie_text(value)
+    return _session_token_from_cookie_text(text)
 
 
 def normalize_access_token(raw: str) -> str:

@@ -4,10 +4,8 @@ from typing import Callable
 from typing import Any
 
 from .gopay_checkout import (
-    chatgpt_success_return_url,
     merge_checkout_payload,
     openai_checkout_email,
-    update_checkout,
 )
 import random
 import time
@@ -16,7 +14,6 @@ import uuid
 from .config import (
     DEFAULT_TIMEOUT,
     PROVIDER_POLL_TIMEOUT_SECONDS,
-    STRIPE_VERSION_BASE,
     STRIPE_VERSION_FULL,
     normalize_payment_method,
     processor_entity_for_country,
@@ -37,7 +34,6 @@ from .gopay_stripe_common import (
     extract_redirect_to_url,
     find_setup_intent,
     find_submission_attempt,
-    is_paypal_ba_approval_url,
     resolve_external_redirect,
     stripe_additional_elements_params,
     stripe_context,
@@ -54,14 +50,25 @@ from .gopay_transport import (
     openai_sentinel_headers,
     prepare_openai_browser_flow,
     response_json,
-    safe_close,
-    set_proxy_url,
     stage_http_request,
     synchronize_stripe_browser_ids,
 )
 
 
 GOPAY_STRIPE_RUNTIME_VERSION = STRIPE_RV_BUILD[:10]
+
+
+def _protocol_failure(
+    status_code,
+    detail,
+    *,
+    retryable=True,
+    failure_mode="gopay_protocol_error",
+):
+    error = ProtocolError(status_code, detail)
+    error.retryable = bool(retryable)
+    error.failure_mode = str(failure_mode)
+    return error
 
 
 def prefetch_checkout_approval_proof(
@@ -134,12 +141,27 @@ def cs_elements_session(
             timeout=DEFAULT_TIMEOUT,
         )
     except Exception as exc:
-        emit_log(log, f"Stripe Elements session exception: {type(exc).__name__}")
-        return {}
+        raise _protocol_failure(
+            502,
+            f"Stripe Elements session request failed: {safe_log_text(exc)}",
+            failure_mode="elements_session_transport",
+        ) from exc
     if response.status_code >= 400:
-        emit_log(log, f"Stripe Elements session failed: {response.text[:300]}")
-        return {}
-    payload = response_json(response, "Stripe Elements session")
+        status_code = int(response.status_code)
+        raise _protocol_failure(
+            status_code,
+            f"Stripe Elements session failed: {safe_log_text(response.text)}",
+            retryable=status_code != 401,
+            failure_mode="elements_session_http",
+        )
+    try:
+        payload = response_json(response, "Stripe Elements session")
+    except Exception as exc:
+        raise _protocol_failure(
+            502,
+            f"Stripe Elements session response invalid: {safe_log_text(exc)}",
+            failure_mode="elements_session_response",
+        ) from exc
     real_session_id = payload.get("session_id") or payload.get("id")
     if real_session_id:
         ctx["elements_session_id"] = str(real_session_id)
@@ -222,20 +244,39 @@ def _cs_update_tax_region_fields(
             continue
         data = dict(common)
         data.update({f"tax_region[{name}]": item for name, item in accumulated.items()})
-        response = stage_http_request(
-            stripe,
-            f"Stripe tax_region ({field})",
-            "POST",
-            f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
-            log,
-            data=data,
-            headers=cs_stripe_headers(),
-            timeout=DEFAULT_TIMEOUT,
-        )
+        try:
+            response = stage_http_request(
+                stripe,
+                f"Stripe tax_region ({field})",
+                "POST",
+                f"https://api.stripe.com/v1/payment_pages/{checkout['cs_id']}",
+                log,
+                data=data,
+                headers=cs_stripe_headers(),
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except Exception as exc:
+            raise _protocol_failure(
+                502,
+                f"Stripe tax_region ({field}) request failed: {safe_log_text(exc)}",
+                failure_mode="tax_region_transport",
+            ) from exc
         if response.status_code >= 400:
-            emit_log(log, f"Stripe tax_region failed ({field}): {response.text[:300]}")
-            return last_payload, accumulated
-        payload = response_json(response, "Stripe tax_region")
+            status_code = int(response.status_code)
+            raise _protocol_failure(
+                status_code,
+                f"Stripe tax_region failed ({field}): {safe_log_text(response.text)}",
+                retryable=status_code != 401,
+                failure_mode="tax_region_http",
+            )
+        try:
+            payload = response_json(response, "Stripe tax_region")
+        except Exception as exc:
+            raise _protocol_failure(
+                502,
+                f"Stripe tax_region ({field}) response invalid: {safe_log_text(exc)}",
+                failure_mode="tax_region_response",
+            ) from exc
         if isinstance(payload, dict):
             last_payload = payload
             checkout_config_id = str(payload.get("config_id") or "").strip()
@@ -249,22 +290,6 @@ def _cs_update_tax_region_fields(
     return last_payload, accumulated
 
 
-def cs_update_tax_region(
-    stripe: Any,
-    checkout: CheckoutData,
-    ctx: StripeContext,
-    billing: dict[str, str],
-    log: Any | None,
-) -> dict[str, Any]:
-    payload, _ = _cs_update_tax_region_fields(
-        stripe,
-        checkout,
-        ctx,
-        billing,
-        log,
-        ("country", "line1", "city", "state", "postal_code"),
-    )
-    return payload
 
 
 def cs_snapshot_billing(
@@ -300,10 +325,20 @@ def cs_snapshot_billing(
             },
             timeout=DEFAULT_TIMEOUT,
         )
-        if response.status_code >= 400:
-            emit_log(log, f"ChatGPT checkout/snapshot failed: {response.text[:300]}")
     except Exception as exc:
-        emit_log(log, f"ChatGPT checkout/snapshot exception: {type(exc).__name__}")
+        raise _protocol_failure(
+            502,
+            f"ChatGPT checkout/snapshot request failed: {safe_log_text(exc)}",
+            failure_mode="snapshot_transport",
+        ) from exc
+    if response.status_code >= 400:
+        status_code = int(response.status_code)
+        raise _protocol_failure(
+            status_code,
+            f"ChatGPT checkout/snapshot failed: {safe_log_text(response.text)}",
+            retryable=status_code != 401,
+            failure_mode="snapshot_http",
+        )
 
 
 def cs_checkout_taxes(
@@ -312,6 +347,8 @@ def cs_checkout_taxes(
     checkout: CheckoutData,
     billing: dict[str, str],
     log: Any | None,
+    *,
+    use_pending_updates: bool = False,
 ) -> dict[str, Any]:
     path = "/backend-api/payments/checkout/taxes"
     processor = processor_entity_for_country(
@@ -327,6 +364,13 @@ def cs_checkout_taxes(
         "processor_entity": processor,
         "billing_address": cs_billing_address(billing, country=config.country.upper()),
     }
+    request_headers = {
+        "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+    if not use_pending_updates:
+        request_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
     response = stage_http_request(
         chatgpt,
         "ChatGPT cs_live checkout/taxes",
@@ -334,12 +378,7 @@ def cs_checkout_taxes(
         "https://chatgpt.com" + path,
         log,
         json=body,
-        headers={
-            "Referer": f"https://chatgpt.com/checkout/{processor}/{checkout['cs_id']}",
-            "x-openai-target-path": path,
-            "x-openai-target-route": path,
-            "x-oai-is-pending-updates": EMPTY_PENDING_UPDATES,
-        },
+        headers=request_headers,
         timeout=DEFAULT_TIMEOUT,
     )
     if response.status_code >= 400:
@@ -349,59 +388,6 @@ def cs_checkout_taxes(
     return payload
 
 
-def stripe_create_payment_method(
-    stripe: Any,
-    checkout: CheckoutData,
-    billing: dict[str, str],
-    ctx: StripeContext,
-    payment_method: str,
-    log: Any | None,
-) -> str:
-    runtime = GOPAY_STRIPE_RUNTIME_VERSION
-    body = {
-        "billing_details[name]": billing["name"],
-        "billing_details[email]": billing["email"],
-        "billing_details[phone]": billing["phone"],
-        "billing_details[address][country]": billing["country"],
-        "billing_details[address][line1]": billing["line1"],
-        "billing_details[address][city]": billing["city"],
-        "billing_details[address][postal_code]": billing["postal_code"],
-        "billing_details[address][state]": billing["state"],
-        "type": payment_method,
-        "payment_user_agent": f"stripe.js/{runtime}; stripe-js-v3/{runtime}; payment-element; deferred-intent",
-        "referrer": "https://chatgpt.com",
-        "time_on_page": str(random.randint(25000, 55000)),
-        "client_attribution_metadata[checkout_session_id]": checkout["cs_id"],
-        "client_attribution_metadata[client_session_id]": ctx["stripe_js_id"],
-        "client_attribution_metadata[checkout_config_id]": ctx["config_id"],
-        "client_attribution_metadata[elements_session_id]": ctx["elements_session_id"],
-        "client_attribution_metadata[elements_session_config_id]": ctx["elements_session_config_id"],
-        "client_attribution_metadata[merchant_integration_source]": "elements",
-        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
-        "client_attribution_metadata[merchant_integration_version]": "2021",
-        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
-        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
-        "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
-        "client_attribution_metadata[merchant_integration_additional_elements][1]": "address",
-        "key": stripe_key(checkout),
-        "_stripe_version": STRIPE_VERSION_BASE,
-    }
-    response = stage_http_request(
-        stripe,
-        "Stripe payment_methods",
-        "POST",
-        "https://api.stripe.com/v1/payment_methods",
-        log,
-        data=body,
-        headers=cs_stripe_headers(),
-        timeout=DEFAULT_TIMEOUT,
-    )
-    if response.status_code >= 400:
-        raise ProtocolError(response.status_code, f"Stripe payment_methods failed: {response.text[:500]}")
-    payment_method_id = str(response_json(response, "Stripe payment_methods").get("id") or "")
-    if not payment_method_id.startswith("pm_"):
-        raise ProtocolError(502, "Stripe payment_methods response missing pm_ id")
-    return payment_method_id
 
 
 def stripe_consumer_session_lookup(
@@ -488,14 +474,19 @@ def stripe_confirm_cs_live(
 ) -> dict[str, Any]:
     runtime = GOPAY_STRIPE_RUNTIME_VERSION
     amount = ctx.get("checkout_amount") or expected_amount(init_payload)
+    guid = str(ctx.get("guid") or "").strip()
+    muid = str(ctx.get("muid") or "").strip()
+    sid = str(ctx.get("sid") or "").strip()
+    if not guid or not muid or not sid:
+        raise ProtocolError(502, "GoPay Stripe browser fingerprint is incomplete")
     elements_session_id = str(ctx.get("elements_session_id") or "")
     elements_session_config_id = str(ctx.get("elements_session_config_id") or "")
     init_checkout_config_id = str(ctx.get("config_id") or "")
     checkout_config_id = str(ctx.get("checkout_config_id") or init_checkout_config_id)
     body = {
-        "guid": str(ctx.get("guid") or f"{uuid.uuid4()}"),
-        "muid": str(ctx.get("muid") or f"{uuid.uuid4()}"),
-        "sid": str(ctx.get("sid") or f"{uuid.uuid4()}"),
+        "guid": guid,
+        "muid": muid,
+        "sid": sid,
         "init_checksum": str(init_payload.get("init_checksum") or ctx.get("init_checksum") or ""),
         "version": runtime,
         "expected_amount": str(amount),
@@ -768,7 +759,14 @@ def extract_cs_live_provider(
         ("postal_code",),
         tax_region,
     )
-    cs_checkout_taxes(config, chatgpt, checkout, billing, log)
+    cs_checkout_taxes(
+        config,
+        chatgpt,
+        checkout,
+        billing,
+        log,
+        use_pending_updates=True,
+    )
     cs_checkout_page_refresh(stripe, checkout, ctx, log)
     checkout["payable_amount_minor"] = ctx.get("checkout_amount")
     final_elements_amount = str(ctx.get("checkout_amount") or "0")
@@ -794,6 +792,8 @@ def extract_cs_live_provider(
     stripe_redirect = provider_redirect_after_confirm(
         chatgpt, stripe, checkout, confirm_payload, payment_method, log, ctx
     )
+    if not stripe_redirect:
+        raise ProtocolError(502, "cs_live Stripe confirm returned no provider redirect")
     if stage_callback:
         stage_callback("redirect_resolution")
     provider_config = provider_redirect_config(payment_method)
@@ -803,8 +803,6 @@ def extract_cs_live_provider(
         preferred_hosts=provider_config["preferred_hosts"],
         log=log,
     )
-    if payment_method == "paypal" and not is_paypal_ba_approval_url(provider_url):
-        raise ProtocolError(502, "PayPal BA 链解析失败：Stripe 中转地址未返回 agreements/approve?ba_token=BA- 链接")
     url = provider_url or stripe_redirect
     return {
         "payment_method_id": "",

@@ -82,6 +82,10 @@ def probe_gopay_zero_trial_eligibility(
         attempt = _attempt_config(config, proxy)
         chatgpt = factory.chatgpt(attempt, proxy)
         try:
+            provider = getattr(chatgpt, "openai_sentinel_provider", None)
+            prepare = getattr(provider, "prepare", None)
+            if callable(prepare):
+                prepare()
             result = probe_coupon_eligibility(attempt, chatgpt, log)
             state = str(result.get("state") or "")
             eligible = bool(result.get("eligible"))

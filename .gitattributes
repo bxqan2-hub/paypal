@@ -7,6 +7,7 @@ artifacts/**/DIFF_FILE.patch -text -diff
 /sentinel.py -text -diff
 /sentinel_bridge.js -text -diff
 /sentinel_assets/*.js -text -diff
+/payment_link_extractor/sentinel_assets/*.js -text -diff
 # Keep the vendored Sentinel launchers byte-stable for their SHA-256 manifest.
 /payment_link_extractor/mk_gcash_open_source/sentinel.py -text -diff
 /payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js -text -diff

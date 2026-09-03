@@ -651,7 +651,11 @@ class TaskManager:
                         attempt_index < retry_count
                         and (not is_checkout_sensitive or explicit_retryable is not False)
                         and not (is_checkout_sensitive and status_code == 401)
-                        and not (is_checkout_sensitive and record.checkout_opportunity_consumed)
+                        and not (
+                            is_checkout_sensitive
+                            and record.checkout_opportunity_consumed
+                            and (not is_gopay or explicit_retryable is not True)
+                        )
                         and (
                             record.config.payment_method != "gcash"
                             or mk_retryable
@@ -884,6 +888,7 @@ class TaskManager:
             config.checkout_proxy,
             config.update_proxy,
             config.stripe_hcaptcha_token,
+            config.session_token,
             *config.checkout_proxy_attempts,
             *config.update_proxy_attempts,
         )

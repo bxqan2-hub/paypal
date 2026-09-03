@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import os
 import base64
-import hashlib
 import json
 import re
 import secrets
-import shutil
-import subprocess
-import sys
-import tempfile
 import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -24,14 +18,16 @@ except ImportError:  # pragma: no cover - installation issue handled at runtime
     requests = None  # type: ignore
 
 from .auth import account_id
-from .config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT, normalize_payment_method
+from .config import DEFAULT_USER_AGENT, normalize_payment_method
 from .errors import ConfigurationError, NetworkError, ProtocolError
 from .logging_utils import compact_url, emit_log, safe_log_text
 from .models import ExtractionConfig
 
 
 EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
-SENTINEL_SDK_VERSION = "20260810913b"
+PENDING_RECEIPT_LIMIT = 2
+GOPAY_OAI_CLIENT_BUILD_NUMBER = "10012890"
+GOPAY_OAI_CLIENT_VERSION = "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
 
 
 def browser_checkout_telemetry(action: str) -> str:
@@ -63,6 +59,18 @@ def browser_checkout_telemetry(action: str) -> str:
         ]
     return json.dumps(values, separators=(",", ":"))
 
+
+def _pending_receipts_from_header(value: Any) -> list[str]:
+    try:
+        payload = json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return []
+    updates = payload.get("updates") if isinstance(payload, dict) else None
+    if not isinstance(updates, list):
+        return []
+    values = [str(item).strip() for item in updates if str(item).strip()]
+    return values[-PENDING_RECEIPT_LIMIT:]
+
 try:
     from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
 except ImportError:  # pragma: no cover
@@ -93,41 +101,10 @@ class TransportFactory(Protocol):
 
 GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
     {
-        "name": "chrome150",
-        "impersonate": "chrome150",
-        "user_agent": DEFAULT_USER_AGENT.replace("Chrome/151.", "Chrome/150."),
-        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="150", "Chromium";v="150"',
-        "weight": 55,
-    },
-    {
-        "name": "chrome131",
-        "impersonate": "chrome131",
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "weight": 20,
-    },
-    {
-        "name": "chrome136",
-        "impersonate": "chrome136",
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-        ),
-        "sec_ch_ua": '"Chromium";v="136", "Google Chrome";v="136", "Not:A-Brand";v="99"',
-        "weight": 15,
-    },
-    {
-        "name": "chrome124",
-        "impersonate": "chrome124",
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "weight": 10,
+        "name": "chrome151",
+        "impersonate": "chrome151",
+        "user_agent": DEFAULT_USER_AGENT,
+        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
     },
 )
 
@@ -139,35 +116,41 @@ def select_gopay_browser_profile(
 ) -> dict[str, Any]:
     """Bind one coherent browser profile to an entire account context."""
     requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
-    if requested not in {"", "auto", "chrome"}:
+    if requested not in {"", "auto", "chrome", "chrome151"}:
         for profile in GOPAY_BROWSER_PROFILES:
             if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
                 return dict(profile)
         raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
 
     selected_transport = str(transport_impersonate or "").strip().lower()
-    if selected_transport and selected_transport != "chrome":
+    if selected_transport and selected_transport not in {"chrome", "chrome151"}:
         for profile in GOPAY_BROWSER_PROFILES:
             if selected_transport == str(profile["impersonate"]).lower():
                 return dict(profile)
         raise ConfigurationError(
             f"GoPay TLS profile has no matching browser identity: {selected_transport}"
         )
+    return dict(GOPAY_BROWSER_PROFILES[0])
 
-    profiles = list(GOPAY_BROWSER_PROFILES)
-    total_weight = sum(max(0, int(profile["weight"])) for profile in profiles)
-    if total_weight <= 0:
-        raise ConfigurationError("GoPay browser profiles have no positive weight")
-    digest = hashlib.sha256(
-        f"gopay-browser-profile:{str(device_id or '')}".encode("utf-8")
-    ).digest()
-    ticket = int.from_bytes(digest[:8], "big") % total_weight
-    for profile in profiles:
-        weight = max(0, int(profile["weight"]))
-        if ticket < weight:
-            return dict(profile)
-        ticket -= weight
-    return dict(profiles[-1])
+
+def validate_gopay_client_hints(user_agent: str, sec_ch_ua: str) -> bool:
+    ua_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", str(user_agent or ""), re.I)
+    if not ua_match:
+        raise ConfigurationError("GoPay User-Agent must identify Chrome or Chromium")
+    expected = ua_match.group(1)
+    hints = re.findall(
+        r'"(Google Chrome|Chromium)"\s*;\s*v="(\d+)"',
+        str(sec_ch_ua or ""),
+        re.I,
+    )
+    brands = {brand.lower() for brand, _ in hints}
+    if brands != {"google chrome", "chromium"} or any(
+        value != expected for _, value in hints
+    ):
+        raise ConfigurationError(
+            f"User-Agent/client-hints version mismatch: ua={expected}, hints={','.join(value for _, value in hints)}"
+        )
+    return True
 
 
 def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
@@ -183,12 +166,14 @@ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
 
 def gopay_browser_identity(config: ExtractionConfig) -> tuple[str, dict[str, Any]]:
     """Return the stable device and paired browser profile for one GoPay AT."""
+    stable_account_id = account_id(config.access_token)
+    device_seed = stable_account_id or config.access_token
     device_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-device:{config.access_token}")
+        uuid.uuid5(uuid.NAMESPACE_URL, f"gopay-device:{device_seed}")
     )
     profile = select_gopay_browser_profile(
         device_id=device_id,
-        transport_impersonate=os.getenv("OPLL_HTTP_IMPERSONATE", "").strip(),
+        transport_impersonate="",
     )
     return device_id, profile
 
@@ -197,6 +182,8 @@ def new_session(impersonate: str | None = None) -> Any:
     if CurlCffiSession is not None:
         selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
         return CurlCffiSession(impersonate=selected)
+    if impersonate:
+        raise ConfigurationError("curl_cffi is required for the GoPay Chrome 151 identity")
     if requests is None:
         raise ConfigurationError("requests is required; install requirements.txt")
     return requests.Session()
@@ -474,13 +461,24 @@ def stage_http_request(
     session_headers = getattr(session, "headers", None)
     if session_headers is not None:
         try:
+            pending_receipts = getattr(session, "openai_pending_receipts", None)
+            if not isinstance(pending_receipts, list):
+                pending_receipts = _pending_receipts_from_header(
+                    session_headers.get("x-oai-is-pending-updates", "")
+                )
             if pending_ack:
+                pending_receipts = []
                 session_headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
             elif pending_receipt:
+                selected_receipt = str(pending_receipt).strip()
+                if selected_receipt and selected_receipt not in pending_receipts:
+                    pending_receipts.append(selected_receipt)
+                pending_receipts = pending_receipts[-PENDING_RECEIPT_LIMIT:]
                 session_headers["x-oai-is-pending-updates"] = json.dumps(
-                    {"v": 3, "updates": [str(pending_receipt)]},
+                    {"v": 3, "updates": pending_receipts},
                     separators=(",", ":"),
                 )
+            setattr(session, "openai_pending_receipts", pending_receipts)
         except Exception:
             pass
     return response
@@ -499,7 +497,12 @@ def openai_sentinel_token(session: Any) -> str:
         headers = getattr(session, "headers", {})
         value = headers.get("OpenAI-Sentinel-Token") or headers.get("openai-sentinel-token")
     if not value:
-        value = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "")
+        value = os.getenv(
+            "OPLL_GOPAY_OPENAI_SENTINEL_TOKEN"
+            if getattr(session, "gopay_browser_profile", "")
+            else "OPLL_OPENAI_SENTINEL_TOKEN",
+            "",
+        )
     return str(value or "").strip()
 
 
@@ -512,7 +515,12 @@ def openai_sentinel_so_token(session: Any) -> str:
             "openai-sentinel-so-token"
         )
     if not value:
-        value = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "")
+        value = os.getenv(
+            "OPLL_GOPAY_OPENAI_SENTINEL_SO_TOKEN"
+            if getattr(session, "gopay_browser_profile", "")
+            else "OPLL_OPENAI_SENTINEL_SO_TOKEN",
+            "",
+        )
     return str(value or "").strip()
 
 
@@ -529,7 +537,7 @@ def openai_sentinel_headers(
     A live browser provider is preferred for the two protected checkout
     operations.  The environment/session fallback remains available for
     deployments that deliberately inject their own short-lived values and for
-    older non-GCash flows.
+    older deployments.
     """
     headers: dict[str, str] = {}
     provider = getattr(session, "openai_sentinel_provider", None)
@@ -546,13 +554,24 @@ def openai_sentinel_headers(
                 # when the browser page is unauthenticated and cannot expose
                 # its bootstrap field yet.
                 if "oai-web-deployment-attestation" not in headers:
-                    fallback_attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+                    fallback_attestation = os.getenv(
+                        "OPLL_GOPAY_OAI_WEB_DEPLOYMENT_ATTESTATION"
+                        if getattr(session, "gopay_browser_profile", "")
+                        else "OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION",
+                        "",
+                    ).strip()
                     if fallback_attestation:
                         headers["oai-web-deployment-attestation"] = fallback_attestation
                 if "OpenAI-Sentinel-SO-Token" not in headers:
                     fallback_so = openai_sentinel_so_token(session)
                     if fallback_so:
                         headers["OpenAI-Sentinel-SO-Token"] = fallback_so
+                if "OpenAI-Sentinel-Token" not in headers:
+                    fallback_token = openai_sentinel_token(session)
+                    if fallback_token:
+                        headers["OpenAI-Sentinel-Token"] = fallback_token
+                if required and not headers.get("OpenAI-Sentinel-Token"):
+                    raise RuntimeError("browser Sentinel proof is missing")
                 return headers
         except Exception as exc:
             # Do not turn an optional browser helper into a transport outage;
@@ -573,12 +592,6 @@ def openai_sentinel_headers(
     return headers
 
 
-def prepare_openai_browser_session(session: Any) -> None:
-    """Start the GoPay browser context before the promo probe when present."""
-    provider = getattr(session, "openai_sentinel_provider", None)
-    prepare = getattr(provider, "prepare", None)
-    if callable(prepare):
-        prepare()
 
 
 def prepare_openai_browser_flow(
@@ -693,673 +706,17 @@ def response_json(response: Any, stage: str) -> dict[str, Any]:
     return payload
 
 
-def _agent_browser_binary() -> str:
-    """Locate the optional native agent-browser executable."""
-    configured = os.getenv("OPLL_AGENT_BROWSER_BIN", "").strip()
-    if configured and Path(configured).exists():
-        return configured
-    if sys.platform == "win32":
-        candidates = (
-            Path.home()
-            / "AppData"
-            / "Roaming"
-            / "npm"
-            / "node_modules"
-            / "agent-browser"
-            / "bin"
-            / "agent-browser-win32-x64.exe",
-            Path(sys.prefix)
-            / "node_modules"
-            / "agent-browser"
-            / "bin"
-            / "agent-browser-win32-x64.exe",
-        )
-    else:
-        candidates = ()
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return shutil.which("agent-browser") or shutil.which("agent-browser.cmd") or ""
 
 
-def _decode_agent_browser_output(text: str) -> Any:
-    """Decode agent-browser's JSON output without logging its contents."""
-    value = str(text or "").strip()
-    if not value:
-        return None
-    try:
-        return json.loads(value)
-    except Exception:
-        pass
-    # Native builds can prepend a one-line status glyph when JSON mode is not
-    # requested.  Decode the first complete JSON value in the remaining text.
-    for start, char in enumerate(value):
-        if char not in "[{\"":
-            continue
-        try:
-            return json.JSONDecoder().raw_decode(value[start:])[0]
-        except Exception:
-            continue
-    return value
 
 
-class BrowserSentinelProvider:
-    """Generate short-lived Sentinel headers in a real browser context.
 
-    The checkout API binds the Sentinel proof to the browser's device cookie,
-    user-agent and fingerprint.  Replaying a HAR token therefore cannot work.
-    This adapter keeps the browser helper optional: when it is not installed or
-    a deployment cannot be opened, callers retain the explicit environment
-    fallback used by older deployments.
-    """
 
-    def __init__(
-        self,
-        *,
-        access_token: str,
-        device_id: str,
-        session_id: str,
-        user_agent: str,
-        proxy: str,
-        transport_session: Any,
-        session_token: str = "",
-        language: str = "en-US",
-        timezone: str = "America/New_York",
-        log: Any | None = None,
-    ) -> None:
-        self.access_token = str(access_token or "").strip()
-        self.device_id = str(device_id or "").strip()
-        self.session_id = str(session_id or "").strip()
-        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
-        self.proxy = str(proxy or "").strip()
-        # Chromium/agent-browser accepts an unauthenticated HTTP proxy more
-        # reliably than an authenticated ``socks5h://`` URL. Reuse the
-        # loopback CONNECT bridge for 1024proxy-style authenticated SOCKS5
-        # routes while keeping the direct normalized proxy for HTTP clients.
-        try:
-            from .web.socks5_bridge import http_proxy_for
-
-            self.browser_proxy = http_proxy_for(self.proxy)
-        except Exception:
-            self.browser_proxy = self.proxy
-        self.transport_session = transport_session
-        self.session_token = str(session_token or "").strip()
-        self.language = str(language or "en-US").strip() or "en-US"
-        self.timezone = str(timezone or "America/New_York").strip() or "America/New_York"
-        self.log = log
-        self.binary = _agent_browser_binary()
-        self.namespace = "opll_sentinel_" + uuid.uuid4().hex[:12]
-        self.session_name = "checkout_" + uuid.uuid4().hex[:12]
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="opll-sentinel-"))
-        self.locale_script = self.temp_dir / "locale.js"
-        self.sentinel_init_script = self.temp_dir / "sentinel-init.js"
-        self.locale_script.write_text(
-            "Object.defineProperty(navigator, 'language', {get: () => "
-            + json.dumps(self.language)
-            + "});Object.defineProperty(navigator, 'languages', {get: () => ["
-            + json.dumps(self.language)
-            + ", 'en']});",
-            encoding="utf-8",
-        )
-        self.sentinel_init_script.write_text(
-            self._build_sentinel_init_script(), encoding="utf-8"
-        )
-        self._lock = threading.RLock()
-        self._started = False
-        self._closed = False
-        self._failed = False
-        self._attestation = ""
-        self._cookies = ""
-        self._launch_args_used = False
-
-    @staticmethod
-    def _build_sentinel_init_script() -> str:
-        """Inject the bundled SDK as a window property before page scripts run."""
-        assets = Path(__file__).resolve().parent / "sentinel_assets"
-        sdk = (assets / "sentinel_sdk.js").read_text(encoding="utf-8")
-        return (
-            "(() => {\n"
-            "  const install = () => { try {\n"
-            # The bootstrap shim is for the Node VM bridge and attempts to
-            # replace browser read-only globals such as crypto/navigator.  A
-            # real Chromium page already supplies those values, so inject
-            # only the SDK itself and publish its var explicitly on window.
-            f"{sdk}\n"
-            "    window.SentinelSDK = SentinelSDK;\n"
-            "    globalThis.SentinelSDK = SentinelSDK;\n"
-            "    if (!window.__opllSentinelFetchWrapped) {\n"
-            "      const originalFetch = window.fetch.bind(window);\n"
-            "      window.fetch = async (...args) => {\n"
-            "        const raw = args[0] && args[0].url ? args[0].url : String(args[0] || '');\n"
-            "        const absolute = new URL(raw, location.origin).href;\n"
-            "        const isPing = new URL(absolute).pathname === '/backend-api/sentinel/ping';\n"
-            "        const started = performance.now();\n"
-            "        if (isPing && window.__opllSentinelReferer) {\n"
-            "          const init = Object.assign({}, args[1] || {}, {referrer: window.__opllSentinelReferer, referrerPolicy: 'strict-origin-when-cross-origin'});\n"
-            "          args = [args[0], init];\n"
-            "        }\n"
-            "        const response = await originalFetch(...args);\n"
-            "        if (isPing) {\n"
-            "          const headersAt = performance.now();\n"
-            "          try { await response.clone().arrayBuffer(); } catch (_) {}\n"
-            "          await new Promise(resolve => setTimeout(resolve, 0));\n"
-            "          const ended = performance.now();\n"
-            "          const entries = performance.getEntriesByName(absolute);\n"
-            "          const entry = entries[entries.length - 1];\n"
-            "          const action = entry && entry.responseStart && entry.requestStart ? entry.responseStart - entry.requestStart : headersAt - started;\n"
-            "          const total = Math.max(0, Math.round(ended - started));\n"
-            "          const bodyRead = Math.max(0, Math.round(ended - headersAt));\n"
-            "          const number = name => Number(response.headers.get(name) || 0) || 0;\n"
-            "          const rtt = number('s-cf-tcp-rtt-msec') || number('s-cf-quic-rtt-msec');\n"
-            "          const protocol = entry && String(entry.nextHopProtocol || '').toLowerCase();\n"
-            "          const protocolCode = protocol.includes('h3') ? 3 : protocol.includes('h2') ? 2 : protocol.includes('http/1') ? 1 : 0;\n"
-            "          window.__opllLastSentinelTelemetry = [1, action, number('s-cf-edge-msec'), number('s-cf-origin-ttfb-msec'), rtt, protocolCode, bodyRead, Math.max(total, Math.ceil(action))];\n"
-            "        }\n"
-            "        return response;\n"
-            "      };\n"
-            "      window.__opllSentinelFetchWrapped = true;\n"
-            "    }\n"
-            "    window.__opllSentinelInjected = true;\n"
-            "  } catch (error) {\n"
-            "    window.__opllSentinelInjectionError = String(error && error.message || error);\n"
-            "  } };\n"
-            "  if (document.body) install();\n"
-            "  else document.addEventListener('DOMContentLoaded', install, {once:true});\n"
-            "})();\n"
-        )
-
-    @property
-    def enabled(self) -> bool:
-        mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
-        return mode not in {"0", "false", "off", "disabled", "no"} and bool(self.binary)
-
-    def _base_command(self) -> list[str]:
-        if not self.binary:
-            raise RuntimeError("agent-browser executable not found")
-        command = [
-            self.binary,
-            "--namespace",
-            self.namespace,
-            "--session",
-            self.session_name,
-            "--user-agent",
-            self.user_agent,
-            "--init-script",
-            str(self.locale_script),
-            "--init-script",
-            str(self.sentinel_init_script),
-        ]
-        if self.browser_proxy:
-            command.extend(["--proxy", self.browser_proxy])
-        return command
-
-    def _run(self, args: list[str], timeout: float = 75.0) -> Any:
-        if self._closed:
-            raise RuntimeError("Sentinel browser provider is closed")
-        output_path = self.temp_dir / ("command-" + uuid.uuid4().hex + ".out")
-        env = dict(os.environ)
-        # Chromium uses TZ when constructing the browser fingerprint.  Keep
-        # Keep the browser and selected checkout locale coherent when supported.
-        env.setdefault("TZ", self.timezone)
-        env["AGENT_BROWSER_NAMESPACE"] = self.namespace
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        status = -1
-        try:
-            with output_path.open("w", encoding="utf-8") as output:
-                process = subprocess.Popen(
-                    self._base_command() + args,
-                    stdin=subprocess.DEVNULL,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    creationflags=creation_flags,
-                )
-                try:
-                    status = process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired as exc:
-                    process.kill()
-                    process.wait(timeout=5)
-                    raise RuntimeError("agent-browser command timed out") from exc
-            text = output_path.read_text(encoding="utf-8", errors="replace")
-        finally:
-            # The daemon can briefly retain the redirected handle.  Cleanup is
-            # best-effort and the temporary directory is removed on close.
-            for _ in range(10):
-                try:
-                    output_path.unlink()
-                    break
-                except OSError:
-                    time.sleep(0.05)
-        if status != 0:
-            detail = safe_log_text(text, 600)
-            raise RuntimeError(
-                f"agent-browser exited with status {status}"
-                + (f": {detail}" if detail else "")
-            )
-        return _decode_agent_browser_output(text)
-
-    def _eval(self, expression: str, timeout: float = 75.0) -> Any:
-        return self._run(["eval", expression], timeout=timeout)
-
-    def _capture_bootstrap(self) -> None:
-        value = self._eval(
-            "(() => {"
-            "const node=document.getElementById('client-bootstrap');"
-            "if (!node) return {};"
-            "try { const data=JSON.parse(node.textContent||'{}');"
-            "return {attestation:data.webDeploymentAttestation||'',locale:data.locale||'',sessionId:data.sessionId||''}; }"
-            "catch (_) { return {}; }"
-            "})()"
-        )
-        if isinstance(value, dict):
-            attestation = str(value.get("attestation") or "").strip()
-            if attestation:
-                self._attestation = attestation
-        if self._attestation:
-            return
-        # Current deployments may generate the signed value inside the web
-        # client instead of exposing `client-bootstrap`. Recover the fresh
-        # value from a same-context backend request without logging it.
-        try:
-            captured = self._run(
-                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
-                timeout=20,
-            )
-        except Exception:
-            return
-        data = captured.get("data") if isinstance(captured, dict) else None
-        requests = data.get("requests") if isinstance(data, dict) else None
-        if not isinstance(requests, list):
-            return
-        for item in reversed(requests):
-            if not isinstance(item, dict):
-                continue
-            headers = item.get("requestHeaders") or item.get("headers")
-            if isinstance(headers, list):
-                header_map = {
-                    str(header.get("name") or "").lower(): str(header.get("value") or "")
-                    for header in headers
-                    if isinstance(header, dict)
-                }
-            elif isinstance(headers, dict):
-                header_map = {str(key).lower(): str(val) for key, val in headers.items()}
-            else:
-                continue
-            attestation = str(
-                header_map.get("oai-web-deployment-attestation") or ""
-            ).strip()
-            if attestation:
-                self._attestation = attestation
-                return
-
-    def _sync_pending_update_from_browser(self) -> None:
-        """Mirror the browser's latest encrypted update receipt.
-
-        ChatGPT returns `x-oai-is-receipt` on browser responses and the next
-        request sends it as `x-oai-is-pending-updates`. The HTTP transport does
-        not see those browser-only response headers, so read only the header
-        metadata from agent-browser's request monitor and keep the opaque
-        value in memory.
-        """
-        try:
-            value = self._run(
-                ["network", "requests", "--json", "--filter", "chatgpt.com/backend-api"],
-                timeout=20,
-            )
-        except Exception:
-            return
-        data = value.get("data") if isinstance(value, dict) else None
-        requests = data.get("requests") if isinstance(data, dict) else None
-        if not isinstance(requests, list):
-            return
-        for item in reversed(requests):
-            if not isinstance(item, dict):
-                continue
-            headers = item.get("responseHeaders")
-            if not isinstance(headers, dict):
-                continue
-            receipt = headers.get("x-oai-is-receipt") or headers.get("X-OAI-IS-Receipt")
-            if not receipt:
-                continue
-            transport_headers = getattr(self.transport_session, "headers", None)
-            if transport_headers is None:
-                return
-            transport_headers["x-oai-is-pending-updates"] = json.dumps(
-                {"v": 3, "updates": [str(receipt)]}, separators=(",", ":")
-            )
-            return
-
-    def _set_cookie(self, name: str, value: str, *, http_only: bool = True) -> None:
-        """Set a browser cookie, chunking large NextAuth values safely."""
-        cookie_name = str(name or "").strip()
-        cookie_value = str(value or "")
-        if not cookie_name or not cookie_value:
-            return
-        chunk_size = 3800
-        chunks = [
-            cookie_value[index : index + chunk_size]
-            for index in range(0, len(cookie_value), chunk_size)
-        ]
-        if len(chunks) == 1 and len(cookie_name) + len(chunks[0]) <= 4096:
-            names = [(cookie_name, chunks[0])]
-        else:
-            names = [
-                (f"{cookie_name}.{index}", chunk)
-                for index, chunk in enumerate(chunks)
-            ]
-        for chunk_name, chunk in names:
-            args = [
-                "cookies", "set", chunk_name, chunk,
-                "--domain", ".chatgpt.com", "--path", "/",
-            ]
-            if http_only:
-                args.append("--httpOnly")
-            args.append("--secure")
-            self._run(args)
-
-    def _sync_cookies(self) -> None:
-        value = self._run(["cookies", "get", "--json"])
-        cookies: list[dict[str, Any]] = []
-        if isinstance(value, dict):
-            data = value.get("data")
-            if isinstance(data, dict) and isinstance(data.get("cookies"), list):
-                cookies = [item for item in data["cookies"] if isinstance(item, dict)]
-            elif isinstance(data, list):
-                cookies = [item for item in data if isinstance(item, dict)]
-        pairs = []
-        for cookie in cookies:
-            name = str(cookie.get("name") or "").strip()
-            val = str(cookie.get("value") or "")
-            if name:
-                pairs.append(f"{name}={val}")
-                if name.lower() == "oai-did" and val:
-                    self.device_id = val
-        if pairs:
-            self._cookies = "; ".join(pairs)
-            headers = getattr(self.transport_session, "headers", None)
-            if headers is not None:
-                headers["Cookie"] = self._cookies
-                if self.device_id:
-                    headers["oai-device-id"] = self.device_id
-
-    def _start(self) -> None:
-        if not self.enabled:
-            raise RuntimeError("agent-browser is disabled or unavailable")
-        try:
-            # Init scripts are not executed by agent-browser on about:blank;
-            # load the real ChatGPT origin so the SDK runs in a browser page
-            # with the same origin, storage, and fingerprint as Checkout.
-            self._run(["open", "https://chatgpt.com/", "--json"])
-            self._started = True
-            self._launch_args_used = True
-            injected: Any = {}
-            for _ in range(10):
-                injected = self._eval(
-                    "(() => ({injected:!!window.SentinelSDK,token:typeof window.SentinelSDK?.token,proto2:typeof window.SentinelSDK?.__proto2,error:window.__opllSentinelInjectionError||''}))()"
-                )
-                if isinstance(injected, dict) and (
-                    injected.get("token") == "function"
-                    or injected.get("proto2") == "function"
-                ):
-                    break
-                self._run(["wait", "100"])
-            if not isinstance(injected, dict) or not (
-                injected.get("token") == "function"
-                or injected.get("proto2") == "function"
-            ):
-                detail = str((injected or {}).get("error") or "SentinelSDK injection failed")
-                raise RuntimeError(detail)
-            # A NextAuth session may be represented by cookies left by a
-            # previous browser context. Clear that context before installing
-            # the current session so duplicate `.0/.1` chunks cannot be
-            # concatenated into a stale token.
-            if self.session_token:
-                self._run(["cookies", "clear"])
-            self._set_cookie("oai-did", self.device_id)
-            if self.session_token:
-                self._set_cookie("__Secure-next-auth.session-token", self.session_token)
-            frame_url = (
-                "https://chatgpt.com/backend-api/sentinel/frame.html?sv="
-                + SENTINEL_SDK_VERSION
-            )
-            self._run(["open", frame_url])
-            # The bootstrap document carries the current signed deployment
-            # attestation.  The initial navigation is authenticated when an
-            # AT is available; an unauthenticated page simply leaves this
-            # optional field empty while token generation still remains useful.
-            auth_headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "oai-device-id": self.device_id,
-                "oai-session-id": self.session_id,
-                "oai-language": self.language,
-                # Keep deployed checkout build identifiers overridable because
-                # the web client rotates them independently of payment flow.
-                "oai-client-build-number": os.getenv(
-                    "OPLL_OAI_CLIENT_BUILD_NUMBER", ""
-                ).strip()
-                or "10012890",
-                "oai-client-version": os.getenv(
-                    "OPLL_OAI_CLIENT_VERSION", ""
-                ).strip()
-                or "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
-            }
-            account = account_id(self.access_token)
-            if account:
-                # The browser sends the selected ChatGPT account on the
-                # authenticated bootstrap navigation.  Keeping it aligned
-                # with the curl transport avoids loading a different account
-                # shell when an AT belongs to a multi-account workspace.
-                auth_headers["chatgpt-account-id"] = account
-            self._run(
-                [
-                    "--headers",
-                    json.dumps(auth_headers, separators=(",", ":")),
-                    "open",
-                    "https://chatgpt.com/?promo_campaign=plus-1-month-free",
-                ]
-            )
-            self._capture_bootstrap()
-            self._sync_pending_update_from_browser()
-            self._run(["open", frame_url])
-            self._sync_cookies()
-        except Exception:
-            self._failed = True
-            raise
-
-    def prepare(self) -> None:
-        """Eagerly bootstrap the browser and mirror pending update state."""
-        with self._lock:
-            if self._failed:
-                raise RuntimeError("Sentinel browser provider failed during startup")
-            if not self._started:
-                self._start()
-            else:
-                self._sync_pending_update_from_browser()
-
-    def _store_ping_telemetry(self, name: str, telemetry: list[Any]) -> None:
-        if len(telemetry) != 8:
-            return
-        setattr(
-            self.transport_session,
-            name,
-            json.dumps(telemetry, separators=(",", ":")),
-        )
-
-    def _captured_ping_telemetry(self) -> list[Any]:
-        value = self._eval(
-            "(() => Array.isArray(window.__opllLastSentinelTelemetry) ? window.__opllLastSentinelTelemetry : [])()"
-        )
-        if not isinstance(value, list) or len(value) != 8:
-            return []
-        try:
-            numbers = [float(item) for item in value]
-        except (TypeError, ValueError):
-            return []
-        if numbers[1] <= 0 or numbers[7] < numbers[1]:
-            return []
-        return [
-            1,
-            numbers[1],
-            int(numbers[2]),
-            int(numbers[3]),
-            int(numbers[4]),
-            int(numbers[5]),
-            int(numbers[6]),
-            numbers[7],
-        ]
-
-    def prepare_flow(self, *, flow: str, referer: str) -> None:
-        """Match SentinelSDK.init(flow): prefetch challenge, then browser ping."""
-        with self._lock:
-            if self._failed:
-                raise RuntimeError("Sentinel browser provider failed during startup")
-            if not self._started:
-                self._start()
-            selected_flow = self._normalize_flow(flow)
-            self._eval(
-                "(async()=>{window.__opllSentinelReferer="
-                + json.dumps(str(referer or ""))
-                + ";await window.SentinelSDK.init("
-                + json.dumps(selected_flow)
-                + ");return true})()",
-                timeout=90,
-            )
-            try:
-                self._sync_cookies()
-            except Exception:
-                pass
-
-    @staticmethod
-    def _normalize_flow(flow: str) -> str:
-        """Never let the SDK's ineffective default flow reach Checkout."""
-        selected = str(flow or "").strip()
-        if selected.lower() in {"", "default", "__default__"}:
-            return "chatgpt_checkout"
-        return selected
-
-    def headers(self, flow: str, *, referer: str = "") -> dict[str, str]:
-        with self._lock:
-            if self._failed:
-                raise RuntimeError("Sentinel browser provider failed during startup")
-            if not self._started:
-                self._start()
-            selected_flow = self._normalize_flow(flow)
-            generated = self._eval(
-                "(async()=>{window.__opllSentinelReferer="
-                + json.dumps(str(referer or ""))
-                + ";const token=await window.SentinelSDK.token("
-                + json.dumps(selected_flow)
-                + ");const timing=typeof window.SentinelSDK.timing==='function'"
-                "?window.SentinelSDK.timing():null;return {token,timing}})()",
-                timeout=90,
-            )
-            raw = generated.get("token") if isinstance(generated, dict) else generated
-            timing_raw = generated.get("timing") if isinstance(generated, dict) else None
-            if isinstance(raw, str):
-                token = raw
-            elif isinstance(raw, dict):
-                token = json.dumps(raw, separators=(",", ":"))
-            else:
-                token = ""
-            if not token:
-                raise RuntimeError("SentinelSDK returned an empty token")
-            result = {"OpenAI-Sentinel-Token": token}
-            if bool(
-                getattr(
-                    self.transport_session,
-                    "openai_sentinel_observer_enabled",
-                    True,
-                )
-            ):
-                observer = ""
-                try:
-                    observer_raw = self._eval(
-                        "(async()=>{if(typeof window.SentinelSDK.sessionObserverToken!=='function')return '';"
-                        "const token=await window.SentinelSDK.sessionObserverToken("
-                        + json.dumps(selected_flow)
-                        + ");return token||''})()",
-                        timeout=45,
-                    )
-                    if isinstance(observer_raw, str):
-                        observer = observer_raw.strip()
-                    elif isinstance(observer_raw, dict):
-                        observer = json.dumps(observer_raw, separators=(",", ":"))
-                except Exception:
-                    observer = ""
-                if observer:
-                    result["OpenAI-Sentinel-SO-Token"] = observer
-            ping_telemetry: list[Any] = []
-            if isinstance(timing_raw, str):
-                try:
-                    timing_value = json.loads(timing_raw)
-                except (TypeError, ValueError):
-                    timing_value = None
-            else:
-                timing_value = timing_raw
-            if isinstance(timing_value, list) and len(timing_value) == 8:
-                ping_telemetry = timing_value
-            if not ping_telemetry:
-                ping_telemetry = self._captured_ping_telemetry()
-            if selected_flow == "chatgpt_checkout":
-                self._store_ping_telemetry(
-                    "openai_checkout_telemetry", ping_telemetry
-                )
-            else:
-                self._store_ping_telemetry(
-                    "openai_approve_telemetry", ping_telemetry
-                )
-            # token() and sessionObserverToken() may update HttpOnly browser
-            # cookies. Read them through the browser/CDP command after proof
-            # creation, then mirror oai-did into the HTTP transport.
-            if hasattr(self, "_run"):
-                try:
-                    self._sync_cookies()
-                except Exception:
-                    pass
-            if self._attestation:
-                result["oai-web-deployment-attestation"] = self._attestation
-                session_headers = getattr(self.transport_session, "headers", None)
-                if session_headers is not None:
-                    session_headers["oai-web-deployment-attestation"] = self._attestation
-            if self._cookies:
-                result["Cookie"] = self._cookies
-            current_device_id = str(getattr(self, "device_id", "") or "").strip()
-            if current_device_id:
-                result["oai-device-id"] = current_device_id
-            return result
-
-    def set_cookie(self, name: str, value: str, *, http_only: bool = False) -> None:
-        """Install a runtime cookie into the same browser proof context."""
-        with self._lock:
-            if self._failed:
-                raise RuntimeError("Sentinel browser provider failed during startup")
-            if not self._started:
-                self._start()
-            self._set_cookie(name, value, http_only=http_only)
-            try:
-                self._sync_cookies()
-            except Exception:
-                pass
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            if self._started and self.binary:
-                try:
-                    self._run(["close", "--json"], timeout=30)
-                except Exception:
-                    pass
-            self._closed = True
-            try:
-                for child in self.temp_dir.iterdir():
-                    try:
-                        child.unlink()
-                    except OSError:
-                        pass
-                self.temp_dir.rmdir()
-            except OSError:
-                pass
+def _normalize_sentinel_flow(flow: str) -> str:
+    selected = str(flow or "").strip()
+    if selected.lower() in {"", "default", "__default__"}:
+        return "chatgpt_checkout"
+    return selected
 
 
 class PlaywrightSentinelProvider:
@@ -1377,6 +734,7 @@ class PlaywrightSentinelProvider:
         session_token: str = "",
         language: str = "id-ID",
         timezone: str = "Asia/Jakarta",
+        promo_campaign: bool = True,
         log: Any | None = None,
     ) -> None:
         self.access_token = str(access_token or "").strip()
@@ -1394,6 +752,7 @@ class PlaywrightSentinelProvider:
         self.session_token = str(session_token or "").strip()
         self.language = str(language or "id-ID").strip() or "id-ID"
         self.timezone = str(timezone or "Asia/Jakarta").strip() or "Asia/Jakarta"
+        self.promo_campaign = bool(promo_campaign)
         self.log = log
         self._lock = threading.RLock()
         self._runtime_id = ""
@@ -1427,12 +786,35 @@ class PlaywrightSentinelProvider:
         return get_playwright_daemon()
 
     def _apply_runtime(self, result: dict[str, Any]) -> None:
+        device_id = str(result.get("device_id") or "").strip()
+        if device_id:
+            self.device_id = device_id
+            setattr(self.transport_session, "openai_device_id", device_id)
+            setattr(self.transport_session, "openai_did", device_id)
+        session_id = str(result.get("session_id") or "").strip()
+        try:
+            session_id = str(uuid.UUID(session_id)) if session_id else ""
+        except (TypeError, ValueError):
+            session_id = ""
+        if session_id:
+            self.session_id = session_id
+            setattr(self.transport_session, "openai_session_id", session_id)
+        current_session_id = str(getattr(self, "session_id", "") or "").strip()
+        try:
+            current_session_id = str(uuid.UUID(current_session_id)) if current_session_id else ""
+        except (TypeError, ValueError):
+            current_session_id = ""
+        if current_session_id:
+            self.session_id = current_session_id
+            setattr(self.transport_session, "openai_session_id", current_session_id)
         attestation = str(result.get("attestation") or "").strip()
-        if attestation:
+        if "attestation" in result:
             self._attestation = attestation
         cookies = str(result.get("cookie_header") or "").strip()
-        if cookies:
-            self._cookies = cookies
+        if "cookie_header" in result:
+            self._cookies = cookies or (
+                f"oai-did={self.device_id}" if self.device_id else ""
+            )
         profile_path = str(result.get("profile_path") or "").strip()
         if profile_path:
             self._profile_path = profile_path
@@ -1452,15 +834,38 @@ class PlaywrightSentinelProvider:
             self._sdk_sha256 = sdk_sha256
         headers = getattr(self.transport_session, "headers", None)
         if headers is not None:
-            if self._cookies:
-                headers["Cookie"] = self._cookies
+            if "cookie_header" in result:
+                if self._cookies:
+                    headers["Cookie"] = self._cookies
+                else:
+                    headers.pop("Cookie", None)
             headers["oai-device-id"] = self.device_id
-            if self._attestation:
+            if current_session_id:
+                headers["oai-session-id"] = current_session_id
+            if "attestation" in result:
+                if self._attestation:
+                    headers["oai-web-deployment-attestation"] = self._attestation
+                else:
+                    headers.pop("oai-web-deployment-attestation", None)
+            elif self._attestation:
                 headers["oai-web-deployment-attestation"] = self._attestation
             receipt = str(result.get("latest_receipt") or "").strip()
             if receipt:
+                pending_receipts = getattr(self.transport_session, "openai_pending_receipts", None)
+                if not isinstance(pending_receipts, list):
+                    pending_receipts = _pending_receipts_from_header(
+                        headers.get("x-oai-is-pending-updates", "")
+                    )
+                if receipt not in pending_receipts:
+                    pending_receipts.append(receipt)
+                pending_receipts = pending_receipts[-PENDING_RECEIPT_LIMIT:]
+                setattr(
+                    self.transport_session,
+                    "openai_pending_receipts",
+                    pending_receipts,
+                )
                 headers["x-oai-is-pending-updates"] = json.dumps(
-                    {"v": 3, "updates": [receipt]}, separators=(",", ":")
+                    {"v": 3, "updates": pending_receipts}, separators=(",", ":")
                 )
 
     def _start(self) -> None:
@@ -1479,6 +884,7 @@ class PlaywrightSentinelProvider:
                 session_token=self.session_token,
                 language=self.language,
                 timezone=self.timezone,
+                promo_campaign=self.promo_campaign,
             )
             self._runtime_id = str(opened.get("runtime_id") or "")
             if not self._runtime_id:
@@ -1504,7 +910,7 @@ class PlaywrightSentinelProvider:
                 self._start()
             result = self._daemon().prepare_flow(
                 self._runtime_id,
-                BrowserSentinelProvider._normalize_flow(flow),
+                _normalize_sentinel_flow(flow),
                 str(referer or "https://chatgpt.com"),
             )
             self._apply_runtime(result)
@@ -1520,7 +926,7 @@ class PlaywrightSentinelProvider:
                 raise RuntimeError("Playwright Sentinel provider failed during startup")
             if not self._started:
                 self._start()
-            selected_flow = BrowserSentinelProvider._normalize_flow(flow)
+            selected_flow = _normalize_sentinel_flow(flow)
             generated = self._daemon().token(
                 self._runtime_id,
                 selected_flow,
@@ -1609,17 +1015,33 @@ class DefaultTransportFactory:
             session = new_session(impersonate if is_gopay else None)
         except TypeError:
             # Keep compatibility with lightweight test/fallback session factories.
+            if is_gopay:
+                raise
             session = new_session()
         session_id = str(uuid.uuid4())
-        user_agent = (
-            os.getenv("OPLL_USER_AGENT", "").strip()
-            or (profile or {}).get("user_agent", "")
-            or DEFAULT_USER_AGENT
+        language = (
+            (
+                os.getenv("OPLL_GOPAY_OAI_LANGUAGE", "").strip()
+                or country_locale(config)
+            )
+            if is_gopay
+            else os.getenv("OPLL_GOPAY_OAI_LANGUAGE", "").strip()
+            or country_locale(config)
         )
+        user_agent = (
+            str((profile or {}).get("user_agent") or "").strip()
+            if is_gopay
+            else os.getenv("OPLL_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+        ) or DEFAULT_USER_AGENT
         if is_gopay:
             validate_tls_ua_consistency(impersonate or "", user_agent)
             validate_tls_ua_consistency(str((profile or {}).get("name") or ""), user_agent)
-        observation_override = os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+        observation_override = os.getenv(
+            "OPLL_GOPAY_OAI_IS_CLIENT_OBSERVATION"
+            if is_gopay
+            else "OPLL_OAI_IS_CLIENT_OBSERVATION",
+            "",
+        ).strip()
         session.headers.update(
             {
                 "User-Agent": user_agent,
@@ -1639,52 +1061,69 @@ class DefaultTransportFactory:
                 # country-specific Accept-Language remains separate above.
                 # Keep GoPay's Indonesian locale independent from the legacy
                 # PayPal OPLL_OAI_LANGUAGE setting loaded by older .env files.
-                "oai-language": os.getenv("OPLL_GOPAY_OAI_LANGUAGE", "").strip()
-                or country_locale(config),
+                "oai-language": language,
                 # These values match the current browser checkout contract;
                 # environment overrides keep the transport forward-compatible
                 # when the web deployment rotates its build identifier.
                 "oai-client-build-number": (
-                    os.getenv("OPLL_OAI_CLIENT_BUILD_NUMBER", "").strip()
-                    or ("10109010" if is_gopay else "9748354")
+                    os.getenv(
+                        "OPLL_GOPAY_OAI_CLIENT_BUILD_NUMBER"
+                        if is_gopay
+                        else "OPLL_OAI_CLIENT_BUILD_NUMBER",
+                        "",
+                    ).strip()
+                    or (GOPAY_OAI_CLIENT_BUILD_NUMBER if is_gopay else "9748354")
                 ),
                 "oai-client-version": (
-                    os.getenv("OPLL_OAI_CLIENT_VERSION", "").strip()
+                    os.getenv(
+                        "OPLL_GOPAY_OAI_CLIENT_VERSION"
+                        if is_gopay
+                        else "OPLL_OAI_CLIENT_VERSION",
+                        "",
+                    ).strip()
                     or (
-                        "prod-31e08510fe1189856ad77823ca134a25c60715b5"
+                        GOPAY_OAI_CLIENT_VERSION
                         if is_gopay
                         else "prod-1e268a33279bcedafc2fe5526bfe230880444b77"
                     )
                 ),
-                "x-oai-is-pending-updates": os.getenv(
-                    "OPLL_X_OAI_IS_PENDING_UPDATES", ""
-                ).strip()
-                or '{"v":3,"updates":[]}',
+                "x-oai-is-pending-updates": (
+                    EMPTY_PENDING_UPDATES
+                    if is_gopay
+                    else os.getenv("OPLL_X_OAI_IS_PENDING_UPDATES", "").strip()
+                    or EMPTY_PENDING_UPDATES
+                ),
                 # The browser keeps one observation id for a request burst;
                 # callers may pin a captured value for diagnostics, while the
                 # default remains fresh for every transport session.
-                "x-oai-is-client-observation": os.getenv(
-                    "OPLL_OAI_IS_CLIENT_OBSERVATION",
-                    f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
-                ),
-                "sec-ch-ua": os.getenv("OPLL_SEC_CH_UA", "").strip()
-                or (profile or {}).get(
-                    "sec_ch_ua",
-                    '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+                "x-oai-is-client-observation": observation_override
+                or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}",
+                "sec-ch-ua": (
+                    str((profile or {}).get("sec_ch_ua") or "").strip()
+                    if is_gopay
+                    else os.getenv("OPLL_SEC_CH_UA", "").strip()
+                    or '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"'
                 ),
                 "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": os.getenv(
-                    "OPLL_SEC_CH_UA_PLATFORM", ""
-                ).strip()
-                or '"Windows"',
+                "sec-ch-ua-platform": (
+                    '"Windows"'
+                    if is_gopay
+                    else os.getenv("OPLL_SEC_CH_UA_PLATFORM", "").strip()
+                    or '"Windows"'
+                ),
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
                 "Cookie": f"oai-did={device_id}",
             }
         )
+        if is_gopay:
+            validate_gopay_client_hints(
+                user_agent,
+                str(session.headers.get("sec-ch-ua") or ""),
+            )
         account = account_id(config.access_token)
-        if account:
+        if account and not is_gopay:
             session.headers["chatgpt-account-id"] = account
         # Keep these values on the session for the browser Sentinel adapter
         # and diagnostics without putting identifiers into request URLs/logs.
@@ -1692,15 +1131,24 @@ class DefaultTransportFactory:
         session.gopay_browser_profile = (profile or {}).get("name", "")
         session.gopay_tls_impersonate = impersonate or ""
         session.openai_did = device_id
+        session.openai_session_id = session_id
         session.openai_proxy = proxy
         session.openai_client_observation = session.headers.get(
             "x-oai-is-client-observation", ""
+        )
+        session.openai_pending_receipts = _pending_receipts_from_header(
+            session.headers.get("x-oai-is-pending-updates", "")
         )
         session.openai_request_started = time.perf_counter()
         session.openai_sentinel_observer_enabled = not is_gopay
 
         def refresh_openai_request_headers(method: str, url: str) -> dict[str, str]:
-            pinned = observation_override or os.getenv("OPLL_OAI_IS_CLIENT_OBSERVATION", "").strip()
+            pinned = observation_override or os.getenv(
+                "OPLL_GOPAY_OAI_IS_CLIENT_OBSERVATION"
+                if is_gopay
+                else "OPLL_OAI_IS_CLIENT_OBSERVATION",
+                "",
+            ).strip()
             observation = pinned or f"v1.r.p.{secrets.token_urlsafe(12).rstrip('=')}"
             session.openai_client_observation = observation
             session.headers["x-oai-is-client-observation"] = observation
@@ -1718,10 +1166,18 @@ class DefaultTransportFactory:
             ):
                 if payment_method not in {"paypal", "gopay"}:
                     dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY", "[1,null]"
+                        "OPLL_GOPAY_OAI_CHECKOUT_TELEMETRY"
+                        if is_gopay
+                        else "OPLL_OAI_CHECKOUT_TELEMETRY",
+                        "[1,null]",
                     )
                 elif is_checkout_confirm or is_checkout_approve:
-                    override = os.getenv("OPLL_OAI_APPROVE_TELEMETRY", "").strip()
+                    override = os.getenv(
+                        "OPLL_GOPAY_OAI_APPROVE_TELEMETRY"
+                        if is_gopay
+                        else "OPLL_OAI_APPROVE_TELEMETRY",
+                        "",
+                    ).strip()
                     captured = str(
                         getattr(
                             session,
@@ -1742,14 +1198,22 @@ class DefaultTransportFactory:
                     if is_checkout_approve:
                         # Both complete GoPay HARs acknowledge an empty update
                         # envelope on approve, regardless of earlier tax receipts.
+                        session.openai_pending_receipts = []
+                        session.headers["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
                         dynamic["x-oai-is-pending-updates"] = EMPTY_PENDING_UPDATES
                 else:
                     captured = str(
                         getattr(session, "openai_checkout_telemetry", "") or ""
                     ).strip()
-                    dynamic["oai-telemetry"] = os.getenv(
-                        "OPLL_OAI_CHECKOUT_TELEMETRY",
-                        captured or browser_checkout_telemetry("checkout"),
+                    dynamic["oai-telemetry"] = (
+                        os.getenv(
+                            "OPLL_GOPAY_OAI_CHECKOUT_TELEMETRY"
+                            if is_gopay
+                            else "OPLL_OAI_CHECKOUT_TELEMETRY",
+                            "",
+                        ).strip()
+                        or captured
+                        or browser_checkout_telemetry("checkout")
                     )
             return dynamic
 
@@ -1757,23 +1221,35 @@ class DefaultTransportFactory:
         # Deployment attestation is browser-generated and optional.  Never
         # bake a captured value into the repository; operators can inject a
         # fresh value for environments that enforce it.
-        attestation = os.getenv("OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION", "").strip()
+        attestation = os.getenv(
+            "OPLL_GOPAY_OAI_WEB_DEPLOYMENT_ATTESTATION"
+            if is_gopay
+            else "OPLL_OAI_WEB_DEPLOYMENT_ATTESTATION",
+            "",
+        ).strip()
         if attestation:
             session.headers["oai-web-deployment-attestation"] = attestation
-        sentinel = os.getenv("OPLL_OPENAI_SENTINEL_TOKEN", "").strip()
+        sentinel = os.getenv(
+            "OPLL_GOPAY_OPENAI_SENTINEL_TOKEN"
+            if is_gopay
+            else "OPLL_OPENAI_SENTINEL_TOKEN",
+            "",
+        ).strip()
         if sentinel:
             session.openai_sentinel_token = sentinel
-        sentinel_so = os.getenv("OPLL_OPENAI_SENTINEL_SO_TOKEN", "").strip()
+        sentinel_so = os.getenv(
+            "OPLL_GOPAY_OPENAI_SENTINEL_SO_TOKEN"
+            if is_gopay
+            else "OPLL_OPENAI_SENTINEL_SO_TOKEN",
+            "",
+        ).strip()
         if sentinel_so:
             session.openai_sentinel_so_token = sentinel_so
         normalized_proxy = normalize_proxy_url(proxy)
-        if normalize_payment_method(config.payment_method) in {"paypal", "gopay"}:
+        if is_gopay:
             mode = os.getenv("OPLL_SENTINEL_BROWSER", "auto").strip().lower()
             if mode not in {"0", "false", "off", "disabled", "no"}:
-                provider_type = (
-                    PlaywrightSentinelProvider if is_gopay else BrowserSentinelProvider
-                )
-                session.openai_sentinel_provider = provider_type(
+                session.openai_sentinel_provider = PlaywrightSentinelProvider(
                     access_token=config.access_token,
                     device_id=device_id,
                     session_id=session_id,
@@ -1781,8 +1257,9 @@ class DefaultTransportFactory:
                     proxy=normalized_proxy,
                     transport_session=session,
                     session_token=str(getattr(config, "session_token", "") or ""),
-                    language=country_locale(config),
+                    language=language,
                     timezone=country_timezone(config),
+                    promo_campaign=bool(config.gopay_zero_trial_validation),
                 )
         session.proxies = (
             {"http": normalized_proxy, "https": normalized_proxy}
@@ -1801,12 +1278,14 @@ class DefaultTransportFactory:
         try:
             session = new_session(impersonate if is_gopay else None)
         except TypeError:
+            if is_gopay:
+                raise
             session = new_session()
         user_agent = (
-            os.getenv("OPLL_USER_AGENT", "").strip()
-            or str((profile or {}).get("user_agent") or "")
-            or DEFAULT_USER_AGENT
-        )
+            str((profile or {}).get("user_agent") or "").strip()
+            if is_gopay
+            else os.getenv("OPLL_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+        ) or DEFAULT_USER_AGENT
         if is_gopay:
             validate_tls_ua_consistency(impersonate, user_agent)
             validate_tls_ua_consistency(str((profile or {}).get("name") or ""), user_agent)
@@ -1823,14 +1302,14 @@ class DefaultTransportFactory:
         if is_gopay:
             session.headers.update(
                 {
-                    "sec-ch-ua": os.getenv("OPLL_SEC_CH_UA", "").strip()
-                    or str(profile.get("sec_ch_ua") or ""),
+                    "sec-ch-ua": str(profile.get("sec_ch_ua") or "").strip(),
                     "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": os.getenv(
-                        "OPLL_SEC_CH_UA_PLATFORM", ""
-                    ).strip()
-                    or '"Windows"',
+                    "sec-ch-ua-platform": '"Windows"',
                 }
+            )
+            validate_gopay_client_hints(
+                user_agent,
+                str(session.headers.get("sec-ch-ua") or ""),
             )
             session.gopay_browser_profile = str(profile.get("name") or "")
             session.gopay_tls_impersonate = impersonate

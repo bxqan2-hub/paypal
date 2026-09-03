@@ -349,7 +349,10 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         proxy_pool=submitted_pool,
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
-        session_token=extract_session_token(payload),
+        session_token=(
+            extract_session_token(payload)
+            or os.getenv("OPLL_SESSION_TOKEN", "").strip()
+        ),
     )
 
 

@@ -139,7 +139,7 @@ Elements session 查询包含 19 个键，关键值为：
 | 4 | `country` + `line1` + `city` + `state` | 4 |
 | 5 | `country` + `line1` + `city` + `state` + `postal_code` | 5 |
 
-当前 GoPay 副本的 [`gopay_cs_live.py`](../payment_link_extractor/gopay_cs_live.py) `cs_update_tax_region()` 会把已有地址字段一次性放进一个 POST；这是后续最明确的协议对齐候选点。修改时应保留同一个 Elements session、Stripe JS ID、Checkout config/checksum，并按上表依次发送。
+当前 GoPay 副本的 [`gopay_cs_live.py`](../payment_link_extractor/gopay_cs_live.py) 已通过 `_cs_update_tax_region_fields()` 复现五步累积税区更新，并保留同一个 Elements session、Stripe JS ID、Checkout config/checksum。
 
 ### 5.3 Confirm
 
@@ -236,7 +236,7 @@ checkout 18:49:49.488
 
 ## 8. 当前代码的后续修改建议
 
-1. **税区协议**：在 `gopay_cs_live.py` 增加 GoPay 专属 1→5 字段渐进更新；不要改共享 PayPal flow。
+1. **税区协议**：`gopay_cs_live.py` 已实现 GoPay 专属 1→5 字段渐进更新；后续只监测响应时序，不改共享 PayPal flow。
 2. **金额单位**：同时保留 Stripe 的 `expected_amount=34900000` 与 Midtrans 的 `gross_amount=349000` 证据，明确转换规则后再决定是否加入归一化字段；零金额门禁继续在最终结果前执行。
 3. **Sentinel flow**：保持 `chatgpt_checkout`，approve 使用新的 proof；`checkout_session_approval` 是 Sentinel 内部请求体 flow，不等同于把 Checkout API 的 flow 改成该值。
 4. **设备连续性**：继续在真实浏览器中生成 token，读取 HttpOnly `oai-did` 后同步 `oai-device-id`；不要把 HAR 中的 proof、JWE、Cookie 或 nonce 固定写入代码。
@@ -341,7 +341,7 @@ checkout 18:49:49.488
 - status: validated
 - evidence_ids: [E-003]
 - location: `api.stripe.com/v1/payment_pages/<CS_SESSION>`
-- impact: 一次性提交地址字段可能改变 config/税务响应时序；这是当前 GoPay flow 最明确的后续对齐点。
+- impact: 五步累积提交已落在当前 GoPay flow；后续仅需监测 config/税务响应时序。
 - confidence: high
 
 #### F-004

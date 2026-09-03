@@ -5,6 +5,7 @@ import atexit
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -14,11 +15,19 @@ from typing import Any, Coroutine
 from urllib.parse import unquote, urlsplit
 
 try:
-    from playwright.async_api import BrowserContext, Page, async_playwright
+    from playwright.async_api import (
+        BrowserContext,
+        Page,
+        TimeoutError as PlaywrightTimeoutError,
+        async_playwright,
+    )
 except ImportError:  # pragma: no cover - dependency is validated at runtime
     BrowserContext = Any  # type: ignore[misc,assignment]
     Page = Any  # type: ignore[misc,assignment]
+    PlaywrightTimeoutError = TimeoutError
     async_playwright = None  # type: ignore[assignment]
+
+from .gopay_transport import GOPAY_OAI_CLIENT_BUILD_NUMBER, GOPAY_OAI_CLIENT_VERSION
 
 
 SENTINEL_SDK_VERSION = "20260810913b"
@@ -73,12 +82,48 @@ def _cookie_header(cookies: list[dict[str, Any]]) -> str:
     )
 
 
+def _nextauth_cookie_records(session_token: str) -> list[dict[str, Any]]:
+    value = str(session_token or "")
+    if not value:
+        return []
+    base = "__Secure-next-auth.session-token"
+    chunk_size = 3800
+    chunks = [value[index : index + chunk_size] for index in range(0, len(value), chunk_size)]
+    if len(chunks) == 1 and len(base) + len(chunks[0]) <= 4096:
+        names = [(base, chunks[0])]
+    else:
+        names = [(f"{base}.{index}", chunk) for index, chunk in enumerate(chunks)]
+    return [
+        {
+            "name": name,
+            "value": chunk,
+            "domain": ".chatgpt.com",
+            "path": "/",
+            "secure": True,
+            "httpOnly": True,
+        }
+        for name, chunk in names
+        if chunk
+    ]
+
+
+def _browser_version_matches(user_agent: str, browser_version: str) -> bool:
+    user_agent_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", str(user_agent or ""), re.I)
+    browser_version_match = re.match(r"(\d+)\.", str(browser_version or ""))
+    return bool(
+        user_agent_match
+        and browser_version_match
+        and user_agent_match.group(1) == browser_version_match.group(1)
+    )
+
+
 @dataclass
 class _BrowserSession:
     context: BrowserContext
     page: Page
     profile_path: Path
     device_id: str
+    session_id: str = ""
     attestation: str = ""
     request_events: list[dict[str, Any]] = field(default_factory=list)
     latest_receipt: str = ""
@@ -86,6 +131,7 @@ class _BrowserSession:
     sdk_sha256: str = ""
     bootstrap_headers: dict[str, str] = field(default_factory=dict)
     active_page_url: str = ""
+    capture_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 class PersistentPlaywrightDaemon:
@@ -129,7 +175,11 @@ class PersistentPlaywrightDaemon:
         if self._startup_error is not None or not self._thread.is_alive():
             raise RuntimeError("Playwright daemon is unavailable")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     async def _capture_request(self, session_id: str, request: Any) -> None:
         session = self._sessions.get(session_id)
@@ -139,6 +189,11 @@ class PersistentPlaywrightDaemon:
             parsed = urlsplit(request.url)
             headers = await request.all_headers()
         except Exception:
+            return
+        if parsed.scheme != "https" or parsed.netloc not in {
+            "chatgpt.com",
+            "www.chatgpt.com",
+        }:
             return
         attestation = str(headers.get("oai-web-deployment-attestation") or "").strip()
         if attestation:
@@ -171,8 +226,18 @@ class PersistentPlaywrightDaemon:
             headers = await response.all_headers()
         except Exception:
             return
-        path = urlsplit(response_url).path
-        receipt = str(headers.get("x-oai-is-receipt") or "").strip()
+        parsed = urlsplit(response_url)
+        if parsed.scheme != "https" or parsed.netloc not in {
+            "chatgpt.com",
+            "www.chatgpt.com",
+        }:
+            return
+        path = parsed.path
+        receipt = (
+            str(headers.get("x-oai-is-receipt") or "").strip()
+            if path.startswith("/backend-api/payments/")
+            else ""
+        )
         if receipt:
             session.latest_receipt = receipt
         if path == "/backend-api/sentinel/req":
@@ -203,6 +268,13 @@ class PersistentPlaywrightDaemon:
             except Exception:
                 pass
 
+    async def _settle_capture_tasks(self, session: _BrowserSession) -> None:
+        for _ in range(3):
+            tasks = tuple(session.capture_tasks)
+            if not tasks:
+                return
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _install_sdk(self, page: Page) -> None:
         present = await page.evaluate(
             "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'"
@@ -210,7 +282,7 @@ class PersistentPlaywrightDaemon:
         if present:
             return
         await page.add_script_tag(
-            url=f"{CHATGPT_ORIGIN}/backend-api/sentinel/sdk.js"
+            url=f"{CHATGPT_ORIGIN}/sentinel/{SENTINEL_SDK_VERSION}/sdk.js"
         )
         await page.wait_for_function(
             "() => typeof window.SentinelSDK?.init === 'function' && typeof window.SentinelSDK?.token === 'function' && typeof window.SentinelSDK?.sessionObserverToken === 'function'",
@@ -221,22 +293,38 @@ class PersistentPlaywrightDaemon:
         try:
             value = await session.page.evaluate(
                 """() => {
-                    const direct = window.__reactRouterContext?.state?.loaderData?.root?.clientBootstrap?.webDeploymentAttestation;
-                    if (direct) return String(direct);
+                    const direct = window.__reactRouterContext?.state?.loaderData?.root?.clientBootstrap;
+                    let attestation = String(direct?.webDeploymentAttestation || '');
+                    let sessionId = String(direct?.sessionId || '');
                     const node = document.getElementById('client-bootstrap');
                     if (node) {
                         try {
                             const data = JSON.parse(node.textContent || '{}');
-                            if (data.webDeploymentAttestation) return String(data.webDeploymentAttestation);
+                            attestation = attestation || String(data.webDeploymentAttestation || '');
+                            sessionId = sessionId || String(data.sessionId || '');
                         } catch (_) {}
                     }
-                    return '';
+                    return {attestation, sessionId};
                 }"""
             )
         except Exception:
-            value = ""
-        if value:
-            session.attestation = str(value)
+            value = {}
+        if isinstance(value, dict):
+            attestation = str(value.get("attestation") or "").strip()
+            if attestation:
+                session.attestation = attestation
+                headers = getattr(session, "bootstrap_headers", None)
+                if isinstance(headers, dict):
+                    headers["oai-web-deployment-attestation"] = attestation
+            candidate = str(value.get("sessionId") or "").strip()
+            try:
+                session.session_id = str(uuid.UUID(candidate))
+            except (TypeError, ValueError):
+                pass
+            if session.session_id:
+                headers = getattr(session, "bootstrap_headers", None)
+                if isinstance(headers, dict):
+                    headers["oai-session-id"] = session.session_id
 
     async def _open_session_async(
         self,
@@ -250,6 +338,7 @@ class PersistentPlaywrightDaemon:
         session_token: str,
         language: str,
         timezone: str,
+        promo_campaign: bool = True,
     ) -> dict[str, Any]:
         runtime_id = uuid.uuid4().hex
         profile_path = _profile_root() / _profile_key(device_id)
@@ -259,7 +348,7 @@ class PersistentPlaywrightDaemon:
         headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=True)
         browser_channel = os.getenv(
             "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
-        ).strip()
+        ).strip() or "chrome"
         launch_options: dict[str, Any] = {
             "user_data_dir": str(profile_path),
             "headless": headless,
@@ -274,22 +363,49 @@ class PersistentPlaywrightDaemon:
         }
         if browser_channel:
             launch_options["channel"] = browser_channel
-        try:
-            context = await self._playwright.chromium.launch_persistent_context(
-                **launch_options
-            )
-        except Exception:
-            if not browser_channel:
-                raise
-            launch_options.pop("channel", None)
-            context = await self._playwright.chromium.launch_persistent_context(
-                **launch_options
-            )
+        context = await self._playwright.chromium.launch_persistent_context(
+            **launch_options
+        )
         browser_version = (
             str(context.browser.version)
             if getattr(context, "browser", None) is not None
             else ""
         )
+        user_agent_match = re.search(r"(?:Chrome|Chromium)/(\d+)\.", user_agent, re.I)
+        if not _browser_version_matches(user_agent, browser_version):
+            await context.close()
+            raise RuntimeError(
+                f"GoPay browser version mismatch: browser={browser_version or '?'}, ua={user_agent_match.group(1) if user_agent_match else '?'}"
+            )
+        try:
+            existing_cookies = await context.cookies(CHATGPT_ORIGIN)
+        except Exception:
+            existing_cookies = []
+        if not isinstance(existing_cookies, list):
+            existing_cookies = []
+        cookie_backed = any(
+            (
+                str(item.get("name") or "") == "__Secure-next-auth.session-token"
+                or str(item.get("name") or "").startswith(
+                    "__Secure-next-auth.session-token."
+                )
+            )
+            and str(item.get("value") or "").strip()
+            for item in existing_cookies
+            if isinstance(item, dict)
+        )
+        has_valid_device_cookie = False
+        for item in existing_cookies:
+            if str(item.get("name") or "").strip().lower() != "oai-did":
+                continue
+            candidate = str(item.get("value") or "").strip()
+            try:
+                uuid.UUID(candidate)
+            except (TypeError, ValueError):
+                continue
+            device_id = candidate
+            has_valid_device_cookie = True
+            break
         (profile_path / "device-profile.json").write_text(
             json.dumps(
                 {
@@ -311,80 +427,116 @@ class PersistentPlaywrightDaemon:
             page=page,
             profile_path=profile_path,
             device_id=device_id,
+            session_id=session_id,
         )
         self._sessions[runtime_id] = session
-        context.on(
-            "request",
-            lambda request: asyncio.create_task(self._capture_request(runtime_id, request)),
-        )
-        context.on(
-            "response",
-            lambda response: asyncio.create_task(self._capture_response(runtime_id, response)),
-        )
-        cookies = [
-            {
-                "name": "oai-did",
-                "value": device_id,
-                "domain": ".chatgpt.com",
-                "path": "/",
-                "secure": True,
-            }
-        ]
-        if session_token:
-            cookies.append(
-                {
-                    "name": "__Secure-next-auth.session-token",
-                    "value": session_token,
-                    "domain": ".chatgpt.com",
-                    "path": "/",
-                    "secure": True,
-                    "httpOnly": True,
-                }
-            )
-        await context.add_cookies(cookies)
-        bootstrap_headers = {
-            "Authorization": f"Bearer {access_token}",
-            "oai-device-id": device_id,
-            "oai-session-id": session_id,
-            "oai-language": language,
-            "oai-client-build-number": os.getenv(
-                "OPLL_OAI_CLIENT_BUILD_NUMBER", "10012890"
-            ),
-            "oai-client-version": os.getenv(
-                "OPLL_OAI_CLIENT_VERSION",
-                "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4",
-            ),
-        }
-        if account_id:
-            bootstrap_headers["chatgpt-account-id"] = account_id
-        session.bootstrap_headers = dict(bootstrap_headers)
-        await context.set_extra_http_headers(bootstrap_headers)
+        def on_request(request: Any) -> None:
+            task = asyncio.create_task(self._capture_request(runtime_id, request))
+            session.capture_tasks.add(task)
+            task.add_done_callback(session.capture_tasks.discard)
+
+        def on_response(response: Any) -> None:
+            task = asyncio.create_task(self._capture_response(runtime_id, response))
+            session.capture_tasks.add(task)
+            task.add_done_callback(session.capture_tasks.discard)
+
         try:
-            await page.goto(
-                f"{CHATGPT_ORIGIN}/?promo_campaign=plus-1-month-free",
-                wait_until="domcontentloaded",
-                timeout=90_000,
+            context.on("request", on_request)
+            context.on("response", on_response)
+            cookies: list[dict[str, Any]] = []
+            if not has_valid_device_cookie:
+                if any(
+                    str(item.get("name") or "").strip().lower() == "oai-did"
+                    for item in existing_cookies
+                ):
+                    await context.clear_cookies(name="oai-did")
+                cookies.append(
+                    {
+                        "name": "oai-did",
+                        "value": device_id,
+                        "domain": ".chatgpt.com",
+                        "path": "/",
+                        "secure": True,
+                    }
+                )
+            if session_token:
+                cookie_backed = True
+                for item in existing_cookies:
+                    name = str(item.get("name") or "")
+                    if name == "__Secure-next-auth.session-token" or name.startswith(
+                        "__Secure-next-auth.session-token."
+                    ):
+                        await context.clear_cookies(name=name)
+                cookies.extend(_nextauth_cookie_records(session_token))
+            await context.add_cookies(cookies)
+            bootstrap_headers = {
+                "oai-device-id": device_id,
+                "oai-session-id": session_id,
+                "oai-language": language,
+                "oai-client-build-number": os.getenv(
+                    "OPLL_GOPAY_OAI_CLIENT_BUILD_NUMBER",
+                    GOPAY_OAI_CLIENT_BUILD_NUMBER,
+                ).strip()
+                or GOPAY_OAI_CLIENT_BUILD_NUMBER,
+                "oai-client-version": os.getenv(
+                    "OPLL_GOPAY_OAI_CLIENT_VERSION", GOPAY_OAI_CLIENT_VERSION
+                ).strip()
+                or GOPAY_OAI_CLIENT_VERSION,
+            }
+            configured_attestation = os.getenv(
+                "OPLL_GOPAY_OAI_WEB_DEPLOYMENT_ATTESTATION", ""
+            ).strip()
+            if configured_attestation:
+                bootstrap_headers["oai-web-deployment-attestation"] = configured_attestation
+            if not cookie_backed:
+                bootstrap_headers["Authorization"] = f"Bearer {access_token}"
+                if account_id:
+                    bootstrap_headers["chatgpt-account-id"] = account_id
+            session.bootstrap_headers = dict(bootstrap_headers)
+            session.attestation = str(
+                bootstrap_headers.get("oai-web-deployment-attestation") or ""
             )
-        finally:
-            # Sentinel req/ping in both HARs are cookie/browser requests and do
-            # not carry the API Authorization header.
-            await context.set_extra_http_headers({})
-        await self._install_sdk(page)
-        await self._capture_page_attestation(session)
-        await asyncio.sleep(0.15)
-        browser_cookies = await context.cookies(CHATGPT_ORIGIN)
-        return {
-            "runtime_id": runtime_id,
-            "attestation": session.attestation,
-            "cookie_header": _cookie_header(browser_cookies),
-            "latest_receipt": session.latest_receipt,
-            "challenge_shapes": list(session.challenge_shapes),
-            "sdk_sha256": session.sdk_sha256,
-            "profile_path": str(profile_path),
-            "headless": headless,
-            "browser_channel": browser_channel or "bundled-chromium",
-            "browser_version": browser_version,
-        }
+            await context.set_extra_http_headers(bootstrap_headers)
+            try:
+                await page.goto(
+                    (
+                        f"{CHATGPT_ORIGIN}/?promo_campaign=plus-1-month-free"
+                        if promo_campaign
+                        else f"{CHATGPT_ORIGIN}/"
+                    ),
+                    wait_until="domcontentloaded",
+                    timeout=90_000,
+                )
+            finally:
+                # Sentinel req/ping in both HARs are cookie/browser requests and do
+                # not carry the API Authorization header.
+                await context.set_extra_http_headers({})
+            await self._install_sdk(page)
+            await self._capture_page_attestation(session)
+            await asyncio.sleep(0.15)
+            await self._settle_capture_tasks(session)
+            browser_cookies = await context.cookies(CHATGPT_ORIGIN)
+            return {
+                "runtime_id": runtime_id,
+                "device_id": device_id,
+                "session_id": session.session_id,
+                "attestation": session.attestation,
+                "cookie_header": _cookie_header(browser_cookies),
+                "latest_receipt": session.latest_receipt,
+                "challenge_shapes": list(session.challenge_shapes),
+                "sdk_sha256": session.sdk_sha256,
+                "profile_path": str(profile_path),
+                "headless": headless,
+                "browser_channel": browser_channel or "bundled-chromium",
+                "browser_version": browser_version,
+            }
+        except BaseException:
+            self._sessions.pop(runtime_id, None)
+            try:
+                await context.close()
+            except Exception:
+                pass
+            raise
 
     def open_session(self, **kwargs: Any) -> dict[str, Any]:
         return self._call(self._open_session_async(**kwargs), timeout=150)
@@ -423,13 +575,17 @@ class PersistentPlaywrightDaemon:
                         ),
                     ),
                 )
-            except Exception:
+            except (TimeoutError, PlaywrightTimeoutError):
                 # A slow proxy can time out after the response has already
                 # established a valid chatgpt.com document. Sentinel only
                 # needs that same-origin document plus the exact Checkout
                 # Referer, so retain it and continue with SDK injection.
                 current_after_timeout = urlsplit(session.page.url)
-                if current_after_timeout.netloc != "chatgpt.com":
+                if (
+                    current_after_timeout.netloc != "chatgpt.com"
+                    or parsed.path.startswith("/checkout/")
+                    and not current_after_timeout.path.startswith("/checkout/")
+                ):
                     raise
             finally:
                 await session.context.set_extra_http_headers({})
@@ -461,8 +617,10 @@ class PersistentPlaywrightDaemon:
             flow,
         )
         await asyncio.sleep(0.1)
+        await self._settle_capture_tasks(session)
         cookies = await session.context.cookies(CHATGPT_ORIGIN)
         return {
+            "session_id": session.session_id,
             "attestation": session.attestation,
             "cookie_header": _cookie_header(cookies),
             "latest_receipt": session.latest_receipt,
@@ -495,10 +653,12 @@ class PersistentPlaywrightDaemon:
             flow,
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        await self._settle_capture_tasks(session)
         cookies = await session.context.cookies(CHATGPT_ORIGIN)
         return {
             "token": generated.get("token") if isinstance(generated, dict) else "",
             "timing": generated.get("timing") if isinstance(generated, dict) else None,
+            "session_id": session.session_id,
             "attestation": session.attestation,
             "cookie_header": _cookie_header(cookies),
             "latest_receipt": session.latest_receipt,
@@ -540,6 +700,7 @@ class PersistentPlaywrightDaemon:
     async def _close_session_async(self, runtime_id: str) -> None:
         session = self._sessions.pop(runtime_id, None)
         if session is not None:
+            await self._settle_capture_tasks(session)
             await session.context.close()
 
     def close_session(self, runtime_id: str) -> None:

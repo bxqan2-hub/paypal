@@ -9,17 +9,15 @@ import uuid
 from typing import Any
 from urllib.parse import parse_qsl, quote, urljoin, urlsplit, urlencode, urlunsplit
 
-from .gopay_checkout import chatgpt_success_return_url, first_value_by_key
+from .gopay_checkout import chatgpt_success_return_url
 from .config import (
     DEFAULT_STRIPE_PK,
     DEFAULT_TIMEOUT,
-    STRIPE_VERSION_BASE,
     STRIPE_VERSION_FULL,
 )
 from .errors import ProtocolError, ProviderRequiresApproval
-from .logging_utils import emit_log, safe_log_text
+from .logging_utils import compact_url, emit_log, safe_log_text
 from .models import CheckoutData, StripeContext
-from .providers import provider_redirect_config
 from .gopay_transport import response_json, stage_http_request
 
 STRIPE_CLIENT_BETAS = (
@@ -35,6 +33,19 @@ STRIPE_ADDITIONAL_ELEMENTS = ("expressCheckout", "payment", "address")
 STRIPE_RV_TIMESTAMP = "2024-01-01 00:00:00 -0000"
 STRIPE_RV_BUILD = "b0f5e7abe5ab1a4b215a0dbc9e8f642173efc07e"
 STRIPE_RV_SALT = "2ab88fa6a8e98b8aca4b257a12633402a6f9ca3d7f29ec369e620c310e8b2229"
+
+
+def _protocol_failure(
+    status_code,
+    detail,
+    *,
+    retryable=True,
+    failure_mode="provider_redirect_error",
+):
+    error = ProtocolError(status_code, detail)
+    error.retryable = bool(retryable)
+    error.failure_mode = str(failure_mode)
+    return error
 
 
 def _stripe_xor5(value: str) -> str:
@@ -101,23 +112,6 @@ def expected_amount(payload: Any) -> str:
     return str(due) if due is not None else "0"
 
 
-def checkout_payable_amount(checkout: CheckoutData) -> tuple[int, str]:
-    state = checkout.get("checkout_state") if isinstance(checkout.get("checkout_state"), dict) else {}
-    total = state.get("total") if isinstance(state.get("total"), dict) else {}
-    due = total.get("total") if isinstance(total.get("total"), dict) else {}
-    minor_units = due.get("minorUnitsAmount")
-    if minor_units in (None, ""):
-        minor_units = checkout.get("payable_amount_minor")
-    if minor_units in (None, ""):
-        from .gopay_oaics import openai_checkout_init_payload
-
-        minor_units = extract_checkout_totals(openai_checkout_init_payload(checkout)).get("due")
-    try:
-        amount = int(minor_units) if minor_units not in (None, "") else 0
-    except (TypeError, ValueError):
-        amount = 0
-    currency = str(state.get("currency") or checkout.get("currency") or "GBP").upper()
-    return amount, currency
 
 
 def payment_method_types(payload: Any) -> list[str]:
@@ -411,12 +405,29 @@ def resolve_external_redirect(
 ) -> str:
     current = str(redirect_url or "").strip()
     preferred = tuple(host.lower().lstrip(".") for host in preferred_hosts)
+    if not current:
+        return ""
     for _ in range(max(1, max_hops)):
         if not current:
-            return ""
-        parsed = urlsplit(current)
+            raise _protocol_failure(
+                502,
+                "provider redirect chain returned an empty URL",
+                failure_mode="provider_redirect_empty",
+            )
+        try:
+            parsed = urlsplit(current)
+        except ValueError as exc:
+            raise _protocol_failure(
+                502,
+                "provider redirect URL is invalid",
+                failure_mode="provider_redirect_invalid",
+            ) from exc
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return current
+            raise _protocol_failure(
+                502,
+                f"provider redirect URL is invalid: {compact_url(current)}",
+                failure_mode="provider_redirect_invalid",
+            )
         host = (parsed.hostname or "").lower()
         if any(host == item or host.endswith("." + item) for item in preferred):
             return current
@@ -444,43 +455,56 @@ def resolve_external_redirect(
                     },
                 )
                 break
-            except Exception:
+            except Exception as exc:
                 if attempt >= 2:
-                    return current
+                    raise _protocol_failure(
+                        502,
+                        f"provider redirect hop failed: {safe_log_text(exc)}",
+                        failure_mode="provider_redirect_transport",
+                    ) from exc
                 time.sleep(0.35 * (attempt + 1))
         if response is None:
-            return current
-        if response.status_code not in (301, 302, 303, 307, 308):
-            return current
-        location = str(response.headers.get("Location") or "").strip()
+            raise _protocol_failure(
+                502,
+                "provider redirect hop returned no response",
+                failure_mode="provider_redirect_empty_response",
+            )
+        status_code = int(getattr(response, "status_code", 0))
+        if status_code not in (301, 302, 303, 307, 308):
+            raise _protocol_failure(
+                status_code if status_code >= 400 else 502,
+                f"provider redirect stopped at intermediate URL: {compact_url(current)}",
+                retryable=status_code != 401,
+                failure_mode="provider_redirect_intermediate",
+            )
+        response_headers = getattr(response, "headers", {}) or {}
+        location = str(
+            response_headers.get("Location")
+            or response_headers.get("location")
+            or ""
+        ).strip()
         if not location:
-            return current
+            raise _protocol_failure(
+                502,
+                f"provider redirect response missing Location: {compact_url(current)}",
+                failure_mode="provider_redirect_missing_location",
+            )
         current = urljoin(current, location)
-    return current
-
-
-def is_paypal_ba_approval_url(value: str) -> bool:
-    """True only for the final PayPal billing-agreement approval URL."""
     try:
-        parsed = urlsplit(str(value or "").strip())
-        host = (parsed.hostname or "").lower()
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        return bool(
-            (host == "paypal.com" or host.endswith(".paypal.com"))
-            and parsed.path.rstrip("/").lower() == "/agreements/approve"
-            and str(query.get("ba_token") or "").upper().startswith("BA-")
-        )
-    except Exception:
-        return False
-
-
-def provider_result(checkout: CheckoutData, payment_method: str, stripe_redirect: str, provider_url: str) -> dict[str, str]:
-    provider_config = provider_redirect_config(payment_method)
-    url = provider_url or stripe_redirect
-    result = {
-        "payment_method_id": str(checkout.get("payment_method_id") or ""),
-        "stripe_redirect_url": stripe_redirect,
-        "provider_url": url,
-    }
-    result[provider_config["result_field"]] = url
-    return result
+        parsed = urlsplit(current)
+    except ValueError as exc:
+        raise _protocol_failure(
+            502,
+            "provider redirect chain returned an invalid URL",
+            failure_mode="provider_redirect_invalid",
+        ) from exc
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme in {"http", "https"} and parsed.netloc and any(
+        host == item or host.endswith("." + item) for item in preferred
+    ):
+        return current
+    raise _protocol_failure(
+        502,
+        f"provider redirect chain exceeded {max(1, max_hops)} hops: {compact_url(current)}",
+        failure_mode="provider_redirect_hops_exhausted",
+    )

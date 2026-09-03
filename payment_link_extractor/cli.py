@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", help="path to a .env file")
     parser.add_argument("--at", default=os.getenv("OPLL_AT", ""), help="OpenAI AT; prefer OPLL_AT env")
     parser.add_argument(
+        "--session-token",
+        default=os.getenv("OPLL_SESSION_TOKEN", ""),
+        help="NextAuth session token; prefer OPLL_SESSION_TOKEN env",
+    )
+    parser.add_argument(
         "--checkout-proxy",
         default=os.getenv("OPLL_CHECKOUT_PROXY", ""),
         help="checkout + Stripe/provider proxy",
@@ -34,8 +39,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--stripe-hcaptcha-token",
-        default=os.getenv("OPLL_STRIPE_HCAPTCHA_TOKEN", "")
-        or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", ""),
+        default=os.getenv("OPLL_STRIPE_HCAPTCHA_TOKEN", ""),
         help="optional current Stripe Elements passive captcha token",
     )
     parser.add_argument("--quiet", action="store_true", help="only print final JSON")
@@ -58,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         default=_env_bool("OPLL_UPDATE_CHECKOUT", True),
         help="run checkout/update before payment extraction",
     )
+    parser.add_argument(
+        "--gopay-zero-trial-validation",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("OPLL_GOPAY_ZERO_TRIAL_VALIDATION", True),
+        help="validate GoPay zero-trial eligibility and amount",
+    )
     return parser.parse_args()
 
 
@@ -77,16 +87,21 @@ def main() -> int:
         serialize=os.getenv("OPLL_LOG_JSON", "false").lower() in {"1", "true", "yes"},
     )
     token = str(args.at or "").strip() or getpass.getpass("OpenAI AT: ").strip()
+    stripe_hcaptcha_token = str(args.stripe_hcaptcha_token or "").strip()
+    if args.payment_method == "momo" and not stripe_hcaptcha_token:
+        stripe_hcaptcha_token = os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", "").strip()
     try:
         result = extract_payment_link(
             ExtractionConfig(
                 access_token=token,
+                session_token=str(args.session_token or "").strip(),
                 checkout_proxy=args.checkout_proxy,
                 update_proxy=args.update_proxy,
-                stripe_hcaptcha_token=args.stripe_hcaptcha_token,
+                stripe_hcaptcha_token=stripe_hcaptcha_token,
                 country=args.country,
                 payment_method=args.payment_method,
                 apply_checkout_update=args.update_checkout,
+                gopay_zero_trial_validation=args.gopay_zero_trial_validation,
                 verbose=not args.quiet,
             )
         )

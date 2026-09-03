@@ -7,7 +7,7 @@ from typing import Callable
 
 from .models import ExtractionConfig, PaymentLinkResult
 from .gopay_core import extract_gopay_payment_link as _extract_gopay_core
-from .transport import TransportFactory
+from .gopay_transport import TransportFactory
 
 
 def extract_gopay_payment_link(
