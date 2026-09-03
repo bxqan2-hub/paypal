@@ -1,0 +1,368 @@
+diff --git a/.env.example b/.env.example
+index e129c66e56d4be86c1934e9183fbf5a86062a492..e94f21171656d61fe3e456e21245723db876ef0b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -23,11 +23,10 @@ OPLL_GOPAY_OPENAI_SENTINEL_SO_TOKEN=
+ OPLL_GOPAY_OAI_IS_CLIENT_OBSERVATION=
+ OPLL_GOPAY_OAI_CHECKOUT_TELEMETRY=
+ OPLL_GOPAY_OAI_APPROVE_TELEMETRY=
+-OPLL_GOPAY_BROWSER_PROFILE=chrome151
++OPLL_GOPAY_BROWSER_PROFILE=chrome146
+ # GoPay Sentinel uses a real persistent Playwright-controlled Chrome profile.
+ OPLL_SENTINEL_BROWSER=auto
+ OPLL_SENTINEL_HEADLESS=true
+-OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL=chrome
+ OPLL_GOPAY_SENTINEL_NAVIGATE_CHECKOUT=true
+ OPLL_GOPAY_SENTINEL_NAVIGATION_TIMEOUT_MS=30000
+ OPLL_GOPAY_SENTINEL_PROFILE_DIR=./data/gopay-sentinel-profiles
+diff --git a/payment_link_extractor/gopay_sentinel_playwright.py b/payment_link_extractor/gopay_sentinel_playwright.py
+index 4f5a468752df3bd2d9ecaf084cef3d2980d25124..85661bb39e453625973cdf90cbd0c7549ce4b74a 100644
+--- a/payment_link_extractor/gopay_sentinel_playwright.py
++++ b/payment_link_extractor/gopay_sentinel_playwright.py
+@@ -28,10 +28,19 @@ except ImportError:  # pragma: no cover - dependency is validated at runtime
+     async_playwright = None  # type: ignore[assignment]
+ 
+ from .gopay_transport import GOPAY_OAI_CLIENT_BUILD_NUMBER, GOPAY_OAI_CLIENT_VERSION
++from .gopay_transport import GOPAY_BROWSER_USER_AGENT
+ 
+ 
+ SENTINEL_SDK_VERSION = "20260810913b"
+ CHATGPT_ORIGIN = "https://chatgpt.com"
++GOPAY_CHROME146_EXECUTABLE = (
++    Path(__file__).resolve().parent
++    / "runtime"
++    / "chrome-146.0.7680.165"
++    / "win64-146.0.7680.165"
++    / "chrome-headless-shell-win64"
++    / "chrome-headless-shell.exe"
++)
+ 
+ 
+ def _enabled(value: str, *, default: bool) -> bool:
+@@ -113,6 +122,8 @@ def _browser_version_matches(user_agent: str, browser_version: str) -> bool:
+     return bool(
+         user_agent_match
+         and browser_version_match
++        and user_agent_match.group(1) == "146"
++        and browser_version_match.group(1) == "146"
+         and user_agent_match.group(1) == browser_version_match.group(1)
+     )
+ 
+@@ -343,12 +354,15 @@ class PersistentPlaywrightDaemon:
+         runtime_id = uuid.uuid4().hex
+         profile_path = _profile_root() / _profile_key(device_id)
+         profile_path.mkdir(parents=True, exist_ok=True)
++        browser_executable = GOPAY_CHROME146_EXECUTABLE
++        if not browser_executable.is_file():
++            raise RuntimeError(
++                f"GoPay Chrome 146 executable is unavailable: {browser_executable}"
++            )
+         # Sentinel still runs in the same persistent Playwright context, but
+         # the Chromium window stays hidden unless explicitly disabled.
+         headless = _enabled(os.getenv("OPLL_SENTINEL_HEADLESS", ""), default=True)
+-        browser_channel = os.getenv(
+-            "OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "chrome"
+-        ).strip() or "chrome"
++        browser_channel = "chrome146"
+         launch_options: dict[str, Any] = {
+             "user_data_dir": str(profile_path),
+             "headless": headless,
+@@ -360,9 +374,8 @@ class PersistentPlaywrightDaemon:
+             "bypass_csp": True,
+             "ignore_https_errors": False,
+             "args": ["--no-first-run", "--no-default-browser-check"],
++            "executable_path": str(browser_executable),
+         }
+-        if browser_channel:
+-            launch_options["channel"] = browser_channel
+         context = await self._playwright.chromium.launch_persistent_context(
+             **launch_options
+         )
+diff --git a/payment_link_extractor/gopay_transport.py b/payment_link_extractor/gopay_transport.py
+index 54c5d5043c9cb67a45de34dc44fa3ace88349097..fa018a3740fc8055452f8526aae124bcc8ad7b61 100644
+--- a/payment_link_extractor/gopay_transport.py
++++ b/payment_link_extractor/gopay_transport.py
+@@ -28,6 +28,11 @@ EMPTY_PENDING_UPDATES = '{"v":3,"updates":[]}'
+ PENDING_RECEIPT_LIMIT = 2
+ GOPAY_OAI_CLIENT_BUILD_NUMBER = "10012890"
+ GOPAY_OAI_CLIENT_VERSION = "prod-7890a3be6202572c0e8e3bb4907574d660b4e4f4"
++GOPAY_BROWSER_USER_AGENT = (
++    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
++)
++GOPAY_BROWSER_SEC_CH_UA = '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"'
+ 
+ 
+ def browser_checkout_telemetry(action: str) -> str:
+@@ -101,10 +106,10 @@ class TransportFactory(Protocol):
+ 
+ GOPAY_BROWSER_PROFILES: tuple[dict[str, Any], ...] = (
+     {
+-        "name": "chrome151",
+-        "impersonate": "chrome151",
+-        "user_agent": DEFAULT_USER_AGENT,
+-        "sec_ch_ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
++        "name": "chrome146",
++        "impersonate": "chrome146",
++        "user_agent": GOPAY_BROWSER_USER_AGENT,
++        "sec_ch_ua": GOPAY_BROWSER_SEC_CH_UA,
+     },
+ )
+ 
+@@ -116,14 +121,14 @@ def select_gopay_browser_profile(
+ ) -> dict[str, Any]:
+     """Bind one coherent browser profile to an entire account context."""
+     requested = os.getenv("OPLL_GOPAY_BROWSER_PROFILE", "").strip().lower()
+-    if requested not in {"", "auto", "chrome", "chrome151"}:
++    if requested not in {"", "auto", "chrome", "chrome146"}:
+         for profile in GOPAY_BROWSER_PROFILES:
+             if requested in {str(profile["name"]).lower(), str(profile["impersonate"]).lower()}:
+                 return dict(profile)
+         raise ConfigurationError(f"unknown GoPay browser profile: {requested}")
+ 
+     selected_transport = str(transport_impersonate or "").strip().lower()
+-    if selected_transport and selected_transport not in {"chrome", "chrome151"}:
++    if selected_transport and selected_transport not in {"chrome", "chrome146"}:
+         for profile in GOPAY_BROWSER_PROFILES:
+             if selected_transport == str(profile["impersonate"]).lower():
+                 return dict(profile)
+@@ -138,6 +143,8 @@ def validate_gopay_client_hints(user_agent: str, sec_ch_ua: str) -> bool:
+     if not ua_match:
+         raise ConfigurationError("GoPay User-Agent must identify Chrome or Chromium")
+     expected = ua_match.group(1)
++    if expected != "146":
++        raise ConfigurationError("GoPay browser identity must use Chrome 146")
+     hints = re.findall(
+         r'"(Google Chrome|Chromium)"\s*;\s*v="(\d+)"',
+         str(sec_ch_ua or ""),
+@@ -161,6 +168,10 @@ def validate_tls_ua_consistency(impersonate: str, user_agent: str) -> bool:
+         raise ConfigurationError(
+             f"TLS/UA version mismatch: impersonate={impersonate}, ua={ua_match.group(1)}"
+         )
++    if tls_match and tls_match.group(1) != "146":
++        raise ConfigurationError("GoPay TLS profile must use Chrome 146")
++    if ua_match and ua_match.group(1) != "146":
++        raise ConfigurationError("GoPay User-Agent must use Chrome 146")
+     return True
+ 
+ 
+@@ -179,11 +190,13 @@ def gopay_browser_identity(config: ExtractionConfig) -> tuple[str, dict[str, Any
+ 
+ 
+ def new_session(impersonate: str | None = None) -> Any:
++    if impersonate and str(impersonate).strip().lower() != "chrome146":
++        raise ConfigurationError("GoPay curl_cffi profile must use chrome146")
+     if CurlCffiSession is not None:
+         selected = str(impersonate or os.getenv("OPLL_HTTP_IMPERSONATE", "chrome")).strip() or "chrome"
+         return CurlCffiSession(impersonate=selected)
+     if impersonate:
+-        raise ConfigurationError("curl_cffi is required for the GoPay Chrome 151 identity")
++        raise ConfigurationError("curl_cffi is required for the GoPay Chrome 146 identity")
+     if requests is None:
+         raise ConfigurationError("requests is required; install requirements.txt")
+     return requests.Session()
+@@ -740,7 +753,7 @@ class PlaywrightSentinelProvider:
+         self.access_token = str(access_token or "").strip()
+         self.device_id = str(device_id or "").strip()
+         self.session_id = str(session_id or "").strip()
+-        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
++        self.user_agent = str(user_agent or GOPAY_BROWSER_USER_AGENT)
+         self.proxy = str(proxy or "").strip()
+         try:
+             from .web.socks5_bridge import http_proxy_for
+diff --git a/tests/test_gopay_hidden_blockers.py b/tests/test_gopay_hidden_blockers.py
+index 45996c5b68311668def2662715bdc250906df1a7..4ae5ac448d67e59529e3c367ee37d64149ca89d3 100644
+--- a/tests/test_gopay_hidden_blockers.py
++++ b/tests/test_gopay_hidden_blockers.py
+@@ -66,10 +66,13 @@ def test_playwright_session_cookie_chunks_and_version_guard() -> None:
+     ]
+     assert [len(item["value"]) for item in records] == [3800, 3800]
+     assert gopay_sentinel_playwright._browser_version_matches(
+-        "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36", "151.0.7922.170"
++        "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36", "146.0.7680.165"
++    )
++    assert not gopay_sentinel_playwright._browser_version_matches(
++        "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36", "146.0.7680.165"
+     )
+     assert not gopay_sentinel_playwright._browser_version_matches(
+-        "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36", "151.0.7922.170"
++        "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36", "151.0.7922.170"
+     )
+ 
+ 
+@@ -285,7 +288,7 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
+             return True
+ 
+     class Context:
+-        browser = SimpleNamespace(version="151.0.7922.170")
++        browser = SimpleNamespace(version="146.0.7680.165")
+         pages = [Page()]
+         closed = False
+         clear_calls: list[dict[str, str]] = []
+@@ -326,8 +329,14 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
+     daemon = object.__new__(gopay_sentinel_playwright.PersistentPlaywrightDaemon)
+     daemon._playwright = SimpleNamespace(chromium=Chromium())
+     daemon._sessions = {}
++    executable = tmp_path / "chrome-headless-shell.exe"
++    executable.write_bytes(b"chrome-146-fixture")
++    monkeypatch.setattr(
++        gopay_sentinel_playwright,
++        "GOPAY_CHROME146_EXECUTABLE",
++        executable,
++    )
+     monkeypatch.setenv("OPLL_GOPAY_SENTINEL_PROFILE_DIR", str(tmp_path))
+-    monkeypatch.setenv("OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL", "")
+     with pytest.raises(RuntimeError, match="goto-fixture"):
+         asyncio.run(
+             daemon._open_session_async(
+@@ -335,7 +344,7 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
+                 account_id="account-fixture",
+                 device_id="11111111-1111-4111-8111-111111111111",
+                 session_id="22222222-2222-4222-8222-222222222222",
+-                user_agent="Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
++                user_agent="Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
+                 browser_proxy="",
+                 session_token=session_token,
+                 language="id-ID",
+@@ -344,7 +353,8 @@ def test_playwright_cleans_failed_open_session_and_separates_cookie_auth(
+         )
+     assert daemon._sessions == {}
+     assert context.closed is True
+-    assert launch_kwargs["channel"] == "chrome"
++    assert launch_kwargs["executable_path"] == str(executable)
++    assert "channel" not in launch_kwargs
+     assert captured_headers
+     assert "Authorization" not in captured_headers[0]
+     assert "chatgpt-account-id" not in captured_headers[0]
+@@ -420,7 +430,7 @@ def test_gopay_ignores_generic_cross_channel_identity_overrides(monkeypatch) ->
+     assert session.headers["User-Agent"] == gopay_transport.GOPAY_BROWSER_PROFILES[0]["user_agent"]
+     assert session.headers["sec-ch-ua"] == gopay_transport.GOPAY_BROWSER_PROFILES[0]["sec_ch_ua"]
+     assert session.headers["sec-ch-ua-platform"] == '"Windows"'
+-    assert session.gopay_tls_impersonate == "chrome151"
++    assert session.gopay_tls_impersonate == "chrome146"
+ 
+ 
+ def test_gopay_device_id_is_stable_for_same_account_different_jwt_nonce(monkeypatch) -> None:
+@@ -436,7 +446,7 @@ def test_gopay_device_id_is_stable_for_same_account_different_jwt_nonce(monkeypa
+         ).decode("ascii").rstrip("=")
+         return f"header.{encoded}.signature"
+ 
+-    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome151")
++    monkeypatch.setenv("OPLL_HTTP_IMPERSONATE", "chrome146")
+     first = ExtractionConfig(
+         access_token=token("one"),
+         checkout_proxy="",
+@@ -477,6 +487,11 @@ def test_web_route_uses_session_token_environment_fallback(monkeypatch) -> None:
+ def test_gopay_identity_does_not_fall_back_to_plain_requests(monkeypatch) -> None:
+     monkeypatch.setattr(gopay_transport, "CurlCffiSession", None)
+     with pytest.raises(Exception, match="curl_cffi is required"):
++        gopay_transport.new_session("chrome146")
++
++
++def test_gopay_rejects_non_146_curl_profile() -> None:
++    with pytest.raises(Exception, match="chrome146"):
+         gopay_transport.new_session("chrome151")
+ 
+ 
+@@ -502,21 +517,21 @@ def test_gopay_session_constructor_type_error_is_not_downgraded(monkeypatch, met
+             gopay_transport.DefaultTransportFactory().chatgpt(config, config.checkout_proxy)
+         else:
+             gopay_transport.DefaultTransportFactory().stripe(config)
+-    assert calls == ["chrome151"]
++    assert calls == ["chrome146"]
+ 
+ 
+ @pytest.mark.parametrize("sec_ch_ua", ["", '"Not=A?Brand";v="99"'])
+ def test_gopay_client_hints_require_chrome_brands(sec_ch_ua) -> None:
+     with pytest.raises(Exception, match="client-hints version mismatch"):
+         gopay_transport.validate_gopay_client_hints(
+-            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
++            "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
+             sec_ch_ua,
+         )
+ 
+ 
+ def test_required_sentinel_headers_reject_partial_provider_result(monkeypatch) -> None:
+     session = SimpleNamespace(
+-        gopay_browser_profile="chrome151",
++        gopay_browser_profile="chrome146",
+         openai_sentinel_provider=SimpleNamespace(
+             headers=lambda *_args, **_kwargs: {"oai-device-id": "device-fixture"}
+         ),
+@@ -533,9 +548,17 @@ def test_required_sentinel_headers_reject_partial_provider_result(monkeypatch) -
+ 
+ def test_gopay_client_hints_reject_missing_chromium_brand() -> None:
+     with pytest.raises(Exception, match="client-hints version mismatch"):
++        gopay_transport.validate_gopay_client_hints(
++            "Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36",
++            '"Google Chrome";v="146"',
++        )
++
++
++def test_gopay_client_hints_reject_non_146_identity() -> None:
++    with pytest.raises(Exception, match="Chrome 146"):
+         gopay_transport.validate_gopay_client_hints(
+             "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+-            '"Google Chrome";v="151"',
++            '"Chromium";v="151", "Not-A.Brand";v="24", "Google Chrome";v="151"',
+         )
+ 
+ 
+diff --git a/tests/test_gopay_isolated_optimization.py b/tests/test_gopay_isolated_optimization.py
+index 37bcf302c987d94d805b27c4c1e3d506afb3087f..0c07c86c0bf667c074cc8039a739e4e7445e1b53 100644
+--- a/tests/test_gopay_isolated_optimization.py
++++ b/tests/test_gopay_isolated_optimization.py
+@@ -136,7 +136,7 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
+         for index in range(80)
+     }
+     assert profiles.issubset({item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES})
+-    assert profiles == {"chrome151"}
++    assert profiles == {"chrome146"}
+     assert gopay_transport.select_gopay_browser_profile(device_id="stable-device") == (
+         gopay_transport.select_gopay_browser_profile(device_id="stable-device")
+     )
+@@ -149,7 +149,7 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
+         device_id="stable-device",
+         transport_impersonate="chrome",
+     ) == gopay_transport.select_gopay_browser_profile(device_id="stable-device")
+-    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {"chrome151"}
++    assert {item["name"] for item in gopay_transport.GOPAY_BROWSER_PROFILES} == {"chrome146"}
+     for profile in gopay_transport.GOPAY_BROWSER_PROFILES:
+         assert gopay_transport.validate_tls_ua_consistency(
+             str(profile["impersonate"]), str(profile["user_agent"])
+@@ -157,14 +157,15 @@ def test_gopay_browser_profile_rotation_and_tls_ua_validation(monkeypatch) -> No
+         assert gopay_transport.validate_gopay_client_hints(
+             str(profile["user_agent"]), str(profile["sec_ch_ua"])
+         )
+-    assert gopay_transport.validate_tls_ua_consistency(
+-        "chrome131",
+-        "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
+-    )
+-    with pytest.raises(Exception, match="TLS/UA version mismatch"):
++    with pytest.raises(Exception, match="Chrome 146"):
+         gopay_transport.validate_tls_ua_consistency(
+             "chrome131",
+-            "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
++            "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
++        )
++    with pytest.raises(Exception, match="TLS/UA version mismatch"):
++        gopay_transport.validate_tls_ua_consistency(
++            "chrome146",
++            "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36",
+         )
+ 
+ 
+diff --git a/tests/test_gopay_sentinel_playwright.py b/tests/test_gopay_sentinel_playwright.py
+index 0c2ea42b77b09aebd72fa28e5405b73971a8ac7f..7b6a5bb0029141ebf0d192a8ab10cc0b7595a71d 100644
+--- a/tests/test_gopay_sentinel_playwright.py
++++ b/tests/test_gopay_sentinel_playwright.py
+@@ -40,7 +40,8 @@ def test_playwright_runtime_uses_persistent_profile_and_real_sdk_url() -> None:
+     assert "gopay-sentinel-profiles" in source
+     assert "/sentinel/{SENTINEL_SDK_VERSION}/sdk.js" in source
+     assert '"headless": headless' in source
+-    assert '"chrome"' in source
++    assert "GOPAY_CHROME146_EXECUTABLE" in source
++    assert '"executable_path"' in source
+     assert "jsdom" not in source.lower()
+ 
+ 

@@ -1,0 +1,128 @@
+CHANGED_BRANCH=main
+CHANGED_FIELD=GoPay Chrome kernel, curl_cffi impersonation, UA/Client Hints, and Playwright executable fixed to Chrome 146
+BASE_COMMIT=f30abb52272c89f00e3c23508a8c0ef82f96e1c9
+MODIFIED_COMMIT=ffddc74ce94ccf9de7bd4cdbc9746f760da3a8c0
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\DIFF_FILE
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\ROLLBACK.sh
+
+CHANGESET_RESULT=6 files; GoPay HTTP/browser identity fixed to Chrome 146; GoPay tests updated; other channel source files unchanged
+ORIGINAL_HASHES=recorded per file in MODIFIED_FILE (Git blob SHA-1 and SHA-256)
+
+REFERENCE_INPUT=C:\Users\Administrator\Downloads\momo_only_current_9999_20260831\payment_link_extractor\transport.py and sentinel_runner.py
+REFERENCE_LITERAL_OUTPUT=PAYMENT_BROWSER_IMPERSONATE=chrome146; Chrome/146.0.0.0; Chrome 146 runtime path confirmed
+REFERENCE_RESULT=PASS
+REFERENCE_EXIT=0
+
+COMPILE_COMMAND:
+C:\Python314\python.exe -m compileall -q payment_link_extractor
+COMPILE_LITERAL_OUTPUT:
+COMPILE_OK
+COMPILE_RESULT=PASS
+COMPILE_EXIT=0
+
+GOPAY_KERNEL_COMMAND:
+C:\Users\Administrator\Desktop\提链\payment_link_extractor\runtime\chrome-146.0.7680.165\win64-146.0.7680.165\chrome-headless-shell-win64\chrome-headless-shell.exe --version
+GOPAY_KERNEL_LITERAL_OUTPUT:
+Google Chrome for Testing 146.0.7680.165
+GOPAY_KERNEL_RESULT=PASS
+GOPAY_KERNEL_EXIT=0
+
+GOPAY_IDENTITY_SCAN_COMMAND:
+rg -n -i 'chrome151|Chrome/151|151\.0' payment_link_extractor/gopay_transport.py payment_link_extractor/gopay_sentinel_playwright.py .env.example --glob '!*.pyc'
+GOPAY_IDENTITY_SCAN_LITERAL_OUTPUT:
+(no output)
+GOPAY_IDENTITY_SCAN_RESULT=PASS (GOPAY_CHROME_GT150_EMPTY)
+GOPAY_IDENTITY_SCAN_EXIT=1 (rg no-match status)
+
+GOPAY_CHANNEL_OVERRIDE_SCAN_COMMAND:
+rg -n 'OPLL_GOPAY_SENTINEL_BROWSER_CHANNEL' payment_link_extractor/gopay_sentinel_playwright.py .env.example
+GOPAY_CHANNEL_OVERRIDE_SCAN_LITERAL_OUTPUT:
+(no output)
+GOPAY_CHANNEL_OVERRIDE_SCAN_RESULT=PASS (GOPAY_CHANNEL_ENV_EMPTY)
+GOPAY_CHANNEL_OVERRIDE_SCAN_EXIT=1 (rg no-match status)
+
+BASELINE_INPUT:
+Temporary Git worktree C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-baseline-20260903 at BASE_COMMIT; Windows checkout SDK bytes normalized with b.replace(b"\\r\\n", b"\\n") only.
+BASELINE_SETUP_COMMAND:
+C:\Python314\python.exe -c "from pathlib import Path; p=Path(r'C:\\Users\\Administrator\\AppData\\Local\\Temp\\gopay-chrome146-baseline-20260903\\payment_link_extractor\\sentinel_assets\\sentinel_sdk.js'); p.write_bytes(p.read_bytes().replace(b'\\r\\n',b'\\n')); print('BASELINE_SDK_NORMALIZED=1')"
+BASELINE_SETUP_LITERAL_OUTPUT:
+BASELINE_SDK_NORMALIZED=1
+BASELINE_SETUP_RESULT=PASS
+BASELINE_SETUP_EXIT=0
+BASELINE_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+BASELINE_LITERAL_OUTPUT:
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+..........................                                               [100%]
+314 passed in 3.24s
+BASELINE_RESULT=PASS
+BASELINE_EXIT=0
+
+MODIFIED_INPUT:
+Repository worktree C:\Users\Administrator\Desktop\提链 at MODIFIED_COMMIT=ffddc74ce94ccf9de7bd4cdbc9746f760da3a8c0.
+MODIFIED_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+MODIFIED_LITERAL_OUTPUT:
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+............................                                             [100%]
+316 passed in 2.31s
+MODIFIED_RESULT=PASS
+MODIFIED_EXIT=0
+
+FORWARD_INPUT:
+Temporary Git worktree C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-forward-20260903 at BASE_COMMIT; DIFF_FILE applied.
+FORWARD_CHECK_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-forward-20260903 apply --check --whitespace=nowarn C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\DIFF_FILE
+FORWARD_CHECK_LITERAL_OUTPUT:
+(no output)
+FORWARD_APPLY_CHECK_EXIT=0
+FORWARD_APPLY_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-forward-20260903 apply --whitespace=nowarn C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\DIFF_FILE
+FORWARD_APPLY_LITERAL_OUTPUT:
+(no output)
+FORWARD_APPLY_EXIT=0
+FORWARD_COMPARE_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-forward-20260903 diff --quiet ffddc74ce94ccf9de7bd4cdbc9746f760da3a8c0 --
+FORWARD_COMPARE_LITERAL_OUTPUT:
+(no output)
+FORWARD_COMPARE_EXIT=0
+FORWARD_RESULT=PASS
+
+ROLLBACK_INPUT:
+Temporary Git worktree C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-rollback-20260903 at MODIFIED_COMMIT.
+ROLLBACK_COMMAND:
+& "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\gopay-chrome146-20260903\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-rollback-20260903"
+ROLLBACK_LITERAL_OUTPUT:
+ROLLBACK_APPLIED=C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-rollback-20260903
+ROLLBACK_SCRIPT_EXIT=0
+ROLLBACK_SCRIPT_RESULT=PASS
+ROLLBACK_COMPARE_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-chrome146-rollback-20260903 diff --quiet f30abb52272c89f00e3c23508a8c0ef82f96e1c9 --
+ROLLBACK_COMPARE_LITERAL_OUTPUT:
+(no output)
+ROLLBACK_COMPARE_EXIT=0
+ROLLBACK_TEST_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+ROLLBACK_TEST_LITERAL_OUTPUT:
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+..........................                                               [100%]
+314 passed in 3.21s
+ROLLBACK_TEST_RESULT=PASS
+ROLLBACK_TEST_EXIT=0
+RESTORED_BEHAVIOR=baseline suite restored: 314 passed
+RESTORED_STATUS=working-tree content equals BASE_COMMIT (comparison exit 0); MODIFIED_FILE remains changed in the repository artifact directory
+
+ARTIFACT_RESULT=all four artifacts reopened after creation; ROLLBACK.sh Git mode 100755 after commit
+UNRESOLVED=No GoPay Chrome version ambiguity remains; other channel identities and historical HAR documentation were left unchanged.
