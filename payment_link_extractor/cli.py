@@ -38,16 +38,6 @@ def parse_args() -> argparse.Namespace:
         or os.getenv("OPLL_MOMO_STRIPE_HCAPTCHA_TOKEN", ""),
         help="optional current Stripe Elements passive captcha token",
     )
-    parser.add_argument(
-        "--momo-fingerprint",
-        default=os.getenv("OPLL_MOMO_FINGERPRINT", ""),
-        help="optional supported MoMo browser profile; empty rotates profiles per attempt",
-    )
-    parser.add_argument(
-        "--momo-session-token",
-        default=os.getenv("OPLL_MOMO_SESSION_TOKEN", ""),
-        help="optional runtime NextAuth session token for the MoMo browser context",
-    )
     parser.add_argument("--quiet", action="store_true", help="only print final JSON")
     parser.add_argument(
         "--country",
@@ -97,8 +87,6 @@ def main() -> int:
                 country=args.country,
                 payment_method=args.payment_method,
                 apply_checkout_update=args.update_checkout,
-                momo_fingerprint=args.momo_fingerprint,
-                session_token=args.momo_session_token,
                 verbose=not args.quiet,
             )
         )

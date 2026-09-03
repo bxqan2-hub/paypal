@@ -277,21 +277,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         "gopay_zero_trial_validation",
         _env_bool("OPLL_GOPAY_ZERO_TRIAL_VALIDATION", True),
     )
-    momo_zero_trial_validation = payload.get(
-        "momo_zero_trial_validation",
-        _env_bool("OPLL_MOMO_ZERO_TRIAL_VALIDATION", True),
-    )
-    momo_trial_eligibility_check = payload.get(
-        "momo_trial_eligibility_check",
-        _env_bool("OPLL_MOMO_TRIAL_ELIGIBILITY_CHECK", True),
-    )
-    momo_fingerprint = str(
-        payload.get(
-            "momo_fingerprint",
-            os.getenv("OPLL_MOMO_FINGERPRINT", ""),
-        )
-        or ""
-    ).strip()
     if "max_attempts" in payload:
         max_attempts = _max_attempts_value(payload.get("max_attempts"))
         retry_count = max_attempts - 1
@@ -307,10 +292,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         raise ConfigurationError("apply_checkout_update must be boolean")
     if not isinstance(gopay_zero_trial_validation, bool):
         raise ConfigurationError("gopay_zero_trial_validation must be boolean")
-    if not isinstance(momo_zero_trial_validation, bool):
-        raise ConfigurationError("momo_zero_trial_validation must be boolean")
-    if not isinstance(momo_trial_eligibility_check, bool):
-        raise ConfigurationError("momo_trial_eligibility_check must be boolean")
     if not str(access_token or "").strip():
         raise ConfigurationError("AT is required")
     if not str(checkout_proxy or "").strip():
@@ -353,9 +334,6 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         payment_method=payment_method,
         apply_checkout_update=apply_update,
         gopay_zero_trial_validation=gopay_zero_trial_validation,
-        momo_zero_trial_validation=momo_zero_trial_validation,
-        momo_trial_eligibility_check=momo_trial_eligibility_check,
-        momo_fingerprint=momo_fingerprint,
         verbose=False,
         oaics_only=oaics_only,
         retry_count=retry_count,
@@ -364,14 +342,7 @@ def _config_from_payload(payload: dict[str, Any]) -> ExtractionConfig:
         proxy_pool=submitted_pool,
         account_name=str(payload.get("name") or "").strip(),
         account_email=str(payload.get("email") or "").strip(),
-        session_token=(
-            extract_session_token(payload)
-            or (
-                os.getenv("OPLL_MOMO_SESSION_TOKEN", "").strip()
-                if payment_method == "momo"
-                else ""
-            )
-        ),
+        session_token=extract_session_token(payload),
     )
 
 

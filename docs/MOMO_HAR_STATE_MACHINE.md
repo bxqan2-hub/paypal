@@ -44,7 +44,7 @@
 - 生成 `momo_url` 后先以文档导航头打开 `/v2/gateway/pay`，从 `<meta name="_csrf">` 或实时 Cookie 读取 CSRF，再以空 body、`Accept: */*`、`Origin`、`Referer`、`X-CSRF-Token` 请求 `querySession`；默认约 4.25 秒间隔轮询，必须达到 `status_code=9000` 和 `redirect=true` 才返回结果。
 - 提链第一步先用当前 VN 代理请求 `/backend-api/accounts/check/v4-2023-04-27`，读取账号 `eligible_promo_campaigns.plus`；未返回活动标识时切换代理继续检查，确认资格后才创建 Checkout。
 - 账号检查前复现三个只读 `/backend-anon/*` 壳请求；该壳不携带 Authorization，失败只作为顺序诊断，不改变 AT 资格判定。
-- `momo_zero_trial_validation` 只控制金额闸门：开启时 taxes 后要求 VND payable minor units 为 0，关闭时跳过该金额判断；资格预检仍保持在 Checkout 之前。
+- 金额闸门固定生效，无开关：taxes 刷新后由 `momo/_flow.py` 断言 VND payable minor units 为 0。
 - `checkout/confirm` 返回 `status=blocked` 时只记录为 `approval_context_rejected`，不推断为登录态失败；诊断同时记录当前 `pending_updates` 数量、`_account` Cookie、Sentinel、`oai-telemetry`、deployment attestation、Elements site key 和 hCaptcha 来源。只有获得真实 client secret 并完成后续 Stripe/MoMo 终态才产生 `momo_url`。
-- `momo_fingerprint` 为空时只在受支持且 UA/TLS 成对一致的 Chrome 136/145/146/150 profile 中随机选择；一次完整尝试内固定同一 profile，重试才重新选择。
+- 浏览器身份固定 Chrome 146，无 profile 轮换：curl_cffi 指纹、UA/client hints、生成 Sentinel 证明的浏览器三者同版本。
 - 认证或协议失败发生在 Checkout 提交前时才切换下一代理；提交 `oaics_*` 后当前尝试不再创建第二个 Checkout。

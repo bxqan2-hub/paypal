@@ -57,7 +57,7 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
     "momo": PaymentChannel(
         name="momo",
         label="MoMo",
-        adapter_module="payment_link_extractor.momo_channel",
+        adapter_module="payment_link_extractor.momo",
         adapter_callable="extract_momo_payment_link",
         result_field="momo_url",
         country="VN",

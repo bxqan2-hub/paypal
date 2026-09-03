@@ -119,26 +119,6 @@
                 </label>
                 <small>开启：执行资格检查和最终 0 元校验；关闭：跳过第 1、6 步，直接执行创建 Checkout 到返回 GoPay 长链。</small>
               </section>
-              <section id="momo-zero-trial-field" class="gopay-zero-trial-field" hidden>
-                <label class="check-field" for="momo-zero-trial-validation">
-                  <input id="momo-zero-trial-validation" type="checkbox" checked>
-                  <span>开启 MoMo 0 元金额校验</span>
-                </label>
-                <small>开启：税费刷新后要求 VND minor units 为 0；关闭：跳过金额闸门。</small>
-              </section>
-              <section id="momo-fingerprint-field" class="gopay-zero-trial-field" hidden>
-                <label class="field" for="momo-fingerprint">
-                  <span>MoMo 浏览器内核</span>
-                  <select id="momo-fingerprint">
-                    <option value="">自动随机（保持单次尝试上下文一致）</option>
-                    <option value="chrome150">Chrome 150</option>
-                    <option value="chrome146">Chrome 146</option>
-                    <option value="chrome145">Chrome 145</option>
-                    <option value="chrome136">Chrome 136</option>
-                  </select>
-                </label>
-                <small>每次完整尝试固定一个内核；失败重试时重新选择。</small>
-              </section>
               <section class="mk-proxy-panel">
                 <div class="mk-proxy-heading">
                   <div><strong>代理池</strong><small>所有支付步骤共用一个自备节点池</small></div>
