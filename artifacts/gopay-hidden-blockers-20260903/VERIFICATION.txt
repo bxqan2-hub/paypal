@@ -1,0 +1,101 @@
+CHANGED_BRANCH=main
+CHANGED_FIELD=GoPay core runtime identity, Sentinel lifecycle, pending receipts, zero-validation routing, fail-closed errors, and channel isolation
+BASE_COMMIT=03158274667fefab23d1b55f36a2f637c7b5c191
+MODIFIED_COMMIT=314491c69b4de60b3320428f11d1c2fe8eb04f91
+
+MODIFIED_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\MODIFIED_FILE
+DIFF_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\DIFF_FILE
+VERIFICATION_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\ROLLBACK.sh
+
+CHANGESET_RESULT=22 files; +2391 / -1701; MoMo source files unchanged
+ORIGINAL_HASHES=recorded per file in MODIFIED_FILE (Git blob SHA-1 and SHA-256)
+
+COMPILE_COMMAND:
+C:\Python314\python.exe -m compileall -q payment_link_extractor
+COMPILE_LITERAL_OUTPUT:
+COMPILE_OK
+COMPILE_RESULT=PASS
+COMPILE_EXIT=0
+
+BASELINE_INPUT:
+Temporary Git worktree C:\Users\Administrator\AppData\Local\Temp\gopay-baseline-final-20260903 at BASE_COMMIT; Windows checkout SDK bytes normalized with b.replace(b"\\r\\n", b"\\n") only.
+BASELINE_SETUP_COMMAND:
+C:\Python314\python.exe -c "from pathlib import Path; p=Path(r'C:\\Users\\Administrator\\AppData\\Local\\Temp\\gopay-baseline-final-20260903\\payment_link_extractor\\sentinel_assets\\sentinel_sdk.js'); p.write_bytes(p.read_bytes().replace(b'\\r\\n',b'\\n')); print('BASELINE_SDK_NORMALIZED=1')"
+BASELINE_SETUP_LITERAL_OUTPUT:
+BASELINE_SDK_NORMALIZED=1
+BASELINE_SETUP_RESULT=PASS
+BASELINE_SETUP_EXIT=0
+BASELINE_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+BASELINE_LITERAL_OUTPUT:
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+.....................................................                    [100%]
+269 passed in 2.93s
+BASELINE_RESULT=PASS
+BASELINE_EXIT=0
+
+MODIFIED_INPUT=repository worktree at MODIFIED_COMMIT with all GoPay changes and regression tests.
+MODIFIED_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+MODIFIED_LITERAL_OUTPUT:
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+..........................                                               [100%]
+314 passed in 2.64s
+MODIFIED_RESULT=PASS
+MODIFIED_EXIT=0
+
+FORWARD_INPUT=temporary worktree C:\Users\Administrator\AppData\Local\Temp\gopay-forward-20260903 at BASE_COMMIT; DIFF_FILE applied.
+FORWARD_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-forward-20260903 apply --check C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\DIFF_FILE
+FORWARD_LITERAL_OUTPUT:
+(no output)
+FORWARD_CHECK_EXIT=0
+FORWARD_APPLY_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-forward-20260903 apply --whitespace=nowarn C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\DIFF_FILE
+FORWARD_APPLY_LITERAL_OUTPUT:
+(no output)
+FORWARD_APPLY_EXIT=0
+FORWARD_COMPARE_RESULT=PASS (normalized working-tree blobs equal MODIFIED_COMMIT)
+
+ROLLBACK_INPUT=temporary Git worktree C:\Users\Administrator\AppData\Local\Temp\gopay-rollback-controlled-20260903 at MODIFIED_COMMIT.
+ROLLBACK_COMMAND:
+& "C:\Program Files\Git\bin\bash.exe" "C:\Users\Administrator\Desktop\提链\artifacts\gopay-hidden-blockers-20260903\ROLLBACK.sh" "C:\Users\Administrator\AppData\Local\Temp\gopay-rollback-controlled-20260903"
+ROLLBACK_LITERAL_OUTPUT:
+ROLLBACK_APPLIED=C:\Users\Administrator\AppData\Local\Temp\gopay-rollback-controlled-20260903
+ROLLBACK_SCRIPT_EXIT=0
+ROLLBACK_COMPARE_COMMAND:
+git -C C:\Users\Administrator\AppData\Local\Temp\gopay-rollback-controlled-20260903 diff --quiet 03158274667fefab23d1b55f36a2f637c7b5c191 --
+ROLLBACK_COMPARE_LITERAL_OUTPUT:
+(no output)
+ROLLBACK_COMPARE_EXIT=0
+ROLLBACK_TEST_COMMAND:
+C:\Python314\python.exe -m pytest tests/ -q
+ROLLBACK_TEST_LITERAL_OUTPUT:
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+.....................................................                    [100%]
+269 passed in 2.98s
+ROLLBACK_TEST_RESULT=PASS
+ROLLBACK_TEST_EXIT=0
+RESTORED_BEHAVIOR=baseline suite restored: 269 passed
+RESTORED_STATUS=working-tree content equals BASE_COMMIT (comparison exit 0); MODIFIED_FILE remains changed in the repository artifact directory
+
+DEAD_REFERENCE_COMMAND:
+rg -n "BrowserSentinelProvider|_agent_browser_binary|_decode_agent_browser_output|prepare_openai_browser_session|cs_update_tax_region\\(|stripe_create_payment_method\\(|_gcash_custom_payment_method_id|fetch_custom_checkout_data_state|fetch_custom_checkout_state|confirm_custom_checkout_method|start_custom_checkout_method|continue_custom_checkout_method|extract_oaics_gcash_provider|is_paypal_ba_approval_url" payment_link_extractor/gopay_transport.py payment_link_extractor/gopay_oaics.py payment_link_extractor/gopay_cs_live.py payment_link_extractor/gopay_core.py payment_link_extractor/gopay_checkout.py payment_link_extractor/gopay_sentinel_playwright.py
+DEAD_REFERENCE_LITERAL_OUTPUT:
+DEAD_GOPAY_SYMBOLS_EMPTY
+DEAD_REFERENCE_EXIT=0
+CROSS_CHANNEL_MARKER_COMMAND:
+rg -n "enhanced|momo" payment_link_extractor/gopay_transport.py
+CROSS_CHANNEL_MARKER_LITERAL_OUTPUT:
+GOPAY_TRANSPORT_CROSS_CHANNEL_MARKERS_EMPTY
+CROSS_CHANNEL_MARKER_EXIT=0
+
+UNRESOLVED=OAICS has no successful HAR in the repository; browser_timezone/locale shape, OAICS taxes Sentinel/SO-token policy, snapshot.amount_total shape, and persistent-profile account binding remain explicitly unverified and were not guessed into code. Concurrent reuse of one persistent profile is not expanded in this change.
