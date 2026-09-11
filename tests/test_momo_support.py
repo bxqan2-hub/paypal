@@ -9,7 +9,10 @@ a single coherent Chrome 146 identity and no post-link gateway gate.
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
+from unittest.mock import Mock
+from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 
@@ -41,9 +44,11 @@ def test_momo_registration() -> None:
     assert callable(extract_momo_payment_link)
 
 
-def test_momo_is_pinned_to_a_coherent_chrome146_identity() -> None:
+def test_momo_is_pinned_to_a_coherent_chrome146_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    import iprocket_chain_bridge as bridge
     from payment_link_extractor.momo import _transport as transport
 
+    monkeypatch.setattr(bridge, "ensure_background_server", Mock(return_value=True))
     # The HTTP fingerprint, UA and client hints are all Chrome 146.  The
     # Sentinel proof browser (._sentinel_runner) is likewise 146; presenting a
     # <=150 request while minting the proof in system Chrome 151/152 is what
@@ -62,6 +67,70 @@ def test_momo_is_pinned_to_a_coherent_chrome146_identity() -> None:
         assert headers.get("oai-client-build-number") == "9999461"
     finally:
         transport.safe_close(session)
+
+
+@pytest.mark.parametrize("scheme, protocol", [
+    ("http", "http"), ("https", "https"), ("socks5", "socks5"), ("socks5h", "socks5"),
+])
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_momo_generic_proxy_and_sentinel_share_one_bridge(monkeypatch, scheme, protocol, authenticated):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor.momo import _sentinel_client as sentinel, _transport as transport
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    password = "PASS_SECRET@:%40" if authenticated else ""
+    credentials = f"USER_SECRET:{quote(password, safe='')}@" if authenticated else ""
+    session = SimpleNamespace(proxies={})
+    transport.set_proxy_url(session, f"{scheme}://{credentials}proxy.example:3010")
+
+    mapped = session.proxies["https"]
+    parsed = urlsplit(mapped)
+    assert (parsed.scheme, parsed.hostname, parsed.port) == ("http", "127.0.0.1", 18796)
+    encoded = parsed.username.removeprefix("iprb_")
+    metadata = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    assert metadata == f"{protocol}|proxy.example|3010|{'USER_SECRET' if authenticated else ''}"
+    assert unquote(parsed.password) == password
+    assert session.proxies["http"] == mapped
+    assert sentinel._current_proxy(session) == mapped
+    assert transport.normalize_proxy_url(mapped) == mapped
+    ensure.assert_called_once_with()
+
+
+def test_momo_arxlabs_transport_and_shared_probe_use_identical_bridge(monkeypatch):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor.momo import _sentinel_client as sentinel, _transport as transport
+    from payment_link_extractor.web import proxy_probe
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    raw = "sg.arxlabs.io:3010:USER_SECRET:PASS_SECRET@:%40"
+    session = SimpleNamespace(proxies={})
+    transport.set_proxy_url(session, raw)
+    request_get = Mock(return_value=SimpleNamespace(
+        status_code=200, json=lambda: {"ip": "192.0.2.5", "country_code": "VN"},
+    ))
+    location = proxy_probe.probe_proxy(raw, request_get=request_get)
+
+    assert location.ip == "192.0.2.5"
+    assert request_get.call_args.kwargs["proxies"] == session.proxies
+    assert sentinel._current_proxy(session) == session.proxies["https"]
+    assert unquote(urlsplit(session.proxies["https"]).password) == "PASS_SECRET@:%40"
+    assert ensure.call_count == 2
+
+
+def test_momo_empty_proxy_does_not_start_bridge(monkeypatch):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor.momo import _transport as transport
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    session = SimpleNamespace(proxies={"http": "previous"})
+    transport.set_proxy_url(session, "")
+    assert session.proxies == {}
+    ensure.assert_not_called()
 
 
 def test_momo_config_helpers() -> None:

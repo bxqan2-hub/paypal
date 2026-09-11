@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import time
 import uuid
+import os
 from typing import Any, Protocol
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit
 
 try:
     import requests
@@ -14,6 +15,7 @@ from ._config import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
 from ..errors import ConfigurationError, NetworkError, ProtocolError
 from ..logging_utils import compact_url, emit_log, safe_log_text
 from ..models import ExtractionConfig
+from ..transport import _iprocket_bridge_proxy, normalize_proxy_url as normalize_shared_proxy_url
 
 try:
     from curl_cffi.requests import Session as CurlCffiSession  # type: ignore
@@ -66,25 +68,21 @@ def safe_close(session: Any) -> None:
 
 
 def normalize_proxy_url(proxy: str) -> str:
-    text = str(proxy or "").strip()
-    if not text:
+    normalized = normalize_shared_proxy_url(proxy)
+    if not normalized:
         return ""
-    if "://" not in text:
-        text = "http://" + text
-    parsed = urlsplit(text)
-    if not parsed.scheme or not parsed.netloc:
-        return text
-    host = parsed.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    auth = ""
-    if parsed.username is not None:
-        auth = quote(unquote(parsed.username), safe="%")
-        if parsed.password is not None:
-            auth += ":" + quote(unquote(parsed.password), safe="%")
-        auth += "@"
-    port = f":{parsed.port}" if parsed.port else ""
-    return urlunsplit((parsed.scheme, auth + host + port, parsed.path, parsed.query, parsed.fragment))
+    parsed = urlsplit(normalized)
+    bridge = urlsplit(os.getenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796"))
+    if (parsed.hostname == (bridge.hostname or "127.0.0.1") and
+            parsed.port == (bridge.port or 18796) and (parsed.username or "").startswith("iprb_")):
+        return normalized
+    if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+        raise ValueError("proxy must use HTTP, HTTPS or SOCKS5")
+    port = parsed.port or (1080 if parsed.scheme.startswith("socks") else 443 if parsed.scheme == "https" else 80)
+    return _iprocket_bridge_proxy(
+        parsed.hostname, port, unquote(parsed.username or ""),
+        unquote(parsed.password or ""), parsed.scheme,
+    )
 
 
 def set_proxy_url(session: Any, proxy: str) -> None:

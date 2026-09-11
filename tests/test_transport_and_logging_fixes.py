@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import sys
+import base64
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 import pytest
@@ -21,6 +23,80 @@ import web as protocol_web  # noqa: E402
 
 
 PROXY = "http://probe-user:probe-pass@proxy.example:8080"
+
+
+@pytest.mark.parametrize("prefix, protocol", [
+    ("", "socks5"), ("http://", "http"), ("https://", "https"), ("socks5h://", "socks5"),
+])
+@pytest.mark.parametrize("standard_url", [False, True])
+def test_shared_arxlabs_proxy_protocol_and_raw_credentials(monkeypatch, prefix, protocol, standard_url):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor import transport
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    password = "PASS_SECRET@:%40"
+    raw = (f"USER_SECRET:{quote(password, safe='')}@sg.arxlabs.io:3010" if standard_url
+           else f"sg.arxlabs.io:3010:USER_SECRET:{password}")
+    normalized = transport.normalize_proxy_url(prefix + raw)
+    parsed = urlsplit(normalized)
+    assert (parsed.scheme, parsed.hostname, parsed.port) == ("http", "127.0.0.1", 18796)
+    encoded = parsed.username.removeprefix("iprb_")
+    metadata = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    assert metadata == f"{protocol}|sg.arxlabs.io|3010|USER_SECRET"
+    assert unquote(parsed.password) == password
+    assert transport.normalize_proxy_url(normalized) == normalized
+    ensure.assert_called_once_with()
+
+
+@pytest.mark.parametrize("raw, metadata", [
+    ("proxy.iprocket.io:9595:USER_SECRET:PASS_SECRET", "socks5|proxy.iprocket.io|9595|USER_SECRET"),
+    ("9595:proxy.iprocket.io:USER_SECRET:PASS_SECRET", "socks5|proxy.iprocket.io|9595|USER_SECRET"),
+    ("PASS_SECRET:9595:proxy.iprocket.io:USER_SECRET", "socks5|proxy.iprocket.io|9595|USER_SECRET"),
+    ("USER_SECRET:PASS_SECRET:proxy.iprocket.io:9595", "socks5|proxy.iprocket.io|9595|USER_SECRET"),
+    ("proxy.iprocket.io|5959|USER_SECRET|PASS_SECRET", "http|proxy.iprocket.io|5959|USER_SECRET"),
+    ("proxy.iprocket.io,5959,USER_SECRET,PASS_SECRET", "http|proxy.iprocket.io|5959|USER_SECRET"),
+    ("proxy.iprocket.io;5959;USER_SECRET;PASS_SECRET", "http|proxy.iprocket.io|5959|USER_SECRET"),
+    ("proxy.iproyal.net:12321:USER_SECRET:PASS_SECRET", "http|proxy.iproyal.net|12321|USER_SECRET"),
+    ("gw.1024proxy.io:9595:USER_SECRET:PASS_SECRET", "socks5|gw.1024proxy.io|9595|USER_SECRET"),
+])
+def test_shared_existing_vendor_exports_keep_bridge_contract(monkeypatch, raw, metadata):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor import transport
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    parsed = urlsplit(transport.normalize_proxy_url(raw))
+    encoded = parsed.username.removeprefix("iprb_")
+    assert base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode() == metadata
+    assert unquote(parsed.password) == "PASS_SECRET"
+    ensure.assert_called_once_with()
+
+
+def test_shared_1024_port_3000_retains_existing_direct_contract(monkeypatch):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor import transport
+
+    ensure = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    assert transport.normalize_proxy_url("gw.1024proxy.io:3000:USER_SECRET:PASS_SECRET") == (
+        "socks5h://USER_SECRET:PASS_SECRET@gw.1024proxy.io:3000"
+    )
+    ensure.assert_not_called()
+
+
+def test_shared_bridge_start_failure_is_not_silently_replaced_with_direct_proxy(monkeypatch):
+    import iprocket_chain_bridge as bridge
+    from payment_link_extractor import transport
+
+    ensure = Mock(side_effect=RuntimeError("bridge fixture unavailable"))
+    monkeypatch.setattr(bridge, "ensure_background_server", ensure)
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    with pytest.raises(RuntimeError, match="bridge fixture unavailable"):
+        transport.normalize_proxy_url("sg.arxlabs.io:3010:USER_SECRET:PASS_SECRET")
+    ensure.assert_called_once_with()
 
 
 def test_proxy_entry_stable_id_is_deterministic_and_secret_free() -> None:

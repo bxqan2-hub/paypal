@@ -5,6 +5,7 @@ import base64
 import select
 import socket
 import socketserver
+import ssl
 import struct
 import threading
 import time
@@ -85,7 +86,12 @@ def http_proxy_connect(sock: socket.socket, host: str, port: int, username: str,
     sock.sendall(request)
     response = b""
     while b"\r\n\r\n" not in response and len(response) < 65536:
-        response += sock.recv(4096)
+        part = sock.recv(4096)
+        if not part:
+            raise ConnectionError("HTTP upstream proxy closed during CONNECT")
+        response += part
+    if b"\r\n\r\n" not in response:
+        raise ConnectionError("HTTP upstream proxy response headers are too large")
     status_line = response.split(b"\r\n", 1)[0]
     if b" 200 " not in status_line:
         raise ConnectionError("HTTP upstream proxy CONNECT rejected")
@@ -117,18 +123,16 @@ def open_chain(
     else:
         proxy_host, proxy_port, username, password = load_credential()
         protocol = "socks5" if proxy_port in {9595, 59999, 619999} else "http"
+    if protocol not in {"http", "https", "socks5", "auto"}:
+        raise ValueError("unsupported upstream proxy protocol")
     upstream: socket.socket | None = None
     try:
-        try:
-            upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
-            upstream.settimeout(30)
-            socks_connect(upstream, proxy_host, proxy_port)
-        except (ConnectionError, OSError):
-            if upstream is not None:
-                upstream.close()
-            upstream = socket.create_connection((proxy_host, proxy_port), timeout=15)
-            upstream.settimeout(30)
-        if protocol == "http":
+        upstream = socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=15)
+        upstream.settimeout(30)
+        socks_connect(upstream, proxy_host, proxy_port)
+        if protocol == "https":
+            upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=proxy_host)
+        if protocol in {"http", "https"}:
             http_proxy_connect(upstream, destination_host, destination_port, username, password)
         else:
             socks_connect(upstream, destination_host, destination_port, username, password)
@@ -155,45 +159,66 @@ def relay(left: socket.socket, right: socket.socket) -> None:
 
 class Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
-        self.request.settimeout(15)
-        data = b""
-        while b"\r\n\r\n" not in data and len(data) < 65536:
-            part = self.request.recv(4096)
-            if not part:
-                return
-            data += part
-        header_text = data.decode("latin-1", errors="replace")
-        first_line = header_text.split("\r\n", 1)[0]
-        method, target, _ = (first_line.split(" ", 2) + ["", ""])[:3]
-        if method.upper() != "CONNECT":
-            self.request.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
-            return
-        host, separator, port_text = target.rpartition(":")
-        if not separator:
-            host, port_text = target, "443"
-        dynamic_credential = None
-        for header_line in header_text.split("\r\n")[1:]:
-            if not header_line.lower().startswith("proxy-authorization: basic "):
-                continue
-            try:
-                encoded = header_line.split(None, 2)[2].strip()
-                bridge_user, bridge_password = base64.b64decode(encoded).decode("utf-8").split(":", 1)
-                if bridge_user.startswith("iprb_"):
-                    metadata = bridge_user[5:]
-                    metadata += "=" * ((4 - len(metadata) % 4) % 4)
-                    decoded = base64.urlsafe_b64decode(metadata).decode("utf-8")
-                    protocol, proxy_host, proxy_port, username = decoded.split("|", 3)
-                    dynamic_credential = protocol, proxy_host, int(proxy_port), username, bridge_password
-            except Exception:
-                dynamic_credential = None
-            break
-        upstream = open_chain(host.strip("[]"), int(port_text), dynamic_credential)
+        upstream = None
+        established = False
         try:
+            self.request.settimeout(15)
+            data = b""
+            while b"\r\n\r\n" not in data and len(data) < 65536:
+                part = self.request.recv(4096)
+                if not part:
+                    return
+                data += part
+            if b"\r\n\r\n" not in data:
+                raise ValueError("proxy request headers are too large")
+            header_text = data.decode("latin-1")
+            first_line = header_text.split("\r\n", 1)[0]
+            method, target, _ = (first_line.split(" ", 2) + ["", ""])[:3]
+            if method.upper() != "CONNECT":
+                self.request.sendall(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
+                return
+            host, separator, port_text = target.rpartition(":")
+            if not separator:
+                host, port_text = target, "443"
+            if not host or not 1 <= int(port_text) <= 65535:
+                raise ValueError("invalid CONNECT target")
+            dynamic_credential = None
+            for header_line in header_text.split("\r\n")[1:]:
+                if not header_line.lower().startswith("proxy-authorization:"):
+                    continue
+                if not header_line.lower().startswith("proxy-authorization: basic "):
+                    raise ValueError("invalid proxy authentication")
+                encoded = header_line.split(None, 2)[2].strip()
+                bridge_user, bridge_password = base64.b64decode(encoded, validate=True).decode("utf-8").split(":", 1)
+                if not bridge_user.startswith("iprb_"):
+                    raise ValueError("invalid proxy authentication")
+                metadata = bridge_user[5:]
+                metadata += "=" * ((4 - len(metadata) % 4) % 4)
+                decoded = base64.b64decode(metadata, altchars=b"-_", validate=True).decode("utf-8")
+                protocol, proxy_host, proxy_port, username = decoded.split("|", 3)
+                if protocol not in {"http", "https", "socks5", "auto"} or not proxy_host or any(char.isspace() for char in proxy_host):
+                    raise ValueError("invalid proxy metadata")
+                if not 1 <= int(proxy_port) <= 65535:
+                    raise ValueError("invalid proxy metadata")
+                dynamic_credential = protocol, proxy_host, int(proxy_port), username, bridge_password
+                break
+            if dynamic_credential is None and not SOURCE_URL:
+                self.request.sendall(b'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="chain"\r\nConnection: close\r\n\r\n')
+                return
+            upstream = open_chain(host.strip("[]"), int(port_text), dynamic_credential)
             self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            established = True
             self.request.settimeout(None)
             relay(self.request, upstream)
+        except Exception:
+            if not established:
+                try:
+                    self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                except OSError:
+                    pass
         finally:
-            upstream.close()
+            if upstream is not None:
+                upstream.close()
 
 
 class Server(socketserver.ThreadingTCPServer):

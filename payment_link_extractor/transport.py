@@ -117,6 +117,8 @@ def _is_iprocket_host(host: str) -> bool:
         or lowered.endswith(".iproyal.com")
         or lowered == "1024proxy.io"
         or lowered.endswith(".1024proxy.io")
+        or lowered == "arxlabs.io"
+        or lowered.endswith(".arxlabs.io")
     )
 
 
@@ -125,7 +127,7 @@ def _iprocket_protocol(port: int, scheme: str = "") -> str:
     if lowered.startswith("socks"):
         return "socks5"
     if lowered in {"http", "https"}:
-        return "http"
+        return lowered
     if port in {9595, 59999, 619999}:
         return "socks5"
     if port in {5959, 61999}:
@@ -143,7 +145,7 @@ def _iprocket_bridge_proxy(
     bridge = os.getenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
     protocol = (
         "socks5"
-        if "1024proxy." in host.lower()
+        if "1024proxy." in host.lower() or ("arxlabs." in host.lower() and not scheme)
         else "http" if "iproyal." in host.lower() else _iprocket_protocol(port, scheme)
     )
     metadata = base64.urlsafe_b64encode(
@@ -152,6 +154,10 @@ def _iprocket_bridge_proxy(
     parsed_bridge = urlsplit(bridge)
     bridge_host = parsed_bridge.hostname or "127.0.0.1"
     bridge_port = parsed_bridge.port or 18796
+    if bridge_host in {"127.0.0.1", "localhost", "::1"}:
+        from iprocket_chain_bridge import ensure_background_server
+
+        ensure_background_server()
     return (
         f"http://iprb_{metadata}:{quote(password, safe='')}"
         f"@{bridge_host}:{bridge_port}"
@@ -196,11 +202,12 @@ def normalize_proxy_url(proxy: str) -> str:
         except Exception:
             pass
     had_explicit_scheme = "://" in text
+    export_scheme, export_text = text.split("://", 1) if had_explicit_scheme else ("", text)
     # IPRocket dashboard export formats 1/2/3. Password remains the fourth
     # field so punctuation inside it is preserved.
-    if "://" not in text and "@" not in text:
-        separator = next((item for item in (":", "|", ",", ";") if text.count(item) >= 3), ":")
-        parts = text.split(separator, 3)
+    if "@" not in export_text or _is_iprocket_host(export_text.split(":", 1)[0]):
+        separator = next((item for item in (":", "|", ",", ";") if export_text.count(item) >= 3), ":")
+        parts = export_text.split(separator, 3)
         parsed_vendor: tuple[str, str, str, str] | None = None
         if len(parts) == 4 and _is_iprocket_host(parts[0]) and parts[1].isdigit():  # host:port:user:pass
             parsed_vendor = parts[0], parts[1], parts[2], parts[3]
@@ -217,7 +224,7 @@ def normalize_proxy_url(proxy: str) -> str:
                     "socks5h", host, port, username, password
                 )
             if _is_iprocket_host(host):
-                return _iprocket_bridge_proxy(host, int(port), username, password)
+                return _iprocket_bridge_proxy(host, int(port), username, password, export_scheme)
             # Vendor port conventions: IPRocket 9595 and Kookeey gateways are
             # SOCKS5; IPRocket 5959 is HTTP. Resolve DNS through SOCKS as well.
             scheme = (
@@ -238,7 +245,7 @@ def normalize_proxy_url(proxy: str) -> str:
             )
         elif separator == ":" and len(parts) == 4 and parts[1].isdigit():
             host, port, username, password = parts
-            scheme = "socks5h" if "kookeey" in host.lower() else "http"
+            scheme = export_scheme or ("socks5h" if "kookeey" in host.lower() else "http")
             text = (
                 scheme + "://" + quote(username, safe="") + ":"
                 + quote(password, safe="") + "@" + host + ":" + port
@@ -278,9 +285,9 @@ def normalize_proxy_url(proxy: str) -> str:
         host = f"[{host}]"
     auth = ""
     if parsed.username is not None:
-        auth = quote(unquote(parsed.username), safe="%")
+        auth = quote(unquote(parsed.username), safe="")
         if parsed.password is not None:
-            auth += ":" + quote(unquote(parsed.password), safe="%")
+            auth += ":" + quote(unquote(parsed.password), safe="")
         auth += "@"
     try:
         port = f":{parsed.port}" if parsed.port else ""
