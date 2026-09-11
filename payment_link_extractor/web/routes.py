@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import hashlib
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request
+from dotenv import set_key
 
 from ..channels import PAYMENT_CHANNELS, payment_channel, public_payment_channels
 from ..config import (
@@ -25,6 +27,8 @@ from .tasks import TaskManager, TaskNotFoundError, TaskStateError
 
 
 def register_routes(app: Flask, manager: TaskManager) -> None:
+    concurrency_lock = threading.Lock()
+
     @app.get("/api/health")
     def health() -> Any:
         return jsonify({"ok": True, "service": "payment-link-extractor"})
@@ -94,12 +98,22 @@ def register_routes(app: Flask, manager: TaskManager) -> None:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             return _error("request body must be a JSON object", 400)
-        try:
-            value = int(payload.get("concurrency"))
-        except (TypeError, ValueError):
-            return _error("concurrency must be an integer", 400)
-        manager.set_concurrency(value)
-        return jsonify({"ok": True, **manager.concurrency_snapshot()})
+        value = payload.get("concurrency")
+        if type(value) is not int or not 1 <= value <= manager.max_concurrency:
+            return _error(
+                f"concurrency must be an integer between 1 and {manager.max_concurrency}", 400
+            )
+        with concurrency_lock:
+            if not app.testing:
+                try:
+                    # Reuse the startup env file, keeping all other settings intact.
+                    set_key(app.config["ENV_FILE"], "OPLL_TASK_WORKERS", str(value))
+                except OSError:
+                    app.logger.error("Failed to persist task concurrency")
+                    return _error("failed to save concurrency setting", 500)
+                os.environ["OPLL_TASK_WORKERS"] = str(value)
+            manager.set_concurrency(value)
+            return jsonify({"ok": True, **manager.concurrency_snapshot()})
 
     @app.post("/api/tasks")
     def create_task() -> Any:

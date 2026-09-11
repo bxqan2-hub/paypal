@@ -37,6 +37,7 @@
   let updateProxyPoolCursor = 0;
   let billingProfiles = {};
   let paypalCountryPreference = "";
+  const concurrencyControl = { snapshot: null, dirty: false, busy: "", message: "", error: false, request: 0, revision: 0 };
 
   const elements = {};
 
@@ -84,6 +85,111 @@
     });
   }
 
+  function renderConcurrency() {
+    const control = concurrencyControl;
+    const snapshot = control.snapshot;
+    if (snapshot) {
+      elements.concurrencyInput.max = String(snapshot.max_concurrency);
+      if (!control.dirty && document.activeElement !== elements.concurrencyInput) {
+        elements.concurrencyInput.value = String(snapshot.concurrency);
+      }
+      elements.concurrencySummary.textContent = `服务端生效 ${snapshot.concurrency} / ${snapshot.max_concurrency} · 实际运行 ${snapshot.active_slots} · 排队 ${snapshot.queued_tasks}`;
+    } else {
+      elements.concurrencySummary.textContent = "等待读取服务端并发状态";
+    }
+    elements.concurrencyInput.disabled = !authReady || !snapshot || control.busy === "saving";
+    elements.concurrencyApply.disabled = !authReady || !snapshot || Boolean(control.busy);
+    elements.concurrencyRefresh.disabled = !authReady || Boolean(control.busy);
+    elements.concurrencyApply.textContent = control.busy === "saving" ? "应用中…" : "应用";
+    elements.concurrencyForm.setAttribute("aria-busy", String(Boolean(control.busy)));
+    elements.concurrencyStatus.classList.toggle("form-error", control.error);
+    elements.concurrencyStatus.textContent = control.busy === "loading" ? "正在读取服务端状态…"
+      : control.busy === "saving" ? "正在应用全局并发设置…"
+      : control.message || (control.dirty ? "已编辑，点击应用后生效；其他标签页的修改会同步到上方状态。"
+        : snapshot && snapshot.active_slots > snapshot.concurrency ? "已调低并发；运行中任务继续执行，降至新限额以下后再补位。" : "");
+  }
+
+  function receiveConcurrency(data) {
+    const fields = ["concurrency", "max_concurrency", "active_slots", "queued_tasks"];
+    if (!data || fields.some(field => !Number.isInteger(data[field]) || data[field] < 0)
+      || data.concurrency < 1 || data.concurrency > data.max_concurrency) {
+      throw new Error("服务端并发状态格式无效，请刷新重试");
+    }
+    concurrencyControl.snapshot = Object.fromEntries(fields.map(field => [field, data[field]]));
+    renderConcurrency();
+  }
+
+  async function refreshConcurrency({ successMessage = "" } = {}) {
+    const control = concurrencyControl;
+    if (!authReady || control.busy === "saving") return;
+    const request = ++control.request;
+    const revision = control.revision;
+    control.busy = "loading";
+    control.message = successMessage;
+    control.error = false;
+    renderConcurrency();
+    try {
+      const response = await apiFetch("/api/tasks/concurrency");
+      const data = await response.json();
+      if (!authReady || request !== control.request) return;
+      if (!response.ok || data.ok === false) throw new Error(data.error || "读取并发状态失败，请刷新重试");
+      // A newer socket event wins over an in-flight HTTP snapshot.
+      if (revision === control.revision) receiveConcurrency(data);
+    } catch (error) {
+      if (!authReady || request !== control.request) return;
+      control.error = true;
+      control.message = error.message || "读取并发状态失败，请刷新重试";
+    } finally {
+      if (authReady && request === control.request) {
+        control.busy = "";
+        renderConcurrency();
+        if (!control.error && revision !== control.revision) refreshConcurrency({ successMessage });
+      }
+    }
+  }
+
+  async function applyConcurrency(event) {
+    event.preventDefault();
+    const control = concurrencyControl;
+    if (!authReady || !control.snapshot || control.busy) return;
+    const value = Number(elements.concurrencyInput.value);
+    if (!Number.isInteger(value) || value < 1 || value > control.snapshot.max_concurrency) {
+      control.error = true;
+      control.message = `请输入 1–${control.snapshot.max_concurrency} 的整数`;
+      renderConcurrency();
+      elements.concurrencyInput.focus();
+      return;
+    }
+    const request = ++control.request;
+    const revision = control.revision;
+    control.busy = "saving";
+    control.error = false;
+    control.message = "";
+    renderConcurrency();
+    try {
+      const response = await apiFetch("/api/tasks/concurrency", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ concurrency: value }),
+      });
+      const data = await response.json();
+      if (!authReady || request !== control.request) return;
+      if (!response.ok || data.ok === false) throw new Error(data.error || "应用失败，请重试");
+      if (revision === control.revision) receiveConcurrency(data);
+      control.dirty = false;
+      control.message = "设置已应用并由服务端保存。";
+    } catch (error) {
+      if (!authReady || request !== control.request) return;
+      control.error = true;
+      control.message = `${error.message || "应用失败"}；可刷新确认服务端当前状态。`;
+    } finally {
+      if (authReady && request === control.request) {
+        control.busy = "";
+        renderConcurrency();
+        if (!control.error) refreshConcurrency({ successMessage: "设置已应用并由服务端保存。" });
+      }
+    }
+  }
+
   function readSavedPassword() {
     try {
       return localStorage.getItem(PASSWORD_STORAGE_KEY) || "";
@@ -115,6 +221,9 @@
   function lockWorkbench(message) {
     authReady = false;
     authPassword = "";
+    Object.assign(concurrencyControl, { snapshot: null, dirty: false, busy: "", message: "", error: false, request: concurrencyControl.request + 1 });
+    elements.concurrencyInput.value = "";
+    renderConcurrency();
     if (elements.logoutButton) elements.logoutButton.hidden = true;
     clearSavedPassword();
     if (socket) {
@@ -160,6 +269,7 @@
       elements.logoutButton.hidden = !password;
       await loadDefaultPreferences();
       await loadExistingTasks();
+      await refreshConcurrency();
       connectTaskSocket();
     } catch (error) {
       authReady = false;
@@ -969,6 +1079,13 @@
   }
 
   function reduceTaskEvent(event) {
+    if (event && event.type === "task.concurrency") {
+      if (authReady) {
+        receiveConcurrency(event.data);
+        concurrencyControl.revision += 1;
+      }
+      return;
+    }
     if (!event || event.type === "task.ping" || !event.task_id) return;
     if (event.type === "task.deleted") {
       tasks.delete(event.task_id);
@@ -1105,6 +1222,7 @@
         const message = JSON.parse(event.data);
         if (message.type === "auth.ok") {
           setConnection(true);
+          refreshConcurrency();
           return;
         }
         if (message.type === "auth.failed") {
@@ -1116,6 +1234,10 @@
     });
     socket.addEventListener("close", function () {
       setConnection(false);
+      if (authReady) {
+        concurrencyControl.message = "实时连接已断开，当前显示上次同步值；重连后自动刷新。";
+        renderConcurrency();
+      }
       if (authReady) scheduleReconnect();
     });
     socket.addEventListener("error", function () { setConnection(false); });
@@ -1878,6 +2000,16 @@
     });
     elements.logoutButton.addEventListener("click", logout);
     elements.taskForm.addEventListener("submit", submitTask);
+    elements.concurrencyForm.addEventListener("submit", applyConcurrency);
+    elements.concurrencyRefresh.addEventListener("click", refreshConcurrency);
+    elements.concurrencyInput.addEventListener("input", function () {
+      concurrencyControl.dirty = true;
+      concurrencyControl.message = "";
+      concurrencyControl.error = false;
+      renderConcurrency();
+    });
+    elements.concurrencyInput.addEventListener("blur", renderConcurrency);
+    window.addEventListener("focus", () => { if (authReady) refreshConcurrency(); });
     elements.credentialInput.addEventListener("input", updateCredentialPreview);
     ["country", "proxy-pool", "failure-retry-count"].forEach(id => {
       const field = byId(id);
@@ -1947,6 +2079,12 @@
     elements.workbench = byId("workbench");
     elements.logoutButton = byId("logout-button");
     elements.taskForm = byId("task-form");
+    elements.concurrencyForm = byId("concurrency-form");
+    elements.concurrencyInput = byId("task-concurrency");
+    elements.concurrencyApply = byId("concurrency-apply");
+    elements.concurrencyRefresh = byId("concurrency-refresh");
+    elements.concurrencySummary = byId("concurrency-summary");
+    elements.concurrencyStatus = byId("concurrency-status");
     elements.credentialInput = byId("credential-input");
     elements.submitButton = byId("submit-button");
     elements.formError = byId("form-error");

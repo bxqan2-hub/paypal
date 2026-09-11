@@ -120,6 +120,8 @@ class TaskManager:
         self._ttl = max(1, ttl_seconds)
         self._lock = threading.RLock()
         self._tasks: dict[str, TaskRecord] = {}
+        self._pending: deque[str] = deque()
+        self._closed = False
         self._history: deque[dict[str, Any]] = deque(maxlen=max(1, history_size))
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
 
@@ -133,19 +135,12 @@ class TaskManager:
         return self._capacity
 
     def set_concurrency(self, value: int) -> int:
-        normalized = max(1, min(self._capacity, int(value)))
+        if type(value) is not int or not 1 <= value <= self._capacity:
+            raise ValueError(f"concurrency must be an integer between 1 and {self._capacity}")
         with self._lock:
-            self._concurrency = normalized
-            self._publish_locked(
-                "",
-                "task.concurrency",
-                {
-                    "concurrency": self._concurrency,
-                    "max_concurrency": self._capacity,
-                    "active_slots": self._active_slots,
-                },
-            )
-        return normalized
+            self._concurrency = value
+            self._dispatch_locked()
+        return value
 
     def concurrency_snapshot(self) -> dict[str, int]:
         with self._lock:
@@ -153,9 +148,23 @@ class TaskManager:
                 "concurrency": self._concurrency,
                 "max_concurrency": self._capacity,
                 "active_slots": self._active_slots,
+                "queued_tasks": sum(
+                    record.status == "queued" and record.future is None
+                    for record in self._tasks.values()
+                ),
             }
 
     def close(self, wait: bool = True) -> None:
+        with self._lock:
+            self._closed = True
+            self._pending.clear()
+            for record in self._tasks.values():
+                if record.status == "queued":
+                    record.cancel_event.set()
+                    self._finish_cancelled_locked(record)
+                    if record.future is not None:
+                        record.future.cancel()
+            self._publish_locked("", "task.concurrency", self.concurrency_snapshot())
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def create(self, config: ExtractionConfig) -> dict[str, Any]:
@@ -175,6 +184,8 @@ class TaskManager:
         proxy_pool: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
+            if self._closed:
+                raise TaskStateError("task manager is closed")
             self._cleanup_locked()
             record = self._tasks.get(task_id)
             if record is None:
@@ -244,6 +255,8 @@ class TaskManager:
             return self._create_locked(retry_config, retry_of=task_id)
 
     def _create_locked(self, config: ExtractionConfig, *, retry_of: str | None = None) -> dict[str, Any]:
+        if self._closed:
+            raise TaskStateError("task manager is closed")
         task_id = uuid.uuid4().hex
         record = TaskRecord(
             task_id=task_id,
@@ -267,7 +280,8 @@ class TaskManager:
             created_data["retry_of"] = retry_of
         self._publish_locked(task_id, "task.created", created_data)
         log_context(component="task", task_id=task_id).info("task queued")
-        record.future = self._executor.submit(self._run, task_id)
+        self._pending.append(task_id)
+        self._dispatch_locked()
         return self._snapshot_locked(record)
 
     def get(self, task_id: str) -> dict[str, Any] | None:
@@ -345,8 +359,6 @@ class TaskManager:
             record.cancel_event.set()
             log_context(component="task", task_id=task_id).info("task cancellation requested")
             if record.status == "queued":
-                if record.future is not None:
-                    record.future.cancel()
                 record.status = "cancelled"
                 record.stage = "cancelled"
                 record.finished_at = utc_timestamp()
@@ -355,6 +367,9 @@ class TaskManager:
                     "task.cancelled",
                     {"status": record.status, "progress": record.progress},
                 )
+                if record.future is not None:
+                    record.future.cancel()
+                self._dispatch_locked()
             elif record.status == "running":
                 record.status = "cancel_requested"
                 self._publish_locked(task_id, "task.cancel_requested", {"status": record.status})
@@ -419,29 +434,44 @@ class TaskManager:
         with self._lock:
             self._subscribers.discard(subscriber)
 
-    def _acquire_slot(self, task_id: str) -> bool:
-        while True:
-            with self._lock:
-                record = self._tasks.get(task_id)
-                if record is None or record.status == "cancelled":
-                    return False
-                if self._active_slots < self._concurrency:
-                    self._active_slots += 1
-                    return True
-            if record.cancel_event.wait(0.1):
-                return False
+    def _dispatch_locked(self) -> None:
+        # Only admitted tasks enter the pool; waiting tasks keep FIFO order and
+        # consume no worker threads. Lowering the limit drains existing work.
+        while not self._closed and self._pending and self._active_slots < self._concurrency:
+            task_id = self._pending.popleft()
+            record = self._tasks.get(task_id)
+            if record is None or record.status != "queued":
+                continue
+            self._active_slots += 1
+            try:
+                record.future = self._executor.submit(self._run_with_slot, task_id)
+            except RuntimeError as exc:
+                self._active_slots -= 1
+                self._finish_worker_failure_locked(record, exc)
+                continue
+            record.future.add_done_callback(lambda future, tid=task_id: self._release_slot(tid, future))
+        self._publish_locked("", "task.concurrency", self.concurrency_snapshot())
 
-    def _release_slot(self) -> None:
+    def _release_slot(self, task_id: str, future: Future[Any]) -> None:
         with self._lock:
-            self._active_slots = max(0, self._active_slots - 1)
+            record = self._tasks.get(task_id)
+            error = None if future.cancelled() else future.exception()
+            if error is not None and record is not None and record.status != "cancelled":
+                self._finish_worker_failure_locked(record, error)
+            self._active_slots -= 1
+            self._dispatch_locked()
 
-    def _run(self, task_id: str) -> None:
-        if not self._acquire_slot(task_id):
-            return
-        try:
-            self._run_with_slot(task_id)
-        finally:
-            self._release_slot()
+    def _finish_worker_failure_locked(self, record: TaskRecord, error: BaseException) -> None:
+        # Also finalize failures outside the extractor's own try/except, such
+        # as pool submission or result conversion, so no running slot lingers.
+        record.status = "failed"
+        record.stage = "failed"
+        record.error = redact_text(error, self._secrets(record.config))
+        record.finished_at = utc_timestamp()
+        self._publish_locked(
+            record.task_id, "task.failed",
+            {"status": record.status, "error": record.error, "progress": record.progress},
+        )
 
     @staticmethod
     def _fit_proxy_attempts(
@@ -546,7 +576,7 @@ class TaskManager:
         task_log = log_context(component="task", task_id=task_id)
         with self._lock:
             record = self._tasks.get(task_id)
-            if record is None or record.status == "cancelled":
+            if record is None or record.status != "queued":
                 return
             retry_plan = record.config
             total_attempts = self._total_attempts(retry_plan)
@@ -570,7 +600,13 @@ class TaskManager:
                     with self._lock:
                         current = self._tasks.get(task_id)
                         cancel_event = current.cancel_event if current is not None else None
-                    if cancel_event is None or cancel_event.wait(delay):
+                    if cancel_event is None:
+                        return
+                    if cancel_event.wait(delay):
+                        with self._lock:
+                            current = self._tasks.get(task_id)
+                            if current is not None:
+                                self._finish_cancelled_locked(current)
                         return
             with self._lock:
                 record = self._tasks.get(task_id)
@@ -826,8 +862,8 @@ class TaskManager:
             try:
                 subscriber.put_nowait(event)
             except queue.Full:
-                # Preserve terminal events; transient logs/stages may be dropped.
-                if event_type in {"task.succeeded", "task.failed", "task.cancelled"}:
+                # Preserve terminal events and current capacity; transient logs/stages may be dropped.
+                if event_type in {"task.succeeded", "task.failed", "task.cancelled", "task.concurrency"}:
                     try:
                         subscriber.get_nowait()
                         subscriber.put_nowait(event)

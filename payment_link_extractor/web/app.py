@@ -28,11 +28,12 @@ def create_app(
     *,
     task_manager: TaskManager | None = None,
 ) -> Flask:
-    load_configured_env()
+    env_path = load_configured_env()
     app = Flask(__name__)
     app.config.from_mapping(
-        TASK_WORKERS=min(_int_env("OPLL_TASK_WORKERS", 2), 32),
-        TASK_MAX_WORKERS=min(_int_env("OPLL_TASK_MAX_WORKERS", 10), 32),
+        ENV_FILE=str(env_path),
+        TASK_WORKERS=min(_int_env("OPLL_TASK_WORKERS", 4), 32),
+        TASK_MAX_WORKERS=min(_int_env("OPLL_TASK_MAX_WORKERS", 32), 32),
         TASK_TTL_SECONDS=_int_env("OPLL_TASK_TTL_SECONDS", 3600),
         TASK_EVENT_HISTORY_SIZE=_int_env("OPLL_TASK_EVENT_HISTORY_SIZE", 500),
         WEB_PASSWORD=os.getenv("OPLL_WEB_PASSWORD", ""),

@@ -68,6 +68,12 @@ h2 { margin-bottom: 4px; font-size: 18px; }
 .panel { padding: 18px; }
 .submit-panel { position: sticky; top: 16px; z-index: 2; }
 .tasks-panel { min-width: 0; }
+.concurrency-panel { margin-bottom: 14px; }
+.concurrency-heading, .concurrency-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.concurrency-heading { justify-content: space-between; }
+.concurrency-actions .field { width: 130px; }
+.concurrency-panel p { margin: 8px 0 0; }
+.concurrency-panel #concurrency-status:empty { display: none; }
 .panel-heading { align-items: flex-start; margin-bottom: 16px; }
 .panel-heading p, .section-heading p { margin-bottom: 0; color: #75808c; font-size: 13px; }
 .quiet { color: #8a949f; font-size: 12px; }

@@ -166,6 +166,24 @@
         </section>
 
         <section class="tasks-panel">
+          <form id="concurrency-form" class="panel concurrency-panel" novalidate aria-labelledby="concurrency-title">
+            <div class="concurrency-heading">
+              <div>
+                <h2 id="concurrency-title">全局任务并发</h2>
+                <p id="concurrency-summary" class="quiet" aria-live="polite">等待读取服务端并发状态</p>
+              </div>
+              <div class="concurrency-actions">
+                <label class="field" for="task-concurrency">
+                  <span>同时运行任务数</span>
+                  <input id="task-concurrency" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" aria-describedby="concurrency-help concurrency-status" disabled>
+                </label>
+                <button id="concurrency-apply" class="primary" type="submit" disabled>应用</button>
+                <button id="concurrency-refresh" class="secondary" type="button" disabled>刷新</button>
+              </div>
+            </div>
+            <p id="concurrency-help" class="quiet">限制真正同时运行的任务数，不是批量提交请求数；所有支付渠道共用全局名额。调低不会终止运行中任务，只暂停补位。设置由服务端保存并同步所有标签页。</p>
+            <p id="concurrency-status" class="quiet" role="status" aria-live="polite"></p>
+          </form>
           <div class="section-heading">
             <div>
               <h2>任务状态</h2>
@@ -245,6 +263,6 @@
         </section>
       </div>
     </main>
-    <script src="{{ url_for('static', filename='app.js', v='20260824-jwe-at-1') }}" defer></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260911-global-concurrency') }}" defer></script>
   </body>
 </html>

@@ -19,17 +19,28 @@ class _ButtonParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.buttons: list[dict[str, object]] = []
+        self.inputs: list[dict[str, object]] = []
+        self.forms: list[str | None] = []
+        self.nested_form = False
         self._current: dict[str, object] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "form":
+            self.nested_form = self.nested_form or bool(self.forms)
+            self.forms.append(dict(attrs).get("id"))
+        form = self.forms[-1] if self.forms else None
+        if tag == "input":
+            self.inputs.append({"attrs": dict(attrs), "form": form})
         if tag == "button":
-            self._current = {"attrs": dict(attrs), "text": []}
+            self._current = {"attrs": dict(attrs), "text": [], "form": form}
 
     def handle_data(self, data: str) -> None:
         if self._current is not None:
             self._current["text"].append(data)  # type: ignore[union-attr]
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self.forms:
+            self.forms.pop()
         if tag == "button" and self._current is not None:
             self.buttons.append(self._current)
             self._current = None
@@ -45,7 +56,7 @@ def test_both_interfaces_have_no_empty_or_implicit_static_buttons() -> None:
     paypal_buttons = _buttons(PAYPAL_HTML)
     extractor_buttons = _buttons(EXTRACTOR_HTML)
     assert len(paypal_buttons) == 18
-    assert len(extractor_buttons) == 22
+    assert len(extractor_buttons) == 24
 
     for button in paypal_buttons + extractor_buttons:
         attrs = button["attrs"]
@@ -149,6 +160,8 @@ def test_extractor_interface_static_and_dynamic_buttons_are_wired() -> None:
         "copy-token-button": 'elements.copyTokenButton.addEventListener("click", copyAccessToken)',
         "refresh-proxy-source": 'byId("refresh-proxy-source").addEventListener("click", refreshProxySource)',
         "submit-button": 'elements.taskForm.addEventListener("submit", submitTask)',
+        "concurrency-apply": 'elements.concurrencyForm.addEventListener("submit", applyConcurrency)',
+        "concurrency-refresh": 'elements.concurrencyRefresh.addEventListener("click", refreshConcurrency)',
         "export-csv-button": 'elements.exportCsvButton.addEventListener("click", downloadSelectedCsv)',
         "push-selected-paypal": 'elements.pushSelectedPaypalButton.addEventListener("click", pushPaypalTasks)',
         "retry-network-failed-tasks": 'elements.retryNetworkFailedTasksButton.addEventListener("click", retryAllNetworkFailedTasks)',
@@ -189,6 +202,57 @@ def test_extractor_workspace_is_centered_with_breathing_room() -> None:
     assert "max-width: 1680px; margin: 0 auto;" in css
 
 
+def test_global_concurrency_controls_use_an_independent_form_and_server_truth() -> None:
+    html = EXTRACTOR_HTML.read_text(encoding="utf-8")
+    source = EXTRACTOR_JS.read_text(encoding="utf-8")
+    parser = _ButtonParser()
+    parser.feed(html)
+    assert not parser.nested_form
+    buttons = {button["attrs"]["id"]: button for button in parser.buttons if "id" in button["attrs"]}
+    assert buttons["concurrency-apply"]["form"] == "concurrency-form"
+    assert buttons["concurrency-apply"]["attrs"]["type"] == "submit"
+    assert buttons["concurrency-refresh"]["form"] == "concurrency-form"
+    assert buttons["concurrency-refresh"]["attrs"]["type"] == "button"
+    assert buttons["submit-button"]["form"] == "task-form"
+    control = next(item for item in parser.inputs if item["attrs"].get("id") == "task-concurrency")
+    assert control["form"] == "concurrency-form"
+    assert control["attrs"]["type"] == "number"
+    assert control["attrs"]["min"] == "1"
+    assert control["attrs"]["step"] == "1"
+    assert "value" not in control["attrs"]  # No browser default overrides persisted server settings.
+    assert "真正同时运行的任务数，不是批量提交请求数" in html
+    assert "所有支付渠道共用全局名额" in html
+    assert "调低不会终止运行中任务" in html
+
+    implementation = source[source.index("  function renderConcurrency()"):source.index("  function readSavedPassword()")]
+    assert 'apiFetch("/api/tasks/concurrency")' in implementation
+    assert 'apiFetch("/api/tasks/concurrency", {' in implementation
+    assert 'body: JSON.stringify({ concurrency: value })' in implementation
+    assert "event.preventDefault();" in implementation
+    assert "Number.isInteger(value)" in implementation
+    assert "value > control.snapshot.max_concurrency" in implementation
+    assert "snapshot.active_slots" in implementation
+    assert "snapshot.queued_tasks" in implementation
+    assert "snapshot.active_slots > snapshot.concurrency" in implementation
+    assert "!control.dirty && document.activeElement !== elements.concurrencyInput" in implementation
+    assert "revision === control.revision" in implementation
+    assert "localStorage" not in implementation
+    assert "submitTaskRequest" not in implementation
+
+
+def test_global_concurrency_sync_runs_on_login_and_reconnect_before_task_id_filter() -> None:
+    source = EXTRACTOR_JS.read_text(encoding="utf-8")
+    auth = source[source.index("  async function authenticate("):source.index("  function escapeHtml(")]
+    assert "await refreshConcurrency();" in auth
+    reducer = source[source.index("  function reduceTaskEvent("):source.index("  function matchesFilter(")]
+    assert reducer.index('event.type === "task.concurrency"') < reducer.index("!event.task_id")
+    assert "receiveConcurrency(event.data);" in reducer
+    socket = source[source.index("  function connectTaskSocket()"):source.index("  function scheduleReconnect()")]
+    assert socket.index('message.type === "auth.ok"') < socket.index("refreshConcurrency();")
+    assert 'elements.concurrencyInput.addEventListener("input"' in source
+    assert 'window.addEventListener("focus", () => { if (authReady) refreshConcurrency(); });' in source
+
+
 def test_button_backend_routes_exist() -> None:
     app = create_app({"TESTING": True})
     rules = {rule.rule: set(rule.methods or ()) for rule in app.url_map.iter_rules()}
@@ -207,6 +271,11 @@ def test_button_backend_routes_exist() -> None:
     for route, method in expected.items():
         assert route in rules
         assert method in rules[route]
+    concurrency_methods = {
+        method for rule in app.url_map.iter_rules() if rule.rule == "/api/tasks/concurrency"
+        for method in rule.methods or ()
+    }
+    assert {"GET", "POST"}.issubset(concurrency_methods)
 
     protocol_source = (ROOT / "paypal_agreement_protocol" / "web.py").read_text(encoding="utf-8")
     for route_fragment in {

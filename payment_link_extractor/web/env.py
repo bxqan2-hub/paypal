@@ -16,9 +16,8 @@ def load_env_file(path: str | os.PathLike[str], *, required: bool = False) -> bo
     return True
 
 
-def load_configured_env(env_file: str | None = None) -> None:
+def load_configured_env(env_file: str | None = None) -> Path:
     configured = env_file or os.getenv("OPLL_ENV_FILE", "")
-    if configured:
-        load_env_file(configured, required=True)
-    else:
-        load_env_file(".env")
+    env_path = Path(configured or ".env").resolve()
+    load_env_file(env_path, required=bool(configured))
+    return env_path
