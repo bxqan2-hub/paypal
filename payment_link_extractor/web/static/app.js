@@ -447,7 +447,7 @@
   function saveFormPreferences() {
     syncSingleProxyPool();
     const paymentMethod = byId("payment-method").value;
-    if (!new Set(["gcash", "gopay", "momo"]).has(paymentMethod) && byId("country").value) {
+    if (!new Set(["gcash", "gopay", "momo", "upi"]).has(paymentMethod) && byId("country").value) {
       paypalCountryPreference = byId("country").value;
     }
     const preferences = {
@@ -490,7 +490,7 @@
     if (!preview) return;
     const code = String(country || "").trim().toUpperCase();
     const profile = billingProfiles[code];
-    if (!profile) {
+    if (!profile || byId("payment-method").value === "upi") {
       preview.hidden = true;
       return;
     }
@@ -522,13 +522,15 @@
     const isGcash = method === "gcash";
     const isGopay = method === "gopay";
     const isMomo = method === "momo";
-    const isFixedCountry = isGcash || isGopay || isMomo;
-    const fixedCountry = isGopay ? "ID" : isMomo ? "VN" : "PH";
+    const isUpi = method === "upi";
+    const isFixedCountry = isGcash || isGopay || isMomo || isUpi;
+    const fixedCountry = isUpi ? "IN" : isGopay ? "ID" : isMomo ? "VN" : "PH";
     const country = byId("country");
     const countryField = byId("country-field");
     const gcashNote = byId("gcash-country-note");
     const gopayNote = byId("gopay-country-note");
     const momoNote = byId("momo-country-note");
+    const upiNote = byId("upi-country-note");
     const gopayZeroTrialField = byId("gopay-zero-trial-field");
     const momoZeroTrialField = byId("momo-zero-trial-field");
     if (!isFixedCountry && country.value) {
@@ -536,16 +538,23 @@
     }
     if (isFixedCountry) {
       if (country.value && country.value !== fixedCountry) paypalCountryPreference = country.value;
-      if (isGopay) country.value = "ID";
+      if (isUpi) country.value = "IN";
+      else if (isGopay) country.value = "ID";
       else if (isMomo) country.value = "VN";
       else country.value = "PH";
-    } else if (paypalCountryPreference && ["PH", "ID"].includes(country.value)) {
+    } else if (paypalCountryPreference && ["PH", "ID", "IN"].includes(country.value)) {
       country.value = paypalCountryPreference;
     }
     if (countryField) countryField.hidden = isFixedCountry;
     if (gcashNote) gcashNote.hidden = !isGcash;
     if (gopayNote) gopayNote.hidden = !isGopay;
     if (momoNote) momoNote.hidden = !isMomo;
+    if (upiNote) upiNote.hidden = !isUpi;
+    const proxyHint = byId("proxy-pool-hint");
+    if (proxyHint) proxyHint.textContent = isUpi
+      ? "填写 IN 印度出口代理；一轮提炼全程保持同一出口，不使用中途换 IP 的轮换节点"
+      : "所有支付步骤共用一个自备节点池";
+    byId("submit-button").textContent = isUpi ? "开始 UPI 提炼" : "提交任务";
     if (gopayZeroTrialField) gopayZeroTrialField.hidden = !isGopay;
     if (momoZeroTrialField) momoZeroTrialField.hidden = !isMomo;
     renderBillingPreview();
@@ -717,7 +726,7 @@
       result.momo_zero_trial_validation = byId("momo-zero-trial-validation").checked;
     }
     const values = [
-      ["country", paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
+      ["country", paymentMethod === "upi" ? "IN" : paymentMethod === "gcash" ? "PH" : paymentMethod === "gopay" ? "ID" : paymentMethod === "momo" ? "VN" : byId("country").value],
       ["payment_method", paymentMethod],
     ];
     values.forEach(([key, value]) => {
@@ -1449,7 +1458,7 @@
   }
 
   function taskResultUrl(result) {
-    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || result.momo_url || "";
+    return result.provider_url || result.paypal_url || result.gopay_url || result.gcash_url || result.momo_url || result.upi_url || "";
   }
 
   function isPaypalBaLink(url) {
@@ -1793,6 +1802,23 @@
     </article>`;
   }
 
+  function renderUpiDetails(result) {
+    if (result.payment_method !== "upi" || !result.upi_url) return "";
+    const expires = Number(result.upi_expires_at || 0);
+    const expiry = expires > 0
+      ? (expires * 1000 <= Date.now() ? "已过期 · " : "有效期至 ") + new Date(expires * 1000).toLocaleString()
+      : "有效期以 Stripe 指引页为准";
+    let qr = "";
+    try {
+      const parsed = new URL(result.upi_qr_png);
+      if (parsed.protocol === "https:" && parsed.hostname === "qr.stripe.com" && (!expires || expires * 1000 > Date.now())) {
+        qr = '<img class="upi-qr" src="' + escapeHtml(parsed.href) + '" width="180" height="180" alt="UPI 委托二维码" loading="lazy" referrerpolicy="no-referrer">';
+      }
+    } catch (error) { /* QR is optional; the verified hosted link remains usable. */ }
+    return '<div class="upi-result"><strong>UPI 委托链接 · ' + (result.upi_verified ? '提炼时核验通过' : '未核验')
+      + '</strong><span>' + escapeHtml(expiry) + '</span>' + qr + '</div>';
+  }
+
   function renderResultDetails(result, checkoutProxy, taskId, proxyTest) {
     const amount = result.amount_due == null ? "" : `${result.amount_due} ${result.currency || ""}`.trim();
     const details = [
@@ -1810,7 +1836,7 @@
       ? `<div class="detail-item detail-item-wide"><span>Checkout Proxy</span><div class="detail-value-action"><button class="secondary" data-test-proxy="${escapeHtml(taskId)}"${testing ? " disabled" : ""}>${testing ? "测试中..." : "测试 IP"}</button><button class="secondary" data-copy-proxy="${escapeHtml(checkoutProxy)}">复制</button><strong class="proxy-value" title="${proxyVisible ? escapeHtml(checkoutProxy) : "Checkout Proxy 已隐藏"}">${proxyVisible ? escapeHtml(checkoutProxy) : "已隐藏"}</strong><button class="secondary" data-toggle-proxy="${escapeHtml(taskId)}">${proxyVisible ? "隐藏" : "显示"}</button></div>${renderProxyTest(proxyTest)}</div>`
       : "";
     if (!details.length && !proxyHtml) return "";
-    return `<div class="result-details">${proxyHtml}${details.map(([label, value]) => `<div class="detail-item"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
+    return renderUpiDetails(result) + `<div class="result-details">${proxyHtml}${details.map(([label, value]) => `<div class="detail-item"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   }
 
   function renderModalDetail(label, value, wide = false) {
@@ -2017,7 +2043,7 @@
       field.addEventListener("input", saveFormPreferences);
     });
     byId("country").addEventListener("change", () => {
-      if (!["gcash", "gopay", "momo"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
+      if (!["gcash", "gopay", "momo", "upi"].includes(byId("payment-method").value)) paypalCountryPreference = byId("country").value;
       renderBillingPreview();
     });
     byId("payment-method").addEventListener("change", () => {

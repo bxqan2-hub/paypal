@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+payment_link_extractor/upi/core/_vendor/sentinel_assets/node_modules/
 .pytest_cache/
 .mypy_cache/
 .env

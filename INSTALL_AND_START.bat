@@ -56,4 +56,16 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist ".env" copy /y ".env.example" ".env" >nul
+where node >nul 2>&1
+if errorlevel 1 (
+  echo UPI requires Node.js 18.17 or newer. Install Node.js and try again.
+  pause
+  exit /b 1
+)
+call npm ci --ignore-scripts --no-audit --no-fund --prefix payment_link_extractor/upi/core/_vendor/sentinel_assets
+if errorlevel 1 (
+  echo UPI Node dependency installation failed.
+  pause
+  exit /b 1
+)
 call START.bat

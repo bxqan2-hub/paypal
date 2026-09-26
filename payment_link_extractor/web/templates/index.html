@@ -79,7 +79,7 @@
                   <option>GB</option><option>US</option><option selected>BR</option><option>DE</option>
                   <option>TH</option><option>BA</option><option>PH</option><option>ID</option>
                   <option>NL</option><option>AE</option><option>DK</option><option>JP</option>
-                  <option>ES</option><option>FI</option><option>FR</option>
+                  <option>ES</option><option>FI</option><option>FR</option><option>IN</option>
                 </select>
               </label>
               <section id="billing-preview" class="billing-preview" hidden aria-live="polite" aria-label="所选国家账单配置">
@@ -107,10 +107,12 @@
                   <option value="gopay">GoPay（印度尼西亚）</option>
                   <option value="gcash">GCash（菲律宾）</option>
                   <option value="momo">MoMo（越南）</option>
+                  <option value="upi">UPI 提炼（印度）</option>
                 </select>
                 <small id="gopay-country-note" class="quiet" hidden>GoPay 固定使用印度尼西亚 ID / IDR，选择后直接调用 GoPay 核心。</small>
                 <small id="gcash-country-note" class="quiet" hidden>GCash 固定使用菲律宾 PH / PHP，无需选择国家。</small>
                 <small id="momo-country-note" class="quiet" hidden>MoMo 固定使用越南 VN / VND，无需选择国家。</small>
+                <small id="upi-country-note" class="quiet" hidden>输入 AT 自动识别邮箱，填写 IN 印度出口代理即可开始。固定 IN / INR，使用 upi-zero-link 原版核心，保留 0 元与链接核验。</small>
               </label>
               <section id="gopay-zero-trial-field" class="gopay-zero-trial-field" hidden>
                 <label class="check-field" for="gopay-zero-trial-validation">
@@ -128,7 +130,7 @@
               </section>
               <section class="mk-proxy-panel">
                 <div class="mk-proxy-heading">
-                  <div><strong>代理池</strong><small>所有支付步骤共用一个自备节点池</small></div>
+                  <div><strong>代理池</strong><small id="proxy-pool-hint">所有支付步骤共用一个自备节点池</small></div>
                   <span id="proxy-count" class="proxy-count">0 / 100</span>
                 </div>
                 <label class="field">

@@ -39,9 +39,12 @@ COUNTRY_PROFILES = {
     "FI": {"currency": "EUR", "locale": "fi-FI", "timezone": "Europe/Helsinki"},
     "FR": {"currency": "EUR", "locale": "fr-FR", "timezone": "Europe/Paris"},
     "VN": {"currency": "VND", "locale": "vi-VN", "timezone": "Asia/Ho_Chi_Minh"},
+    "IN": {"currency": "INR", "locale": "en-IN", "timezone": "Asia/Kolkata"},
 }
 
 _BILLING_VALUES = {
+    # UPI's unchanged upstream core selects its actual billing address.
+    "IN": ("", "", "", "", "", "", ""),
     "GB": ("James Smith", "james.smith@example.com", "+442079250918", "10 Downing Street", "London", "Greater London", "SW1A 2AA"),
     "US": ("John Smith", "john.smith@example.com", "+12025550123", "1600 Pennsylvania Avenue NW", "Washington", "DC", "20500"),
     "BR": ("João da Silva", "joao.silva@example.com", "+551130001234", "Avenida Paulista, 1578", "São Paulo", "SP", "01310-200"),

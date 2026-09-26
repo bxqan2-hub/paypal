@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_all_channels_have_unique_adapters_and_result_fields() -> None:
     channels = list(PAYMENT_CHANNELS.values())
-    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash", "momo")
+    assert tuple(channel.name for channel in channels) == ("paypal", "gopay", "gcash", "momo", "upi")
     assert len({channel.adapter_module for channel in channels}) == len(channels)
     assert len({channel.result_field for channel in channels}) == len(channels)
     assert SUPPORTED_PAYMENT_METHODS == tuple(PAYMENT_CHANNELS)

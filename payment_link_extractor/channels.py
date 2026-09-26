@@ -65,6 +65,15 @@ PAYMENT_CHANNELS: dict[str, PaymentChannel] = {
         uses_legacy_transport=False,
         uses_checkout_update=False,
     ),
+    "upi": PaymentChannel(
+        name="upi",
+        label="UPI",
+        adapter_module="payment_link_extractor.upi",
+        adapter_callable="extract_upi_payment_link",
+        result_field="upi_url",
+        country="IN",
+        currency="INR",
+    ),
 }
 PAYMENT_CHANNEL_NAMES = tuple(PAYMENT_CHANNELS)
 

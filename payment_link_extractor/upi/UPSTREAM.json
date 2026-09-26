@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/wangshen233/upi-zero-link",
+  "commit": "f3cbc40f97e4b1de03fc8eff63f5caaedb285334",
+  "package": "upi_zero_link",
+  "files": {
+    "__init__.py": "2ad6348a2b08175eaee09a2fa5032172981bf836e174b83832ce69665357883c",
+    "__main__.py": "c55b9ffe32067853cb73e4e3d7478a9187a192b69ab8b90b0620c45ae1158c0d",
+    "_vendor/__init__.py": "0e82e104d5614992574db1ed0e01b060362eafb1adea3f91f14a7c80d01e0a72",
+    "_vendor/attestation.py": "9912fed9672918d5073025169e8447508469982ed88a334f010e934419a4c8c2",
+    "_vendor/http.py": "b09fdcd2bfe01224c0b88cc5a1accedcf7eecb2d6ee2bbb2904dc30980807e33",
+    "_vendor/oaics.py": "47c2af7a822ba5101ab1a99aebf33763e327c0e30dd6b070d3dd7991bad6e218",
+    "_vendor/openai_protocol.py": "fe792b2bb291b79fa34dea6458a2c8c9f71dfbba1f724563a24e2d53def2916b",
+    "_vendor/risk.py": "21ab6871e1a57ed15429cb11b27b61dfc5c0d6195395fafce8ead04f844de9fd",
+    "_vendor/sentinel_assets/package-lock.json": "248b7854b8e91aadb982a8d5121cc38d58fc023f04c6f4103e2679903969d57d",
+    "_vendor/sentinel_assets/package.json": "a66db2dc531b508c481b6fee2f036c29ce4a505186fe4803af7a79b68cdf28fc",
+    "_vendor/sentinel_assets/sentinel_bootstrap.js": "c5265f4697bbed50774182a5079b7d70ec4f5fc252a0238976052d50271f1c68",
+    "_vendor/sentinel_assets/sentinel_bridge.js": "2e5ae07636e8cf2d3dada0486eb92d30f4d1f4db3846bcaced24ac170c23324c",
+    "_vendor/sentinel_assets/sentinel_curl_fetch.py": "c21386a86a27c814860dc977d6ad9c8e4d8f73d7f81d8a0992a5b8ace6627976",
+    "_vendor/sentinel_assets/sentinel_sdk.js": "b61fedaaa18817f0546664b46a9855b82e54f0e29a4f522083ce8d579f89195c",
+    "_vendor/sentinel_token.py": "d90b950de365bf2ac7d6c8212568977cf3a0f344c0c8952909958e2ad544539e",
+    "addresses.py": "6b063b7a40b6c884eac2980249971cc338d53e3c4874a457e51b6bd03b8579c0",
+    "cli.py": "21096cfafaadab02e88d149adf1a26041d78d92cb99da04c8eaf092cf16572a2",
+    "data/in_pincodes.json": "64eec9d49f3b23c3695672de35b7099d0c69a86f7a718c7413689738a1f879f0",
+    "identity.py": "6ef4627d5c8c72c244cf9fb663829fdedc502bc68678eb7368176e8020b071af",
+    "protocol.py": "dd4f31fabeda4b2cdc0afc8967e7d8ba4f0c1f92a85c005b98675809b4f43d02",
+    "verify.py": "8ecaebde4c2e4a8f1247569dfe374081d94ba10fcd59cfa190480dc73d6f99b2"
+  }
+}

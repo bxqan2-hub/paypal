@@ -11,3 +11,5 @@ artifacts/**/DIFF_FILE.patch -text -diff
 # Keep the vendored Sentinel launchers byte-stable for their SHA-256 manifest.
 /payment_link_extractor/mk_gcash_open_source/sentinel.py -text -diff
 /payment_link_extractor/mk_gcash_open_source/sentinel_bridge.js -text -diff
+# UPI's pinned SHA-256 manifest covers every upstream file, including CRLFs.
+/payment_link_extractor/upi/core/** -text

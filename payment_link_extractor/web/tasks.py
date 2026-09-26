@@ -499,7 +499,7 @@ class TaskManager:
         proxy_plan: tuple[str, ...] | None = None,
     ) -> ExtractionConfig:
         total_attempts = cls._total_attempts(config)
-        if config.payment_method in {"gopay", "momo"}:
+        if config.payment_method in {"gopay", "momo", "upi"}:
             # GoPay owns one proxy for the entire current attempt. A new
             # proxy is selected only when the attempt fails and the outer
             # retry loop rebuilds the complete flow from the beginning.
@@ -673,7 +673,7 @@ class TaskManager:
                     is_gopay = record.config.payment_method == "gopay"
                     # Momo may restart a fresh full attempt with the same AT;
                     # each attempt gets a new proxy and browser fingerprint.
-                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo"}
+                    is_checkout_sensitive = record.config.payment_method in {"gopay", "momo", "upi"}
                     explicit_retryable = getattr(exc, "retryable", None)
                     status_code = getattr(exc, "status_code", None)
                     try:
@@ -802,7 +802,7 @@ class TaskManager:
             if record is None or record.status in TERMINAL_STATES:
                 return
             if (
-                record.config.payment_method in {"gopay", "momo"}
+                record.config.payment_method in {"gopay", "momo", "upi"}
                 and str(stage) == "checkout_committed"
             ):
                 record.checkout_opportunity_consumed = True
