@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from ..auth import account_email, normalize_access_token
 from ..errors import ConfigurationError, ExtractionCancelled, NetworkError, ProtocolError
 from ..models import BillingProfile, ExtractionConfig, PaymentLinkResult
+from ..transport import normalize_proxy_url
 
 UPI_RESULT_FIELD = "upi_url"
 ROOT = Path(__file__).resolve().parents[2]
@@ -135,7 +136,8 @@ def extract_upi_payment_link(
         error.retryable = False
         raise error
     try:
-        proxy = urlsplit(config.checkout_proxy)
+        proxy_url = normalize_proxy_url(config.checkout_proxy)
+        proxy = urlsplit(proxy_url)
         valid_proxy = proxy.scheme in {"http", "https", "socks5", "socks5h"} and bool(proxy.hostname)
         proxy.port
     except ValueError:
@@ -146,7 +148,7 @@ def extract_upi_payment_link(
         stage_callback("checkout_kind:cs")
     raw = _run_core(
         {"email": email, "access_token": token, "session_token": config.session_token},
-        config.checkout_proxy, cancel_event, stage_callback,
+        proxy_url, cancel_event, stage_callback,
     )
     url = str(raw.get("url") or "")
     parsed = urlsplit(url)

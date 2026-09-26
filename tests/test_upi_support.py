@@ -151,6 +151,43 @@ def test_missing_email_does_not_invoke_core(monkeypatch):
     assert caught.value.retryable is False
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("in.example.test:1080:test:pass", "http://test:pass@in.example.test:1080"),
+    ("socks5h://in.example.test:1080:test:pass", "socks5h://test:pass@in.example.test:1080"),
+    ("in.example.test:8080", "http://in.example.test:8080"),
+    ("socks5://test:p%40ss@in.example.test:1080", "socks5://test:p%40ss@in.example.test:1080"),
+])
+def test_upi_normalizes_ui_proxy_formats_before_core(monkeypatch, raw, expected):
+    captured = []
+    monkeypatch.setattr(upi, "_run_core", lambda account, proxy, *args: captured.append(proxy) or success())
+    extract_payment_link(replace(config(), checkout_proxy=raw))
+    assert captured == [expected]
+
+
+def test_upi_reuses_existing_socks_bridge_for_vendor_exports(monkeypatch):
+    from urllib.parse import urlsplit, unquote
+    import iprocket_chain_bridge as bridge
+
+    started, captured = [], []
+    monkeypatch.setattr(bridge, "ensure_background_server", lambda: started.append(True))
+    monkeypatch.setenv("IPROCKET_CHAIN_PROXY", "http://127.0.0.1:18796")
+    monkeypatch.setattr(upi, "_run_core", lambda account, proxy, *args: captured.append(proxy) or success())
+    extract_payment_link(replace(config(), checkout_proxy="proxy.iprocket.io:9595:TEST_USER:TEST_PASS"))
+    proxy = urlsplit(captured[0])
+    assert (proxy.scheme, proxy.hostname, proxy.port) == ("http", "127.0.0.1", 18796)
+    encoded = proxy.username.removeprefix("iprb_")
+    assert base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode() == "socks5|proxy.iprocket.io|9595|TEST_USER"
+    assert unquote(proxy.password) == "TEST_PASS" and started == [True]
+
+
+@pytest.mark.parametrize("raw", ["ftp://in.example.test:1080", "http://in.example.test:invalid"])
+def test_invalid_proxy_still_stops_before_core(monkeypatch, raw):
+    monkeypatch.setattr(upi, "_run_core", lambda *args: pytest.fail("invalid proxy must not launch core"))
+    with pytest.raises(ProtocolError, match="有效的 IN") as caught:
+        extract_payment_link(replace(config(), checkout_proxy=raw))
+    assert caught.value.retryable is False
+
+
 def test_json_email_supported_for_non_jwt_token(monkeypatch):
     captured = {}
     monkeypatch.setattr(upi, "_run_core", lambda account, *args: captured.update(account) or success())
